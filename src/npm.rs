@@ -48,7 +48,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
             target.skipped_latest_version.as_deref(),
         ) {
             println!(
-                "npm: {name} {from} -> {to} (delayed, latest {} is {} < {}, source: npm)",
+                "npm: {name} {from} -> {to} (source: npm; latest {} delayed: {} < {})",
                 version_label(skipped_ver),
                 human_age(age_secs),
                 human_age(min_age.as_secs())

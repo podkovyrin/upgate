@@ -85,7 +85,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
             target.skipped_latest_version.as_deref(),
         ) {
             println!(
-                "pipx: {name} {from} -> {to} (delayed, latest {} is {} < {}, source: pypi)",
+                "pipx: {name} {from} -> {to} (source: pypi; latest {} delayed: {} < {})",
                 version_label(skipped_ver),
                 human_age(age_secs),
                 human_age(min_age.as_secs())
