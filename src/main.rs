@@ -80,9 +80,36 @@ struct TapMeta {
     branch: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+enum DataSource {
+    Git,
+    Api,
+    None,
+}
+
+impl DataSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Git => "git",
+            Self::Api => "api",
+            Self::None => "n/a",
+        }
+    }
+}
+
 enum PlanAction {
-    Upgrade,
-    Skip(String),
+    Upgrade {
+        source: DataSource,
+    },
+    Delayed {
+        age: String,
+        required: String,
+        source: DataSource,
+    },
+    Skipped {
+        reason: String,
+        source: DataSource,
+    },
 }
 
 struct PlanItem {
@@ -93,20 +120,9 @@ struct PlanItem {
     is_formula: bool,
 }
 
-struct FormulaCandidate {
-    name: String,
-    installed: String,
-    target: String,
-    pinned: bool,
-    pinned_version: Option<String>,
-    tap_and_source: Option<(Option<String>, Option<String>)>,
-}
-
-struct CaskCandidate {
-    name: String,
-    installed: String,
-    target: String,
-    tap_and_source: Option<(Option<String>, Option<String>)>,
+struct CommitAgeInfo {
+    committed_at: u64,
+    source: DataSource,
 }
 
 #[derive(Debug, Deserialize)]
@@ -168,109 +184,62 @@ fn run() -> Result<()> {
         cask_info_by_name.insert(info.token.clone(), info);
     }
 
-    let formula_candidates: Vec<FormulaCandidate> = outdated
+    let formula_plan: Vec<PlanItem> = outdated
         .formulae
-        .into_iter()
-        .map(|item| {
-            let installed = item
-                .installed_versions
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "unknown".to_string());
-            let tap_and_source = formula_info_by_name.get(&item.name).map(|f| {
-                (
-                    f.tap.as_ref().map(std::string::ToString::to_string),
-                    f.ruby_source_path
-                        .as_ref()
-                        .map(std::string::ToString::to_string),
-                )
-            });
-
-            FormulaCandidate {
-                name: item.name,
-                installed,
-                target: item.current_version,
-                pinned: item.pinned,
-                pinned_version: item.pinned_version,
-                tap_and_source,
-            }
-        })
-        .collect();
-
-    let cask_candidates: Vec<CaskCandidate> = outdated
-        .casks
-        .into_iter()
-        .map(|item| {
-            let installed = item
-                .installed_versions
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "unknown".to_string());
-            let tap_and_source = cask_info_by_name.get(&item.name).map(|c| {
-                (
-                    c.tap.as_ref().map(std::string::ToString::to_string),
-                    c.ruby_source_path
-                        .as_ref()
-                        .map(std::string::ToString::to_string),
-                )
-            });
-
-            CaskCandidate {
-                name: item.name,
-                installed,
-                target: item.current_version,
-                tap_and_source,
-            }
-        })
-        .collect();
-
-    let formula_plan: Vec<PlanItem> = formula_candidates
         .into_par_iter()
         .map(|item| {
+            let installed = item
+                .installed_versions
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string());
+
             let action = if item.pinned {
-                PlanAction::Skip(match item.pinned_version {
-                    Some(v) => format!("pinned at {v}"),
-                    None => "pinned".to_string(),
-                })
+                PlanAction::Skipped {
+                    reason: match item.pinned_version {
+                        Some(v) => format!("pinned at {v}"),
+                        None => "pinned".to_string(),
+                    },
+                    source: DataSource::None,
+                }
             } else {
-                decide_by_age(
-                    min_age,
-                    now,
-                    item.tap_and_source
-                        .as_ref()
-                        .map(|(tap, src)| (tap.as_deref(), src.as_deref())),
-                    &tap_meta,
-                    &github_client,
-                )
+                let tap_and_source = formula_info_by_name
+                    .get(&item.name)
+                    .map(|f| (f.tap.as_deref(), f.ruby_source_path.as_deref()));
+
+                decide_by_age(min_age, now, tap_and_source, &tap_meta, &github_client)
             };
 
             PlanItem {
                 name: item.name,
-                installed: item.installed,
-                target: item.target,
+                installed,
+                target: item.current_version,
                 action,
                 is_formula: true,
             }
         })
         .collect();
 
-    let cask_plan: Vec<PlanItem> = cask_candidates
+    let cask_plan: Vec<PlanItem> = outdated
+        .casks
         .into_par_iter()
         .map(|item| {
-            let action = decide_by_age(
-                min_age,
-                now,
-                item.tap_and_source
-                    .as_ref()
-                    .map(|(tap, src)| (tap.as_deref(), src.as_deref())),
-                &tap_meta,
-                &github_client,
-            );
+            let installed = item
+                .installed_versions
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let tap_and_source = cask_info_by_name
+                .get(&item.name)
+                .map(|c| (c.tap.as_deref(), c.ruby_source_path.as_deref()));
+
+            let action = decide_by_age(min_age, now, tap_and_source, &tap_meta, &github_client);
 
             PlanItem {
                 name: item.name,
-                installed: item.installed,
-                target: item.target,
+                installed,
+                target: item.current_version,
                 action,
                 is_formula: false,
             }
@@ -282,14 +251,42 @@ fn run() -> Result<()> {
     plan.extend(cask_plan);
 
     for item in &plan {
+        let installed = version_label(&item.installed);
+        let target = version_label(&item.target);
+
         match &item.action {
-            PlanAction::Upgrade => {
-                println!("brew: {} {} -> {}", item.name, item.installed, item.target);
-            }
-            PlanAction::Skip(reason) => {
+            PlanAction::Upgrade { source } => {
                 println!(
-                    "brew: {} v{} skipped (reason: {})",
-                    item.name, item.target, reason
+                    "brew: {} {} -> {} (source: {})",
+                    item.name,
+                    installed,
+                    target,
+                    source.as_str()
+                );
+            }
+            PlanAction::Delayed {
+                age,
+                required,
+                source,
+            } => {
+                println!(
+                    "brew: {} {} -> {} (delayed, {} < {}, source: {})",
+                    item.name,
+                    installed,
+                    target,
+                    age,
+                    required,
+                    source.as_str()
+                );
+            }
+            PlanAction::Skipped { reason, source } => {
+                println!(
+                    "brew: {} {} -> {} (skipped, {}, source: {})",
+                    item.name,
+                    installed,
+                    target,
+                    reason,
+                    source.as_str()
                 );
             }
         }
@@ -303,8 +300,8 @@ fn run() -> Result<()> {
         .iter()
         .filter(|i| i.is_formula)
         .filter_map(|i| match i.action {
-            PlanAction::Upgrade => Some(i.name.clone()),
-            PlanAction::Skip(_) => None,
+            PlanAction::Upgrade { .. } => Some(i.name.clone()),
+            PlanAction::Delayed { .. } | PlanAction::Skipped { .. } => None,
         })
         .collect();
 
@@ -312,8 +309,8 @@ fn run() -> Result<()> {
         .iter()
         .filter(|i| !i.is_formula)
         .filter_map(|i| match i.action {
-            PlanAction::Upgrade => Some(i.name.clone()),
-            PlanAction::Skip(_) => None,
+            PlanAction::Upgrade { .. } => Some(i.name.clone()),
+            PlanAction::Delayed { .. } | PlanAction::Skipped { .. } => None,
         })
         .collect();
 
@@ -340,48 +337,77 @@ fn decide_by_age(
     github_client: &Client,
 ) -> PlanAction {
     let Some((tap, source_path)) = tap_and_source else {
-        return PlanAction::Skip("unable to resolve package metadata from brew info".to_string());
+        return PlanAction::Skipped {
+            reason: "unable to resolve package metadata from brew info".to_string(),
+            source: DataSource::None,
+        };
     };
 
     let Some(tap) = tap else {
-        return PlanAction::Skip("missing tap".to_string());
+        return PlanAction::Skipped {
+            reason: "missing tap".to_string(),
+            source: DataSource::None,
+        };
     };
 
     let Some(source_path) = source_path else {
-        return PlanAction::Skip("missing ruby_source_path".to_string());
+        return PlanAction::Skipped {
+            reason: "missing ruby_source_path".to_string(),
+            source: DataSource::None,
+        };
     };
 
     let Some(tap_meta) = tap_meta.get(tap) else {
-        return PlanAction::Skip(format!("tap '{tap}' is not installed locally"));
+        return PlanAction::Skipped {
+            reason: format!("tap '{tap}' is not installed locally"),
+            source: DataSource::None,
+        };
     };
 
-    let committed_at = match commit_unix_seconds(tap_meta, source_path, github_client) {
-        Ok(ts) => ts,
-        Err(err) => return PlanAction::Skip(format!("failed age check: {err}")),
+    let commit_info = match commit_unix_seconds(tap_meta, source_path, github_client) {
+        Ok(info) => info,
+        Err(err) => {
+            return PlanAction::Skipped {
+                reason: format!("failed age check: {err}"),
+                source: DataSource::None,
+            };
+        }
     };
 
-    let age_secs = now_unix_secs.saturating_sub(committed_at);
+    let age_secs = now_unix_secs.saturating_sub(commit_info.committed_at);
 
     if age_secs >= min_age.as_secs() {
-        return PlanAction::Upgrade;
+        return PlanAction::Upgrade {
+            source: commit_info.source,
+        };
     }
 
     let age = human_age(age_secs);
     let required = human_age(min_age.as_secs());
-    PlanAction::Skip(format!("release age {age} < required {required}"))
+    PlanAction::Delayed {
+        age,
+        required,
+        source: commit_info.source,
+    }
 }
 
 fn commit_unix_seconds(
     tap_meta: &TapMeta,
     source_path: &str,
     github_client: &Client,
-) -> Result<u64> {
-    match git_last_commit_unix_seconds(&tap_meta.path, source_path) {
-        Ok(ts) => Ok(ts),
+) -> Result<CommitAgeInfo> {
+    match git_last_commit_unix_seconds(&tap_meta.path, tap_meta.branch.as_deref(), source_path) {
+        Ok(ts) => Ok(CommitAgeInfo {
+            committed_at: ts,
+            source: DataSource::Git,
+        }),
         Err(local_err) => {
             if let (Some(remote), Some(branch)) = (&tap_meta.remote, &tap_meta.branch) {
                 match github_last_commit_unix_seconds(github_client, remote, branch, source_path) {
-                    Ok(ts) => Ok(ts),
+                    Ok(ts) => Ok(CommitAgeInfo {
+                        committed_at: ts,
+                        source: DataSource::Api,
+                    }),
                     Err(github_err) => {
                         bail!(
                             "local git failed ({local_err}); GitHub fallback failed ({github_err})"
@@ -395,17 +421,52 @@ fn commit_unix_seconds(
     }
 }
 
-fn git_last_commit_unix_seconds(repo_path: &str, source_path: &str) -> Result<u64> {
+fn git_last_commit_unix_seconds(
+    repo_path: &str,
+    branch: Option<&str>,
+    source_path: &str,
+) -> Result<u64> {
+    // Some Homebrew taps can have an invalid local HEAD (e.g. refs/heads/.invalid),
+    // so implicit HEAD-based commands fail even though origin/* and FETCH_HEAD are valid.
+    // `brew update-reset` usually repairs tap refs if needed.
+    let mut refs: Vec<String> = Vec::new();
+
+    let mut push_unique = |git_ref: String| {
+        if !refs.iter().any(|existing| existing == &git_ref) {
+            refs.push(git_ref);
+        }
+    };
+
+    if let Some(branch) = branch.filter(|b| !b.is_empty()) {
+        push_unique(format!("origin/{branch}"));
+    }
+
+    push_unique("origin/HEAD".to_string());
+    push_unique("FETCH_HEAD".to_string());
+    push_unique("HEAD".to_string());
+
+    let mut last_err = String::new();
+    for git_ref in refs {
+        match git_log_timestamp_for_ref(repo_path, source_path, &git_ref) {
+            Ok(ts) => return Ok(ts),
+            Err(err) => last_err = format!("{git_ref}: {err}"),
+        }
+    }
+
+    bail!("git log failed for all refs ({last_err})")
+}
+
+fn git_log_timestamp_for_ref(repo_path: &str, source_path: &str, git_ref: &str) -> Result<u64> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_path)
-        .args(["log", "-1", "--format=%ct", "--", source_path])
+        .args(["log", "-1", "--format=%ct", git_ref, "--", source_path])
         .output()
-        .with_context(|| format!("failed running git log for {source_path}"))?;
+        .with_context(|| format!("failed running git log {git_ref} for {source_path}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git log failed: {}", stderr.trim());
+        bail!("{}", stderr.trim());
     }
 
     let stdout = String::from_utf8(output.stdout).context("git log output was not UTF-8")?;
@@ -637,6 +698,17 @@ fn parse_duration(raw: &str) -> Result<Duration> {
     };
 
     Ok(Duration::from_secs(secs))
+}
+
+fn version_label(version: &str) -> String {
+    if version.starts_with('v') {
+        return version.to_string();
+    }
+
+    match version.chars().next() {
+        Some(c) if c.is_ascii_digit() => format!("v{version}"),
+        _ => version.to_string(),
+    }
 }
 
 fn human_age(total_secs: u64) -> String {
