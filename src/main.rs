@@ -128,18 +128,13 @@ struct PlanItem {
     is_formula: bool,
 }
 
-#[derive(Clone)]
-struct LocalCandidate {
-    index: usize,
+struct PackageJob {
     name: String,
     installed: String,
     target: String,
     is_formula: bool,
-    source_path: String,
-    tap_path: String,
-    tap_branch: Option<String>,
-    remote: Option<String>,
-    remote_branch: Option<String>,
+    initial_skip_reason: Option<String>,
+    tap_and_source: Option<(Option<String>, Option<String>)>,
 }
 
 #[derive(Clone)]
@@ -153,6 +148,11 @@ struct ApiJob {
     branch: String,
     source_path: String,
     local_err: String,
+}
+
+enum PhaseOneResult {
+    Final(PlanItem),
+    NeedsApi(ApiJob),
 }
 
 #[derive(Debug, Deserialize)]
@@ -219,198 +219,74 @@ fn run() -> Result<()> {
         cask_info_by_name.insert(cask.token.clone(), cask);
     }
 
-    let mut plan_slots: Vec<Option<PlanItem>> = (0..(outdated.formulae.len()
-        + outdated.casks.len()))
-        .map(|_| None)
-        .collect();
-
-    let mut local_candidates = Vec::new();
-
-    let mut next_index = 0usize;
+    let mut jobs = Vec::with_capacity(outdated.formulae.len() + outdated.casks.len());
 
     for item in outdated.formulae {
-        let index = next_index;
-        next_index = next_index.saturating_add(1);
-
         let installed = item
             .installed_versions
             .first()
             .cloned()
             .unwrap_or_else(|| "unknown".to_string());
-
-        if item.pinned {
-            let reason = match item.pinned_version {
+        let initial_skip_reason = if item.pinned {
+            Some(match item.pinned_version {
                 Some(v) => format!("pinned at {v}"),
                 None => "pinned".to_string(),
-            };
-            plan_slots[index] = Some(PlanItem {
-                name: item.name,
-                installed,
-                target: item.current_version,
-                action: PlanAction::Skipped {
-                    reason,
-                    source: DataSource::None,
-                },
-                is_formula: true,
-            });
-            continue;
-        }
-
-        let Some(meta) = formula_info_by_name.get(&item.name) else {
-            plan_slots[index] = Some(PlanItem {
-                name: item.name,
-                installed,
-                target: item.current_version,
-                action: PlanAction::Skipped {
-                    reason: "unable to resolve package metadata from brew info".to_string(),
-                    source: DataSource::None,
-                },
-                is_formula: true,
-            });
-            continue;
+            })
+        } else {
+            None
         };
 
-        let Some(tap) = meta.tap.as_deref() else {
-            plan_slots[index] = Some(PlanItem {
-                name: item.name,
-                installed,
-                target: item.current_version,
-                action: PlanAction::Skipped {
-                    reason: "missing tap".to_string(),
-                    source: DataSource::None,
-                },
-                is_formula: true,
-            });
-            continue;
-        };
+        let tap_and_source = formula_info_by_name
+            .get(&item.name)
+            .map(|f| (f.tap.clone(), f.ruby_source_path.clone()));
 
-        let Some(source_path) = meta.ruby_source_path.as_deref() else {
-            plan_slots[index] = Some(PlanItem {
-                name: item.name,
-                installed,
-                target: item.current_version,
-                action: PlanAction::Skipped {
-                    reason: "missing ruby_source_path".to_string(),
-                    source: DataSource::None,
-                },
-                is_formula: true,
-            });
-            continue;
-        };
-
-        let Some(tap) = tap_meta.get(tap) else {
-            plan_slots[index] = Some(PlanItem {
-                name: item.name,
-                installed,
-                target: item.current_version,
-                action: PlanAction::Skipped {
-                    reason: format!("tap '{tap}' is not installed locally"),
-                    source: DataSource::None,
-                },
-                is_formula: true,
-            });
-            continue;
-        };
-
-        local_candidates.push(LocalCandidate {
-            index,
+        jobs.push(PackageJob {
             name: item.name,
             installed,
             target: item.current_version,
             is_formula: true,
-            source_path: source_path.to_string(),
-            tap_path: tap.path.clone(),
-            tap_branch: tap.branch.clone(),
-            remote: tap.remote.clone(),
-            remote_branch: tap.branch.clone(),
+            initial_skip_reason,
+            tap_and_source,
         });
     }
 
     for item in outdated.casks {
-        let index = next_index;
-        next_index = next_index.saturating_add(1);
-
         let installed = item
             .installed_versions
             .first()
             .cloned()
             .unwrap_or_else(|| "unknown".to_string());
 
-        let Some(meta) = cask_info_by_name.get(&item.name) else {
-            plan_slots[index] = Some(PlanItem {
-                name: item.name,
-                installed,
-                target: item.current_version,
-                action: PlanAction::Skipped {
-                    reason: "unable to resolve package metadata from brew info".to_string(),
-                    source: DataSource::None,
-                },
-                is_formula: false,
-            });
-            continue;
-        };
+        let tap_and_source = cask_info_by_name
+            .get(&item.name)
+            .map(|c| (c.tap.clone(), c.ruby_source_path.clone()));
 
-        let Some(tap) = meta.tap.as_deref() else {
-            plan_slots[index] = Some(PlanItem {
-                name: item.name,
-                installed,
-                target: item.current_version,
-                action: PlanAction::Skipped {
-                    reason: "missing tap".to_string(),
-                    source: DataSource::None,
-                },
-                is_formula: false,
-            });
-            continue;
-        };
-
-        let Some(source_path) = meta.ruby_source_path.as_deref() else {
-            plan_slots[index] = Some(PlanItem {
-                name: item.name,
-                installed,
-                target: item.current_version,
-                action: PlanAction::Skipped {
-                    reason: "missing ruby_source_path".to_string(),
-                    source: DataSource::None,
-                },
-                is_formula: false,
-            });
-            continue;
-        };
-
-        let Some(tap) = tap_meta.get(tap) else {
-            plan_slots[index] = Some(PlanItem {
-                name: item.name,
-                installed,
-                target: item.current_version,
-                action: PlanAction::Skipped {
-                    reason: format!("tap '{tap}' is not installed locally"),
-                    source: DataSource::None,
-                },
-                is_formula: false,
-            });
-            continue;
-        };
-
-        local_candidates.push(LocalCandidate {
-            index,
+        jobs.push(PackageJob {
             name: item.name,
             installed,
             target: item.current_version,
             is_formula: false,
-            source_path: source_path.to_string(),
-            tap_path: tap.path.clone(),
-            tap_branch: tap.branch.clone(),
-            remote: tap.remote.clone(),
-            remote_branch: tap.branch.clone(),
+            initial_skip_reason: None,
+            tap_and_source,
         });
     }
 
-    let (local_age_results, api_jobs) =
-        phase_one_local_batched(&pool, local_candidates, min_age, now)?;
+    let phase_one_results: Vec<PhaseOneResult> = pool.install(|| {
+        jobs.into_par_iter()
+            .enumerate()
+            .map(|(index, job)| phase_one_local_check(index, job, min_age, now, &tap_meta))
+            .collect()
+    });
 
-    for (index, item) in local_age_results {
-        plan_slots[index] = Some(item);
+    let mut plan_slots: Vec<Option<PlanItem>> =
+        (0..phase_one_results.len()).map(|_| None).collect();
+    let mut api_jobs = Vec::new();
+
+    for (index, result) in phase_one_results.into_iter().enumerate() {
+        match result {
+            PhaseOneResult::Final(item) => plan_slots[index] = Some(item),
+            PhaseOneResult::NeedsApi(job) => api_jobs.push(job),
+        }
     }
 
     if !api_jobs.is_empty() {
@@ -543,135 +419,115 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-fn phase_one_local_batched(
-    pool: &rayon::ThreadPool,
-    local_candidates: Vec<LocalCandidate>,
+fn phase_one_local_check(
+    index: usize,
+    job: PackageJob,
     min_age: Duration,
     now_unix_secs: u64,
-) -> Result<(Vec<(usize, PlanItem)>, Vec<ApiJob>)> {
-    let mut by_tap: HashMap<(String, Option<String>), Vec<LocalCandidate>> = HashMap::new();
-    for c in local_candidates {
-        by_tap
-            .entry((c.tap_path.clone(), c.tap_branch.clone()))
-            .or_default()
-            .push(c);
+    tap_meta: &HashMap<String, TapMeta>,
+) -> PhaseOneResult {
+    if let Some(reason) = job.initial_skip_reason {
+        return PhaseOneResult::Final(PlanItem {
+            name: job.name,
+            installed: job.installed,
+            target: job.target,
+            action: PlanAction::Skipped {
+                reason,
+                source: DataSource::None,
+            },
+            is_formula: job.is_formula,
+        });
     }
 
-    let groups: Vec<((String, Option<String>), Vec<LocalCandidate>)> = by_tap.into_iter().collect();
-
-    let per_group_results: Vec<(Vec<(usize, PlanItem)>, Vec<ApiJob>)> = pool.install(|| {
-        groups
-            .into_par_iter()
-            .map(|((tap_path, tap_branch), candidates)| {
-                process_tap_group(
-                    &tap_path,
-                    tap_branch.as_deref(),
-                    candidates,
-                    min_age,
-                    now_unix_secs,
-                )
-            })
-            .collect()
-    });
-
-    let mut final_items = Vec::new();
-    let mut api_jobs = Vec::new();
-    for (items, jobs) in per_group_results {
-        final_items.extend(items);
-        api_jobs.extend(jobs);
-    }
-
-    Ok((final_items, api_jobs))
-}
-
-fn process_tap_group(
-    tap_path: &str,
-    tap_branch: Option<&str>,
-    candidates: Vec<LocalCandidate>,
-    min_age: Duration,
-    now_unix_secs: u64,
-) -> (Vec<(usize, PlanItem)>, Vec<ApiJob>) {
-    let source_paths: Vec<&str> = candidates.iter().map(|c| c.source_path.as_str()).collect();
-    let cutoff_unix_secs = now_unix_secs.saturating_sub(min_age.as_secs());
-
-    let recent_map = match git_recent_commit_unix_seconds_batch(
-        tap_path,
-        tap_branch,
-        &source_paths,
-        cutoff_unix_secs,
-    ) {
-        Ok(m) => m,
-        Err(err) => {
-            let mut api_jobs = Vec::new();
-            let mut missing_fallback = Vec::new();
-
-            for c in candidates {
-                if let (Some(remote), Some(branch)) = (c.remote.clone(), c.remote_branch.clone()) {
-                    api_jobs.push(ApiJob {
-                        index: c.index,
-                        name: c.name,
-                        installed: c.installed,
-                        target: c.target,
-                        is_formula: c.is_formula,
-                        remote,
-                        branch,
-                        source_path: c.source_path,
-                        local_err: err.to_string(),
-                    });
-                } else {
-                    missing_fallback.push((
-                        c.index,
-                        PlanItem {
-                            name: c.name,
-                            installed: c.installed,
-                            target: c.target,
-                            action: PlanAction::Skipped {
-                                reason: format!(
-                                    "failed age check: local git failed ({err}) and no remote/branch fallback available"
-                                ),
-                                source: DataSource::None,
-                            },
-                            is_formula: c.is_formula,
-                        },
-                    ));
-                }
-            }
-
-            return (missing_fallback, api_jobs);
-        }
+    let Some((tap, source_path)) = job.tap_and_source.as_ref() else {
+        return PhaseOneResult::Final(PlanItem {
+            name: job.name,
+            installed: job.installed,
+            target: job.target,
+            action: PlanAction::Skipped {
+                reason: "unable to resolve package metadata from brew info".to_string(),
+                source: DataSource::None,
+            },
+            is_formula: job.is_formula,
+        });
     };
 
-    let mut final_items = Vec::new();
+    let Some(tap) = tap.as_deref() else {
+        return PhaseOneResult::Final(PlanItem {
+            name: job.name,
+            installed: job.installed,
+            target: job.target,
+            action: PlanAction::Skipped {
+                reason: "missing tap".to_string(),
+                source: DataSource::None,
+            },
+            is_formula: job.is_formula,
+        });
+    };
 
-    for c in candidates {
-        if let Some(ts) = recent_map.get(c.source_path.as_str()).copied() {
-            final_items.push((
-                c.index,
-                PlanItem {
-                    name: c.name,
-                    installed: c.installed,
-                    target: c.target,
-                    action: action_from_commit_age(min_age, now_unix_secs, ts, DataSource::Git),
-                    is_formula: c.is_formula,
-                },
-            ));
-        } else {
-            final_items.push((
-                c.index,
-                PlanItem {
-                    name: c.name,
-                    installed: c.installed,
-                    target: c.target,
-                    action: PlanAction::Upgrade {
-                        source: DataSource::Git,
+    let Some(source_path) = source_path.as_deref() else {
+        return PhaseOneResult::Final(PlanItem {
+            name: job.name,
+            installed: job.installed,
+            target: job.target,
+            action: PlanAction::Skipped {
+                reason: "missing ruby_source_path".to_string(),
+                source: DataSource::None,
+            },
+            is_formula: job.is_formula,
+        });
+    };
+
+    let Some(tap_meta) = tap_meta.get(tap) else {
+        return PhaseOneResult::Final(PlanItem {
+            name: job.name,
+            installed: job.installed,
+            target: job.target,
+            action: PlanAction::Skipped {
+                reason: format!("tap '{tap}' is not installed locally"),
+                source: DataSource::None,
+            },
+            is_formula: job.is_formula,
+        });
+    };
+
+    match git_last_commit_unix_seconds(&tap_meta.path, tap_meta.branch.as_deref(), source_path) {
+        Ok(ts) => PhaseOneResult::Final(PlanItem {
+            name: job.name,
+            installed: job.installed,
+            target: job.target,
+            action: action_from_commit_age(min_age, now_unix_secs, ts, DataSource::Git),
+            is_formula: job.is_formula,
+        }),
+        Err(local_err) => {
+            if let (Some(remote), Some(branch)) = (&tap_meta.remote, &tap_meta.branch) {
+                PhaseOneResult::NeedsApi(ApiJob {
+                    index,
+                    name: job.name,
+                    installed: job.installed,
+                    target: job.target,
+                    is_formula: job.is_formula,
+                    remote: remote.clone(),
+                    branch: branch.clone(),
+                    source_path: source_path.to_string(),
+                    local_err: local_err.to_string(),
+                })
+            } else {
+                PhaseOneResult::Final(PlanItem {
+                    name: job.name,
+                    installed: job.installed,
+                    target: job.target,
+                    action: PlanAction::Skipped {
+                        reason: format!(
+                            "failed age check: local git failed ({local_err}) and no remote/branch fallback available"
+                        ),
+                        source: DataSource::None,
                     },
-                    is_formula: c.is_formula,
-                },
-            ));
+                    is_formula: job.is_formula,
+                })
+            }
         }
     }
-
-    (final_items, Vec::new())
 }
 
 fn action_from_commit_age(
@@ -695,14 +551,11 @@ fn action_from_commit_age(
     }
 }
 
-const BATCH_MAX_COMMITS: usize = 4000;
-
-fn git_recent_commit_unix_seconds_batch(
+fn git_last_commit_unix_seconds(
     repo_path: &str,
     branch: Option<&str>,
-    source_paths: &[&str],
-    cutoff_unix_secs: u64,
-) -> Result<HashMap<String, u64>> {
+    source_path: &str,
+) -> Result<u64> {
     // Some Homebrew taps can have an invalid local HEAD (e.g. refs/heads/.invalid),
     // so implicit HEAD-based commands fail even though origin/* and FETCH_HEAD are valid.
     // `brew update-reset` usually repairs tap refs if needed.
@@ -722,57 +575,24 @@ fn git_recent_commit_unix_seconds_batch(
     push_unique("FETCH_HEAD".to_string());
     push_unique("HEAD".to_string());
 
-    let mut found: HashMap<String, u64> = HashMap::new();
     let mut last_err = String::new();
-
     for git_ref in refs {
-        match git_recent_timestamps_for_ref(repo_path, &git_ref, source_paths, cutoff_unix_secs) {
-            Ok(mut map) => {
-                for (path, ts) in map.drain() {
-                    found.insert(path, ts);
-                }
-            }
+        match git_log_timestamp_for_ref(repo_path, source_path, &git_ref) {
+            Ok(ts) => return Ok(ts),
             Err(err) => last_err = format!("{git_ref}: {err}"),
         }
     }
 
-    if found.is_empty() && !last_err.is_empty() {
-        bail!("git log failed for all refs ({last_err})")
-    } else {
-        Ok(found)
-    }
+    bail!("git log failed for all refs ({last_err})")
 }
 
-fn git_recent_timestamps_for_ref(
-    repo_path: &str,
-    git_ref: &str,
-    source_paths: &[&str],
-    cutoff_unix_secs: u64,
-) -> Result<HashMap<String, u64>> {
-    if source_paths.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let wanted: std::collections::HashSet<&str> = source_paths.iter().copied().collect();
-    let mut found: HashMap<String, u64> = HashMap::new();
-
-    let mut args = vec![
-        "log".to_string(),
-        "--format=%ct".to_string(),
-        "--name-only".to_string(),
-        format!("--max-count={BATCH_MAX_COMMITS}"),
-        format!("--since=@{cutoff_unix_secs}"),
-        git_ref.to_string(),
-        "--".to_string(),
-    ];
-    args.extend(source_paths.iter().map(|p| (*p).to_string()));
-
+fn git_log_timestamp_for_ref(repo_path: &str, source_path: &str, git_ref: &str) -> Result<u64> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_path)
-        .args(&args)
+        .args(["log", "-1", "--format=%ct", git_ref, "--", source_path])
         .output()
-        .with_context(|| format!("failed running git log {git_ref} for batch"))?;
+        .with_context(|| format!("failed running git log {git_ref} for {source_path}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -780,31 +600,11 @@ fn git_recent_timestamps_for_ref(
     }
 
     let stdout = String::from_utf8(output.stdout).context("git log output was not UTF-8")?;
-
-    let mut current_ts: Option<u64> = None;
-    for line in stdout.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if let Ok(ts) = trimmed.parse::<u64>() {
-            current_ts = Some(ts);
-            continue;
-        }
-
-        if let Some(ts) = current_ts
-            && wanted.contains(trimmed)
-            && !found.contains_key(trimmed)
-        {
-            found.insert(trimmed.to_string(), ts);
-            if found.len() == wanted.len() {
-                break;
-            }
-        }
-    }
-
-    Ok(found)
+    let ts = stdout
+        .trim()
+        .parse::<u64>()
+        .with_context(|| format!("invalid git timestamp for {source_path}"))?;
+    Ok(ts)
 }
 
 fn github_last_commit_unix_seconds(
