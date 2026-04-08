@@ -124,7 +124,7 @@ struct ApiJob {
     target: String,
     is_formula: bool,
     remote: String,
-    branch: String,
+    branch: Option<String>,
     source_path: String,
     local_err: String,
 }
@@ -274,7 +274,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
                     let action = match github_last_commit_unix_seconds(
                         &github_client,
                         &job.remote,
-                        &job.branch,
+                        job.branch.as_deref(),
                         &job.source_path,
                     ) {
                         Ok(ts) => action_from_commit_age(min_age, now, ts, DataSource::Api),
@@ -450,6 +450,20 @@ fn phase_one_local_check(
     };
 
     let Some(tap_meta) = tap_meta.get(tap) else {
+        if let Some((remote, branch)) = resolve_api_fallback_remote_branch(tap, None) {
+            return PhaseOneResult::NeedsApi(ApiJob {
+                index,
+                name: job.name,
+                installed: job.installed,
+                target: job.target,
+                is_formula: job.is_formula,
+                remote,
+                branch,
+                source_path: source_path.to_string(),
+                local_err: format!("tap '{tap}' is not installed locally"),
+            });
+        }
+
         return PhaseOneResult::Final(PlanItem {
             name: job.name,
             installed: job.installed,
@@ -471,15 +485,16 @@ fn phase_one_local_check(
             is_formula: job.is_formula,
         }),
         Err(local_err) => {
-            if let (Some(remote), Some(branch)) = (&tap_meta.remote, &tap_meta.branch) {
+            if let Some((remote, branch)) = resolve_api_fallback_remote_branch(tap, Some(tap_meta))
+            {
                 PhaseOneResult::NeedsApi(ApiJob {
                     index,
                     name: job.name,
                     installed: job.installed,
                     target: job.target,
                     is_formula: job.is_formula,
-                    remote: remote.clone(),
-                    branch: branch.clone(),
+                    remote,
+                    branch,
                     source_path: source_path.to_string(),
                     local_err: local_err.to_string(),
                 })
@@ -490,7 +505,7 @@ fn phase_one_local_check(
                     target: job.target,
                     action: PlanAction::Skipped {
                         reason: format!(
-                            "failed age check: local git failed ({local_err}) and no remote/branch fallback available"
+                            "failed age check: local git failed ({local_err}) and no remote fallback available"
                         ),
                         source: DataSource::None,
                     },
@@ -581,7 +596,7 @@ fn git_log_timestamp_for_ref(repo_path: &str, source_path: &str, git_ref: &str) 
 fn github_last_commit_unix_seconds(
     client: &Client,
     remote: &str,
-    branch: &str,
+    branch: Option<&str>,
     source_path: &str,
 ) -> Result<u64> {
     let (owner, repo) = parse_github_remote(remote)
@@ -594,7 +609,9 @@ fn github_last_commit_unix_seconds(
     {
         let mut q = url.query_pairs_mut();
         q.append_pair("path", source_path);
-        q.append_pair("sha", branch);
+        if let Some(branch) = branch.filter(|b| !b.is_empty()) {
+            q.append_pair("sha", branch);
+        }
         q.append_pair("per_page", "1");
     }
 
@@ -643,6 +660,29 @@ fn parse_github_remote(remote: &str) -> Option<(String, String)> {
     let owner = parts.next()?.to_string();
     let repo = parts.next()?.to_string();
     Some((owner, repo))
+}
+
+fn resolve_api_fallback_remote_branch(
+    tap: &str,
+    tap_meta: Option<&TapMeta>,
+) -> Option<(String, Option<String>)> {
+    if let Some(meta) = tap_meta {
+        if let Some(remote) = meta.remote.clone() {
+            return Some((remote, meta.branch.clone()));
+        }
+    }
+
+    match tap {
+        "homebrew/core" => Some((
+            "https://github.com/Homebrew/homebrew-core".to_string(),
+            Some("main".to_string()),
+        )),
+        "homebrew/cask" => Some((
+            "https://github.com/Homebrew/homebrew-cask".to_string(),
+            Some("main".to_string()),
+        )),
+        _ => None,
+    }
 }
 
 fn brew_tap_meta() -> Result<HashMap<String, TapMeta>> {
@@ -863,5 +903,27 @@ mod tests {
             parse_github_remote("git@github.com:Homebrew/homebrew-cask.git").expect("should parse");
         assert_eq!(parsed.0, "Homebrew");
         assert_eq!(parsed.1, "homebrew-cask");
+    }
+
+    #[test]
+    fn fallback_remote_for_homebrew_cask() {
+        let (remote, branch) =
+            resolve_api_fallback_remote_branch("homebrew/cask", None).expect("fallback expected");
+        assert_eq!(remote, "https://github.com/Homebrew/homebrew-cask");
+        assert_eq!(branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn fallback_remote_prefers_tap_meta_remote() {
+        let meta = TapMeta {
+            path: "/tmp/does-not-matter".to_string(),
+            remote: Some("https://github.com/acme/custom-tap".to_string()),
+            branch: Some("master".to_string()),
+        };
+
+        let (remote, branch) = resolve_api_fallback_remote_branch("homebrew/cask", Some(&meta))
+            .expect("fallback expected");
+        assert_eq!(remote, "https://github.com/acme/custom-tap");
+        assert_eq!(branch.as_deref(), Some("master"));
     }
 }
