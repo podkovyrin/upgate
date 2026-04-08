@@ -12,6 +12,7 @@ Source of truth in code:
 - `src/npm.rs`
 - `src/mise.rs`
 - `src/pipx.rs`
+- `src/uv.rs`
 
 ## CLI contract
 
@@ -21,7 +22,7 @@ Binary options (single shared interface):
 - `--max-parallel-checks <n>` (default `6`)
 - `--no-update`
 - `--managers <list>` where list is comma-separated values from:
-  - `brew`, `npm`, `mise`, `pipx`
+  - `brew`, `npm`, `mise`, `pipx`, `uv`
 
 Default manager set: `brew`.
 
@@ -36,7 +37,7 @@ Default manager set: `brew`.
 ## Output contract
 
 - Normal successful runs print plan lines only.
-- Prefixes: `brew:`, `npm:`, `mise:`, `pipx:`.
+- Prefixes: `brew:`, `npm:`, `mise:`, `pipx:`, `uv:`.
 - Versions are normalized with `v` prefix when numeric.
 - Errors are returned as command failure (stderr from process wrappers).
 
@@ -133,3 +134,29 @@ Output forms:
 
 Apply flow:
 - Per eligible package: `pipx upgrade <name>`
+
+### uv (`src/uv.rs`)
+
+Delay policy:
+- Fixed `7d` via `--exclude-newer 7d`.
+- Semantics match `pipx`: choose highest eligible release (`age >= 7d`) and require `target >= current`.
+
+Planning flow:
+1. `uv tool list --show-version-specifiers` to enumerate installed tools.
+2. Per tool, resolve target with uv resolver against the tool environment:
+   - `uv pip install --dry-run -p <tool-python> --upgrade --exclude-newer 7d <requirement>`
+3. Parse dry-run plan and extract `+ <tool>==<target>` for resolved target.
+4. `uv tool list --outdated` for latest-version context.
+5. For delayed-latest annotation age, query `https://pypi.org/pypi/<name>/json`.
+
+Output forms:
+- `uv: <name> v<from> -> v<to> (source: uv)`
+- If newer latest exists but too new:
+  - `uv: <name> v<from> -> v<to> (source: uv; latest v<latest> delayed: <age> < 7d)`
+- If no eligible `>= current`:
+  - `uv: <name> v<current> -> v<current> (delayed, no eligible release >= current within 7d window, source: uv)`
+- If resolved target equals current and current is not delayed, no line is emitted.
+
+Apply flow:
+- Per eligible tool:
+  - `uv tool install --upgrade --exclude-newer 7d <name>`

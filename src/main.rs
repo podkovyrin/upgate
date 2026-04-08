@@ -2,6 +2,7 @@ mod brew;
 mod mise;
 mod npm;
 mod pipx;
+mod uv;
 
 use clap::{Parser, ValueEnum};
 
@@ -11,6 +12,7 @@ pub(crate) enum Manager {
     Npm,
     Mise,
     Pipx,
+    Uv,
 }
 
 #[derive(Debug, Parser)]
@@ -56,6 +58,10 @@ fn main() {
 
         if cli.managers.contains(&Manager::Pipx) {
             pipx::run(&cli)?;
+        }
+
+        if cli.managers.contains(&Manager::Uv) {
+            uv::run(&cli)?;
         }
 
         Ok(())
