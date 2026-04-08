@@ -1,5 +1,5 @@
+use crate::Cli;
 use anyhow::{Context, Result, bail};
-use clap::Parser;
 use rayon::prelude::*;
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
@@ -7,27 +7,6 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-#[derive(Debug, Parser)]
-#[command(name = "brew-delay-upgrade")]
-#[command(about = "Upgrade Homebrew packages older than a minimum release age")]
-struct Cli {
-    /// Print the upgrade plan only.
-    #[arg(short = 'n', long)]
-    dry_run: bool,
-
-    /// Minimum age of a formula/cask definition commit (e.g. 12h, 7d).
-    #[arg(long, default_value = "12h")]
-    min_release_age: String,
-
-    /// Maximum concurrent age checks (git/API), to avoid API overloading.
-    #[arg(long, default_value_t = 6)]
-    max_parallel_checks: usize,
-
-    /// Skip `brew update` to speed up planning (uses current local metadata).
-    #[arg(long)]
-    no_update: bool,
-}
 
 #[derive(Debug, Deserialize)]
 struct OutdatedRoot {
@@ -172,8 +151,7 @@ struct GitHubCommitPerson {
 }
 
 #[allow(clippy::too_many_lines)]
-pub(crate) fn run() -> Result<()> {
-    let cli = Cli::parse();
+pub(crate) fn run(cli: &Cli) -> Result<()> {
     let min_age = parse_duration(&cli.min_release_age)?;
 
     if !cli.no_update {
