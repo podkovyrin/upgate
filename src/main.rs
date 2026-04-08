@@ -1,4 +1,5 @@
 mod brew;
+mod mise;
 mod npm;
 
 use clap::{Parser, ValueEnum};
@@ -7,6 +8,7 @@ use clap::{Parser, ValueEnum};
 pub(crate) enum Manager {
     Brew,
     Npm,
+    Mise,
 }
 
 #[derive(Debug, Parser)]
@@ -44,6 +46,10 @@ fn main() {
 
         if cli.managers.contains(&Manager::Npm) {
             npm::run(&cli)?;
+        }
+
+        if cli.managers.contains(&Manager::Mise) {
+            mise::run(&cli)?;
         }
 
         Ok(())
