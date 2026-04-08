@@ -195,8 +195,7 @@ fn run() -> Result<()> {
     let formula_names: Vec<String> = outdated.formulae.iter().map(|f| f.name.clone()).collect();
     let cask_names: Vec<String> = outdated.casks.iter().map(|c| c.name.clone()).collect();
 
-    let formula_infos = brew_formula_info(&formula_names)?;
-    let cask_infos = brew_cask_info(&cask_names)?;
+    let info = brew_info_for_names(&formula_names, &cask_names)?;
     let tap_meta = brew_tap_meta()?;
 
     let now = SystemTime::now()
@@ -211,13 +210,13 @@ fn run() -> Result<()> {
         .context("failed to build rayon thread pool")?;
 
     let mut formula_info_by_name: HashMap<String, FormulaInfo> = HashMap::new();
-    for info in formula_infos {
-        formula_info_by_name.insert(info.full_name.clone(), info);
+    for formula in info.formulae {
+        formula_info_by_name.insert(formula.full_name.clone(), formula);
     }
 
     let mut cask_info_by_name: HashMap<String, CaskInfo> = HashMap::new();
-    for info in cask_infos {
-        cask_info_by_name.insert(info.token.clone(), info);
+    for cask in info.casks {
+        cask_info_by_name.insert(cask.token.clone(), cask);
     }
 
     let mut jobs = Vec::with_capacity(outdated.formulae.len() + outdated.casks.len());
@@ -692,36 +691,19 @@ fn brew_tap_meta() -> Result<HashMap<String, TapMeta>> {
         .collect())
 }
 
-fn brew_formula_info(names: &[String]) -> Result<Vec<FormulaInfo>> {
-    if names.is_empty() {
-        return Ok(Vec::new());
+fn brew_info_for_names(formula_names: &[String], cask_names: &[String]) -> Result<InfoRoot> {
+    if formula_names.is_empty() && cask_names.is_empty() {
+        return Ok(InfoRoot {
+            formulae: Vec::new(),
+            casks: Vec::new(),
+        });
     }
 
-    let mut args = vec![
-        "info".to_string(),
-        "--json=v2".to_string(),
-        "--formula".to_string(),
-    ];
-    args.extend(names.iter().cloned());
+    let mut args = vec!["info".to_string(), "--json=v2".to_string()];
+    args.extend(formula_names.iter().cloned());
+    args.extend(cask_names.iter().cloned());
 
-    let root: InfoRoot = brew_json_owned(&args)?;
-    Ok(root.formulae)
-}
-
-fn brew_cask_info(names: &[String]) -> Result<Vec<CaskInfo>> {
-    if names.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut args = vec![
-        "info".to_string(),
-        "--json=v2".to_string(),
-        "--cask".to_string(),
-    ];
-    args.extend(names.iter().cloned());
-
-    let root: InfoRoot = brew_json_owned(&args)?;
-    Ok(root.casks)
+    brew_json_owned(&args)
 }
 
 fn github_client() -> Result<Client> {
