@@ -23,6 +23,10 @@ struct Cli {
     /// Maximum concurrent age checks (git/API), to avoid API overloading.
     #[arg(long, default_value_t = 6)]
     max_parallel_checks: usize,
+
+    /// Skip `brew update` to speed up planning (uses current local metadata).
+    #[arg(long)]
+    no_update: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,7 +161,9 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
     let min_age = parse_duration(&cli.min_release_age)?;
 
-    run_brew(&["update", "--quiet"])?;
+    if !cli.no_update {
+        run_brew(&["update", "--quiet"])?;
+    }
 
     let outdated: OutdatedRoot = brew_json(&["outdated", "--json=v2"])?;
     if outdated.formulae.is_empty() && outdated.casks.is_empty() {
