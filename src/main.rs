@@ -16,7 +16,7 @@ pub(crate) enum Manager {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "brew-delay-upgrade")]
+#[command(name = "upnow")]
 #[command(about = "Delay-aware global package upgrades")]
 pub(crate) struct Cli {
     /// Print the upgrade plan only.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Lightweight profiler scaffold for brew-delay-upgrade.
+# Lightweight profiler scaffold for upnow.
 # Usage examples:
 #   scripts/profile.sh
 #   scripts/profile.sh --runs 8 --warmup 2 -- --dry-run --no-update
@@ -46,7 +46,7 @@ fi
 echo "==> Building release binary"
 cargo build --release
 
-BIN="target/release/brew-delay-upgrade"
+BIN="target/release/upnow"
 DEFAULT_ARGS=(--dry-run --no-update)
 
 if [[ ${#EXTRA_ARGS[@]} -eq 0 ]]; then

@@ -721,7 +721,7 @@ fn github_client() -> Result<Client> {
     let mut headers = HeaderMap::new();
     headers.insert(
         USER_AGENT,
-        HeaderValue::from_static("brew-delay-upgrade/0.1"),
+        HeaderValue::from_static("upnow/0.1"),
     );
     headers.insert(
         ACCEPT,

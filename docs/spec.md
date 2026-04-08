@@ -2,7 +2,7 @@
 
 ## Project
 
-`brew-delay-upgrade` is a multi-manager CLI that prints and applies delayed global package/tool upgrades.
+`upnow` is a multi-manager CLI that prints and applies delayed global package/tool upgrades.
 
 This file is the only manager-spec source of truth.
 

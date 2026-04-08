@@ -11,7 +11,7 @@ scripts/profile.sh
 Default command profiled:
 
 ```bash
-target/release/brew-delay-upgrade --dry-run --no-update
+target/release/upnow --dry-run --no-update
 ```
 
 ## Compare parallelism levels
