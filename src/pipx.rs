@@ -80,9 +80,13 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         }
 
         let to = version_label(&target.version);
-        if let Some(age_secs) = target.latest_too_new_age_secs {
+        if let (Some(age_secs), Some(skipped_ver)) = (
+            target.skipped_latest_age_secs,
+            target.skipped_latest_version.as_deref(),
+        ) {
             println!(
-                "pipx: {name} {from} -> {to} (delayed, {} < {}, source: pypi)",
+                "pipx: {name} {from} -> {to} (delayed, latest {} is {} < {}, source: pypi)",
+                version_label(skipped_ver),
                 human_age(age_secs),
                 human_age(min_age.as_secs())
             );
@@ -131,7 +135,8 @@ fn pipx_installed_main_packages() -> Result<BTreeMap<String, String>> {
 
 struct PypiResolvedTarget {
     version: String,
-    latest_too_new_age_secs: Option<u64>,
+    skipped_latest_age_secs: Option<u64>,
+    skipped_latest_version: Option<String>,
 }
 
 fn pypi_resolve_target_with_min_age(
@@ -199,20 +204,25 @@ fn pypi_resolve_target_with_min_age(
         return Ok(None);
     };
 
-    let latest_too_new_age_secs = if let Some((latest_ver, _latest_str, latest_ts)) = newest_any {
-        if latest_ver > eligible_ver {
-            Some(now_unix_secs.saturating_sub(latest_ts))
+    let (skipped_latest_age_secs, skipped_latest_version) =
+        if let Some((latest_ver, latest_str, latest_ts)) = newest_any {
+            if latest_ver > eligible_ver {
+                (
+                    Some(now_unix_secs.saturating_sub(latest_ts)),
+                    Some(latest_str),
+                )
+            } else {
+                (None, None)
+            }
         } else {
-            None
-        }
-    } else {
-        None
-    };
+            (None, None)
+        };
 
     let _ = root.info.version;
     Ok(Some(PypiResolvedTarget {
         version: eligible_str,
-        latest_too_new_age_secs,
+        skipped_latest_age_secs,
+        skipped_latest_version,
     }))
 }
 
