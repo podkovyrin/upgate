@@ -1,5 +1,6 @@
 use crate::Cli;
 use anyhow::{Context, Result, bail};
+use semver::Version;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::process::Command;
@@ -10,7 +11,6 @@ const NPM_MIN_AGE_DAYS: u64 = 7;
 #[derive(Debug, Deserialize)]
 struct OutdatedEntry {
     current: String,
-    latest: String,
 }
 
 pub(crate) fn run(cli: &Cli) -> Result<()> {
@@ -27,20 +27,30 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .as_secs();
 
     for (name, entry) in &outdated {
-        let latest_time = npm_version_publish_unix_secs(name, &entry.latest)?;
-        let age_secs = now.saturating_sub(latest_time);
-
         let from = version_label(&entry.current);
-        let to = version_label(&entry.latest);
 
-        if age_secs >= min_age.as_secs() {
-            println!("npm: {name} {from} -> {to} (source: npm)");
-        } else {
+        let resolved = npm_resolve_target_with_min_age(name, &entry.current, now, min_age)?;
+
+        let Some(target) = resolved else {
+            println!(
+                "npm: {name} {from} -> {from} (delayed, no eligible release >= current within 7d window, source: npm)"
+            );
+            continue;
+        };
+
+        if target.version == entry.current {
+            continue;
+        }
+
+        let to = version_label(&target.version);
+        if let Some(age_secs) = target.latest_too_new_age_secs {
             println!(
                 "npm: {name} {from} -> {to} (delayed, {} < {}, source: npm)",
                 human_age(age_secs),
                 human_age(min_age.as_secs())
             );
+        } else {
+            println!("npm: {name} {from} -> {to} (source: npm)");
         }
     }
 
@@ -76,29 +86,99 @@ fn npm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
     Ok(parsed)
 }
 
-fn npm_version_publish_unix_secs(name: &str, version: &str) -> Result<u64> {
-    let spec = format!("{name}@{version}");
+struct NpmResolvedTarget {
+    version: String,
+    latest_too_new_age_secs: Option<u64>,
+}
+
+fn npm_resolve_target_with_min_age(
+    name: &str,
+    current: &str,
+    now_unix_secs: u64,
+    min_age: Duration,
+) -> Result<Option<NpmResolvedTarget>> {
     let output = Command::new("npm")
-        .args(["view", &spec, "time", "--json"])
+        .args(["view", name, "time", "--json"])
         .output()
-        .with_context(|| format!("failed to run npm view {spec} time --json"))?;
+        .with_context(|| format!("failed to run npm view {name} time --json"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("npm view {spec} time --json failed: {}", stderr.trim());
+        bail!("npm view {name} time --json failed: {}", stderr.trim());
     }
 
     let stdout = String::from_utf8(output.stdout).context("npm view output not UTF-8")?;
     let val: serde_json::Value = serde_json::from_str(&stdout)
-        .with_context(|| format!("failed to parse npm view JSON for {spec}"))?;
+        .with_context(|| format!("failed to parse npm view JSON for {name}"))?;
 
-    let version_time = val
-        .get(version)
-        .and_then(serde_json::Value::as_str)
-        .with_context(|| format!("npm view time missing timestamp for {spec}"))?;
+    let obj = val
+        .as_object()
+        .with_context(|| format!("npm view time JSON is not an object for {name}"))?;
 
-    let dt = chrono::DateTime::parse_from_rfc3339(version_time)
-        .with_context(|| format!("invalid RFC3339 timestamp for {spec}: {version_time}"))?;
+    let current_ver = Version::parse(current)
+        .with_context(|| format!("failed to parse current semver for {name}: {current}"))?;
+
+    let mut eligible: Option<(Version, String, u64)> = None;
+    let mut newest_any: Option<(Version, String, u64)> = None;
+
+    for (ver_str, ts_val) in obj {
+        if ver_str == "created" || ver_str == "modified" {
+            continue;
+        }
+
+        let Some(ts_raw) = ts_val.as_str() else {
+            continue;
+        };
+
+        let version = match Version::parse(ver_str) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let ts = parse_rfc3339_unix(ts_raw)
+            .with_context(|| format!("invalid npm timestamp for {name}@{ver_str}: {ts_raw}"))?;
+
+        if newest_any
+            .as_ref()
+            .is_none_or(|(curr, _, _)| version > *curr)
+        {
+            newest_any = Some((version.clone(), ver_str.clone(), ts));
+        }
+
+        if version >= current_ver {
+            let age_secs = now_unix_secs.saturating_sub(ts);
+            if age_secs >= min_age.as_secs()
+                && eligible.as_ref().is_none_or(|(curr, _, _)| version > *curr)
+            {
+                eligible = Some((version, ver_str.clone(), ts));
+            }
+        }
+    }
+
+    let Some((eligible_ver, eligible_str, _eligible_ts)) = eligible else {
+        return Ok(None);
+    };
+
+    let latest_too_new_age_secs = if let Some((latest_ver, _latest_str, latest_ts)) = newest_any {
+        if latest_ver > eligible_ver {
+            Some(now_unix_secs.saturating_sub(latest_ts))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let _ = eligible_str;
+    Ok(Some(NpmResolvedTarget {
+        version: eligible_ver.to_string(),
+        latest_too_new_age_secs,
+    }))
+}
+
+fn parse_rfc3339_unix(raw: &str) -> Result<u64> {
+    let dt = chrono::DateTime::parse_from_rfc3339(raw)
+        .with_context(|| format!("invalid RFC3339 timestamp: {raw}"))?;
 
     u64::try_from(dt.timestamp()).context("npm publish timestamp is negative")
 }

@@ -1,5 +1,6 @@
 use crate::Cli;
 use anyhow::{Context, Result, bail};
+use pep440::Version;
 use std::collections::BTreeMap;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -63,26 +64,32 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
     let mut upgradable = Vec::new();
 
     for (name, current) in installed {
-        let (latest, latest_ts) = pypi_latest_version_and_time(&name)?;
+        let from = version_label(&current);
 
-        if latest == current {
+        let resolved = pypi_resolve_target_with_min_age(&name, &current, now, min_age)?;
+
+        let Some(target) = resolved else {
+            println!(
+                "pipx: {name} {from} -> {from} (delayed, no eligible release >= current within 7d window, source: pypi)"
+            );
+            continue;
+        };
+
+        if target.version == current {
             continue;
         }
 
-        let age_secs = now.saturating_sub(latest_ts);
-        let from = version_label(&current);
-        let to = version_label(&latest);
-
-        if age_secs >= min_age.as_secs() {
-            println!("pipx: {name} {from} -> {to} (source: pypi)");
-            upgradable.push(name);
-        } else {
+        let to = version_label(&target.version);
+        if let Some(age_secs) = target.latest_too_new_age_secs {
             println!(
                 "pipx: {name} {from} -> {to} (delayed, {} < {}, source: pypi)",
                 human_age(age_secs),
                 human_age(min_age.as_secs())
             );
+        } else {
+            println!("pipx: {name} {from} -> {to} (source: pypi)");
         }
+        upgradable.push(name);
     }
 
     if cli.dry_run {
@@ -122,7 +129,17 @@ fn pipx_installed_main_packages() -> Result<BTreeMap<String, String>> {
     Ok(out)
 }
 
-fn pypi_latest_version_and_time(pkg: &str) -> Result<(String, u64)> {
+struct PypiResolvedTarget {
+    version: String,
+    latest_too_new_age_secs: Option<u64>,
+}
+
+fn pypi_resolve_target_with_min_age(
+    pkg: &str,
+    current: &str,
+    now_unix_secs: u64,
+    min_age: Duration,
+) -> Result<Option<PypiResolvedTarget>> {
     let url = format!("https://pypi.org/pypi/{pkg}/json");
     let body = reqwest::blocking::get(&url)
         .with_context(|| format!("failed to GET {url}"))?
@@ -134,34 +151,69 @@ fn pypi_latest_version_and_time(pkg: &str) -> Result<(String, u64)> {
     let root: PypiRoot = serde_json::from_str(&body)
         .with_context(|| format!("failed to parse PyPI JSON for {pkg}"))?;
 
-    let latest = root.info.version;
-    if latest.is_empty() {
-        bail!("PyPI latest version missing for {pkg}");
-    }
+    let current_ver = Version::parse(current)
+        .with_context(|| format!("failed to parse current PEP440 version for {pkg}: {current}"))?;
 
-    let files = root
-        .releases
-        .get(&latest)
-        .with_context(|| format!("PyPI release metadata missing for {pkg}@{latest}"))?;
+    let mut eligible: Option<(Version, String, u64)> = None;
+    let mut newest_any: Option<(Version, String, u64)> = None;
 
-    let mut newest_ts = None::<u64>;
-    for f in files {
-        let raw = f
-            .upload_time_iso_8601
-            .as_deref()
-            .or(f.upload_time.as_deref());
+    for (ver_str, files) in &root.releases {
+        let Some(ver) = Version::parse(ver_str) else {
+            continue;
+        };
 
-        if let Some(raw) = raw {
-            let ts = parse_rfc3339_unix(raw)
-                .with_context(|| format!("invalid upload timestamp for {pkg}@{latest}: {raw}"))?;
-            newest_ts = Some(newest_ts.map_or(ts, |curr| curr.max(ts)));
+        let mut newest_file_ts = None::<u64>;
+        for f in files {
+            let raw = f
+                .upload_time_iso_8601
+                .as_deref()
+                .or(f.upload_time.as_deref());
+
+            if let Some(raw) = raw {
+                let ts = parse_rfc3339_unix(raw).with_context(|| {
+                    format!("invalid upload timestamp for {pkg}@{ver_str}: {raw}")
+                })?;
+                newest_file_ts = Some(newest_file_ts.map_or(ts, |curr| curr.max(ts)));
+            }
+        }
+
+        let Some(ts) = newest_file_ts else {
+            continue;
+        };
+
+        if newest_any.as_ref().is_none_or(|(curr, _, _)| ver > *curr) {
+            newest_any = Some((ver.clone(), ver_str.clone(), ts));
+        }
+
+        if ver >= current_ver {
+            let age_secs = now_unix_secs.saturating_sub(ts);
+            if age_secs >= min_age.as_secs()
+                && eligible.as_ref().is_none_or(|(curr, _, _)| ver > *curr)
+            {
+                eligible = Some((ver, ver_str.clone(), ts));
+            }
         }
     }
 
-    let newest_ts =
-        newest_ts.with_context(|| format!("no upload timestamp found for {pkg}@{latest}"))?;
+    let Some((eligible_ver, eligible_str, _)) = eligible else {
+        return Ok(None);
+    };
 
-    Ok((latest, newest_ts))
+    let latest_too_new_age_secs = if let Some((latest_ver, _latest_str, latest_ts)) = newest_any {
+        if latest_ver > eligible_ver {
+            Some(now_unix_secs.saturating_sub(latest_ts))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let _ = root.info.version;
+    Ok(Some(PypiResolvedTarget {
+        version: eligible_str,
+        latest_too_new_age_secs,
+    }))
 }
 
 fn parse_rfc3339_unix(raw: &str) -> Result<u64> {
