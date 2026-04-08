@@ -1,15 +1,43 @@
 use crate::Cli;
 use anyhow::{Context, Result, bail};
+use std::collections::BTreeMap;
 use std::process::Command;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MISE_DELAY: &str = "7d";
 
 pub(crate) fn run(cli: &Cli) -> Result<()> {
     let planned = mise_upgrade_dry_run_with_before(MISE_DELAY)?;
-    let plan_lines = build_plan_lines(&planned);
+    let plan_pairs = build_plan_pairs(&planned);
+    let latest_map = mise_outdated_latest_map()?;
 
-    for line in plan_lines {
-        println!("{line}");
+    let min_age = parse_duration_days(MISE_DELAY)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock before UNIX_EPOCH")?
+        .as_secs();
+
+    for item in &plan_pairs {
+        let from = version_label(&item.from_version);
+        let to = version_label(&item.to_version);
+
+        if let Some(latest) = latest_map.get(&item.tool)
+            && latest != &item.to_version
+        {
+            let age_secs = mise_latest_age_secs(&item.tool, latest, now)?;
+            println!(
+                "mise: {} {} -> {} (source: mise; latest {} delayed: {} < {})",
+                item.tool,
+                from,
+                to,
+                version_label(latest),
+                human_age(age_secs),
+                human_age(min_age.as_secs())
+            );
+            continue;
+        }
+
+        println!("mise: {} {} -> {} (source: mise)", item.tool, from, to);
     }
 
     if cli.dry_run {
@@ -20,9 +48,14 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-fn build_plan_lines(lines: &[String]) -> Vec<String> {
-    let mut old_versions: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
+struct MisePlanItem {
+    tool: String,
+    from_version: String,
+    to_version: String,
+}
+
+fn build_plan_pairs(lines: &[String]) -> Vec<MisePlanItem> {
+    let mut old_versions: BTreeMap<String, String> = BTreeMap::new();
     let mut result = Vec::new();
 
     for line in lines {
@@ -40,11 +73,13 @@ fn build_plan_lines(lines: &[String]) -> Vec<String> {
         {
             let from = old_versions
                 .get(tool)
-                .map_or_else(|| "v?".to_string(), |v| version_label(v));
-            let to = version_label(to_ver);
-            result.push(format!(
-                "mise: {tool} {from} -> {to} (source: mise, delay: {MISE_DELAY})"
-            ));
+                .cloned()
+                .unwrap_or_else(|| "?".to_string());
+            result.push(MisePlanItem {
+                tool: tool.to_string(),
+                from_version: from,
+                to_version: to_ver.to_string(),
+            });
         }
     }
 
@@ -75,6 +110,86 @@ fn mise_upgrade_dry_run_with_before(before: &str) -> Result<Vec<String>> {
     Ok(stdout.lines().map(str::to_string).collect())
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct MiseOutdatedItem {
+    latest: String,
+}
+
+fn mise_outdated_latest_map() -> Result<BTreeMap<String, String>> {
+    let output = Command::new("mise")
+        .args(["outdated", "--json"])
+        .output()
+        .context("failed to run mise outdated --json")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("mise outdated --json failed: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("mise outdated output not UTF-8")?;
+    let parsed: BTreeMap<String, MiseOutdatedItem> =
+        serde_json::from_str(&stdout).context("failed to parse mise outdated JSON")?;
+
+    Ok(parsed.into_iter().map(|(k, v)| (k, v.latest)).collect())
+}
+
+fn mise_latest_age_secs(tool: &str, latest: &str, now_unix_secs: u64) -> Result<u64> {
+    if tool.starts_with("npm:") {
+        return npm_latest_age_secs(tool, latest, now_unix_secs);
+    }
+
+    // For non-npm mise tools we currently cannot reliably query upstream release timestamps
+    // in a generic way. Return 0 so message still reflects delayed status.
+    Ok(0)
+}
+
+fn npm_latest_age_secs(tool: &str, latest: &str, now_unix_secs: u64) -> Result<u64> {
+    let pkg = tool.trim_start_matches("npm:");
+    let spec = format!("{pkg}@{latest}");
+    let output = Command::new("npm")
+        .args(["view", &spec, "time", "--json"])
+        .output()
+        .with_context(|| format!("failed to run npm view {spec} time --json"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("npm view {spec} time --json failed: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("npm view output not UTF-8")?;
+    let val: serde_json::Value = serde_json::from_str(&stdout)
+        .with_context(|| format!("failed to parse npm view JSON for {spec}"))?;
+
+    let ts_raw = val
+        .get(latest)
+        .and_then(serde_json::Value::as_str)
+        .with_context(|| format!("npm view time missing timestamp for {spec}"))?;
+
+    let ts = parse_rfc3339_unix(ts_raw)
+        .with_context(|| format!("invalid RFC3339 timestamp for {spec}: {ts_raw}"))?;
+
+    Ok(now_unix_secs.saturating_sub(ts))
+}
+
+fn parse_rfc3339_unix(raw: &str) -> Result<u64> {
+    let dt = chrono::DateTime::parse_from_rfc3339(raw)
+        .with_context(|| format!("invalid RFC3339 timestamp: {raw}"))?;
+
+    u64::try_from(dt.timestamp()).context("timestamp before UNIX_EPOCH")
+}
+
+fn parse_duration_days(raw: &str) -> Result<Duration> {
+    let trimmed = raw.trim();
+    if let Some(days) = trimmed.strip_suffix('d') {
+        let d = days
+            .parse::<u64>()
+            .with_context(|| format!("invalid day value in '{raw}'"))?;
+        return Ok(Duration::from_secs(d * 24 * 60 * 60));
+    }
+
+    bail!("unsupported delay format '{raw}', expected e.g. 7d")
+}
+
 fn run_mise(args: &[&str]) -> Result<Vec<u8>> {
     let output = Command::new("mise")
         .args(args)
@@ -87,6 +202,34 @@ fn run_mise(args: &[&str]) -> Result<Vec<u8>> {
     }
 
     Ok(output.stdout)
+}
+
+fn human_age(total_secs: u64) -> String {
+    if total_secs < 60 {
+        return format!("{total_secs}s");
+    }
+
+    if total_secs < 60 * 60 {
+        return format!("{}m", total_secs / 60);
+    }
+
+    if total_secs < 24 * 60 * 60 {
+        let hours = total_secs / 3600;
+        let minutes = (total_secs % 3600) / 60;
+        return if minutes == 0 {
+            format!("{hours}h")
+        } else {
+            format!("{hours}h{minutes}m")
+        };
+    }
+
+    let days = total_secs / (24 * 60 * 60);
+    let hours = (total_secs % (24 * 60 * 60)) / 3600;
+    if hours == 0 {
+        format!("{days}d")
+    } else {
+        format!("{days}d{hours}h")
+    }
 }
 
 fn version_label(version: &str) -> String {
