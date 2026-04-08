@@ -19,6 +19,10 @@ struct Cli {
     /// Minimum age of a formula/cask definition commit (e.g. 12h, 7d).
     #[arg(long, default_value = "12h")]
     min_release_age: String,
+
+    /// Maximum concurrent age checks (git/API), to avoid API overloading.
+    #[arg(long, default_value_t = 6)]
+    max_parallel_checks: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,6 +177,10 @@ fn run() -> Result<()> {
         .as_secs();
 
     let github_client = github_client()?;
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(cli.max_parallel_checks.max(1))
+        .build()
+        .context("failed to build rayon thread pool")?;
 
     let mut formula_info_by_name: HashMap<String, FormulaInfo> = HashMap::new();
     for info in formula_infos {
@@ -184,67 +192,71 @@ fn run() -> Result<()> {
         cask_info_by_name.insert(info.token.clone(), info);
     }
 
-    let formula_plan: Vec<PlanItem> = outdated
-        .formulae
-        .into_par_iter()
-        .map(|item| {
-            let installed = item
-                .installed_versions
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "unknown".to_string());
+    let formula_plan: Vec<PlanItem> = pool.install(|| {
+        outdated
+            .formulae
+            .into_par_iter()
+            .map(|item| {
+                let installed = item
+                    .installed_versions
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string());
 
-            let action = if item.pinned {
-                PlanAction::Skipped {
-                    reason: match item.pinned_version {
-                        Some(v) => format!("pinned at {v}"),
-                        None => "pinned".to_string(),
-                    },
-                    source: DataSource::None,
+                let action = if item.pinned {
+                    PlanAction::Skipped {
+                        reason: match item.pinned_version {
+                            Some(v) => format!("pinned at {v}"),
+                            None => "pinned".to_string(),
+                        },
+                        source: DataSource::None,
+                    }
+                } else {
+                    let tap_and_source = formula_info_by_name
+                        .get(&item.name)
+                        .map(|f| (f.tap.as_deref(), f.ruby_source_path.as_deref()));
+
+                    decide_by_age(min_age, now, tap_and_source, &tap_meta, &github_client)
+                };
+
+                PlanItem {
+                    name: item.name,
+                    installed,
+                    target: item.current_version,
+                    action,
+                    is_formula: true,
                 }
-            } else {
-                let tap_and_source = formula_info_by_name
+            })
+            .collect()
+    });
+
+    let cask_plan: Vec<PlanItem> = pool.install(|| {
+        outdated
+            .casks
+            .into_par_iter()
+            .map(|item| {
+                let installed = item
+                    .installed_versions
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                let tap_and_source = cask_info_by_name
                     .get(&item.name)
-                    .map(|f| (f.tap.as_deref(), f.ruby_source_path.as_deref()));
+                    .map(|c| (c.tap.as_deref(), c.ruby_source_path.as_deref()));
 
-                decide_by_age(min_age, now, tap_and_source, &tap_meta, &github_client)
-            };
+                let action = decide_by_age(min_age, now, tap_and_source, &tap_meta, &github_client);
 
-            PlanItem {
-                name: item.name,
-                installed,
-                target: item.current_version,
-                action,
-                is_formula: true,
-            }
-        })
-        .collect();
-
-    let cask_plan: Vec<PlanItem> = outdated
-        .casks
-        .into_par_iter()
-        .map(|item| {
-            let installed = item
-                .installed_versions
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "unknown".to_string());
-
-            let tap_and_source = cask_info_by_name
-                .get(&item.name)
-                .map(|c| (c.tap.as_deref(), c.ruby_source_path.as_deref()));
-
-            let action = decide_by_age(min_age, now, tap_and_source, &tap_meta, &github_client);
-
-            PlanItem {
-                name: item.name,
-                installed,
-                target: item.current_version,
-                action,
-                is_formula: false,
-            }
-        })
-        .collect();
+                PlanItem {
+                    name: item.name,
+                    installed,
+                    target: item.current_version,
+                    action,
+                    is_formula: false,
+                }
+            })
+            .collect()
+    });
 
     let mut plan = Vec::with_capacity(formula_plan.len() + cask_plan.len());
     plan.extend(formula_plan);
