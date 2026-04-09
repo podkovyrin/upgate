@@ -6,6 +6,7 @@ use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
 use pep440::Version;
+use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -14,6 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const UV_DELAY: &str = "7d";
 const UV_DELAY_DAYS: u64 = 7;
+const UV_MAX_PARALLEL_CHECKS: usize = 2;
 
 struct UvTool {
     name: String,
@@ -33,6 +35,11 @@ struct PypiReleaseFile {
     upload_time: Option<String>,
 }
 
+struct UvPlanItem {
+    tool: UvTool,
+    target: Result<String, String>,
+}
+
 pub(crate) fn run(cli: &Cli) -> Result<()> {
     let min_age = Duration::from_secs(UV_DELAY_DAYS * 24 * 60 * 60);
     let tool_dir = uv_tool_dir()?;
@@ -49,11 +56,40 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .context("system clock before UNIX_EPOCH")?
         .as_secs();
 
+    let effective_parallelism = cli.max_parallel_checks.clamp(1, UV_MAX_PARALLEL_CHECKS);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(effective_parallelism)
+        .build()
+        .context("failed to build uv planning thread pool")?;
+
+    let plan_indexed: Vec<(usize, UvPlanItem)> = pool.install(|| {
+        installed
+            .into_par_iter()
+            .enumerate()
+            .map(|(index, tool)| {
+                let target =
+                    uv_resolve_target_with_exclude_newer(&tool).map_err(|err| err.to_string());
+                (index, UvPlanItem { tool, target })
+            })
+            .collect()
+    });
+
+    let mut plan_slots: Vec<Option<UvPlanItem>> = (0..plan_indexed.len()).map(|_| None).collect();
+    for (index, item) in plan_indexed {
+        plan_slots[index] = Some(item);
+    }
+
+    let plan: Vec<UvPlanItem> = plan_slots
+        .into_iter()
+        .map(|item| item.context("internal error: missing uv plan slot"))
+        .collect::<Result<Vec<_>>>()?;
+
     let mut upgradable_tools: Vec<(String, String, String)> = Vec::new();
     let mut pypi_cache: HashMap<String, PypiRoot> = HashMap::new();
 
-    for tool in installed {
-        let target = match uv_resolve_target_with_exclude_newer(&tool) {
+    for item in plan {
+        let tool = item.tool;
+        let target = match item.target {
             Ok(target) => target,
             Err(err) => {
                 let outcome = ItemOutcome::error(
@@ -63,7 +99,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
                     tool.current,
                     Manager::Uv.as_str(),
                     REASON_COMMAND_FAILED,
-                    err.to_string(),
+                    err,
                 );
                 emit_text_outcome(&outcome);
                 continue;
