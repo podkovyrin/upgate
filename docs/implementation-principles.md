@@ -1,71 +1,62 @@
-# Implementation Principles (Post-clarification)
+# Implementation Principles
 
-This document captures implementation guidance agreed after reviewing the previous `upnow-mvp` attempt.
+This file documents implementation-level guidance and rationale.
 
-It is intentionally lightweight and does **not** replace `docs/spec.md`.
+`docs/spec.md` is the behavior/source-of-truth document.
 
 ## 1) Core direction
 
-- Keep manager implementations **self-contained**.
-- Prefer simple, manager-native behavior over global abstractions.
-- Do not introduce a centralized cross-manager policy engine.
+- Keep manager logic primarily manager-native and easy to reason about.
+- Prefer small focused shared utilities over large abstraction frameworks.
+- Avoid centralized cross-manager policy engines unless usage clearly demands it.
 
 ## 2) Plan/apply determinism posture
 
 - `plan` is advisory.
 - `apply` may differ slightly from `plan` when manager-native commands resolve targets at execution time.
   - Example: `npm -g update --min-release-age 7` can shift due to time drift.
-- We accept this tradeoff for simplicity.
-- No strict `decision_time_utc` freeze is required right now.
+- Strict decision-time freeze is intentionally not implemented.
 
-## 3) Lightweight structured outcomes
+## 3) Lightweight structured outcomes (implemented)
 
-Use a small, consistent internal outcome shape per item (no heavy domain modeling):
+Internal per-item shape includes statuses:
+- `update`, `delayed`, `skipped`, `error`
 
-- Status: `update`, `delayed`, `skipped`, `error`
-- Optional reason examples:
-  - `too_fresh`
-  - `pinned`
-  - `missing_metadata`
-  - `command_failed`
+Reason examples:
+- `too_fresh`
+- `pinned`
+- `missing_metadata`
+- `command_failed`
 
-Goals:
-- consistent output across managers
-- easy summary counts
-- easier future machine-readable output if needed
+This supports consistent text rendering and future aggregation/machine output.
 
-## 4) Lightweight process runner helper
+## 4) Lightweight shared helpers (implemented)
 
-A tiny shared subprocess helper is recommended (not a framework), to centralize:
+Current shared utility modules:
+- `src/util/process.rs` — subprocess execution + common failure formatting
+- `src/util/timefmt.rs` — human age formatting
+- `src/util/timeparse.rs` — RFC3339 -> unix seconds parsing
+- `src/util/durationparse.rs` — CLI duration parsing
 
-- command execution
-- common error formatting (command, exit code, stderr)
-- optional timeout/env handling
-- optional per-command logging
+These are intentionally narrow and avoid introducing framework-style coupling.
 
-This is purely to remove repetition and improve consistency.
+## 5) Exit code contract (current)
 
-## 5) Exit code contract
+Current implementation behavior:
+- `0`: run completed without fatal manager-level error (can include handled per-item errors)
+- `1`: fatal manager/runtime error bubbled to `main`
+- CLI parse/usage errors are clap-managed (typically `2`)
 
-- `0`: command completed successfully (including “nothing to do”)
-- `1`: operational failure (manager command failure, runtime error)
-- `2`: invalid CLI usage/config
-- `130`: interrupted (SIGINT)
+Previously discussed explicit `130`/signal mapping is not yet implemented in dedicated handling.
 
-This is treated as implementation-level behavior and should remain stable across commands.
+## 6) Testing posture
 
-## 6) Testing posture (pragmatic)
+- Prefer small semantic/unit tests for parsers and decision logic.
+- Avoid large snapshot/golden sprawl.
+- Keep fixtures and test strings hand-curated/minimal.
 
-- Prefer small semantic tests for parsing and decision logic.
-- Avoid large snapshot/golden test sprawl.
-- Keep fixtures minimal and hand-curated.
-- If golden tests are used, keep only a few high-value CLI contract cases.
+## 7) Deferred / open
 
-## 7) Explicitly deferred
-
-- Cross-manager parallel apply orchestration
-- manager dependency graphing
-- broad architecture refactors
-- strict reproducibility guarantees between `plan` and `apply`
-
-These can be revisited later if real usage demands them.
+- Cross-manager parallel apply orchestration and dependency ordering policy
+- Optional summary/aggregation output lines
+- Optional structured log sinks for crash forensics

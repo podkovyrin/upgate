@@ -4,23 +4,35 @@
 
 `upnow` is a multi-manager CLI that prints and applies delayed global package/tool upgrades.
 
-This file is the only manager-spec source of truth.
+This file is the manager-spec source of truth for current behavior.
 
-Source of truth in code:
+## Source of truth in code
+
 - `src/main.rs`
-- `src/brew.rs`
-- `src/bun.rs`
-- `src/cargo.rs`
-- `src/npm.rs`
-- `src/yarn.rs`
-- `src/mise.rs`
-- `src/pipx.rs`
-- `src/pnpm.rs`
-- `src/uv.rs`
+- `src/manager.rs`
+- `src/managers/mod.rs`
+- `src/managers/brew.rs`
+- `src/managers/bun.rs`
+- `src/managers/cargo.rs`
+- `src/managers/npm.rs`
+- `src/managers/yarn.rs`
+- `src/managers/mise.rs`
+- `src/managers/pipx.rs`
+- `src/managers/pnpm.rs`
+- `src/managers/uv.rs`
+- `src/outcome.rs`
+- `src/util/process.rs`
+- `src/util/timefmt.rs`
+- `src/util/timeparse.rs`
+- `src/util/durationparse.rs`
 
 ## CLI contract
 
-Binary options (single shared interface):
+Commands:
+- `plan` (default when omitted)
+- `apply`
+
+Global options:
 - `--dry-run` / `-n`
 - `--min-release-age <duration>` (default `12h`)
 - `--max-parallel-checks <n>` (default `6`)
@@ -30,24 +42,66 @@ Binary options (single shared interface):
 
 Default manager set: `brew`.
 
-`src/main.rs` only parses CLI and dispatches to selected manager modules.
+Behavior notes:
+- `plan` forces effective dry-run mode.
+- Selected managers run in a fixed internal order:
+  `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`.
 
-## Architecture constraints (implemented)
+## Architecture (current)
 
-- Manager modules are isolated; no shared manager logic.
-- Shared element is the `Cli` interface only.
-- Each module owns its own data structures, parsing, and execution flow.
+- Manager-native parsing/selection/apply logic remains in manager modules.
+- Shared utility modules are used for narrow cross-cutting concerns:
+  - subprocess execution/formatting (`util/process`)
+  - human age formatting (`util/timefmt`)
+  - RFC3339 parse to unix seconds (`util/timeparse`)
+  - duration parsing (`util/durationparse`)
+- Outcome formatting contract is centralized in `src/outcome.rs`.
 
 ## Output contract
 
-- Normal successful runs print plan lines only.
-- Prefixes: `brew:`, `bun:`, `cargo:`, `npm:`, `yarn:`, `mise:`, `pipx:`, `pnpm:`, `uv:`.
-- Versions are normalized with `v` prefix when numeric.
-- Errors are returned as command failure (stderr from process wrappers).
+Outcomes are printed as text lines.
+
+Statuses:
+- `update`
+- `delayed`
+- `skipped`
+- `error`
+
+General forms:
+- Update:
+  - `<manager>: <name> v<from> -> v<to> (source: <source>)`
+  - delayed-latest annotation variant:
+    - `<manager>: <name> v<from> -> v<to> (source: <source>; latest v<latest> delayed: <age> < <required>)`
+- Delayed (no eligible release):
+  - `<manager>: <name> v<current> -> v<current> (delayed, no eligible release >= current within <required> window, source: <source>)`
+- Skipped:
+  - `<manager>: <name> v<from> -> v<to> (skipped, <reason>, source: <source>)`
+- Error:
+  - `<manager>: <name> v<from> -> v<to> (error, <reason>, source: <source>)`
+
+Version labels:
+- Numeric versions get `v` prefix in output.
+- Non-numeric tokens (e.g. `*`) are printed as-is.
+
+Suppression:
+- `skipped_no_change` (`already at selected target`) is not printed.
+
+Batch-error sentinel:
+- Managers with single batch apply commands can emit synthetic error outcome lines using `name="*"` and versions `* -> *`.
+
+## Failure/exit behavior (current)
+
+- Handled per-item failures emit `error` outcomes and continue within that manager loop.
+- Fatal manager-level failures still return an error from `run(...)`.
+- A fatal manager-level failure aborts subsequent manager execution in the current run.
+- Process exit today:
+  - `0` when run completes without fatal manager-level error (including handled per-item errors)
+  - `1` on fatal manager/runtime error
+  - invalid CLI usage uses clap defaults (typically `2`)
 
 ## Manager behavior
 
-### brew (`src/brew.rs`)
+### brew (`src/managers/brew.rs`)
 
 Delay policy:
 - Uses CLI `--min-release-age` (default `12h`).
@@ -59,7 +113,11 @@ Planning flow:
 4. `brew tap-info --json --installed`.
 5. Local git commit age check (`origin/<branch>`, `origin/HEAD`, `FETCH_HEAD`, `HEAD`).
 6. GitHub commits API fallback if local git fails.
-7. Classify each item: upgrade / delayed / skipped.
+7. Classify each item.
+
+Classification:
+- upgrade / delayed / skipped
+- age-check command failures are emitted as structured `error` outcomes.
 
 Apply flow:
 - Formulae: `brew upgrade --formula ...`
@@ -69,199 +127,157 @@ Concurrency:
 - Local checks pool size: `--max-parallel-checks`.
 - API fallback pool size: `clamp(1, 4)`.
 
-### cargo (`src/cargo.rs`)
+### cargo (`src/managers/cargo.rs`)
 
 Delay policy:
 - Fixed `7d`.
 
 Planning semantics:
-- Target is **highest eligible version** (age >= 7d) with constraint `target >= current`.
-- This is not always crates.io latest.
+- Target is highest eligible version (`age >= 7d`) with constraint `target >= current`.
 
 Planning flow:
 1. `cargo install --list`.
-2. Per crate: `cargo search <name> --limit 1` (latest version context).
-3. Per crate: query `https://crates.io/api/v1/crates/<name>` for version timeline.
-4. Parse all non-yanked versions and timestamps, choose target by semver ordering.
-
-Output forms:
-- `cargo: <name> v<from> -> v<to> (source: crates.io)`
-- If newer latest exists but too new:
-  - `cargo: <name> v<from> -> v<to> (source: crates.io; latest v<latest> delayed: <age> < 7d)`
-- If no eligible `>= current`:
-  - `cargo: <name> v<current> -> v<current> (delayed, no eligible release >= current within 7d window, source: crates.io)`
-- If resolved target equals current, no line is emitted.
+2. Per crate: `cargo search <name> --limit 1` (latest context).
+3. Per crate: `https://crates.io/api/v1/crates/<name>` timeline.
+4. Parse non-yanked versions and choose semver-max eligible target.
 
 Apply flow:
-- Per eligible crate: `cargo install --force <name>@<target>`
+- Per eligible crate: `cargo install --force <name>@<target>`.
+- Per-crate apply failures emit `error` and continue.
 
-### npm (`src/npm.rs`)
+### npm (`src/managers/npm.rs`)
 
 Delay policy:
 - Fixed `7d`.
 
 Planning semantics:
-- Target is **highest eligible version** (age >= 7d) with constraint `target >= current`.
-- This is not always npm latest.
+- Target is highest eligible version (`age >= 7d`) with constraint `target >= current`.
 
 Planning flow:
 1. `npm outdated -g --json`.
 2. Per package: `npm view <name> time --json`.
-3. Parse all version timestamps, choose target by semver ordering.
-
-Output forms:
-- `npm: <name> v<from> -> v<to> (source: npm)`
-- If newer latest exists but too new:
-  - `npm: <name> v<from> -> v<to> (source: npm; latest v<latest> delayed: <age> < 7d)`
-- If no eligible `>= current`:
-  - `npm: <name> v<current> -> v<current> (delayed, no eligible release >= current within 7d window, source: npm)`
-- If resolved target equals current, no line is emitted.
+3. Parse version timestamps and choose semver-max eligible target.
 
 Apply flow:
-- `npm -g update --min-release-age 7`
+- Batch command: `npm -g update --min-release-age 7`.
+- Batch apply failure emits one synthetic `*` error outcome.
 
-### yarn (`src/yarn.rs`)
+### yarn (`src/managers/yarn.rs`)
 
 Delay policy:
 - Fixed `7d`.
-
-Planning semantics:
-- Target is **highest eligible version** (age >= 7d) with constraint `target >= current`.
-- This is not always yarn latest.
 
 Planning flow:
 1. `yarn global list --depth=0`.
 2. Per package: `yarn info <name> time --json`.
-3. Parse all version timestamps, choose target by semver ordering.
-
-Output forms:
-- `yarn: <name> v<from> -> v<to> (source: yarn)`
-- If newer latest exists but too new:
-  - `yarn: <name> v<from> -> v<to> (source: yarn; latest v<latest> delayed: <age> < 7d)`
-- If no eligible `>= current`:
-  - `yarn: <name> v<current> -> v<current> (delayed, no eligible release >= current within 7d window, source: yarn)`
-- If resolved target equals current, no line is emitted.
+3. Parse version timestamps and choose semver-max eligible target (`>= current`, age eligible).
 
 Apply flow:
-- Per eligible package: `yarn global add <name>@<target>`
+- Per eligible package: `yarn global add <name>@<target>`.
+- Per-package apply failures emit `error` and continue.
 
-### pnpm (`src/pnpm.rs`)
+### pnpm (`src/managers/pnpm.rs`)
 
 Delay policy:
 - Fixed `7d`.
-
-Planning semantics:
-- Target is **highest eligible version** (age >= 7d) with constraint `target >= current`.
-- This is not always pnpm latest.
 
 Planning flow:
 1. `pnpm outdated -g --json`.
 2. Per package: `pnpm view <name> time --json`.
-3. Parse all version timestamps, choose target by semver ordering.
+3. Parse timestamps and choose semver-max eligible target (`>= current`, age eligible).
 
-Output forms:
-- `pnpm: <name> v<from> -> v<to> (source: pnpm)`
-- If newer latest exists but too new:
-  - `pnpm: <name> v<from> -> v<to> (source: pnpm; latest v<latest> delayed: <age> < 7d)`
-- If no eligible `>= current`:
-  - `pnpm: <name> v<current> -> v<current> (delayed, no eligible release >= current within 7d window, source: pnpm)`
-- If resolved target equals current, no line is emitted.
+Notes:
+- Handles both object and array JSON shapes for `pnpm outdated`.
+- Treats `ERR_PNPM_NO_IMPORTER_MANIFEST_FOUND` as no-op/empty.
 
 Apply flow:
-- Per eligible package: `pnpm add -g <name>@<target>`
+- Per eligible package: `pnpm add -g <name>@<target>`.
+- Per-package apply failures emit `error` and continue.
 
-### bun (`src/bun.rs`)
+### bun (`src/managers/bun.rs`)
 
 Delay policy:
-- Fixed `7d`.
-
-Planning semantics:
-- Target is **highest eligible version** (age >= 7d) with constraint `target >= current`.
-- This is not always bun latest.
+- Fixed `7d` (`604800` seconds).
 
 Planning flow:
 1. `bun outdated -g`.
-2. Per package: `bun pm view <name> time --json`.
-3. Parse all version timestamps, choose target by semver ordering.
+2. Per package: `bun pm view <name> time --json --cwd <global>`.
+3. Parse timestamps and choose semver-max eligible target (`>= current`, age eligible).
 
-Output forms:
-- `bun: <name> v<from> -> v<to> (source: bun)`
-- If newer latest exists but too new:
-  - `bun: <name> v<from> -> v<to> (source: bun; latest v<latest> delayed: <age> < 7d)`
-- If no eligible `>= current`:
-  - `bun: <name> v<current> -> v<current> (delayed, no eligible release >= current within 7d window, source: bun)`
-- If resolved target equals current, no line is emitted.
+Notes:
+- Bun executable resolution order:
+  - `UPNOW_BUN_BIN`
+  - `mise which bun`
+  - fallback `bun`
+- Missing global manifest/lockfile states are treated as empty/no-op.
 
 Apply flow:
-- `bun update -g --minimum-release-age 604800`
+- Batch command: `bun update -g --minimum-release-age 604800`.
+- Batch apply failure emits one synthetic `*` error outcome.
 
-### mise (`src/mise.rs`)
+### mise (`src/managers/mise.rs`)
 
 Delay policy:
 - Fixed `7d` via `--before 7d`.
 
 Planning flow:
 1. `mise upgrade --dry-run --before 7d`.
-2. Parse pairs:
+2. Parse uninstall/install pairs:
    - `Would uninstall <tool>@<from>`
    - `Would install <tool>@<to>`
-3. `mise outdated --json` for latest-version context.
-4. If `latest != planned_target`, annotate latest delayed.
+3. `mise outdated --json` for latest context.
+4. If `latest != planned_target`, annotate delayed latest age.
 
 Latest-age annotation source:
-- For tools with `npm:` prefix, age is computed via `npm view <pkg>@<latest> time --json`.
-- For non-`npm:` tools, age is currently represented as `0s` in delayed annotation path.
+- `npm:` tools use `npm view <pkg>@<latest> time --json`.
+- Non-`npm:` tools currently use `0s` as placeholder age.
+
+Error handling:
+- `mise outdated --json` failure emits one synthetic `*` error outcome and planning continues without latest-map annotations.
+- Per-item latest-age lookup failures emit per-item `error` outcomes.
 
 Apply flow:
-- `mise upgrade --before 7d`
+- Batch command: `mise upgrade --before 7d`.
+- Batch apply failure emits one synthetic `*` error outcome.
 
-### pipx (`src/pipx.rs`)
+### pipx (`src/managers/pipx.rs`)
 
 Delay policy:
 - Fixed `7d`.
 
 Planning semantics:
-- Target is **highest eligible version** (age >= 7d) with constraint `target >= current`.
+- Target is highest eligible version (`age >= 7d`) with constraint `target >= current`.
 - Uses PEP 440 ordering.
 
 Planning flow:
 1. `pipx list --json`.
-2. Per package: fetch `https://pypi.org/pypi/<name>/json`.
-3. Parse releases and timestamps, choose eligible target.
-
-Output forms:
-- `pipx: <name> v<from> -> v<to> (source: pypi)`
-- If newer latest exists but too new:
-  - `pipx: <name> v<from> -> v<to> (source: pypi; latest v<latest> delayed: <age> < 7d)`
-- If no eligible `>= current`:
-  - `pipx: <name> v<current> -> v<current> (delayed, no eligible release >= current within 7d window, source: pypi)`
-- If resolved target equals current, no line is emitted.
+2. Per package: `https://pypi.org/pypi/<name>/json`.
+3. Parse releases/timestamps and choose eligible target.
 
 Apply flow:
-- Per eligible package: `pipx upgrade <name>`
+- Per eligible package: `pipx upgrade <name>`.
+- Per-package apply failures emit `error` and continue.
 
-### uv (`src/uv.rs`)
+### uv (`src/managers/uv.rs`)
 
 Delay policy:
 - Fixed `7d` via `--exclude-newer 7d`.
-- Semantics match `pipx`: choose highest eligible release (`age >= 7d`) and require `target >= current`.
+
+Planning semantics:
+- Matches `pipx`: choose highest eligible release (`age >= 7d`) with `target >= current`.
 
 Planning flow:
-1. `uv tool list --show-version-specifiers` to enumerate installed tools.
-2. Per tool, resolve target with uv resolver against the tool environment:
+1. `uv tool dir`.
+2. Enumerate installed tools:
+   - `uv tool list --show-version-specifiers`
+   - fallback: inspect receipts in tool dir.
+3. Per tool resolve target via dry-run resolver:
    - `uv pip install --dry-run -p <tool-python> --upgrade --exclude-newer 7d <requirement>`
-3. Parse dry-run plan and extract `+ <tool>==<target>` for resolved target.
-4. `uv tool list --outdated` for latest-version context.
-5. For delayed-latest annotation age, query `https://pypi.org/pypi/<name>/json`.
-
-Output forms:
-- `uv: <name> v<from> -> v<to> (source: uv)`
-- If newer latest exists but too new:
-  - `uv: <name> v<from> -> v<to> (source: uv; latest v<latest> delayed: <age> < 7d)`
-- If no eligible `>= current`:
-  - `uv: <name> v<current> -> v<current> (delayed, no eligible release >= current within 7d window, source: uv)`
-- If resolved target equals current and current is not delayed, no line is emitted.
+4. Parse `+ <tool>==<target>` lines from dry-run plan.
+5. `uv tool list --outdated` for latest context.
+6. Latest-age annotation: PyPI JSON (`https://pypi.org/pypi/<name>/json`).
 
 Apply flow:
 - Per eligible tool:
   - `uv tool install --upgrade --exclude-newer 7d <name>`
+- Per-tool apply failures emit `error` and continue.
