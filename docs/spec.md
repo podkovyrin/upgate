@@ -22,7 +22,7 @@ Binary options (single shared interface):
 - `--max-parallel-checks <n>` (default `6`)
 - `--no-update`
 - `--managers <list>` where list is comma-separated values from:
-  - `brew`, `npm`, `mise`, `pipx`, `uv`
+  - `brew`, `npm`, `mise`, `pipx`, `pnpm`, `uv`
 
 Default manager set: `brew`.
 
@@ -89,6 +89,31 @@ Output forms:
 
 Apply flow:
 - `npm -g update --min-release-age 7`
+
+### pnpm (`src/pnpm.rs`)
+
+Delay policy:
+- Fixed `7d`.
+
+Planning semantics:
+- Target is **highest eligible version** (age >= 7d) with constraint `target >= current`.
+- This is not always pnpm latest.
+
+Planning flow:
+1. `pnpm outdated -g --json`.
+2. Per package: `pnpm view <name> time --json`.
+3. Parse all version timestamps, choose target by semver ordering.
+
+Output forms:
+- `pnpm: <name> v<from> -> v<to> (source: pnpm)`
+- If newer latest exists but too new:
+  - `pnpm: <name> v<from> -> v<to> (source: pnpm; latest v<latest> delayed: <age> < 7d)`
+- If no eligible `>= current`:
+  - `pnpm: <name> v<current> -> v<current> (delayed, no eligible release >= current within 7d window, source: pnpm)`
+- If resolved target equals current, no line is emitted.
+
+Apply flow:
+- Per eligible package: `pnpm add -g <name>@<target>`
 
 ### mise (`src/mise.rs`)
 

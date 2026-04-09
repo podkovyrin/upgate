@@ -2,6 +2,7 @@ mod brew;
 mod mise;
 mod npm;
 mod pipx;
+mod pnpm;
 mod uv;
 
 use anyhow::Result;
@@ -13,6 +14,7 @@ pub(crate) enum Manager {
     Npm,
     Mise,
     Pipx,
+    Pnpm,
     Uv,
 }
 
@@ -91,6 +93,10 @@ fn run_selected_managers(cli: &Cli) -> Result<()> {
 
     if cli.managers.contains(&Manager::Pipx) {
         pipx::run(cli)?;
+    }
+
+    if cli.managers.contains(&Manager::Pnpm) {
+        pnpm::run(cli)?;
     }
 
     if cli.managers.contains(&Manager::Uv) {

@@ -6,7 +6,7 @@
 - [x] mise
 - [x] pipx
 - [x] uv tools
-- [ ] pnpm global (`pnpm add -g` / `pnpm update -g`)
+- [x] pnpm global (`pnpm add -g` / `pnpm update -g`)
 - [ ] Bun global (`bun add -g` / `bun update -g`)
 - [ ] cargo install (Rust CLIs)
 
