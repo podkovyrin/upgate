@@ -1,11 +1,11 @@
 use crate::Cli;
-use crate::durationparse::parse_duration;
 use crate::manager::Manager;
 use crate::outcome::{
     ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, REASON_PINNED, emit_text_outcome,
 };
-use crate::process::run_command_checked_stdout;
-use crate::timefmt::human_age;
+use crate::util::durationparse::parse_duration;
+use crate::util::process::run_command_checked_stdout;
+use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 use reqwest::blocking::Client;

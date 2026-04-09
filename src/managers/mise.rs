@@ -1,10 +1,10 @@
 use crate::Cli;
-use crate::durationparse::parse_duration;
 use crate::manager::Manager;
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
-use crate::process::run_command_checked_stdout;
-use crate::timefmt::human_age;
-use crate::timeparse::parse_rfc3339_unix;
+use crate::util::durationparse::parse_duration;
+use crate::util::process::run_command_checked_stdout;
+use crate::util::timefmt::human_age;
+use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::process::Command;

@@ -1,10 +1,7 @@
-mod durationparse;
 mod manager;
 mod managers;
 mod outcome;
-mod process;
-mod timefmt;
-mod timeparse;
+mod util;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
