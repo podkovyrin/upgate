@@ -507,12 +507,20 @@ fn item_to_outcome(item: &PlanItem) -> ItemOutcome {
             required.clone(),
         ),
         PlanAction::Skipped { reason, source } => {
+            if reason.contains("failed age check") {
+                return ItemOutcome::error(
+                    Manager::Brew,
+                    item.name.clone(),
+                    item.installed.clone(),
+                    item.target.clone(),
+                    source.as_str(),
+                    REASON_COMMAND_FAILED,
+                    reason.clone(),
+                );
+            }
+
             let reason_code = if reason.starts_with("pinned") {
                 REASON_PINNED
-            } else if reason.contains("failed age check") {
-                // TODO(refactor-outcomes): convert this to per-item `error` status once
-                // non-fatal per-item errors are supported across managers.
-                REASON_COMMAND_FAILED
             } else {
                 REASON_MISSING_METADATA
             };

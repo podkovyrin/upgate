@@ -26,6 +26,6 @@
 - [ ] Helm plugins
 
 ## Refactor follow-ups
-- [ ] Introduce per-item error outcomes across managers (currently command-level failure still aborts run)
+- [x] Introduce per-item error outcomes across managers (currently command-level failure still aborts run)
 - [ ] Add optional summary/aggregation lines (update/delayed/skipped/error counts)
-- [ ] Reclassify brew age-check command failures to structured `error` outcomes (currently emitted as skipped)
+- [x] Reclassify brew age-check command failures to structured `error` outcomes (currently emitted as skipped)
