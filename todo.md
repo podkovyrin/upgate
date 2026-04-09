@@ -8,7 +8,7 @@
 - [x] uv tools
 - [x] pnpm global (`pnpm add -g` / `pnpm update -g`)
 - [x] Bun global (`bun add -g` / `bun update -g`)
-- [ ] cargo install (Rust CLIs)
+- [x] cargo install (Rust CLIs)
 
 ## P1 (medium priority)
 - [ ] Mac App Store CLI (`mas`)

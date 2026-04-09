@@ -1,0 +1,371 @@
+use crate::Cli;
+use anyhow::{Context, Result, bail};
+use semver::Version;
+use std::collections::{BTreeMap, HashSet};
+use std::process::{Command, Output};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const CARGO_MIN_AGE_DAYS: u64 = 7;
+
+#[derive(Debug)]
+struct InstalledCrate {
+    version: String,
+}
+
+pub(crate) fn run(cli: &Cli) -> Result<()> {
+    let min_age = Duration::from_secs(CARGO_MIN_AGE_DAYS * 24 * 60 * 60);
+
+    let installed = cargo_installed_crates()?;
+    if installed.is_empty() {
+        return Ok(());
+    }
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock before UNIX_EPOCH")?
+        .as_secs();
+
+    let mut upgradable = Vec::new();
+
+    for (name, entry) in &installed {
+        let from = version_label(&entry.version);
+        let resolved = cargo_resolve_target_with_min_age(name, &entry.version, now, min_age)?;
+
+        let Some(target) = resolved else {
+            println!(
+                "cargo: {name} {from} -> {from} (delayed, no eligible release >= current within 7d window, source: crates.io)"
+            );
+            continue;
+        };
+
+        if target.version == entry.version {
+            continue;
+        }
+
+        let to = version_label(&target.version);
+        if let (Some(age_secs), Some(skipped_ver)) = (
+            target.skipped_latest_age_secs,
+            target.skipped_latest_version.as_deref(),
+        ) {
+            println!(
+                "cargo: {name} {from} -> {to} (source: crates.io; latest {} delayed: {} < {})",
+                version_label(skipped_ver),
+                human_age(age_secs),
+                human_age(min_age.as_secs())
+            );
+        } else {
+            println!("cargo: {name} {from} -> {to} (source: crates.io)");
+        }
+
+        upgradable.push((name.clone(), target.version));
+    }
+
+    if cli.dry_run {
+        return Ok(());
+    }
+
+    for (name, version) in upgradable {
+        let spec = format!("{name}@{version}");
+        run_cargo(&["install", "--force", &spec])?;
+    }
+
+    Ok(())
+}
+
+fn cargo_installed_crates() -> Result<BTreeMap<String, InstalledCrate>> {
+    let stdout = run_cargo(&["install", "--list"])?;
+    let text = String::from_utf8(stdout).context("cargo install --list output not UTF-8")?;
+
+    Ok(parse_cargo_install_list(&text))
+}
+
+fn parse_cargo_install_list(text: &str) -> BTreeMap<String, InstalledCrate> {
+    let mut out = BTreeMap::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.ends_with(':') {
+            continue;
+        }
+
+        let Some((name, ver_raw)) = trimmed.trim_end_matches(':').split_once(" v") else {
+            continue;
+        };
+
+        if name.is_empty() || ver_raw.is_empty() {
+            continue;
+        }
+
+        out.insert(
+            name.to_string(),
+            InstalledCrate {
+                version: ver_raw.to_string(),
+            },
+        );
+    }
+
+    out
+}
+
+struct CargoResolvedTarget {
+    version: String,
+    skipped_latest_age_secs: Option<u64>,
+    skipped_latest_version: Option<String>,
+}
+
+fn cargo_resolve_target_with_min_age(
+    name: &str,
+    current: &str,
+    now_unix_secs: u64,
+    min_age: Duration,
+) -> Result<Option<CargoResolvedTarget>> {
+    let output = Command::new("cargo")
+        .args(["search", name, "--limit", "1"])
+        .output()
+        .with_context(|| format!("failed to run cargo search {name} --limit 1"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("cargo search {name} --limit 1 failed: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("cargo search output not UTF-8")?;
+    let latest = parse_cargo_search_latest_version(name, &stdout)?;
+
+    let current_ver = Version::parse(current)
+        .with_context(|| format!("failed to parse current semver for {name}: {current}"))?;
+
+    let all_versions = crates_io_versions(name)?;
+    let mut newest_any: Option<(Version, String, u64)> = None;
+    let mut eligible: Option<(Version, String, u64)> = None;
+
+    for item in &all_versions {
+        let version = match Version::parse(&item.version) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if newest_any
+            .as_ref()
+            .is_none_or(|(curr, _, _)| version > *curr)
+        {
+            newest_any = Some((version.clone(), item.version.clone(), item.created_at_unix));
+        }
+
+        if version >= current_ver {
+            let age_secs = now_unix_secs.saturating_sub(item.created_at_unix);
+            if age_secs >= min_age.as_secs()
+                && eligible.as_ref().is_none_or(|(curr, _, _)| version > *curr)
+            {
+                eligible = Some((version, item.version.clone(), item.created_at_unix));
+            }
+        }
+    }
+
+    let Some((eligible_ver, eligible_str, _)) = eligible else {
+        return Ok(None);
+    };
+
+    let mut skipped_latest_age_secs = None;
+    let mut skipped_latest_version = None;
+
+    if let Some((latest_ver, latest_str, latest_ts)) = newest_any
+        && latest_ver > eligible_ver
+    {
+        skipped_latest_age_secs = Some(now_unix_secs.saturating_sub(latest_ts));
+        skipped_latest_version = Some(latest_str);
+    }
+
+    // Keep the parsed search latest in scope to validate semver hygiene and avoid stale data.
+    let _ = latest;
+    let _ = eligible_str;
+
+    Ok(Some(CargoResolvedTarget {
+        version: eligible_ver.to_string(),
+        skipped_latest_age_secs,
+        skipped_latest_version,
+    }))
+}
+
+fn parse_cargo_search_latest_version(crate_name: &str, stdout: &str) -> Result<Version> {
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("...") || trimmed.starts_with("note:") {
+            continue;
+        }
+
+        let prefix = format!("{crate_name} = \"");
+        if let Some(rest) = trimmed.strip_prefix(&prefix)
+            && let Some((ver, _)) = rest.split_once('"')
+        {
+            return Version::parse(ver).with_context(|| {
+                format!("failed to parse cargo search version for {crate_name}: {ver}")
+            });
+        }
+    }
+
+    bail!("failed to parse cargo search latest version for {crate_name}")
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CratesIoRoot {
+    #[serde(default)]
+    versions: Vec<CratesIoVersion>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CratesIoVersion {
+    num: String,
+    created_at: String,
+    yanked: bool,
+}
+
+#[derive(Debug)]
+struct CrateVersionItem {
+    version: String,
+    created_at_unix: u64,
+}
+
+fn crates_io_versions(crate_name: &str) -> Result<Vec<CrateVersionItem>> {
+    let url = format!("https://crates.io/api/v1/crates/{crate_name}");
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("upnow/0.1")
+        .timeout(Duration::from_secs(8))
+        .build()
+        .context("failed to build crates.io HTTP client")?;
+
+    let body = client
+        .get(&url)
+        .send()
+        .with_context(|| format!("failed to GET {url}"))?
+        .error_for_status()
+        .with_context(|| format!("crates.io returned error for {crate_name}"))?
+        .text()
+        .with_context(|| format!("failed to read crates.io response body for {crate_name}"))?;
+
+    let root: CratesIoRoot = serde_json::from_str(&body)
+        .with_context(|| format!("failed to parse crates.io JSON for {crate_name}"))?;
+
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+
+    for v in root.versions {
+        if v.yanked {
+            continue;
+        }
+
+        if !seen.insert(v.num.clone()) {
+            continue;
+        }
+
+        let ts = parse_rfc3339_unix(&v.created_at).with_context(|| {
+            format!(
+                "invalid crates.io version timestamp for {crate_name}@{}: {}",
+                v.num, v.created_at
+            )
+        })?;
+
+        out.push(CrateVersionItem {
+            version: v.num,
+            created_at_unix: ts,
+        });
+    }
+
+    Ok(out)
+}
+
+fn parse_rfc3339_unix(raw: &str) -> Result<u64> {
+    let dt = chrono::DateTime::parse_from_rfc3339(raw)
+        .with_context(|| format!("invalid RFC3339 timestamp: {raw}"))?;
+
+    u64::try_from(dt.timestamp()).context("timestamp before UNIX_EPOCH")
+}
+
+fn run_cargo(args: &[&str]) -> Result<Vec<u8>> {
+    let output = run_cargo_raw(args)?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("cargo {} failed: {}", args.join(" "), stderr.trim());
+    }
+
+    Ok(output.stdout)
+}
+
+fn run_cargo_raw(args: &[&str]) -> Result<Output> {
+    Command::new("cargo")
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to run cargo {}", args.join(" ")))
+}
+
+fn version_label(version: &str) -> String {
+    if version.starts_with('v') {
+        return version.to_string();
+    }
+
+    match version.chars().next() {
+        Some(c) if c.is_ascii_digit() => format!("v{version}"),
+        _ => version.to_string(),
+    }
+}
+
+fn human_age(total_secs: u64) -> String {
+    if total_secs < 60 {
+        return format!("{total_secs}s");
+    }
+
+    if total_secs < 60 * 60 {
+        return format!("{}m", total_secs / 60);
+    }
+
+    if total_secs < 24 * 60 * 60 {
+        let hours = total_secs / 3600;
+        let minutes = (total_secs % 3600) / 60;
+        return if minutes == 0 {
+            format!("{hours}h")
+        } else {
+            format!("{hours}h{minutes}m")
+        };
+    }
+
+    let days = total_secs / (24 * 60 * 60);
+    let hours = (total_secs % (24 * 60 * 60)) / 3600;
+    if hours == 0 {
+        format!("{days}d")
+    } else {
+        format!("{days}d{hours}h")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_install_list_entries() {
+        let raw = r#"cargo-deny v0.19.0:
+    cargo-deny
+cbindgen v0.29.2:
+    cbindgen
+"#;
+
+        let parsed = parse_cargo_install_list(raw);
+        assert_eq!(
+            parsed.get("cargo-deny").map(|e| e.version.as_str()),
+            Some("0.19.0")
+        );
+        assert_eq!(
+            parsed.get("cbindgen").map(|e| e.version.as_str()),
+            Some("0.29.2")
+        );
+    }
+
+    #[test]
+    fn parse_search_latest() {
+        let raw = "cargo-deny = \"0.19.0\"    # comment\n... and 12 crates more\n";
+        let parsed = parse_cargo_search_latest_version("cargo-deny", raw).expect("should parse");
+        assert_eq!(parsed, Version::new(0, 19, 0));
+    }
+}

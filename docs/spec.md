@@ -9,9 +9,12 @@ This file is the only manager-spec source of truth.
 Source of truth in code:
 - `src/main.rs`
 - `src/brew.rs`
+- `src/bun.rs`
+- `src/cargo.rs`
 - `src/npm.rs`
 - `src/mise.rs`
 - `src/pipx.rs`
+- `src/pnpm.rs`
 - `src/uv.rs`
 
 ## CLI contract
@@ -22,7 +25,7 @@ Binary options (single shared interface):
 - `--max-parallel-checks <n>` (default `6`)
 - `--no-update`
 - `--managers <list>` where list is comma-separated values from:
-  - `brew`, `npm`, `mise`, `pipx`, `pnpm`, `bun`, `uv`
+  - `brew`, `npm`, `mise`, `pipx`, `pnpm`, `bun`, `cargo`, `uv`
 
 Default manager set: `brew`.
 
@@ -37,7 +40,7 @@ Default manager set: `brew`.
 ## Output contract
 
 - Normal successful runs print plan lines only.
-- Prefixes: `brew:`, `npm:`, `mise:`, `pipx:`, `uv:`.
+- Prefixes: `brew:`, `bun:`, `cargo:`, `npm:`, `mise:`, `pipx:`, `pnpm:`, `uv:`.
 - Versions are normalized with `v` prefix when numeric.
 - Errors are returned as command failure (stderr from process wrappers).
 
@@ -64,6 +67,32 @@ Apply flow:
 Concurrency:
 - Local checks pool size: `--max-parallel-checks`.
 - API fallback pool size: `clamp(1, 4)`.
+
+### cargo (`src/cargo.rs`)
+
+Delay policy:
+- Fixed `7d`.
+
+Planning semantics:
+- Target is **highest eligible version** (age >= 7d) with constraint `target >= current`.
+- This is not always crates.io latest.
+
+Planning flow:
+1. `cargo install --list`.
+2. Per crate: `cargo search <name> --limit 1` (latest version context).
+3. Per crate: query `https://crates.io/api/v1/crates/<name>` for version timeline.
+4. Parse all non-yanked versions and timestamps, choose target by semver ordering.
+
+Output forms:
+- `cargo: <name> v<from> -> v<to> (source: crates.io)`
+- If newer latest exists but too new:
+  - `cargo: <name> v<from> -> v<to> (source: crates.io; latest v<latest> delayed: <age> < 7d)`
+- If no eligible `>= current`:
+  - `cargo: <name> v<current> -> v<current> (delayed, no eligible release >= current within 7d window, source: crates.io)`
+- If resolved target equals current, no line is emitted.
+
+Apply flow:
+- Per eligible crate: `cargo install --force <name>@<target>`
 
 ### npm (`src/npm.rs`)
 
