@@ -1,6 +1,6 @@
 use crate::Cli;
 use crate::manager::Manager;
-use crate::outcome::{ItemOutcome, emit_text_outcome};
+use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::process::run_command_checked_stdout;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -12,7 +12,22 @@ const MISE_DELAY: &str = "7d";
 pub(crate) fn run(cli: &Cli) -> Result<()> {
     let planned = mise_upgrade_dry_run_with_before(MISE_DELAY)?;
     let plan_pairs = build_plan_pairs(&planned);
-    let latest_map = mise_outdated_latest_map()?;
+    let latest_map = match mise_outdated_latest_map() {
+        Ok(map) => map,
+        Err(err) => {
+            let outcome = ItemOutcome::error(
+                Manager::Mise,
+                "*",
+                "*",
+                "*",
+                Manager::Mise.as_str(),
+                REASON_COMMAND_FAILED,
+                err.to_string(),
+            );
+            emit_text_outcome(&outcome);
+            BTreeMap::new()
+        }
+    };
 
     let min_age = parse_duration_days(MISE_DELAY)?;
     let now = SystemTime::now()
@@ -24,7 +39,23 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         if let Some(latest) = latest_map.get(&item.tool)
             && latest != &item.to_version
         {
-            let age_secs = mise_latest_age_secs(&item.tool, latest, now)?;
+            let age_secs = match mise_latest_age_secs(&item.tool, latest, now) {
+                Ok(age_secs) => age_secs,
+                Err(err) => {
+                    let outcome = ItemOutcome::error(
+                        Manager::Mise,
+                        item.tool.clone(),
+                        item.from_version.clone(),
+                        item.to_version.clone(),
+                        Manager::Mise.as_str(),
+                        REASON_COMMAND_FAILED,
+                        err.to_string(),
+                    );
+                    emit_text_outcome(&outcome);
+                    continue;
+                }
+            };
+
             let outcome = ItemOutcome::update_with_delayed_latest(
                 Manager::Mise,
                 item.tool.clone(),
@@ -53,7 +84,18 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    run_mise(&["upgrade", "--before", MISE_DELAY])?;
+    if let Err(err) = run_mise(&["upgrade", "--before", MISE_DELAY]) {
+        let outcome = ItemOutcome::error(
+            Manager::Mise,
+            "*",
+            "*",
+            "*",
+            Manager::Mise.as_str(),
+            REASON_COMMAND_FAILED,
+            err.to_string(),
+        );
+        emit_text_outcome(&outcome);
+    }
     Ok(())
 }
 
