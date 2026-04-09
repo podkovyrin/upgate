@@ -3,6 +3,7 @@ use crate::manager::Manager;
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::process::{run_command_checked, run_command_checked_stdout};
 use crate::timefmt::human_age;
+use crate::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
 use pep440::Version;
 use std::cmp::Ordering;
@@ -456,13 +457,6 @@ fn pypi_release_age_secs(
     }
 
     Ok(newest_ts.map(|ts| now_unix_secs.saturating_sub(ts)))
-}
-
-fn parse_rfc3339_unix(raw: &str) -> Result<u64> {
-    let dt = chrono::DateTime::parse_from_rfc3339(raw)
-        .with_context(|| format!("invalid RFC3339 date: {raw}"))?;
-
-    u64::try_from(dt.timestamp()).context("timestamp before UNIX_EPOCH")
 }
 
 fn uv_tool_python_path(tool_dir: &str, tool_name: &str) -> String {

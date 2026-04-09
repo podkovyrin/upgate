@@ -9,6 +9,7 @@ mod pipx;
 mod pnpm;
 mod process;
 mod timefmt;
+mod timeparse;
 mod uv;
 mod yarn;
 

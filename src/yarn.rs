@@ -3,6 +3,7 @@ use crate::manager::Manager;
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::process::run_command_checked_stdout;
 use crate::timefmt::human_age;
+use crate::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
 use semver::Version;
 use std::collections::BTreeMap;
@@ -280,13 +281,6 @@ fn parse_yarn_inspect_object(
     }
 
     bail!("failed to parse yarn {field} JSON payload")
-}
-
-fn parse_rfc3339_unix(raw: &str) -> Result<u64> {
-    let dt = chrono::DateTime::parse_from_rfc3339(raw)
-        .with_context(|| format!("invalid RFC3339 timestamp: {raw}"))?;
-
-    u64::try_from(dt.timestamp()).context("yarn publish timestamp is negative")
 }
 
 fn run_yarn(args: &[&str]) -> Result<Vec<u8>> {
