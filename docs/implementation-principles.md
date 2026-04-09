@@ -45,14 +45,23 @@ A tiny shared subprocess helper is recommended (not a framework), to centralize:
 
 This is purely to remove repetition and improve consistency.
 
-## 5) Testing posture (pragmatic)
+## 5) Exit code contract
+
+- `0`: command completed successfully (including “nothing to do”)
+- `1`: operational failure (manager command failure, runtime error)
+- `2`: invalid CLI usage/config
+- `130`: interrupted (SIGINT)
+
+This is treated as implementation-level behavior and should remain stable across commands.
+
+## 6) Testing posture (pragmatic)
 
 - Prefer small semantic tests for parsing and decision logic.
 - Avoid large snapshot/golden test sprawl.
 - Keep fixtures minimal and hand-curated.
 - If golden tests are used, keep only a few high-value CLI contract cases.
 
-## 6) Explicitly deferred
+## 7) Explicitly deferred
 
 - Cross-manager parallel apply orchestration
 - manager dependency graphing
