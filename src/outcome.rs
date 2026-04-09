@@ -181,6 +181,31 @@ impl ItemOutcome {
         }
     }
 
+    pub(crate) fn error(
+        manager: Manager,
+        name: impl Into<String>,
+        from_version: impl Into<String>,
+        to_version: impl Into<String>,
+        source: impl Into<String>,
+        reason_code: &'static str,
+        reason_detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            manager,
+            name: name.into(),
+            from_version: from_version.into(),
+            to_version: to_version.into(),
+            status: OutcomeStatus::Error,
+            source: source.into(),
+            reason_code: Some(reason_code),
+            reason_detail: Some(reason_detail.into()),
+            age: None,
+            required_age: None,
+            latest_version: None,
+            latest_age: None,
+        }
+    }
+
     pub(crate) fn to_text_line(&self) -> Option<String> {
         // Manager enum is the source of truth for the manager prefix.
         if self.status == OutcomeStatus::Skipped && self.reason_code == Some(REASON_NO_CHANGE) {
