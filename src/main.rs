@@ -6,6 +6,7 @@ mod npm;
 mod pipx;
 mod pnpm;
 mod uv;
+mod yarn;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -16,6 +17,7 @@ pub(crate) enum Manager {
     Bun,
     Cargo,
     Npm,
+    Yarn,
     Mise,
     Pipx,
     Pnpm,
@@ -97,6 +99,10 @@ fn run_selected_managers(cli: &Cli) -> Result<()> {
 
     if cli.managers.contains(&Manager::Npm) {
         npm::run(cli)?;
+    }
+
+    if cli.managers.contains(&Manager::Yarn) {
+        yarn::run(cli)?;
     }
 
     if cli.managers.contains(&Manager::Mise) {

@@ -12,6 +12,7 @@ Source of truth in code:
 - `src/bun.rs`
 - `src/cargo.rs`
 - `src/npm.rs`
+- `src/yarn.rs`
 - `src/mise.rs`
 - `src/pipx.rs`
 - `src/pnpm.rs`
@@ -25,7 +26,7 @@ Binary options (single shared interface):
 - `--max-parallel-checks <n>` (default `6`)
 - `--no-update`
 - `--managers <list>` where list is comma-separated values from:
-  - `brew`, `npm`, `mise`, `pipx`, `pnpm`, `bun`, `cargo`, `uv`
+  - `brew`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `bun`, `cargo`, `uv`
 
 Default manager set: `brew`.
 
@@ -40,7 +41,7 @@ Default manager set: `brew`.
 ## Output contract
 
 - Normal successful runs print plan lines only.
-- Prefixes: `brew:`, `bun:`, `cargo:`, `npm:`, `mise:`, `pipx:`, `pnpm:`, `uv:`.
+- Prefixes: `brew:`, `bun:`, `cargo:`, `npm:`, `yarn:`, `mise:`, `pipx:`, `pnpm:`, `uv:`.
 - Versions are normalized with `v` prefix when numeric.
 - Errors are returned as command failure (stderr from process wrappers).
 
@@ -118,6 +119,31 @@ Output forms:
 
 Apply flow:
 - `npm -g update --min-release-age 7`
+
+### yarn (`src/yarn.rs`)
+
+Delay policy:
+- Fixed `7d`.
+
+Planning semantics:
+- Target is **highest eligible version** (age >= 7d) with constraint `target >= current`.
+- This is not always yarn latest.
+
+Planning flow:
+1. `yarn global list --depth=0`.
+2. Per package: `yarn info <name> time --json`.
+3. Parse all version timestamps, choose target by semver ordering.
+
+Output forms:
+- `yarn: <name> v<from> -> v<to> (source: yarn)`
+- If newer latest exists but too new:
+  - `yarn: <name> v<from> -> v<to> (source: yarn; latest v<latest> delayed: <age> < 7d)`
+- If no eligible `>= current`:
+  - `yarn: <name> v<current> -> v<current> (delayed, no eligible release >= current within 7d window, source: yarn)`
+- If resolved target equals current, no line is emitted.
+
+Apply flow:
+- Per eligible package: `yarn global add <name>@<target>`
 
 ### pnpm (`src/pnpm.rs`)
 
