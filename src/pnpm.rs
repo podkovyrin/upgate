@@ -2,6 +2,7 @@ use crate::Cli;
 use crate::manager::Manager;
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::process::run_command_checked_stdout;
+use crate::timefmt::human_age;
 use anyhow::{Context, Result, bail};
 use semver::Version;
 use serde::Deserialize;
@@ -340,34 +341,6 @@ fn run_pnpm(args: &[&str]) -> Result<Vec<u8>> {
     let mut command = Command::new("pnpm");
     command.args(args);
     run_command_checked_stdout(command)
-}
-
-fn human_age(total_secs: u64) -> String {
-    if total_secs < 60 {
-        return format!("{total_secs}s");
-    }
-
-    if total_secs < 60 * 60 {
-        return format!("{}m", total_secs / 60);
-    }
-
-    if total_secs < 24 * 60 * 60 {
-        let hours = total_secs / 3600;
-        let minutes = (total_secs % 3600) / 60;
-        return if minutes == 0 {
-            format!("{hours}h")
-        } else {
-            format!("{hours}h{minutes}m")
-        };
-    }
-
-    let days = total_secs / (24 * 60 * 60);
-    let hours = (total_secs % (24 * 60 * 60)) / 3600;
-    if hours == 0 {
-        format!("{days}d")
-    } else {
-        format!("{days}d{hours}h")
-    }
 }
 
 #[cfg(test)]

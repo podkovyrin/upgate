@@ -8,6 +8,7 @@ mod outcome;
 mod pipx;
 mod pnpm;
 mod process;
+mod timefmt;
 mod uv;
 mod yarn;
 

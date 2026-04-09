@@ -1,6 +1,5 @@
 use crate::manager::Manager;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutcomeStatus {
     Update,
@@ -106,7 +105,6 @@ impl ItemOutcome {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn delayed_too_fresh(
         manager: Manager,
         name: impl Into<String>,
@@ -132,7 +130,6 @@ impl ItemOutcome {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn skipped(
         manager: Manager,
         name: impl Into<String>,
@@ -296,13 +293,6 @@ impl ItemOutcome {
 pub(crate) fn emit_text_outcome(outcome: &ItemOutcome) {
     if let Some(line) = outcome.to_text_line() {
         println!("{line}");
-    }
-}
-
-#[allow(dead_code)]
-pub(crate) fn emit_text_outcomes(outcomes: &[ItemOutcome]) {
-    for outcome in outcomes {
-        emit_text_outcome(outcome);
     }
 }
 
