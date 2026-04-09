@@ -1,4 +1,6 @@
 use crate::Cli;
+use crate::manager::Manager;
+use crate::outcome::{ItemOutcome, emit_text_outcome};
 use anyhow::{Context, Result, bail};
 use semver::Version;
 use serde::Deserialize;
@@ -27,35 +29,56 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .as_secs();
 
     for (name, entry) in &outdated {
-        let from = version_label(&entry.current);
-
         let resolved = npm_resolve_target_with_min_age(name, &entry.current, now, min_age)?;
 
         let Some(target) = resolved else {
-            println!(
-                "npm: {name} {from} -> {from} (delayed, no eligible release >= current within 7d window, source: npm)"
+            let outcome = ItemOutcome::delayed_no_eligible(
+                Manager::Npm,
+                name.clone(),
+                entry.current.clone(),
+                Manager::Npm.as_str(),
+                format!("{}d", NPM_MIN_AGE_DAYS),
             );
+            emit_text_outcome(&outcome);
             continue;
         };
 
         if target.version == entry.current {
+            let outcome = ItemOutcome::skipped_no_change(
+                Manager::Npm,
+                name.clone(),
+                entry.current.clone(),
+                Manager::Npm.as_str(),
+            );
+            emit_text_outcome(&outcome);
             continue;
         }
 
-        let to = version_label(&target.version);
-        if let (Some(age_secs), Some(skipped_ver)) = (
+        let outcome = if let (Some(age_secs), Some(skipped_ver)) = (
             target.skipped_latest_age_secs,
             target.skipped_latest_version.as_deref(),
         ) {
-            println!(
-                "npm: {name} {from} -> {to} (source: npm; latest {} delayed: {} < {})",
-                version_label(skipped_ver),
+            ItemOutcome::update_with_delayed_latest(
+                Manager::Npm,
+                name.clone(),
+                entry.current.clone(),
+                target.version,
+                Manager::Npm.as_str(),
+                skipped_ver.to_string(),
                 human_age(age_secs),
-                human_age(min_age.as_secs())
-            );
+                human_age(min_age.as_secs()),
+            )
         } else {
-            println!("npm: {name} {from} -> {to} (source: npm)");
-        }
+            ItemOutcome::update(
+                Manager::Npm,
+                name.clone(),
+                entry.current.clone(),
+                target.version,
+                Manager::Npm.as_str(),
+            )
+        };
+
+        emit_text_outcome(&outcome);
     }
 
     if cli.dry_run {
@@ -71,12 +94,16 @@ fn npm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
     let output = Command::new("npm")
         .args(["outdated", "-g", "--json"])
         .output()
-        .context("failed to run npm outdated -g --json")?;
+        .with_context(|| format!("failed to run {} outdated -g --json", Manager::Npm.as_str()))?;
 
     // npm outdated returns exit code 1 when outdated packages exist.
     if !output.status.success() && output.status.code() != Some(1) {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("npm outdated -g --json failed: {}", stderr.trim());
+        bail!(
+            "{} outdated -g --json failed: {}",
+            Manager::Npm.as_str(),
+            stderr.trim()
+        );
     }
 
     let stdout = String::from_utf8(output.stdout).context("npm outdated output not UTF-8")?;
@@ -105,11 +132,20 @@ fn npm_resolve_target_with_min_age(
     let output = Command::new("npm")
         .args(["view", name, "time", "--json"])
         .output()
-        .with_context(|| format!("failed to run npm view {name} time --json"))?;
+        .with_context(|| {
+            format!(
+                "failed to run {} view {name} time --json",
+                Manager::Npm.as_str()
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("npm view {name} time --json failed: {}", stderr.trim());
+        bail!(
+            "{} view {name} time --json failed: {}",
+            Manager::Npm.as_str(),
+            stderr.trim()
+        );
     }
 
     let stdout = String::from_utf8(output.stdout).context("npm view output not UTF-8")?;
@@ -197,25 +233,19 @@ fn run_npm(args: &[&str]) -> Result<Vec<u8>> {
     let output = Command::new("npm")
         .args(args)
         .output()
-        .with_context(|| format!("failed to run npm {}", args.join(" ")))?;
+        .with_context(|| format!("failed to run {} {}", Manager::Npm.as_str(), args.join(" ")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("npm {} failed: {}", args.join(" "), stderr.trim());
+        bail!(
+            "{} {} failed: {}",
+            Manager::Npm.as_str(),
+            args.join(" "),
+            stderr.trim()
+        );
     }
 
     Ok(output.stdout)
-}
-
-fn version_label(version: &str) -> String {
-    if version.starts_with('v') {
-        return version.to_string();
-    }
-
-    match version.chars().next() {
-        Some(c) if c.is_ascii_digit() => format!("v{version}"),
-        _ => version.to_string(),
-    }
 }
 
 fn human_age(total_secs: u64) -> String {

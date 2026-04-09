@@ -1,4 +1,6 @@
 use crate::Cli;
+use crate::manager::Manager;
+use crate::outcome::{ItemOutcome, emit_text_outcome};
 use anyhow::{Context, Result, bail};
 use pep440::Version;
 use std::collections::BTreeMap;
@@ -64,35 +66,46 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
     let mut upgradable = Vec::new();
 
     for (name, current) in installed {
-        let from = version_label(&current);
-
         let resolved = pypi_resolve_target_with_min_age(&name, &current, now, min_age)?;
 
         let Some(target) = resolved else {
-            println!(
-                "pipx: {name} {from} -> {from} (delayed, no eligible release >= current within 7d window, source: pypi)"
+            let outcome = ItemOutcome::delayed_no_eligible(
+                Manager::Pipx,
+                name.clone(),
+                current.clone(),
+                "pypi",
+                format!("{}d", PIPX_DELAY_DAYS),
             );
+            emit_text_outcome(&outcome);
             continue;
         };
 
         if target.version == current {
+            let outcome =
+                ItemOutcome::skipped_no_change(Manager::Pipx, name.clone(), current, "pypi");
+            emit_text_outcome(&outcome);
             continue;
         }
 
-        let to = version_label(&target.version);
-        if let (Some(age_secs), Some(skipped_ver)) = (
+        let outcome = if let (Some(age_secs), Some(skipped_ver)) = (
             target.skipped_latest_age_secs,
             target.skipped_latest_version.as_deref(),
         ) {
-            println!(
-                "pipx: {name} {from} -> {to} (source: pypi; latest {} delayed: {} < {})",
-                version_label(skipped_ver),
+            ItemOutcome::update_with_delayed_latest(
+                Manager::Pipx,
+                name.clone(),
+                current,
+                target.version,
+                "pypi",
+                skipped_ver.to_string(),
                 human_age(age_secs),
-                human_age(min_age.as_secs())
-            );
+                human_age(min_age.as_secs()),
+            )
         } else {
-            println!("pipx: {name} {from} -> {to} (source: pypi)");
-        }
+            ItemOutcome::update(Manager::Pipx, name.clone(), current, target.version, "pypi")
+        };
+
+        emit_text_outcome(&outcome);
         upgradable.push(name);
     }
 
@@ -111,11 +124,15 @@ fn pipx_installed_main_packages() -> Result<BTreeMap<String, String>> {
     let output = Command::new("pipx")
         .args(["list", "--json"])
         .output()
-        .context("failed to run pipx list --json")?;
+        .with_context(|| format!("failed to run {} list --json", Manager::Pipx.as_str()))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("pipx list --json failed: {}", stderr.trim());
+        bail!(
+            "{} list --json failed: {}",
+            Manager::Pipx.as_str(),
+            stderr.trim()
+        );
     }
 
     let stdout = String::from_utf8(output.stdout).context("pipx list output not UTF-8")?;
@@ -234,28 +251,25 @@ fn parse_rfc3339_unix(raw: &str) -> Result<u64> {
 }
 
 fn run_pipx(args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("pipx")
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to run pipx {}", args.join(" ")))?;
+    let output = Command::new("pipx").args(args).output().with_context(|| {
+        format!(
+            "failed to run {} {}",
+            Manager::Pipx.as_str(),
+            args.join(" ")
+        )
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("pipx {} failed: {}", args.join(" "), stderr.trim());
+        bail!(
+            "{} {} failed: {}",
+            Manager::Pipx.as_str(),
+            args.join(" "),
+            stderr.trim()
+        );
     }
 
     Ok(output.stdout)
-}
-
-fn version_label(version: &str) -> String {
-    if version.starts_with('v') {
-        return version.to_string();
-    }
-
-    match version.chars().next() {
-        Some(c) if c.is_ascii_digit() => format!("v{version}"),
-        _ => version.to_string(),
-    }
 }
 
 fn human_age(total_secs: u64) -> String {

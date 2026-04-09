@@ -1,4 +1,6 @@
 use crate::Cli;
+use crate::manager::Manager;
+use crate::outcome::{ItemOutcome, emit_text_outcome};
 use anyhow::{Context, Result, bail};
 use semver::Version;
 use std::collections::{BTreeMap, HashSet};
@@ -28,35 +30,56 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
     let mut upgradable = Vec::new();
 
     for (name, entry) in &installed {
-        let from = version_label(&entry.version);
         let resolved = cargo_resolve_target_with_min_age(name, &entry.version, now, min_age)?;
 
         let Some(target) = resolved else {
-            println!(
-                "cargo: {name} {from} -> {from} (delayed, no eligible release >= current within 7d window, source: crates.io)"
+            let outcome = ItemOutcome::delayed_no_eligible(
+                Manager::Cargo,
+                name.clone(),
+                entry.version.clone(),
+                "crates.io",
+                format!("{}d", CARGO_MIN_AGE_DAYS),
             );
+            emit_text_outcome(&outcome);
             continue;
         };
 
         if target.version == entry.version {
+            let outcome = ItemOutcome::skipped_no_change(
+                Manager::Cargo,
+                name.clone(),
+                entry.version.clone(),
+                "crates.io",
+            );
+            emit_text_outcome(&outcome);
             continue;
         }
 
-        let to = version_label(&target.version);
-        if let (Some(age_secs), Some(skipped_ver)) = (
+        let outcome = if let (Some(age_secs), Some(skipped_ver)) = (
             target.skipped_latest_age_secs,
             target.skipped_latest_version.as_deref(),
         ) {
-            println!(
-                "cargo: {name} {from} -> {to} (source: crates.io; latest {} delayed: {} < {})",
-                version_label(skipped_ver),
+            ItemOutcome::update_with_delayed_latest(
+                Manager::Cargo,
+                name.clone(),
+                entry.version.clone(),
+                target.version.clone(),
+                "crates.io",
+                skipped_ver.to_string(),
                 human_age(age_secs),
-                human_age(min_age.as_secs())
-            );
+                human_age(min_age.as_secs()),
+            )
         } else {
-            println!("cargo: {name} {from} -> {to} (source: crates.io)");
-        }
+            ItemOutcome::update(
+                Manager::Cargo,
+                name.clone(),
+                entry.version.clone(),
+                target.version.clone(),
+                "crates.io",
+            )
+        };
 
+        emit_text_outcome(&outcome);
         upgradable.push((name.clone(), target.version));
     }
 
@@ -122,11 +145,20 @@ fn cargo_resolve_target_with_min_age(
     let output = Command::new("cargo")
         .args(["search", name, "--limit", "1"])
         .output()
-        .with_context(|| format!("failed to run cargo search {name} --limit 1"))?;
+        .with_context(|| {
+            format!(
+                "failed to run {} search {name} --limit 1",
+                Manager::Cargo.as_str()
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("cargo search {name} --limit 1 failed: {}", stderr.trim());
+        bail!(
+            "{} search {name} --limit 1 failed: {}",
+            Manager::Cargo.as_str(),
+            stderr.trim()
+        );
     }
 
     let stdout = String::from_utf8(output.stdout).context("cargo search output not UTF-8")?;
@@ -287,28 +319,25 @@ fn run_cargo(args: &[&str]) -> Result<Vec<u8>> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("cargo {} failed: {}", args.join(" "), stderr.trim());
+        bail!(
+            "{} {} failed: {}",
+            Manager::Cargo.as_str(),
+            args.join(" "),
+            stderr.trim()
+        );
     }
 
     Ok(output.stdout)
 }
 
 fn run_cargo_raw(args: &[&str]) -> Result<Output> {
-    Command::new("cargo")
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to run cargo {}", args.join(" ")))
-}
-
-fn version_label(version: &str) -> String {
-    if version.starts_with('v') {
-        return version.to_string();
-    }
-
-    match version.chars().next() {
-        Some(c) if c.is_ascii_digit() => format!("v{version}"),
-        _ => version.to_string(),
-    }
+    Command::new("cargo").args(args).output().with_context(|| {
+        format!(
+            "failed to run {} {}",
+            Manager::Cargo.as_str(),
+            args.join(" ")
+        )
+    })
 }
 
 fn human_age(total_secs: u64) -> String {

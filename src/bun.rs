@@ -1,4 +1,6 @@
 use crate::Cli;
+use crate::manager::Manager;
+use crate::outcome::{ItemOutcome, emit_text_outcome};
 use anyhow::{Context, Result, bail};
 use semver::Version;
 use std::collections::BTreeMap;
@@ -30,36 +32,57 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
     let global_cwd = bun_global_cwd()?;
 
     for (name, entry) in &outdated {
-        let from = version_label(&entry.current);
-
         let resolved =
             bun_resolve_target_with_min_age(&bun, &global_cwd, name, &entry.current, now, min_age)?;
 
         let Some(target) = resolved else {
-            println!(
-                "bun: {name} {from} -> {from} (delayed, no eligible release >= current within 7d window, source: bun)"
+            let outcome = ItemOutcome::delayed_no_eligible(
+                Manager::Bun,
+                name.clone(),
+                entry.current.clone(),
+                Manager::Bun.as_str(),
+                format!("{}d", BUN_MIN_AGE_DAYS),
             );
+            emit_text_outcome(&outcome);
             continue;
         };
 
         if target.version == entry.current {
+            let outcome = ItemOutcome::skipped_no_change(
+                Manager::Bun,
+                name.clone(),
+                entry.current.clone(),
+                Manager::Bun.as_str(),
+            );
+            emit_text_outcome(&outcome);
             continue;
         }
 
-        let to = version_label(&target.version);
-        if let (Some(age_secs), Some(skipped_ver)) = (
+        let outcome = if let (Some(age_secs), Some(skipped_ver)) = (
             target.skipped_latest_age_secs,
             target.skipped_latest_version.as_deref(),
         ) {
-            println!(
-                "bun: {name} {from} -> {to} (source: bun; latest {} delayed: {} < {})",
-                version_label(skipped_ver),
+            ItemOutcome::update_with_delayed_latest(
+                Manager::Bun,
+                name.clone(),
+                entry.current.clone(),
+                target.version,
+                Manager::Bun.as_str(),
+                skipped_ver.to_string(),
                 human_age(age_secs),
-                human_age(min_age.as_secs())
-            );
+                human_age(min_age.as_secs()),
+            )
         } else {
-            println!("bun: {name} {from} -> {to} (source: bun)");
-        }
+            ItemOutcome::update(
+                Manager::Bun,
+                name.clone(),
+                entry.current.clone(),
+                target.version,
+                Manager::Bun.as_str(),
+            )
+        };
+
+        emit_text_outcome(&outcome);
     }
 
     if cli.dry_run {
@@ -90,7 +113,7 @@ fn bun_outdated_global(bun: &str) -> Result<BTreeMap<String, OutdatedEntry>> {
         } else {
             stderr.trim()
         };
-        bail!("bun outdated -g failed: {err_text}");
+        bail!("{} outdated -g failed: {err_text}", Manager::Bun.as_str());
     }
 
     parse_bun_outdated_table(&stdout)
@@ -169,7 +192,11 @@ fn bun_resolve_target_with_min_age(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("bun pm view {name} time --json failed: {}", stderr.trim());
+        bail!(
+            "{} pm view {name} time --json failed: {}",
+            Manager::Bun.as_str(),
+            stderr.trim()
+        );
     }
 
     let stdout = String::from_utf8(output.stdout).context("bun pm view output not UTF-8")?;
@@ -277,11 +304,14 @@ fn bun_executable() -> String {
         return path;
     }
 
-    "bun".to_string()
+    Manager::Bun.as_str().to_string()
 }
 
 fn bun_from_mise() -> Option<String> {
-    let output = Command::new("mise").args(["which", "bun"]).output().ok()?;
+    let output = Command::new("mise")
+        .args(["which", Manager::Bun.as_str()])
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -299,7 +329,7 @@ fn run_bun_raw(bun: &str, args: &[&str]) -> Result<Output> {
     Command::new(bun)
         .args(args)
         .output()
-        .with_context(|| format!("failed to run bun {}", args.join(" ")))
+        .with_context(|| format!("failed to run {} {}", Manager::Bun.as_str(), args.join(" ")))
 }
 
 fn run_bun(bun: &str, args: &[&str]) -> Result<Vec<u8>> {
@@ -307,21 +337,15 @@ fn run_bun(bun: &str, args: &[&str]) -> Result<Vec<u8>> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("bun {} failed: {}", args.join(" "), stderr.trim());
+        bail!(
+            "{} {} failed: {}",
+            Manager::Bun.as_str(),
+            args.join(" "),
+            stderr.trim()
+        );
     }
 
     Ok(output.stdout)
-}
-
-fn version_label(version: &str) -> String {
-    if version.starts_with('v') {
-        return version.to_string();
-    }
-
-    match version.chars().next() {
-        Some(c) if c.is_ascii_digit() => format!("v{version}"),
-        _ => version.to_string(),
-    }
 }
 
 fn human_age(total_secs: u64) -> String {

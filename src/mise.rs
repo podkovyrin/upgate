@@ -1,4 +1,6 @@
 use crate::Cli;
+use crate::manager::Manager;
+use crate::outcome::{ItemOutcome, emit_text_outcome};
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::process::Command;
@@ -18,26 +20,32 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .as_secs();
 
     for item in &plan_pairs {
-        let from = version_label(&item.from_version);
-        let to = version_label(&item.to_version);
-
         if let Some(latest) = latest_map.get(&item.tool)
             && latest != &item.to_version
         {
             let age_secs = mise_latest_age_secs(&item.tool, latest, now)?;
-            println!(
-                "mise: {} {} -> {} (source: mise; latest {} delayed: {} < {})",
-                item.tool,
-                from,
-                to,
-                version_label(latest),
+            let outcome = ItemOutcome::update_with_delayed_latest(
+                Manager::Mise,
+                item.tool.clone(),
+                item.from_version.clone(),
+                item.to_version.clone(),
+                Manager::Mise.as_str(),
+                latest.clone(),
                 human_age(age_secs),
-                human_age(min_age.as_secs())
+                human_age(min_age.as_secs()),
             );
+            emit_text_outcome(&outcome);
             continue;
         }
 
-        println!("mise: {} {} -> {} (source: mise)", item.tool, from, to);
+        let outcome = ItemOutcome::update(
+            Manager::Mise,
+            item.tool.clone(),
+            item.from_version.clone(),
+            item.to_version.clone(),
+            Manager::Mise.as_str(),
+        );
+        emit_text_outcome(&outcome);
     }
 
     if cli.dry_run {
@@ -96,12 +104,18 @@ fn mise_upgrade_dry_run_with_before(before: &str) -> Result<Vec<String>> {
     let output = Command::new("mise")
         .args(["upgrade", "--dry-run", "--before", before])
         .output()
-        .with_context(|| format!("failed to run mise upgrade --dry-run --before {before}"))?;
+        .with_context(|| {
+            format!(
+                "failed to run {} upgrade --dry-run --before {before}",
+                Manager::Mise.as_str()
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!(
-            "mise upgrade --dry-run --before {before} failed: {}",
+            "{} upgrade --dry-run --before {before} failed: {}",
+            Manager::Mise.as_str(),
             stderr.trim()
         );
     }
@@ -119,11 +133,15 @@ fn mise_outdated_latest_map() -> Result<BTreeMap<String, String>> {
     let output = Command::new("mise")
         .args(["outdated", "--json"])
         .output()
-        .context("failed to run mise outdated --json")?;
+        .with_context(|| format!("failed to run {} outdated --json", Manager::Mise.as_str()))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("mise outdated --json failed: {}", stderr.trim());
+        bail!(
+            "{} outdated --json failed: {}",
+            Manager::Mise.as_str(),
+            stderr.trim()
+        );
     }
 
     let stdout = String::from_utf8(output.stdout).context("mise outdated output not UTF-8")?;
@@ -149,11 +167,20 @@ fn npm_latest_age_secs(tool: &str, latest: &str, now_unix_secs: u64) -> Result<u
     let output = Command::new("npm")
         .args(["view", &spec, "time", "--json"])
         .output()
-        .with_context(|| format!("failed to run npm view {spec} time --json"))?;
+        .with_context(|| {
+            format!(
+                "failed to run {} view {spec} time --json",
+                Manager::Npm.as_str()
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("npm view {spec} time --json failed: {}", stderr.trim());
+        bail!(
+            "{} view {spec} time --json failed: {}",
+            Manager::Npm.as_str(),
+            stderr.trim()
+        );
     }
 
     let stdout = String::from_utf8(output.stdout).context("npm view output not UTF-8")?;
@@ -191,14 +218,22 @@ fn parse_duration_days(raw: &str) -> Result<Duration> {
 }
 
 fn run_mise(args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("mise")
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to run mise {}", args.join(" ")))?;
+    let output = Command::new("mise").args(args).output().with_context(|| {
+        format!(
+            "failed to run {} {}",
+            Manager::Mise.as_str(),
+            args.join(" ")
+        )
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("mise {} failed: {}", args.join(" "), stderr.trim());
+        bail!(
+            "{} {} failed: {}",
+            Manager::Mise.as_str(),
+            args.join(" "),
+            stderr.trim()
+        );
     }
 
     Ok(output.stdout)
@@ -229,16 +264,5 @@ fn human_age(total_secs: u64) -> String {
         format!("{days}d")
     } else {
         format!("{days}d{hours}h")
-    }
-}
-
-fn version_label(version: &str) -> String {
-    if version.starts_with('v') {
-        return version.to_string();
-    }
-
-    match version.chars().next() {
-        Some(c) if c.is_ascii_digit() => format!("v{version}"),
-        _ => version.to_string(),
     }
 }

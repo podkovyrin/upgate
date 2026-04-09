@@ -1,28 +1,18 @@
 mod brew;
 mod bun;
 mod cargo;
+mod manager;
 mod mise;
 mod npm;
+mod outcome;
 mod pipx;
 mod pnpm;
 mod uv;
 mod yarn;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand, ValueEnum};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub(crate) enum Manager {
-    Brew,
-    Bun,
-    Cargo,
-    Npm,
-    Yarn,
-    Mise,
-    Pipx,
-    Pnpm,
-    Uv,
-}
+use clap::{Parser, Subcommand};
+use manager::Manager;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
 enum Command {

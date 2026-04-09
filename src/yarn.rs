@@ -1,4 +1,6 @@
 use crate::Cli;
+use crate::manager::Manager;
+use crate::outcome::{ItemOutcome, emit_text_outcome};
 use anyhow::{Context, Result, bail};
 use semver::Version;
 use std::collections::BTreeMap;
@@ -28,36 +30,56 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
     let mut upgradable = Vec::new();
 
     for (name, entry) in &installed {
-        let from = version_label(&entry.current);
-
         let resolved = yarn_resolve_target_with_min_age(name, &entry.current, now, min_age)?;
 
         let Some(target) = resolved else {
-            println!(
-                "yarn: {name} {from} -> {from} (delayed, no eligible release >= current within 7d window, source: yarn)"
+            let outcome = ItemOutcome::delayed_no_eligible(
+                Manager::Yarn,
+                name.clone(),
+                entry.current.clone(),
+                Manager::Yarn.as_str(),
+                format!("{}d", YARN_MIN_AGE_DAYS),
             );
+            emit_text_outcome(&outcome);
             continue;
         };
 
         if target.version == entry.current {
+            let outcome = ItemOutcome::skipped_no_change(
+                Manager::Yarn,
+                name.clone(),
+                entry.current.clone(),
+                Manager::Yarn.as_str(),
+            );
+            emit_text_outcome(&outcome);
             continue;
         }
 
-        let to = version_label(&target.version);
-        if let (Some(age_secs), Some(skipped_ver)) = (
+        let outcome = if let (Some(age_secs), Some(skipped_ver)) = (
             target.skipped_latest_age_secs,
             target.skipped_latest_version.as_deref(),
         ) {
-            println!(
-                "yarn: {name} {from} -> {to} (source: yarn; latest {} delayed: {} < {})",
-                version_label(skipped_ver),
+            ItemOutcome::update_with_delayed_latest(
+                Manager::Yarn,
+                name.clone(),
+                entry.current.clone(),
+                target.version.clone(),
+                Manager::Yarn.as_str(),
+                skipped_ver.to_string(),
                 human_age(age_secs),
-                human_age(min_age.as_secs())
-            );
+                human_age(min_age.as_secs()),
+            )
         } else {
-            println!("yarn: {name} {from} -> {to} (source: yarn)");
-        }
+            ItemOutcome::update(
+                Manager::Yarn,
+                name.clone(),
+                entry.current.clone(),
+                target.version.clone(),
+                Manager::Yarn.as_str(),
+            )
+        };
 
+        emit_text_outcome(&outcome);
         upgradable.push((name.clone(), target.version));
     }
 
@@ -240,28 +262,25 @@ fn parse_rfc3339_unix(raw: &str) -> Result<u64> {
 }
 
 fn run_yarn(args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("yarn")
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to run yarn {}", args.join(" ")))?;
+    let output = Command::new("yarn").args(args).output().with_context(|| {
+        format!(
+            "failed to run {} {}",
+            Manager::Yarn.as_str(),
+            args.join(" ")
+        )
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("yarn {} failed: {}", args.join(" "), stderr.trim());
+        bail!(
+            "{} {} failed: {}",
+            Manager::Yarn.as_str(),
+            args.join(" "),
+            stderr.trim()
+        );
     }
 
     Ok(output.stdout)
-}
-
-fn version_label(version: &str) -> String {
-    if version.starts_with('v') {
-        return version.to_string();
-    }
-
-    match version.chars().next() {
-        Some(c) if c.is_ascii_digit() => format!("v{version}"),
-        _ => version.to_string(),
-    }
 }
 
 fn human_age(total_secs: u64) -> String {

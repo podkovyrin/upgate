@@ -1,4 +1,8 @@
 use crate::Cli;
+use crate::manager::Manager;
+use crate::outcome::{
+    ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, REASON_PINNED, emit_text_outcome,
+};
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 use reqwest::blocking::Client;
@@ -312,45 +316,8 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
 
     for item in &plan {
-        let installed = version_label(&item.installed);
-        let target = version_label(&item.target);
-
-        match &item.action {
-            PlanAction::Upgrade { source } => {
-                println!(
-                    "brew: {} {} -> {} (source: {})",
-                    item.name,
-                    installed,
-                    target,
-                    source.as_str()
-                );
-            }
-            PlanAction::Delayed {
-                age,
-                required,
-                source,
-            } => {
-                println!(
-                    "brew: {} {} -> {} (delayed, {} < {}, source: {})",
-                    item.name,
-                    installed,
-                    target,
-                    age,
-                    required,
-                    source.as_str()
-                );
-            }
-            PlanAction::Skipped { reason, source } => {
-                println!(
-                    "brew: {} {} -> {} (skipped, {}, source: {})",
-                    item.name,
-                    installed,
-                    target,
-                    reason,
-                    source.as_str()
-                );
-            }
-        }
+        let outcome = item_to_outcome(item);
+        emit_text_outcome(&outcome);
     }
 
     if cli.dry_run {
@@ -512,6 +479,52 @@ fn phase_one_local_check(
                     is_formula: job.is_formula,
                 })
             }
+        }
+    }
+}
+
+fn item_to_outcome(item: &PlanItem) -> ItemOutcome {
+    match &item.action {
+        PlanAction::Upgrade { source } => ItemOutcome::update(
+            Manager::Brew,
+            item.name.clone(),
+            item.installed.clone(),
+            item.target.clone(),
+            source.as_str(),
+        ),
+        PlanAction::Delayed {
+            age,
+            required,
+            source,
+        } => ItemOutcome::delayed_too_fresh(
+            Manager::Brew,
+            item.name.clone(),
+            item.installed.clone(),
+            item.target.clone(),
+            source.as_str(),
+            age.clone(),
+            required.clone(),
+        ),
+        PlanAction::Skipped { reason, source } => {
+            let reason_code = if reason.starts_with("pinned") {
+                REASON_PINNED
+            } else if reason.contains("failed age check") {
+                // TODO(refactor-outcomes): convert this to per-item `error` status once
+                // non-fatal per-item errors are supported across managers.
+                REASON_COMMAND_FAILED
+            } else {
+                REASON_MISSING_METADATA
+            };
+
+            ItemOutcome::skipped(
+                Manager::Brew,
+                item.name.clone(),
+                item.installed.clone(),
+                item.target.clone(),
+                source.as_str(),
+                reason_code,
+                reason.clone(),
+            )
         }
     }
 }
@@ -719,10 +732,7 @@ fn brew_info_for_names(formula_names: &[String], cask_names: &[String]) -> Resul
 
 fn github_client() -> Result<Client> {
     let mut headers = HeaderMap::new();
-    headers.insert(
-        USER_AGENT,
-        HeaderValue::from_static("upnow/0.1"),
-    );
+    headers.insert(USER_AGENT, HeaderValue::from_static("upnow/0.1"));
     headers.insert(
         ACCEPT,
         HeaderValue::from_static("application/vnd.github+json"),
@@ -775,28 +785,44 @@ where
 }
 
 fn run_brew(args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("brew")
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to run brew {}", args.join(" ")))?;
+    let output = Command::new("brew").args(args).output().with_context(|| {
+        format!(
+            "failed to run {} {}",
+            Manager::Brew.as_str(),
+            args.join(" ")
+        )
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("brew {} failed: {}", args.join(" "), stderr.trim());
+        bail!(
+            "{} {} failed: {}",
+            Manager::Brew.as_str(),
+            args.join(" "),
+            stderr.trim()
+        );
     }
 
     Ok(output.stdout)
 }
 
 fn run_brew_owned(args: &[String]) -> Result<Vec<u8>> {
-    let output = Command::new("brew")
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to run brew {}", args.join(" ")))?;
+    let output = Command::new("brew").args(args).output().with_context(|| {
+        format!(
+            "failed to run {} {}",
+            Manager::Brew.as_str(),
+            args.join(" ")
+        )
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("brew {} failed: {}", args.join(" "), stderr.trim());
+        bail!(
+            "{} {} failed: {}",
+            Manager::Brew.as_str(),
+            args.join(" "),
+            stderr.trim()
+        );
     }
 
     Ok(output.stdout)
@@ -822,17 +848,6 @@ fn parse_duration(raw: &str) -> Result<Duration> {
     };
 
     Ok(Duration::from_secs(secs))
-}
-
-fn version_label(version: &str) -> String {
-    if version.starts_with('v') {
-        return version.to_string();
-    }
-
-    match version.chars().next() {
-        Some(c) if c.is_ascii_digit() => format!("v{version}"),
-        _ => version.to_string(),
-    }
 }
 
 fn human_age(total_secs: u64) -> String {

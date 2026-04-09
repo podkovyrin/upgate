@@ -1,4 +1,6 @@
 use crate::Cli;
+use crate::manager::Manager;
+use crate::outcome::{ItemOutcome, emit_text_outcome};
 use anyhow::{Context, Result, bail};
 use pep440::Version;
 use std::cmp::Ordering;
@@ -51,11 +53,14 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         let target = uv_resolve_target_with_exclude_newer(&tool)?;
 
         if pep440_compare(&target, &tool.current) == Some(Ordering::Less) {
-            let current = version_label(&tool.current);
-            println!(
-                "uv: {} {} -> {} (delayed, no eligible release >= current within 7d window, source: uv)",
-                tool.name, current, current
+            let outcome = ItemOutcome::delayed_no_eligible(
+                Manager::Uv,
+                tool.name,
+                tool.current,
+                Manager::Uv.as_str(),
+                format!("{}d", UV_DELAY_DAYS),
             );
+            emit_text_outcome(&outcome);
             continue;
         }
 
@@ -64,36 +69,52 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
                 pypi_release_age_secs(&mut pypi_cache, &tool.name, &tool.current, now)?
                 && age_secs < min_age.as_secs()
             {
-                let current = version_label(&tool.current);
-                println!(
-                    "uv: {} {} -> {} (delayed, no eligible release >= current within 7d window, source: uv)",
-                    tool.name, current, current
+                let outcome = ItemOutcome::delayed_no_eligible(
+                    Manager::Uv,
+                    tool.name,
+                    tool.current,
+                    Manager::Uv.as_str(),
+                    format!("{}d", UV_DELAY_DAYS),
                 );
+                emit_text_outcome(&outcome);
+            } else {
+                let outcome = ItemOutcome::skipped_no_change(
+                    Manager::Uv,
+                    tool.name,
+                    tool.current,
+                    Manager::Uv.as_str(),
+                );
+                emit_text_outcome(&outcome);
             }
             continue;
         }
 
-        let from = version_label(&tool.current);
-        let to = version_label(&target);
-
-        if let Some(latest) = outdated_latest.get(&tool.name)
+        let outcome = if let Some(latest) = outdated_latest.get(&tool.name)
             && latest != &target
         {
             let latest_age =
                 pypi_release_age_secs(&mut pypi_cache, &tool.name, latest, now)?.unwrap_or(0);
-            println!(
-                "uv: {} {} -> {} (source: uv; latest {} delayed: {} < {})",
-                tool.name,
-                from,
-                to,
-                version_label(latest),
+            ItemOutcome::update_with_delayed_latest(
+                Manager::Uv,
+                tool.name.clone(),
+                tool.current.clone(),
+                target.clone(),
+                Manager::Uv.as_str(),
+                latest.clone(),
                 human_age(latest_age),
-                human_age(min_age.as_secs())
-            );
+                human_age(min_age.as_secs()),
+            )
         } else {
-            println!("uv: {} {} -> {} (source: uv)", tool.name, from, to);
-        }
+            ItemOutcome::update(
+                Manager::Uv,
+                tool.name.clone(),
+                tool.current.clone(),
+                target.clone(),
+                Manager::Uv.as_str(),
+            )
+        };
 
+        emit_text_outcome(&outcome);
         upgradable_tools.push(tool.name);
     }
 
@@ -445,11 +466,16 @@ fn run_uv(args: &[&str]) -> Result<Vec<u8>> {
     let output = Command::new("uv")
         .args(args)
         .output()
-        .with_context(|| format!("failed to run uv {}", args.join(" ")))?;
+        .with_context(|| format!("failed to run {} {}", Manager::Uv.as_str(), args.join(" ")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("uv {} failed: {}", args.join(" "), stderr.trim());
+        bail!(
+            "{} {} failed: {}",
+            Manager::Uv.as_str(),
+            args.join(" "),
+            stderr.trim()
+        );
     }
 
     Ok(output.stdout)
@@ -459,11 +485,16 @@ fn run_uv_owned(args: &[String]) -> Result<Vec<u8>> {
     let output = Command::new("uv")
         .args(args)
         .output()
-        .with_context(|| format!("failed to run uv {}", args.join(" ")))?;
+        .with_context(|| format!("failed to run {} {}", Manager::Uv.as_str(), args.join(" ")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("uv {} failed: {}", args.join(" "), stderr.trim());
+        bail!(
+            "{} {} failed: {}",
+            Manager::Uv.as_str(),
+            args.join(" "),
+            stderr.trim()
+        );
     }
 
     Ok(output.stdout)
@@ -473,25 +504,19 @@ fn run_uv_owned_with_stderr(args: &[String]) -> Result<(Vec<u8>, Vec<u8>)> {
     let output = Command::new("uv")
         .args(args)
         .output()
-        .with_context(|| format!("failed to run uv {}", args.join(" ")))?;
+        .with_context(|| format!("failed to run {} {}", Manager::Uv.as_str(), args.join(" ")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("uv {} failed: {}", args.join(" "), stderr.trim());
+        bail!(
+            "{} {} failed: {}",
+            Manager::Uv.as_str(),
+            args.join(" "),
+            stderr.trim()
+        );
     }
 
     Ok((output.stdout, output.stderr))
-}
-
-fn version_label(version: &str) -> String {
-    if version.starts_with('v') {
-        return version.to_string();
-    }
-
-    match version.chars().next() {
-        Some(c) if c.is_ascii_digit() => format!("v{version}"),
-        _ => version.to_string(),
-    }
 }
 
 fn human_age(total_secs: u64) -> String {
