@@ -1,0 +1,9 @@
+pub(crate) mod brew;
+pub(crate) mod bun;
+pub(crate) mod cargo;
+pub(crate) mod mise;
+pub(crate) mod npm;
+pub(crate) mod pipx;
+pub(crate) mod pnpm;
+pub(crate) mod uv;
+pub(crate) mod yarn;

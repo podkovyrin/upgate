@@ -1,18 +1,10 @@
-mod brew;
-mod bun;
-mod cargo;
 mod durationparse;
 mod manager;
-mod mise;
-mod npm;
+mod managers;
 mod outcome;
-mod pipx;
-mod pnpm;
 mod process;
 mod timefmt;
 mod timeparse;
-mod uv;
-mod yarn;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -80,39 +72,39 @@ fn main() {
 
 fn run_selected_managers(cli: &Cli) -> Result<()> {
     if cli.managers.contains(&Manager::Brew) {
-        brew::run(cli)?;
+        managers::brew::run(cli)?;
     }
 
     if cli.managers.contains(&Manager::Bun) {
-        bun::run(cli)?;
+        managers::bun::run(cli)?;
     }
 
     if cli.managers.contains(&Manager::Cargo) {
-        cargo::run(cli)?;
+        managers::cargo::run(cli)?;
     }
 
     if cli.managers.contains(&Manager::Npm) {
-        npm::run(cli)?;
+        managers::npm::run(cli)?;
     }
 
     if cli.managers.contains(&Manager::Yarn) {
-        yarn::run(cli)?;
+        managers::yarn::run(cli)?;
     }
 
     if cli.managers.contains(&Manager::Mise) {
-        mise::run(cli)?;
+        managers::mise::run(cli)?;
     }
 
     if cli.managers.contains(&Manager::Pipx) {
-        pipx::run(cli)?;
+        managers::pipx::run(cli)?;
     }
 
     if cli.managers.contains(&Manager::Pnpm) {
-        pnpm::run(cli)?;
+        managers::pnpm::run(cli)?;
     }
 
     if cli.managers.contains(&Manager::Uv) {
-        uv::run(cli)?;
+        managers::uv::run(cli)?;
     }
 
     Ok(())
