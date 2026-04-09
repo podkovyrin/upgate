@@ -1,4 +1,5 @@
 use crate::Cli;
+use crate::durationparse::parse_duration;
 use crate::manager::Manager;
 use crate::outcome::{
     ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, REASON_PINNED, emit_text_outcome,
@@ -806,53 +807,9 @@ fn run_brew_owned(args: &[String]) -> Result<Vec<u8>> {
     run_command_checked_stdout(command)
 }
 
-fn parse_duration(raw: &str) -> Result<Duration> {
-    let trimmed = raw.trim();
-    if trimmed.len() < 2 {
-        bail!("invalid duration '{raw}', expected values like 12h or 7d");
-    }
-
-    let (number, unit) = trimmed.split_at(trimmed.len() - 1);
-    let value = number
-        .parse::<u64>()
-        .with_context(|| format!("invalid duration number in '{raw}'"))?;
-
-    let secs = match unit {
-        "s" => value,
-        "m" => value.saturating_mul(60),
-        "h" => value.saturating_mul(60 * 60),
-        "d" => value.saturating_mul(24 * 60 * 60),
-        _ => bail!("invalid duration unit '{unit}', expected one of: s, m, h, d"),
-    };
-
-    Ok(Duration::from_secs(secs))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_duration_hours() {
-        let d = parse_duration("12h").expect("duration should parse");
-        assert_eq!(d.as_secs(), 12 * 3600);
-    }
-
-    #[test]
-    fn parse_duration_days() {
-        let d = parse_duration("7d").expect("duration should parse");
-        assert_eq!(d.as_secs(), 7 * 24 * 3600);
-    }
-
-    #[test]
-    fn human_age_format() {
-        assert_eq!(human_age(59), "59s");
-        assert_eq!(human_age(61), "1m");
-        assert_eq!(human_age(3600), "1h");
-        assert_eq!(human_age(3660), "1h1m");
-        assert_eq!(human_age(24 * 3600), "1d");
-        assert_eq!(human_age(25 * 3600), "1d1h");
-    }
 
     #[test]
     fn parse_github_https_remote() {

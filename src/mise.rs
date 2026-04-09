@@ -1,4 +1,5 @@
 use crate::Cli;
+use crate::durationparse::parse_duration;
 use crate::manager::Manager;
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::process::run_command_checked_stdout;
@@ -7,7 +8,7 @@ use crate::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MISE_DELAY: &str = "7d";
 
@@ -31,7 +32,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         }
     };
 
-    let min_age = parse_duration_days(MISE_DELAY)?;
+    let min_age = parse_duration(MISE_DELAY)?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("system clock before UNIX_EPOCH")?
@@ -241,18 +242,6 @@ fn npm_latest_age_secs(tool: &str, latest: &str, now_unix_secs: u64) -> Result<u
         .with_context(|| format!("invalid RFC3339 timestamp for {spec}: {ts_raw}"))?;
 
     Ok(now_unix_secs.saturating_sub(ts))
-}
-
-fn parse_duration_days(raw: &str) -> Result<Duration> {
-    let trimmed = raw.trim();
-    if let Some(days) = trimmed.strip_suffix('d') {
-        let d = days
-            .parse::<u64>()
-            .with_context(|| format!("invalid day value in '{raw}'"))?;
-        return Ok(Duration::from_secs(d * 24 * 60 * 60));
-    }
-
-    bail!("unsupported delay format '{raw}', expected e.g. 7d")
 }
 
 fn run_mise(args: &[&str]) -> Result<Vec<u8>> {

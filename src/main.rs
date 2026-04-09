@@ -1,6 +1,7 @@
 mod brew;
 mod bun;
 mod cargo;
+mod durationparse;
 mod manager;
 mod mise;
 mod npm;
