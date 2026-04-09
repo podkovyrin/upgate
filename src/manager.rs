@@ -14,6 +14,20 @@ pub(crate) enum Manager {
 }
 
 impl Manager {
+    pub(crate) fn default_managers() -> Vec<Self> {
+        vec![
+            Self::Brew,
+            Self::Bun,
+            Self::Cargo,
+            Self::Npm,
+            Self::Yarn,
+            Self::Mise,
+            Self::Pipx,
+            Self::Pnpm,
+            Self::Uv,
+        ]
+    }
+
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Brew => "brew",

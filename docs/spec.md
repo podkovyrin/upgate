@@ -40,7 +40,7 @@ Global options:
 - `--managers <list>` where list is comma-separated values from:
   - `brew`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `bun`, `cargo`, `uv`
 
-Default manager set: `brew`.
+Default manager set: all managers (`brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`).
 
 Behavior notes:
 - `plan` forces effective dry-run mode.

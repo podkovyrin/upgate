@@ -46,7 +46,7 @@ pub(crate) struct Cli {
         long,
         value_enum,
         value_delimiter = ',',
-        default_values_t = [Manager::Brew],
+        default_values_t = Manager::default_managers(),
         global = true
     )]
     pub(crate) managers: Vec<Manager>,
