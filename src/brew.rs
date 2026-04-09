@@ -3,6 +3,7 @@ use crate::manager::Manager;
 use crate::outcome::{
     ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, REASON_PINNED, emit_text_outcome,
 };
+use crate::process::run_command_checked_stdout;
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 use reqwest::blocking::Client;
@@ -785,47 +786,15 @@ where
 }
 
 fn run_brew(args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("brew").args(args).output().with_context(|| {
-        format!(
-            "failed to run {} {}",
-            Manager::Brew.as_str(),
-            args.join(" ")
-        )
-    })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} {} failed: {}",
-            Manager::Brew.as_str(),
-            args.join(" "),
-            stderr.trim()
-        );
-    }
-
-    Ok(output.stdout)
+    let mut command = Command::new("brew");
+    command.args(args);
+    run_command_checked_stdout(command)
 }
 
 fn run_brew_owned(args: &[String]) -> Result<Vec<u8>> {
-    let output = Command::new("brew").args(args).output().with_context(|| {
-        format!(
-            "failed to run {} {}",
-            Manager::Brew.as_str(),
-            args.join(" ")
-        )
-    })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} {} failed: {}",
-            Manager::Brew.as_str(),
-            args.join(" "),
-            stderr.trim()
-        );
-    }
-
-    Ok(output.stdout)
+    let mut command = Command::new("brew");
+    command.args(args);
+    run_command_checked_stdout(command)
 }
 
 fn parse_duration(raw: &str) -> Result<Duration> {

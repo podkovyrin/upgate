@@ -1,6 +1,7 @@
 use crate::Cli;
 use crate::manager::Manager;
 use crate::outcome::{ItemOutcome, emit_text_outcome};
+use crate::process::{run_command, run_command_checked_stdout};
 use anyhow::{Context, Result, bail};
 use semver::Version;
 use std::collections::BTreeMap;
@@ -326,26 +327,15 @@ fn bun_from_mise() -> Option<String> {
 }
 
 fn run_bun_raw(bun: &str, args: &[&str]) -> Result<Output> {
-    Command::new(bun)
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to run {} {}", Manager::Bun.as_str(), args.join(" ")))
+    let mut command = Command::new(bun);
+    command.args(args);
+    run_command(command)
 }
 
 fn run_bun(bun: &str, args: &[&str]) -> Result<Vec<u8>> {
-    let output = run_bun_raw(bun, args)?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} {} failed: {}",
-            Manager::Bun.as_str(),
-            args.join(" "),
-            stderr.trim()
-        );
-    }
-
-    Ok(output.stdout)
+    let mut command = Command::new(bun);
+    command.args(args);
+    run_command_checked_stdout(command)
 }
 
 fn human_age(total_secs: u64) -> String {

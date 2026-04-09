@@ -1,6 +1,7 @@
 use crate::Cli;
 use crate::manager::Manager;
 use crate::outcome::{ItemOutcome, emit_text_outcome};
+use crate::process::{run_command_checked, run_command_checked_stdout};
 use anyhow::{Context, Result, bail};
 use pep440::Version;
 use std::cmp::Ordering;
@@ -463,59 +464,21 @@ fn uv_tool_python_path(tool_dir: &str, tool_name: &str) -> String {
 }
 
 fn run_uv(args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("uv")
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to run {} {}", Manager::Uv.as_str(), args.join(" ")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} {} failed: {}",
-            Manager::Uv.as_str(),
-            args.join(" "),
-            stderr.trim()
-        );
-    }
-
-    Ok(output.stdout)
+    let mut command = Command::new("uv");
+    command.args(args);
+    run_command_checked_stdout(command)
 }
 
 fn run_uv_owned(args: &[String]) -> Result<Vec<u8>> {
-    let output = Command::new("uv")
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to run {} {}", Manager::Uv.as_str(), args.join(" ")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} {} failed: {}",
-            Manager::Uv.as_str(),
-            args.join(" "),
-            stderr.trim()
-        );
-    }
-
-    Ok(output.stdout)
+    let mut command = Command::new("uv");
+    command.args(args);
+    run_command_checked_stdout(command)
 }
 
 fn run_uv_owned_with_stderr(args: &[String]) -> Result<(Vec<u8>, Vec<u8>)> {
-    let output = Command::new("uv")
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to run {} {}", Manager::Uv.as_str(), args.join(" ")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} {} failed: {}",
-            Manager::Uv.as_str(),
-            args.join(" "),
-            stderr.trim()
-        );
-    }
-
+    let mut command = Command::new("uv");
+    command.args(args);
+    let output = run_command_checked(command)?;
     Ok((output.stdout, output.stderr))
 }
 

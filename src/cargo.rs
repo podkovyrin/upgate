@@ -1,10 +1,11 @@
 use crate::Cli;
 use crate::manager::Manager;
 use crate::outcome::{ItemOutcome, emit_text_outcome};
+use crate::process::run_command_checked_stdout;
 use anyhow::{Context, Result, bail};
 use semver::Version;
 use std::collections::{BTreeMap, HashSet};
-use std::process::{Command, Output};
+use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const CARGO_MIN_AGE_DAYS: u64 = 7;
@@ -315,29 +316,9 @@ fn parse_rfc3339_unix(raw: &str) -> Result<u64> {
 }
 
 fn run_cargo(args: &[&str]) -> Result<Vec<u8>> {
-    let output = run_cargo_raw(args)?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} {} failed: {}",
-            Manager::Cargo.as_str(),
-            args.join(" "),
-            stderr.trim()
-        );
-    }
-
-    Ok(output.stdout)
-}
-
-fn run_cargo_raw(args: &[&str]) -> Result<Output> {
-    Command::new("cargo").args(args).output().with_context(|| {
-        format!(
-            "failed to run {} {}",
-            Manager::Cargo.as_str(),
-            args.join(" ")
-        )
-    })
+    let mut command = Command::new("cargo");
+    command.args(args);
+    run_command_checked_stdout(command)
 }
 
 fn human_age(total_secs: u64) -> String {

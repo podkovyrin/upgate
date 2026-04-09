@@ -7,6 +7,7 @@ mod npm;
 mod outcome;
 mod pipx;
 mod pnpm;
+mod process;
 mod uv;
 mod yarn;
 

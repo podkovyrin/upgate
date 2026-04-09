@@ -1,6 +1,7 @@
 use crate::Cli;
 use crate::manager::Manager;
 use crate::outcome::{ItemOutcome, emit_text_outcome};
+use crate::process::run_command_checked_stdout;
 use anyhow::{Context, Result, bail};
 use semver::Version;
 use serde::Deserialize;
@@ -310,25 +311,9 @@ fn parse_rfc3339_unix(raw: &str) -> Result<u64> {
 }
 
 fn run_pnpm(args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("pnpm").args(args).output().with_context(|| {
-        format!(
-            "failed to run {} {}",
-            Manager::Pnpm.as_str(),
-            args.join(" ")
-        )
-    })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} {} failed: {}",
-            Manager::Pnpm.as_str(),
-            args.join(" "),
-            stderr.trim()
-        );
-    }
-
-    Ok(output.stdout)
+    let mut command = Command::new("pnpm");
+    command.args(args);
+    run_command_checked_stdout(command)
 }
 
 fn human_age(total_secs: u64) -> String {
