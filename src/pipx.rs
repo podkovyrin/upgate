@@ -1,6 +1,6 @@
 use crate::Cli;
 use crate::manager::Manager;
-use crate::outcome::{ItemOutcome, emit_text_outcome};
+use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::process::run_command_checked_stdout;
 use anyhow::{Context, Result, bail};
 use pep440::Version;
@@ -64,10 +64,25 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .context("system clock before UNIX_EPOCH")?
         .as_secs();
 
-    let mut upgradable = Vec::new();
+    let mut upgradable: Vec<(String, String, String)> = Vec::new();
 
     for (name, current) in installed {
-        let resolved = pypi_resolve_target_with_min_age(&name, &current, now, min_age)?;
+        let resolved = match pypi_resolve_target_with_min_age(&name, &current, now, min_age) {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                let outcome = ItemOutcome::error(
+                    Manager::Pipx,
+                    name.clone(),
+                    current.clone(),
+                    current.clone(),
+                    "pypi",
+                    REASON_COMMAND_FAILED,
+                    err.to_string(),
+                );
+                emit_text_outcome(&outcome);
+                continue;
+            }
+        };
 
         let Some(target) = resolved else {
             let outcome = ItemOutcome::delayed_no_eligible(
@@ -88,6 +103,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
             continue;
         }
 
+        let target_version = target.version;
         let outcome = if let (Some(age_secs), Some(skipped_ver)) = (
             target.skipped_latest_age_secs,
             target.skipped_latest_version.as_deref(),
@@ -95,27 +111,44 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
             ItemOutcome::update_with_delayed_latest(
                 Manager::Pipx,
                 name.clone(),
-                current,
-                target.version,
+                current.clone(),
+                target_version.clone(),
                 "pypi",
                 skipped_ver.to_string(),
                 human_age(age_secs),
                 human_age(min_age.as_secs()),
             )
         } else {
-            ItemOutcome::update(Manager::Pipx, name.clone(), current, target.version, "pypi")
+            ItemOutcome::update(
+                Manager::Pipx,
+                name.clone(),
+                current.clone(),
+                target_version.clone(),
+                "pypi",
+            )
         };
 
         emit_text_outcome(&outcome);
-        upgradable.push(name);
+        upgradable.push((name, current, target_version));
     }
 
     if cli.dry_run {
         return Ok(());
     }
 
-    for pkg in upgradable {
-        run_pipx(&["upgrade", &pkg])?;
+    for (pkg, current, target) in upgradable {
+        if let Err(err) = run_pipx(&["upgrade", &pkg]) {
+            let outcome = ItemOutcome::error(
+                Manager::Pipx,
+                pkg,
+                current,
+                target,
+                "pypi",
+                REASON_COMMAND_FAILED,
+                err.to_string(),
+            );
+            emit_text_outcome(&outcome);
+        }
     }
 
     Ok(())

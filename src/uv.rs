@@ -1,6 +1,6 @@
 use crate::Cli;
 use crate::manager::Manager;
-use crate::outcome::{ItemOutcome, emit_text_outcome};
+use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::process::{run_command_checked, run_command_checked_stdout};
 use anyhow::{Context, Result, bail};
 use pep440::Version;
@@ -47,11 +47,26 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .context("system clock before UNIX_EPOCH")?
         .as_secs();
 
-    let mut upgradable_tools = Vec::new();
+    let mut upgradable_tools: Vec<(String, String, String)> = Vec::new();
     let mut pypi_cache: HashMap<String, PypiRoot> = HashMap::new();
 
     for tool in installed {
-        let target = uv_resolve_target_with_exclude_newer(&tool)?;
+        let target = match uv_resolve_target_with_exclude_newer(&tool) {
+            Ok(target) => target,
+            Err(err) => {
+                let outcome = ItemOutcome::error(
+                    Manager::Uv,
+                    tool.name,
+                    tool.current.clone(),
+                    tool.current,
+                    Manager::Uv.as_str(),
+                    REASON_COMMAND_FAILED,
+                    err.to_string(),
+                );
+                emit_text_outcome(&outcome);
+                continue;
+            }
+        };
 
         if pep440_compare(&target, &tool.current) == Some(Ordering::Less) {
             let outcome = ItemOutcome::delayed_no_eligible(
@@ -116,7 +131,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         };
 
         emit_text_outcome(&outcome);
-        upgradable_tools.push(tool.name);
+        upgradable_tools.push((tool.name, tool.current, target));
     }
 
     if cli.dry_run {
@@ -127,16 +142,28 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    for tool in upgradable_tools {
+    for (tool, current, target) in upgradable_tools {
         let args = vec![
             "tool".to_string(),
             "install".to_string(),
             "--upgrade".to_string(),
             "--exclude-newer".to_string(),
             UV_DELAY.to_string(),
-            tool,
+            tool.clone(),
         ];
-        run_uv_owned(&args)?;
+
+        if let Err(err) = run_uv_owned(&args) {
+            let outcome = ItemOutcome::error(
+                Manager::Uv,
+                tool,
+                current,
+                target,
+                Manager::Uv.as_str(),
+                REASON_COMMAND_FAILED,
+                err.to_string(),
+            );
+            emit_text_outcome(&outcome);
+        }
     }
 
     Ok(())

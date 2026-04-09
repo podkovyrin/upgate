@@ -1,6 +1,6 @@
 use crate::Cli;
 use crate::manager::Manager;
-use crate::outcome::{ItemOutcome, emit_text_outcome};
+use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::process::run_command_checked_stdout;
 use anyhow::{Context, Result, bail};
 use semver::Version;
@@ -29,10 +29,25 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .context("system clock before UNIX_EPOCH")?
         .as_secs();
 
-    let mut upgradable = Vec::new();
+    let mut upgradable: Vec<(String, String, String)> = Vec::new();
 
     for (name, entry) in &outdated {
-        let resolved = pnpm_resolve_target_with_min_age(name, &entry.current, now, min_age)?;
+        let resolved = match pnpm_resolve_target_with_min_age(name, &entry.current, now, min_age) {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                let outcome = ItemOutcome::error(
+                    Manager::Pnpm,
+                    name.clone(),
+                    entry.current.clone(),
+                    entry.current.clone(),
+                    Manager::Pnpm.as_str(),
+                    REASON_COMMAND_FAILED,
+                    err.to_string(),
+                );
+                emit_text_outcome(&outcome);
+                continue;
+            }
+        };
 
         let Some(target) = resolved else {
             let outcome = ItemOutcome::delayed_no_eligible(
@@ -82,16 +97,27 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         };
 
         emit_text_outcome(&outcome);
-        upgradable.push((name.clone(), target.version));
+        upgradable.push((name.clone(), entry.current.clone(), target.version));
     }
 
     if cli.dry_run {
         return Ok(());
     }
 
-    for (name, version) in upgradable {
+    for (name, current, version) in upgradable {
         let spec = format!("{name}@{version}");
-        run_pnpm(&["add", "-g", &spec])?;
+        if let Err(err) = run_pnpm(&["add", "-g", &spec]) {
+            let outcome = ItemOutcome::error(
+                Manager::Pnpm,
+                name,
+                current,
+                version,
+                Manager::Pnpm.as_str(),
+                REASON_COMMAND_FAILED,
+                err.to_string(),
+            );
+            emit_text_outcome(&outcome);
+        }
     }
 
     Ok(())

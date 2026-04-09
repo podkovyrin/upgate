@@ -1,6 +1,6 @@
 use crate::Cli;
 use crate::manager::Manager;
-use crate::outcome::{ItemOutcome, emit_text_outcome};
+use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::process::{run_command, run_command_checked_stdout};
 use anyhow::{Context, Result, bail};
 use semver::Version;
@@ -33,8 +33,29 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
     let global_cwd = bun_global_cwd()?;
 
     for (name, entry) in &outdated {
-        let resolved =
-            bun_resolve_target_with_min_age(&bun, &global_cwd, name, &entry.current, now, min_age)?;
+        let resolved = match bun_resolve_target_with_min_age(
+            &bun,
+            &global_cwd,
+            name,
+            &entry.current,
+            now,
+            min_age,
+        ) {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                let outcome = ItemOutcome::error(
+                    Manager::Bun,
+                    name.clone(),
+                    entry.current.clone(),
+                    entry.current.clone(),
+                    Manager::Bun.as_str(),
+                    REASON_COMMAND_FAILED,
+                    err.to_string(),
+                );
+                emit_text_outcome(&outcome);
+                continue;
+            }
+        };
 
         let Some(target) = resolved else {
             let outcome = ItemOutcome::delayed_no_eligible(
@@ -90,10 +111,21 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    run_bun(
+    if let Err(err) = run_bun(
         &bun,
         &["update", "-g", "--minimum-release-age", BUN_MIN_AGE_SECS],
-    )?;
+    ) {
+        let outcome = ItemOutcome::error(
+            Manager::Bun,
+            "*",
+            "*",
+            "*",
+            Manager::Bun.as_str(),
+            REASON_COMMAND_FAILED,
+            err.to_string(),
+        );
+        emit_text_outcome(&outcome);
+    }
 
     Ok(())
 }
