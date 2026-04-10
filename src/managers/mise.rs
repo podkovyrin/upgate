@@ -6,11 +6,17 @@ use crate::util::process::run_command_checked_stdout;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
+use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MISE_DELAY: &str = "7d";
+const MISE_NPM_AGE_MAX_PARALLEL_CHECKS: usize = 4;
+
+struct MiseLatestAgeResult {
+    age_secs: Result<u64, String>,
+}
 
 pub(crate) fn run(cli: &Cli) -> Result<()> {
     let planned = mise_upgrade_dry_run_with_before(MISE_DELAY)?;
@@ -38,25 +44,67 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .context("system clock before UNIX_EPOCH")?
         .as_secs();
 
-    for item in &plan_pairs {
+    let mut age_jobs: Vec<(usize, String, String)> = Vec::new();
+    for (idx, item) in plan_pairs.iter().enumerate() {
+        if let Some(latest) = latest_map.get(&item.tool)
+            && latest != &item.to_version
+            && item.tool.starts_with("npm:")
+        {
+            age_jobs.push((idx, item.tool.clone(), latest.clone()));
+        }
+    }
+
+    let effective_parallelism = cli
+        .max_parallel_checks
+        .clamp(1, MISE_NPM_AGE_MAX_PARALLEL_CHECKS);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(effective_parallelism)
+        .build()
+        .context("failed to build mise npm-age planning thread pool")?;
+
+    let age_results_indexed: Vec<(usize, MiseLatestAgeResult)> = pool.install(|| {
+        age_jobs
+            .into_par_iter()
+            .map(|(idx, tool, latest)| {
+                let age_secs =
+                    npm_latest_age_secs(&tool, &latest, now).map_err(|err| err.to_string());
+                (idx, MiseLatestAgeResult { age_secs })
+            })
+            .collect()
+    });
+
+    let mut age_by_index: BTreeMap<usize, MiseLatestAgeResult> = BTreeMap::new();
+    for (idx, age_result) in age_results_indexed {
+        age_by_index.insert(idx, age_result);
+    }
+
+    for (idx, item) in plan_pairs.iter().enumerate() {
         if let Some(latest) = latest_map.get(&item.tool)
             && latest != &item.to_version
         {
-            let age_secs = match mise_latest_age_secs(&item.tool, latest, now) {
-                Ok(age_secs) => age_secs,
-                Err(err) => {
-                    let outcome = ItemOutcome::error(
-                        Manager::Mise,
-                        item.tool.clone(),
-                        item.from_version.clone(),
-                        item.to_version.clone(),
-                        Manager::Mise.as_str(),
-                        REASON_COMMAND_FAILED,
-                        err.to_string(),
-                    );
-                    emit_text_outcome(&outcome);
-                    continue;
+            let age_secs = if item.tool.starts_with("npm:") {
+                if let Some(age_result) = age_by_index.remove(&idx) {
+                    match age_result.age_secs {
+                        Ok(age_secs) => age_secs,
+                        Err(err) => {
+                            let outcome = ItemOutcome::error(
+                                Manager::Mise,
+                                item.tool.clone(),
+                                item.from_version.clone(),
+                                item.to_version.clone(),
+                                Manager::Mise.as_str(),
+                                REASON_COMMAND_FAILED,
+                                err,
+                            );
+                            emit_text_outcome(&outcome);
+                            continue;
+                        }
+                    }
+                } else {
+                    0
                 }
+            } else {
+                0
             };
 
             let outcome = ItemOutcome::update_with_delayed_latest(
@@ -195,16 +243,6 @@ fn mise_outdated_latest_map() -> Result<BTreeMap<String, String>> {
         serde_json::from_str(&stdout).context("failed to parse mise outdated JSON")?;
 
     Ok(parsed.into_iter().map(|(k, v)| (k, v.latest)).collect())
-}
-
-fn mise_latest_age_secs(tool: &str, latest: &str, now_unix_secs: u64) -> Result<u64> {
-    if tool.starts_with("npm:") {
-        return npm_latest_age_secs(tool, latest, now_unix_secs);
-    }
-
-    // For non-npm mise tools we currently cannot reliably query upstream release timestamps
-    // in a generic way. Return 0 so message still reflects delayed status.
-    Ok(0)
 }
 
 fn npm_latest_age_secs(tool: &str, latest: &str, now_unix_secs: u64) -> Result<u64> {
