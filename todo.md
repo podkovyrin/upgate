@@ -13,7 +13,7 @@
 ## P1 (medium priority)
 - [ ] Mac App Store CLI (`mas`)
 - [x] Yarn global (classic `yarn global`)
-- [ ] dotnet global tools (`dotnet tool update --global`)
+- [x] dotnet global tools (`dotnet tool update --global`)
 - [x] RubyGems global (`gem update`)
 - [x] Go-installed CLIs (`go install` workflow)
 - [ ] Nix profile packages (`nix profile`)

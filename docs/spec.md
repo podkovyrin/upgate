@@ -22,6 +22,7 @@ This file is the manager-spec source of truth for current behavior.
 - `src/managers/uv.rs`
 - `src/managers/go.rs`
 - `src/managers/gem.rs`
+- `src/managers/dotnet.rs`
 - `src/outcome.rs`
 - `src/util/process.rs`
 - `src/util/timefmt.rs`
@@ -50,15 +51,15 @@ Configuration file:
 - Brew-only `no_update` is configured under `[brew].no_update` (default `false`).
 - CLI `--set`/`-S` overrides have higher precedence than file config.
 
-Default manager set: all registered managers (`brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`, `gem`) with default modes:
+Default manager set: all registered managers (`brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`, `gem`, `dotnet`) with default modes:
 - `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`: `apply`
-- `gem`: `off`
+- `gem`, `dotnet`: `off`
 
 Behavior notes:
 - `plan` is non-mutating.
 - `apply` performs updates.
 - Selected managers run in a fixed internal order:
-  `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`, `gem`.
+  `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`, `gem`, `dotnet`.
 - Manager execution is gated by per-manager `mode`:
   - `off`: skip always
   - `plan`: run only in `plan`
@@ -410,4 +411,30 @@ Apply flow:
 
 Concurrency:
 - Planning per-gem target resolution is parallelized.
+- Pool size: `clamp(1, --max-parallel-checks, 4)`.
+
+### dotnet (`src/managers/dotnet.rs`)
+
+Execution mode:
+- Default mode is `off`.
+
+Delay policy:
+- Uses config `[dotnet].min_release_age` (default `7d`).
+
+Planning semantics:
+- Scope is global .NET tools from `dotnet tool list --global --format json`.
+- Target is highest eligible NuGet release (`age >= min_release_age`) with constraint `target >= current`.
+
+Planning flow:
+1. `dotnet tool list --global --format json`.
+2. Per tool: query NuGet registration index/pages (`registration5-gz-semver2`, fallback `registration5-semver1`).
+3. Parse catalog versions and `published` timestamps.
+4. Select semver-max eligible target.
+
+Apply flow:
+- Per eligible tool: `dotnet tool update --global <name> --version <target> --allow-downgrade`.
+- Per-tool apply failures emit `error` and continue.
+
+Concurrency:
+- Planning per-tool target resolution is parallelized.
 - Pool size: `clamp(1, --max-parallel-checks, 4)`.

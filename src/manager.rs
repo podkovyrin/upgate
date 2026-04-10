@@ -40,7 +40,7 @@ pub(crate) trait ManagerPlugin: Sync {
 }
 
 pub(crate) fn all_plugins() -> &'static [&'static dyn ManagerPlugin] {
-    static ALL: [&dyn ManagerPlugin; 11] = [
+    static ALL: [&dyn ManagerPlugin; 12] = [
         &managers::brew::PLUGIN,
         &managers::bun::PLUGIN,
         &managers::cargo::PLUGIN,
@@ -52,6 +52,7 @@ pub(crate) fn all_plugins() -> &'static [&'static dyn ManagerPlugin] {
         &managers::uv::PLUGIN,
         &managers::go::PLUGIN,
         &managers::gem::PLUGIN,
+        &managers::dotnet::PLUGIN,
     ];
 
     &ALL
