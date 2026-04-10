@@ -14,7 +14,7 @@ This file documents implementation-level guidance and rationale.
 
 - `plan` is advisory.
 - `apply` may differ slightly from `plan` when manager-native commands resolve targets at execution time.
-  - Example: `npm -g update --min-release-age 7` can shift due to time drift.
+  - Example: `npm -g update --min-release-age <days-from-config>` can shift due to time drift.
 - Strict decision-time freeze is intentionally not implemented.
 
 ## 3) Lightweight structured outcomes (implemented)

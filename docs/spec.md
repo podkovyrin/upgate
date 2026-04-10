@@ -34,17 +34,21 @@ Commands:
 - `apply`
 
 Global options:
-- `--dry-run` / `-n`
-- `--min-release-age <duration>` (default `12h`)
 - `--max-parallel-checks <n>` (default `6`)
-- `--no-update`
-- `--managers <list>` where list is comma-separated values from:
-  - `brew`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `bun`, `cargo`, `uv`
+- `--managers <list>` where list is comma-separated manager IDs (default: all managers)
+- `--set <manager.key=value>` / `-S <manager.key=value>` (repeatable config overrides)
 
-Default manager set: all managers (`brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`).
+Configuration file:
+- `$XDG_CONFIG_HOME/upnow/config.toml` (fallback `~/.config/upnow/config.toml`)
+- Per-manager `min_release_age` values are configured in TOML.
+- Brew-only `no_update` is configured under `[brew].no_update` (default `false`).
+- CLI `--set`/`-S` overrides have higher precedence than file config.
+
+Default manager set: all registered managers (`brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`).
 
 Behavior notes:
-- `plan` forces effective dry-run mode.
+- `plan` is non-mutating.
+- `apply` performs updates.
 - Selected managers run in a fixed internal order:
   `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`.
 
@@ -60,7 +64,7 @@ Behavior notes:
 - Outcome formatting contract is centralized in `src/outcome.rs`.
 
 Internal planning parallelism (current):
-- Manager execution remains sequential (fixed manager order).
+- Manager execution remains sequential (registry order).
 - Apply remains sequential within each manager (no parallel apply orchestration).
 - Several managers parallelize per-item planning checks internally, then emit outcomes in original deterministic order.
 - Effective per-manager planning concurrency is bounded by both CLI value and manager cap.
@@ -112,10 +116,10 @@ Batch-error sentinel:
 ### brew (`src/managers/brew.rs`)
 
 Delay policy:
-- Uses CLI `--min-release-age` (default `12h`).
+- Uses config `[brew].min_release_age` (default `12h`).
 
 Planning flow:
-1. Optional `brew update --quiet` (skipped when `--no-update`).
+1. Optional `brew update --quiet` (skipped when config `[brew].no_update = true`).
 2. `brew outdated --json=v2`.
 3. `brew info --json=v2 <formulae+casks>`.
 4. `brew tap-info --json --installed`.
@@ -138,10 +142,10 @@ Concurrency:
 ### cargo (`src/managers/cargo.rs`)
 
 Delay policy:
-- Fixed `7d`.
+- Uses config `[cargo].min_release_age` (default `7d`).
 
 Planning semantics:
-- Target is highest eligible version (`age >= 7d`) with constraint `target >= current`.
+- Target is highest eligible version (`age >= min_release_age`) with constraint `target >= current`.
 
 Planning flow:
 1. `cargo install --list`.
@@ -160,10 +164,10 @@ Concurrency:
 ### npm (`src/managers/npm.rs`)
 
 Delay policy:
-- Fixed `7d`.
+- Uses config `[npm].min_release_age` (default `7d`).
 
 Planning semantics:
-- Target is highest eligible version (`age >= 7d`) with constraint `target >= current`.
+- Target is highest eligible version (`age >= min_release_age`) with constraint `target >= current`.
 
 Planning flow:
 1. `npm outdated -g --json`.
@@ -171,7 +175,8 @@ Planning flow:
 3. Parse version timestamps and choose semver-max eligible target.
 
 Apply flow:
-- Batch command: `npm -g update --min-release-age 7`.
+- Batch command: `npm -g update --min-release-age <days>`.
+- `<days>` is derived from `[npm].min_release_age` and must be whole days (validated on apply path).
 - Batch apply failure emits one synthetic `*` error outcome.
 
 Concurrency:
@@ -181,7 +186,7 @@ Concurrency:
 ### yarn (`src/managers/yarn.rs`)
 
 Delay policy:
-- Fixed `7d`.
+- Uses config `[yarn].min_release_age` (default `7d`).
 
 Planning flow:
 1. `yarn global list --depth=0`.
@@ -199,7 +204,7 @@ Concurrency:
 ### pnpm (`src/managers/pnpm.rs`)
 
 Delay policy:
-- Fixed `7d`.
+- Uses config `[pnpm].min_release_age` (default `7d`).
 
 Planning flow:
 1. `pnpm outdated -g --json`.
@@ -221,7 +226,7 @@ Concurrency:
 ### bun (`src/managers/bun.rs`)
 
 Delay policy:
-- Fixed `7d` (`604800` seconds).
+- Uses config `[bun].min_release_age` (default `7d`).
 
 Planning flow:
 1. `bun outdated -g`.
@@ -236,7 +241,8 @@ Notes:
 - Missing global manifest/lockfile states are treated as empty/no-op.
 
 Apply flow:
-- Batch command: `bun update -g --minimum-release-age 604800`.
+- Batch command: `bun update -g --minimum-release-age <seconds>`.
+- `<seconds>` is derived from `[bun].min_release_age`.
 - Batch apply failure emits one synthetic `*` error outcome.
 
 Concurrency:
@@ -246,10 +252,10 @@ Concurrency:
 ### mise (`src/managers/mise.rs`)
 
 Delay policy:
-- Fixed `7d` via `--before 7d`.
+- Uses config `[mise].min_release_age` (default `7d`) via `--before <duration>`.
 
 Planning flow:
-1. `mise upgrade --dry-run --before 7d`.
+1. `mise upgrade --dry-run --before <duration-from-config>`.
 2. Parse uninstall/install pairs:
    - `Would uninstall <tool>@<from>`
    - `Would install <tool>@<to>`
@@ -270,16 +276,16 @@ Concurrency:
 - Pool size for that lookup path: `clamp(1, --max-parallel-checks, 4)`.
 
 Apply flow:
-- Batch command: `mise upgrade --before 7d`.
+- Batch command: `mise upgrade --before <duration-from-config>`.
 - Batch apply failure emits one synthetic `*` error outcome.
 
 ### pipx (`src/managers/pipx.rs`)
 
 Delay policy:
-- Fixed `7d`.
+- Uses config `[pipx].min_release_age` (default `7d`).
 
 Planning semantics:
-- Target is highest eligible version (`age >= 7d`) with constraint `target >= current`.
+- Target is highest eligible version (`age >= min_release_age`) with constraint `target >= current`.
 - Uses PEP 440 ordering.
 
 Planning flow:
@@ -298,10 +304,10 @@ Concurrency:
 ### uv (`src/managers/uv.rs`)
 
 Delay policy:
-- Fixed `7d` via `--exclude-newer 7d`.
+- Uses config `[uv].min_release_age` (default `7d`) via `--exclude-newer <duration>`.
 
 Planning semantics:
-- Matches `pipx`: choose highest eligible release (`age >= 7d`) with `target >= current`.
+- Matches `pipx`: choose highest eligible release (`age >= min_release_age`) with `target >= current`.
 
 Planning flow:
 1. `uv tool dir`.
@@ -309,14 +315,14 @@ Planning flow:
    - `uv tool list --show-version-specifiers`
    - fallback: inspect receipts in tool dir.
 3. Per tool resolve target via dry-run resolver:
-   - `uv pip install --dry-run -p <tool-python> --upgrade --exclude-newer 7d <requirement>`
+   - `uv pip install --dry-run -p <tool-python> --upgrade --exclude-newer <duration-from-config> <requirement>`
 4. Parse `+ <tool>==<target>` lines from dry-run plan.
 5. `uv tool list --outdated` for latest context.
 6. Latest-age annotation: PyPI JSON (`https://pypi.org/pypi/<name>/json`).
 
 Apply flow:
 - Per eligible tool:
-  - `uv tool install --upgrade --exclude-newer 7d <name>`
+  - `uv tool install --upgrade --exclude-newer <duration-from-config> <name>`
 - Per-tool apply failures emit `error` and continue.
 
 Concurrency:

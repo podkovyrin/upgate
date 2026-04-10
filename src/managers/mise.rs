@@ -1,10 +1,8 @@
-use crate::Cli;
-use crate::manager::Manager;
+use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
     DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
-use crate::util::durationparse::parse_duration;
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::run_command_checked_stdout;
 use crate::util::timefmt::human_age;
@@ -14,25 +12,45 @@ use std::collections::BTreeMap;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const MISE_DELAY: &str = "7d";
 const MISE_NPM_AGE_MAX_PARALLEL_CHECKS: usize = 4;
+
+pub(crate) struct MisePlugin;
+
+impl ManagerPlugin for MisePlugin {
+    fn id(&self) -> &'static str {
+        "mise"
+    }
+
+    fn default_min_release_age(&self) -> &'static str {
+        "7d"
+    }
+
+    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
+        run(ctx)
+    }
+}
+
+pub(crate) static PLUGIN: MisePlugin = MisePlugin;
 
 struct MiseLatestAgeResult {
     age_secs: Result<u64, String>,
 }
 
-pub(crate) fn run(cli: &Cli) -> Result<()> {
-    let planned = mise_upgrade_dry_run_with_before(MISE_DELAY)?;
+fn run(ctx: &ManagerCtx) -> Result<()> {
+    let min_age_raw = ctx.policy.min_release_age.cli_arg();
+    let min_age = ctx.policy.min_release_age.duration();
+
+    let planned = mise_upgrade_dry_run_with_before(min_age_raw)?;
     let plan_pairs = build_plan_pairs(&planned);
     let latest_map = match mise_outdated_latest_map() {
         Ok(map) => map,
         Err(err) => {
             let outcome = ItemOutcome::error(
-                Manager::Mise,
+                PLUGIN.id(),
                 "*",
                 "*",
                 "*",
-                Manager::Mise.as_str(),
+                PLUGIN.id(),
                 REASON_COMMAND_FAILED,
                 err.to_string(),
             );
@@ -41,7 +59,6 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         }
     };
 
-    let min_age = parse_duration(MISE_DELAY)?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("system clock before UNIX_EPOCH")?
@@ -57,7 +74,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         }
     }
 
-    let threads = effective_parallelism(cli.max_parallel_checks, MISE_NPM_AGE_MAX_PARALLEL_CHECKS);
+    let threads = effective_parallelism(ctx.max_parallel_checks, MISE_NPM_AGE_MAX_PARALLEL_CHECKS);
     let age_results_indexed: Vec<(usize, MiseLatestAgeResult)> = run_indexed_parallel(
         age_jobs,
         threads,
@@ -77,8 +94,8 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
     let _upgradable = emit_plan_and_collect_upgradable(
         plan_pairs.into_iter().enumerate().collect(),
         |(_idx, item)| PlanMeta {
-            manager: Manager::Mise,
-            source: Manager::Mise.as_str(),
+            manager: PLUGIN.id(),
+            source: PLUGIN.id(),
             name: item.tool.clone(),
             current: item.from_version.clone(),
         },
@@ -125,17 +142,17 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         },
     );
 
-    if cli.dry_run {
+    if ctx.is_dry_run() {
         return Ok(());
     }
 
-    if let Err(err) = run_mise(&["upgrade", "--before", MISE_DELAY]) {
+    if let Err(err) = run_mise(&["upgrade", "--before", min_age_raw]) {
         let outcome = ItemOutcome::error(
-            Manager::Mise,
+            PLUGIN.id(),
             "*",
             "*",
             "*",
-            Manager::Mise.as_str(),
+            PLUGIN.id(),
             REASON_COMMAND_FAILED,
             err.to_string(),
         );
@@ -193,19 +210,12 @@ fn mise_upgrade_dry_run_with_before(before: &str) -> Result<Vec<String>> {
         .args(["upgrade", "--dry-run", "--before", before])
         .output()
         .with_context(|| {
-            format!(
-                "failed to run {} upgrade --dry-run --before {before}",
-                Manager::Mise.as_str()
-            )
+            format!("failed to run mise upgrade --dry-run --before {before}")
         })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} upgrade --dry-run --before {before} failed: {}",
-            Manager::Mise.as_str(),
-            stderr.trim()
-        );
+        bail!("mise upgrade --dry-run --before {before} failed: {}", stderr.trim());
     }
 
     let stdout = String::from_utf8(output.stdout).context("mise dry-run output not UTF-8")?;
@@ -221,15 +231,11 @@ fn mise_outdated_latest_map() -> Result<BTreeMap<String, String>> {
     let output = Command::new("mise")
         .args(["outdated", "--json"])
         .output()
-        .with_context(|| format!("failed to run {} outdated --json", Manager::Mise.as_str()))?;
+        .with_context(|| "failed to run mise outdated --json")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} outdated --json failed: {}",
-            Manager::Mise.as_str(),
-            stderr.trim()
-        );
+        bail!("mise outdated --json failed: {}", stderr.trim());
     }
 
     let stdout = String::from_utf8(output.stdout).context("mise outdated output not UTF-8")?;
@@ -246,19 +252,12 @@ fn npm_latest_age_secs(tool: &str, latest: &str, now_unix_secs: u64) -> Result<u
         .args(["view", &spec, "time", "--json"])
         .output()
         .with_context(|| {
-            format!(
-                "failed to run {} view {spec} time --json",
-                Manager::Npm.as_str()
-            )
+            format!("failed to run npm view {spec} time --json")
         })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} view {spec} time --json failed: {}",
-            Manager::Npm.as_str(),
-            stderr.trim()
-        );
+        bail!("npm view {spec} time --json failed: {}", stderr.trim());
     }
 
     let stdout = String::from_utf8(output.stdout).context("npm view output not UTF-8")?;

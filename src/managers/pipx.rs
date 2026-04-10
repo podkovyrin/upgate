@@ -1,5 +1,4 @@
-use crate::Cli;
-use crate::manager::Manager;
+use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
     DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
 };
@@ -15,8 +14,25 @@ use std::collections::BTreeMap;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const PIPX_DELAY_DAYS: u64 = 7;
 const PIPX_MAX_PARALLEL_CHECKS: usize = 4;
+
+pub(crate) struct PipxPlugin;
+
+impl ManagerPlugin for PipxPlugin {
+    fn id(&self) -> &'static str {
+        "pipx"
+    }
+
+    fn default_min_release_age(&self) -> &'static str {
+        "7d"
+    }
+
+    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
+        run(ctx)
+    }
+}
+
+pub(crate) static PLUGIN: PipxPlugin = PipxPlugin;
 
 #[derive(Debug, serde::Deserialize)]
 struct PipxListRoot {
@@ -65,8 +81,8 @@ struct PipxPlanItem {
     resolved: Result<Option<PypiResolvedTarget>, String>,
 }
 
-pub(crate) fn run(cli: &Cli) -> Result<()> {
-    let min_age = Duration::from_secs(PIPX_DELAY_DAYS * 24 * 60 * 60);
+fn run(ctx: &ManagerCtx) -> Result<()> {
+    let min_age = ctx.policy.min_release_age.duration();
 
     let installed = pipx_installed_main_packages()?;
     if installed.is_empty() {
@@ -83,7 +99,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
 
     let jobs: Vec<(String, String)> = installed.into_iter().collect();
 
-    let threads = effective_parallelism(cli.max_parallel_checks, PIPX_MAX_PARALLEL_CHECKS);
+    let threads = effective_parallelism(ctx.max_parallel_checks, PIPX_MAX_PARALLEL_CHECKS);
     let plan: Vec<PipxPlanItem> = run_indexed_parallel(
         jobs,
         threads,
@@ -105,7 +121,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
     let upgradable = emit_plan_and_collect_upgradable(
         plan,
         |item| PlanMeta {
-            manager: Manager::Pipx,
+            manager: PLUGIN.id(),
             source: "pypi",
             name: item.name.clone(),
             current: item.current.clone(),
@@ -115,7 +131,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
                 Ok(Some(target)) => target,
                 Ok(None) => {
                     return PlanDecision::DelayedNoEligible {
-                        required_age: format!("{PIPX_DELAY_DAYS}d"),
+                        required_age: human_age(min_age.as_secs()),
                     };
                 }
                 Err(err) => return PlanDecision::Error(err.clone()),
@@ -145,14 +161,14 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         },
     );
 
-    if cli.dry_run {
+    if ctx.is_dry_run() {
         return Ok(());
     }
 
     for (pkg, current, target) in upgradable {
         if let Err(err) = run_pipx(&["upgrade", &pkg]) {
             let outcome = ItemOutcome::error(
-                Manager::Pipx,
+                PLUGIN.id(),
                 pkg,
                 current,
                 target,
@@ -171,15 +187,11 @@ fn pipx_installed_main_packages() -> Result<BTreeMap<String, String>> {
     let output = Command::new("pipx")
         .args(["list", "--json"])
         .output()
-        .with_context(|| format!("failed to run {} list --json", Manager::Pipx.as_str()))?;
+        .with_context(|| "failed to run pipx list --json")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} list --json failed: {}",
-            Manager::Pipx.as_str(),
-            stderr.trim()
-        );
+        bail!("pipx list --json failed: {}", stderr.trim());
     }
 
     let stdout = String::from_utf8(output.stdout).context("pipx list output not UTF-8")?;

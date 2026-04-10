@@ -1,8 +1,7 @@
-use crate::manager::Manager;
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 
 pub(crate) struct PlanMeta {
-    pub(crate) manager: Manager,
+    pub(crate) manager: &'static str,
     pub(crate) source: &'static str,
     pub(crate) name: String,
     pub(crate) current: String,

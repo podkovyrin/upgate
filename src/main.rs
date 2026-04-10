@@ -1,11 +1,12 @@
+mod config;
 mod manager;
 mod managers;
 mod outcome;
 mod util;
 
-use anyhow::Result;
 use clap::{Parser, Subcommand};
-use manager::Manager;
+use config::UpnowConfig;
+use manager::{RunMode, all_plugins, build_ctx_for_plugin, resolve_selected_plugins};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
 enum Command {
@@ -19,90 +20,67 @@ enum Command {
 #[command(name = "upnow")]
 #[command(about = "Delay-aware global package upgrades")]
 #[command(version)]
-pub(crate) struct Cli {
+struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// Print the upgrade plan only.
-    ///
-    /// Mainly meaningful for `apply`; on `plan` this is always effectively true.
-    #[arg(short = 'n', long, global = true)]
-    pub(crate) dry_run: bool,
-
-    /// Minimum age for brew formula/cask updates (e.g. 12h, 7d).
-    #[arg(long, default_value = "12h", global = true)]
-    pub(crate) min_release_age: String,
-
     /// Maximum concurrent checks.
     #[arg(long, default_value_t = 6, global = true)]
-    pub(crate) max_parallel_checks: usize,
+    max_parallel_checks: usize,
 
-    /// Skip metadata update step for managers that support it.
-    #[arg(long, global = true)]
-    pub(crate) no_update: bool,
+    /// Managers to run (comma-separated manager IDs).
+    #[arg(long, value_delimiter = ',', global = true)]
+    managers: Vec<String>,
 
-    /// Managers to run.
-    #[arg(
-        long,
-        value_enum,
-        value_delimiter = ',',
-        default_values_t = Manager::default_managers(),
-        global = true
-    )]
-    pub(crate) managers: Vec<Manager>,
+    /// Override config values (repeatable), format: <manager>.<key>=<value>
+    #[arg(long = "set", short = 'S', global = true)]
+    set: Vec<String>,
 }
 
 fn main() {
     let cli = Cli::parse();
-    let command = cli.command.unwrap_or(Command::Plan);
+    let run_mode = match cli.command.unwrap_or(Command::Plan) {
+        Command::Plan => RunMode::Plan,
+        Command::Apply => RunMode::Apply,
+    };
 
-    let mut effective_cli = cli.clone();
-    if matches!(command, Command::Plan) {
-        effective_cli.dry_run = true;
+    let mut config = match UpnowConfig::load() {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    let known_manager_ids: Vec<&str> = all_plugins().iter().map(|p| p.id()).collect();
+    for override_arg in &cli.set {
+        if let Err(err) = config.apply_cli_override(override_arg, &known_manager_ids) {
+            eprintln!("error: {err}");
+            std::process::exit(1);
+        }
     }
 
-    if let Err(err) = run_selected_managers(&effective_cli) {
-        eprintln!("error: {err}");
-        std::process::exit(1);
-    }
-}
+    let selected_plugins = match resolve_selected_plugins(&cli.managers) {
+        Ok(plugins) => plugins,
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(1);
+        }
+    };
 
-fn run_selected_managers(cli: &Cli) -> Result<()> {
-    if cli.managers.contains(&Manager::Brew) {
-        managers::brew::run(cli)?;
-    }
+    for plugin in selected_plugins {
+        let manager_ctx = match build_ctx_for_plugin(plugin, run_mode, cli.max_parallel_checks, &config)
+        {
+            Ok(ctx) => ctx,
+            Err(err) => {
+                eprintln!("error: {err}");
+                std::process::exit(1);
+            }
+        };
 
-    if cli.managers.contains(&Manager::Bun) {
-        managers::bun::run(cli)?;
+        if let Err(err) = plugin.run(&manager_ctx) {
+            eprintln!("error: {err}");
+            std::process::exit(1);
+        }
     }
-
-    if cli.managers.contains(&Manager::Cargo) {
-        managers::cargo::run(cli)?;
-    }
-
-    if cli.managers.contains(&Manager::Npm) {
-        managers::npm::run(cli)?;
-    }
-
-    if cli.managers.contains(&Manager::Yarn) {
-        managers::yarn::run(cli)?;
-    }
-
-    if cli.managers.contains(&Manager::Mise) {
-        managers::mise::run(cli)?;
-    }
-
-    if cli.managers.contains(&Manager::Pipx) {
-        managers::pipx::run(cli)?;
-    }
-
-    if cli.managers.contains(&Manager::Pnpm) {
-        managers::pnpm::run(cli)?;
-    }
-
-    if cli.managers.contains(&Manager::Uv) {
-        managers::uv::run(cli)?;
-    }
-
-    Ok(())
 }

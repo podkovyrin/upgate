@@ -1,9 +1,7 @@
-use crate::Cli;
-use crate::manager::Manager;
+use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::outcome::{
     ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, REASON_PINNED, emit_text_outcome,
 };
-use crate::util::durationparse::parse_duration;
 use crate::util::process::run_command_checked_stdout;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
@@ -17,6 +15,28 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const BREW_MAX_PARALLEL_CHECKS_MIN: usize = 1;
 const BREW_API_FALLBACK_MAX_PARALLEL_CHECKS: usize = 4;
+
+pub(crate) struct BrewPlugin;
+
+impl ManagerPlugin for BrewPlugin {
+    fn id(&self) -> &'static str {
+        "brew"
+    }
+
+    fn default_min_release_age(&self) -> &'static str {
+        "12h"
+    }
+
+    fn supports_no_update(&self) -> bool {
+        true
+    }
+
+    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
+        run(ctx)
+    }
+}
+
+pub(crate) static PLUGIN: BrewPlugin = BrewPlugin;
 
 #[derive(Debug, Deserialize)]
 struct OutdatedRoot {
@@ -161,10 +181,10 @@ struct GitHubCommitPerson {
 }
 
 #[allow(clippy::too_many_lines)]
-pub(crate) fn run(cli: &Cli) -> Result<()> {
-    let min_age = parse_duration(&cli.min_release_age)?;
+fn run(ctx: &ManagerCtx) -> Result<()> {
+    let min_age = ctx.policy.min_release_age.duration();
 
-    if !cli.no_update {
+    if !ctx.policy.no_update {
         run_brew(&["update", "--quiet"])?;
     }
 
@@ -186,7 +206,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
 
     let github_client = github_client()?;
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(cli.max_parallel_checks.max(BREW_MAX_PARALLEL_CHECKS_MIN))
+        .num_threads(ctx.max_parallel_checks.max(BREW_MAX_PARALLEL_CHECKS_MIN))
         .build()
         .context("failed to build rayon thread pool")?;
 
@@ -271,7 +291,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
     }
 
     if !api_jobs.is_empty() {
-        let api_parallelism = cli.max_parallel_checks.clamp(
+        let api_parallelism = ctx.max_parallel_checks.clamp(
             BREW_MAX_PARALLEL_CHECKS_MIN,
             BREW_API_FALLBACK_MAX_PARALLEL_CHECKS,
         );
@@ -329,7 +349,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         emit_text_outcome(&outcome);
     }
 
-    if cli.dry_run {
+    if ctx.is_dry_run() {
         return Ok(());
     }
 
@@ -495,7 +515,7 @@ fn phase_one_local_check(
 fn item_to_outcome(item: &PlanItem) -> ItemOutcome {
     match &item.action {
         PlanAction::Upgrade { source } => ItemOutcome::update(
-            Manager::Brew,
+            PLUGIN.id(),
             item.name.clone(),
             item.installed.clone(),
             item.target.clone(),
@@ -506,7 +526,7 @@ fn item_to_outcome(item: &PlanItem) -> ItemOutcome {
             required,
             source,
         } => ItemOutcome::delayed_too_fresh(
-            Manager::Brew,
+            PLUGIN.id(),
             item.name.clone(),
             item.installed.clone(),
             item.target.clone(),
@@ -517,7 +537,7 @@ fn item_to_outcome(item: &PlanItem) -> ItemOutcome {
         PlanAction::Skipped { reason, source } => {
             if reason.contains("failed age check") {
                 return ItemOutcome::error(
-                    Manager::Brew,
+                    PLUGIN.id(),
                     item.name.clone(),
                     item.installed.clone(),
                     item.target.clone(),
@@ -534,7 +554,7 @@ fn item_to_outcome(item: &PlanItem) -> ItemOutcome {
             };
 
             ItemOutcome::skipped(
-                Manager::Brew,
+                PLUGIN.id(),
                 item.name.clone(),
                 item.installed.clone(),
                 item.target.clone(),

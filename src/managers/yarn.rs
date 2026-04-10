@@ -1,5 +1,4 @@
-use crate::Cli;
-use crate::manager::Manager;
+use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
     DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
 };
@@ -14,8 +13,25 @@ use std::collections::BTreeMap;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const YARN_MIN_AGE_DAYS: u64 = 7;
 const YARN_MAX_PARALLEL_CHECKS: usize = 6;
+
+pub(crate) struct YarnPlugin;
+
+impl ManagerPlugin for YarnPlugin {
+    fn id(&self) -> &'static str {
+        "yarn"
+    }
+
+    fn default_min_release_age(&self) -> &'static str {
+        "7d"
+    }
+
+    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
+        run(ctx)
+    }
+}
+
+pub(crate) static PLUGIN: YarnPlugin = YarnPlugin;
 
 #[derive(Debug)]
 struct InstalledEntry {
@@ -28,8 +44,8 @@ struct YarnPlanItem {
     resolved: Result<Option<YarnResolvedTarget>, String>,
 }
 
-pub(crate) fn run(cli: &Cli) -> Result<()> {
-    let min_age = Duration::from_secs(YARN_MIN_AGE_DAYS * 24 * 60 * 60);
+fn run(ctx: &ManagerCtx) -> Result<()> {
+    let min_age = ctx.policy.min_release_age.duration();
 
     let installed = yarn_global_installed()?;
     if installed.is_empty() {
@@ -46,7 +62,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .map(|(name, entry)| (name.clone(), entry.current.clone()))
         .collect();
 
-    let threads = effective_parallelism(cli.max_parallel_checks, YARN_MAX_PARALLEL_CHECKS);
+    let threads = effective_parallelism(ctx.max_parallel_checks, YARN_MAX_PARALLEL_CHECKS);
     let plan: Vec<YarnPlanItem> = run_indexed_parallel(
         jobs,
         threads,
@@ -67,8 +83,8 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
     let upgradable = emit_plan_and_collect_upgradable(
         plan,
         |item| PlanMeta {
-            manager: Manager::Yarn,
-            source: Manager::Yarn.as_str(),
+            manager: PLUGIN.id(),
+            source: PLUGIN.id(),
             name: item.name.clone(),
             current: item.current.clone(),
         },
@@ -77,7 +93,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
                 Ok(Some(target)) => target,
                 Ok(None) => {
                     return PlanDecision::DelayedNoEligible {
-                        required_age: format!("{YARN_MIN_AGE_DAYS}d"),
+                        required_age: human_age(min_age.as_secs()),
                     };
                 }
                 Err(err) => return PlanDecision::Error(err.clone()),
@@ -107,7 +123,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         },
     );
 
-    if cli.dry_run {
+    if ctx.is_dry_run() {
         return Ok(());
     }
 
@@ -115,11 +131,11 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         let spec = format!("{name}@{version}");
         if let Err(err) = run_yarn(&["global", "add", &spec]) {
             let outcome = ItemOutcome::error(
-                Manager::Yarn,
+                PLUGIN.id(),
                 name,
                 current,
                 version,
-                Manager::Yarn.as_str(),
+                PLUGIN.id(),
                 REASON_COMMAND_FAILED,
                 err.to_string(),
             );

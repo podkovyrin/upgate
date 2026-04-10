@@ -5,8 +5,8 @@ set -euo pipefail
 #
 # Examples:
 #   scripts/profile.sh
-#   scripts/profile.sh --label baseline --compare-parallel -- --dry-run --no-update
-#   scripts/profile.sh --runs 10 --warmup 2 --parallel-values 1,2,4,6,8 -- --dry-run --no-update
+#   scripts/profile.sh --label baseline --compare-parallel -- -S brew.no_update=true
+#   scripts/profile.sh --runs 10 --warmup 2 --parallel-values 1,2,4,6,8 -- -S brew.no_update=true
 
 RUNS=6
 WARMUP=1
@@ -30,7 +30,7 @@ Options:
   -h, --help               Show this help
 
 If no extra upnow args are provided, defaults to:
-  --dry-run --no-update
+  -S brew.no_update=true
 EOF
 }
 
@@ -156,7 +156,7 @@ echo "==> Building release binary"
 cargo build --release
 
 BIN="target/release/upnow"
-DEFAULT_ARGS=(--dry-run --no-update)
+DEFAULT_ARGS=(-S brew.no_update=true)
 
 if [[ ${#EXTRA_ARGS[@]} -eq 0 ]]; then
   ARGS=("${DEFAULT_ARGS[@]}")

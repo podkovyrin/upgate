@@ -11,13 +11,13 @@ scripts/profile.sh
 Default command profiled:
 
 ```bash
-target/release/upnow --dry-run --no-update
+target/release/upnow -S brew.no_update=true
 ```
 
 ## Compare `--max-parallel-checks`
 
 ```bash
-scripts/profile.sh --compare-parallel -- --dry-run --no-update
+scripts/profile.sh --compare-parallel -- -S brew.no_update=true
 ```
 
 Default matrix values:
@@ -27,7 +27,7 @@ Default matrix values:
 You can customize values:
 
 ```bash
-scripts/profile.sh --compare-parallel --parallel-values 1,2,3,4,6,8,10,12 -- --dry-run --no-update
+scripts/profile.sh --compare-parallel --parallel-values 1,2,3,4,6,8,10,12 -- -S brew.no_update=true
 ```
 
 ## Labeling and storing run history
@@ -35,8 +35,8 @@ scripts/profile.sh --compare-parallel --parallel-values 1,2,3,4,6,8,10,12 -- --d
 Use labels to make result folders easier to compare:
 
 ```bash
-scripts/profile.sh --label baseline --compare-parallel -- --dry-run --no-update
-scripts/profile.sh --label stage1-npm-yarn-pnpm-bun --compare-parallel -- --dry-run --no-update
+scripts/profile.sh --label baseline --compare-parallel -- -S brew.no_update=true
+scripts/profile.sh --label stage1-npm-yarn-pnpm-bun --compare-parallel -- -S brew.no_update=true
 ```
 
 Artifacts are stored under:
@@ -55,11 +55,11 @@ Artifacts are stored under:
 ## Custom command args
 
 ```bash
-scripts/profile.sh --runs 10 --warmup 2 -- --dry-run --min-release-age 24h --no-update
+scripts/profile.sh --runs 10 --warmup 2 -- --managers brew -S brew.no_update=true
 ```
 
 ## Notes
 
-- Use `--no-update` while profiling internal pipeline changes; otherwise network + brew update noise dominates.
-- For realistic user-facing performance, run another profile without `--no-update`.
+- The profiling script defaults to `-S brew.no_update=true` to reduce brew update noise in baseline runs.
+- For realistic user-facing performance, pass explicit args without this override.
 - Avoid passing `--max-parallel-checks` directly when using `--compare-parallel`.

@@ -117,8 +117,8 @@ Only add this if duplication becomes noisy; otherwise keep per-manager explicit 
 ### Work
 
 - Record baseline timings with `scripts/profile.sh`:
-  - `--dry-run --no-update`
-  - and one realistic run without `--no-update`.
+  - with config `[brew].no_update = true`
+  - and one realistic run with default config.
 - Add/confirm checklist:
   - output order unchanged,
   - statuses/reasons unchanged,
@@ -209,7 +209,7 @@ Manager notes:
 
 - Keep discovery sequential (`uv tool dir`, installed tools, outdated latest map).
 - Parallelize per-tool resolver:
-  - `uv pip install --dry-run ... --exclude-newer 7d <requirement>`.
+  - `uv pip install --dry-run ... --exclude-newer <duration-from-config> <requirement>`.
 - Keep output emission sequential.
 
 Optional within stage (if safe):
@@ -236,7 +236,7 @@ Optional within stage (if safe):
 
 ### Work
 
-- Keep `mise upgrade --dry-run --before 7d` and `mise outdated --json` sequential.
+- Keep `mise upgrade --dry-run --before <duration-from-config>` and `mise outdated --json` sequential.
 - For entries where `latest != planned_target` and `tool` is `npm:*`, parallelize npm latest-age lookups.
 - Keep non-`npm:` behavior unchanged (`0s` placeholder age).
 

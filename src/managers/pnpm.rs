@@ -1,5 +1,4 @@
-use crate::Cli;
-use crate::manager::Manager;
+use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
     DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
 };
@@ -15,8 +14,25 @@ use std::collections::BTreeMap;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const PNPM_MIN_AGE_DAYS: u64 = 7;
 const PNPM_MAX_PARALLEL_CHECKS: usize = 6;
+
+pub(crate) struct PnpmPlugin;
+
+impl ManagerPlugin for PnpmPlugin {
+    fn id(&self) -> &'static str {
+        "pnpm"
+    }
+
+    fn default_min_release_age(&self) -> &'static str {
+        "7d"
+    }
+
+    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
+        run(ctx)
+    }
+}
+
+pub(crate) static PLUGIN: PnpmPlugin = PnpmPlugin;
 
 #[derive(Debug, Deserialize)]
 struct OutdatedEntry {
@@ -29,8 +45,8 @@ struct PnpmPlanItem {
     resolved: Result<Option<PnpmResolvedTarget>, String>,
 }
 
-pub(crate) fn run(cli: &Cli) -> Result<()> {
-    let min_age = Duration::from_secs(PNPM_MIN_AGE_DAYS * 24 * 60 * 60);
+fn run(ctx: &ManagerCtx) -> Result<()> {
+    let min_age = ctx.policy.min_release_age.duration();
 
     let outdated = pnpm_outdated_global()?;
     if outdated.is_empty() {
@@ -47,7 +63,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .map(|(name, entry)| (name.clone(), entry.current.clone()))
         .collect();
 
-    let threads = effective_parallelism(cli.max_parallel_checks, PNPM_MAX_PARALLEL_CHECKS);
+    let threads = effective_parallelism(ctx.max_parallel_checks, PNPM_MAX_PARALLEL_CHECKS);
     let plan: Vec<PnpmPlanItem> = run_indexed_parallel(
         jobs,
         threads,
@@ -68,8 +84,8 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
     let upgradable = emit_plan_and_collect_upgradable(
         plan,
         |item| PlanMeta {
-            manager: Manager::Pnpm,
-            source: Manager::Pnpm.as_str(),
+            manager: PLUGIN.id(),
+            source: PLUGIN.id(),
             name: item.name.clone(),
             current: item.current.clone(),
         },
@@ -78,7 +94,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
                 Ok(Some(target)) => target,
                 Ok(None) => {
                     return PlanDecision::DelayedNoEligible {
-                        required_age: format!("{PNPM_MIN_AGE_DAYS}d"),
+                        required_age: human_age(min_age.as_secs()),
                     };
                 }
                 Err(err) => return PlanDecision::Error(err.clone()),
@@ -108,7 +124,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         },
     );
 
-    if cli.dry_run {
+    if ctx.is_dry_run() {
         return Ok(());
     }
 
@@ -116,11 +132,11 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         let spec = format!("{name}@{version}");
         if let Err(err) = run_pnpm(&["add", "-g", &spec]) {
             let outcome = ItemOutcome::error(
-                Manager::Pnpm,
+                PLUGIN.id(),
                 name,
                 current,
                 version,
-                Manager::Pnpm.as_str(),
+                PLUGIN.id(),
                 REASON_COMMAND_FAILED,
                 err.to_string(),
             );
@@ -135,12 +151,7 @@ fn pnpm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
     let output = Command::new("pnpm")
         .args(["outdated", "-g", "--json"])
         .output()
-        .with_context(|| {
-            format!(
-                "failed to run {} outdated -g --json",
-                Manager::Pnpm.as_str()
-            )
-        })?;
+        .with_context(|| "failed to run pnpm outdated -g --json")?;
 
     let stdout = String::from_utf8(output.stdout).context("pnpm outdated output not UTF-8")?;
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -156,10 +167,7 @@ fn pnpm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
         } else {
             stderr.trim()
         };
-        bail!(
-            "{} outdated -g --json failed: {err_text}",
-            Manager::Pnpm.as_str()
-        );
+        bail!("pnpm outdated -g --json failed: {err_text}");
     }
 
     if stdout.trim().is_empty() {
@@ -247,20 +255,11 @@ fn pnpm_resolve_target_with_min_age(
     let output = Command::new("pnpm")
         .args(["view", name, "time", "--json"])
         .output()
-        .with_context(|| {
-            format!(
-                "failed to run {} view {name} time --json",
-                Manager::Pnpm.as_str()
-            )
-        })?;
+        .with_context(|| format!("failed to run pnpm view {name} time --json"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} view {name} time --json failed: {}",
-            Manager::Pnpm.as_str(),
-            stderr.trim()
-        );
+        bail!("pnpm view {name} time --json failed: {}", stderr.trim());
     }
 
     let stdout = String::from_utf8(output.stdout).context("pnpm view output not UTF-8")?;

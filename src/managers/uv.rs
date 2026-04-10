@@ -1,5 +1,4 @@
-use crate::Cli;
-use crate::manager::Manager;
+use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
     DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
 };
@@ -14,10 +13,8 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-const UV_DELAY: &str = "7d";
-const UV_DELAY_DAYS: u64 = 7;
 const UV_MAX_PARALLEL_CHECKS: usize = 2;
 
 struct UvTool {
@@ -25,6 +22,24 @@ struct UvTool {
     current: String,
     python_path: String,
 }
+
+pub(crate) struct UvPlugin;
+
+impl ManagerPlugin for UvPlugin {
+    fn id(&self) -> &'static str {
+        "uv"
+    }
+
+    fn default_min_release_age(&self) -> &'static str {
+        "7d"
+    }
+
+    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
+        run(ctx)
+    }
+}
+
+pub(crate) static PLUGIN: UvPlugin = UvPlugin;
 
 #[derive(Debug, serde::Deserialize)]
 struct PypiRoot {
@@ -43,8 +58,9 @@ struct UvPlanItem {
     target: Result<String, String>,
 }
 
-pub(crate) fn run(cli: &Cli) -> Result<()> {
-    let min_age = Duration::from_secs(UV_DELAY_DAYS * 24 * 60 * 60);
+fn run(ctx: &ManagerCtx) -> Result<()> {
+    let min_age_raw = ctx.policy.min_release_age.cli_arg();
+    let min_age = ctx.policy.min_release_age.duration();
     let tool_dir = uv_tool_dir()?;
 
     let installed = uv_installed_tools(&tool_dir)?;
@@ -59,14 +75,15 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .context("system clock before UNIX_EPOCH")?
         .as_secs();
 
-    let threads = effective_parallelism(cli.max_parallel_checks, UV_MAX_PARALLEL_CHECKS);
+    let threads = effective_parallelism(ctx.max_parallel_checks, UV_MAX_PARALLEL_CHECKS);
     let plan: Vec<UvPlanItem> = run_indexed_parallel(
         installed,
         threads,
         "failed to build uv planning thread pool",
         "internal error: missing uv plan slot",
         |tool| {
-            let target = uv_resolve_target_with_exclude_newer(&tool).map_err(|err| err.to_string());
+            let target =
+                uv_resolve_target_with_exclude_newer(&tool, min_age_raw).map_err(|err| err.to_string());
             UvPlanItem { tool, target }
         },
     )?;
@@ -77,8 +94,8 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
     let upgradable_tools = emit_plan_and_collect_upgradable(
         plan,
         |item| PlanMeta {
-            manager: Manager::Uv,
-            source: Manager::Uv.as_str(),
+            manager: PLUGIN.id(),
+            source: PLUGIN.id(),
             name: item.tool.name.clone(),
             current: item.tool.current.clone(),
         },
@@ -90,7 +107,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
 
             if pep440_compare(target, &item.tool.current) == Some(Ordering::Less) {
                 return PlanDecision::DelayedNoEligible {
-                    required_age: format!("{UV_DELAY_DAYS}d"),
+                    required_age: human_age(min_age.as_secs()),
                 };
             }
 
@@ -107,7 +124,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
                     && age_secs < min_age.as_secs()
                 {
                     return PlanDecision::DelayedNoEligible {
-                        required_age: format!("{UV_DELAY_DAYS}d"),
+                        required_age: human_age(min_age.as_secs()),
                     };
                 }
 
@@ -143,7 +160,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         },
     );
 
-    if cli.dry_run {
+    if ctx.is_dry_run() {
         return Ok(());
     }
 
@@ -157,17 +174,17 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
             "install".to_string(),
             "--upgrade".to_string(),
             "--exclude-newer".to_string(),
-            UV_DELAY.to_string(),
+            min_age_raw.to_string(),
             tool.clone(),
         ];
 
         if let Err(err) = run_uv_owned(&args) {
             let outcome = ItemOutcome::error(
-                Manager::Uv,
+                PLUGIN.id(),
                 tool,
                 current,
                 target,
-                Manager::Uv.as_str(),
+                PLUGIN.id(),
                 REASON_COMMAND_FAILED,
                 err.to_string(),
             );
@@ -344,7 +361,7 @@ fn bracket_value(line: &str, marker: &str) -> Option<String> {
     Some(after[..end].to_string())
 }
 
-fn uv_resolve_target_with_exclude_newer(tool: &UvTool) -> Result<String> {
+fn uv_resolve_target_with_exclude_newer(tool: &UvTool, min_age_raw: &str) -> Result<String> {
     let requirement = if Version::parse(&tool.current).is_some() {
         format!("{}>={}", tool.name, tool.current)
     } else {
@@ -359,7 +376,7 @@ fn uv_resolve_target_with_exclude_newer(tool: &UvTool) -> Result<String> {
         tool.python_path.clone(),
         "--upgrade".to_string(),
         "--exclude-newer".to_string(),
-        UV_DELAY.to_string(),
+        min_age_raw.to_string(),
         requirement,
     ];
 

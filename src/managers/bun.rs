@@ -1,5 +1,4 @@
-use crate::Cli;
-use crate::manager::Manager;
+use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
     DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
 };
@@ -14,9 +13,25 @@ use std::collections::BTreeMap;
 use std::process::{Command, Output};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const BUN_MIN_AGE_DAYS: u64 = 7;
-const BUN_MIN_AGE_SECS: u64 = BUN_MIN_AGE_DAYS * 24 * 60 * 60;
 const BUN_MAX_PARALLEL_CHECKS: usize = 6;
+
+pub(crate) struct BunPlugin;
+
+impl ManagerPlugin for BunPlugin {
+    fn id(&self) -> &'static str {
+        "bun"
+    }
+
+    fn default_min_release_age(&self) -> &'static str {
+        "7d"
+    }
+
+    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
+        run(ctx)
+    }
+}
+
+pub(crate) static PLUGIN: BunPlugin = BunPlugin;
 
 #[derive(Debug)]
 struct OutdatedEntry {
@@ -29,8 +44,8 @@ struct BunPlanItem {
     resolved: Result<Option<BunResolvedTarget>, String>,
 }
 
-pub(crate) fn run(cli: &Cli) -> Result<()> {
-    let min_age = Duration::from_secs(BUN_MIN_AGE_DAYS * 24 * 60 * 60);
+fn run(ctx: &ManagerCtx) -> Result<()> {
+    let min_age = ctx.policy.min_release_age.duration();
     let bun = bun_executable();
 
     let outdated = bun_outdated_global(&bun)?;
@@ -50,7 +65,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .map(|(name, entry)| (name.clone(), entry.current.clone()))
         .collect();
 
-    let threads = effective_parallelism(cli.max_parallel_checks, BUN_MAX_PARALLEL_CHECKS);
+    let threads = effective_parallelism(ctx.max_parallel_checks, BUN_MAX_PARALLEL_CHECKS);
     let bun_path = bun.clone();
     let global_cwd_path = global_cwd.clone();
     let plan: Vec<BunPlanItem> = run_indexed_parallel(
@@ -80,8 +95,8 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
     let _upgradable = emit_plan_and_collect_upgradable(
         plan,
         |item| PlanMeta {
-            manager: Manager::Bun,
-            source: Manager::Bun.as_str(),
+            manager: PLUGIN.id(),
+            source: PLUGIN.id(),
             name: item.name.clone(),
             current: item.current.clone(),
         },
@@ -90,7 +105,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
                 Ok(Some(target)) => target,
                 Ok(None) => {
                     return PlanDecision::DelayedNoEligible {
-                        required_age: format!("{BUN_MIN_AGE_DAYS}d"),
+                        required_age: human_age(min_age.as_secs()),
                     };
                 }
                 Err(err) => return PlanDecision::Error(err.clone()),
@@ -120,7 +135,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         },
     );
 
-    if cli.dry_run {
+    if ctx.is_dry_run() {
         return Ok(());
     }
 
@@ -130,15 +145,15 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
             "update",
             "-g",
             "--minimum-release-age",
-            &BUN_MIN_AGE_SECS.to_string(),
+            &min_age.as_secs().to_string(),
         ],
     ) {
         let outcome = ItemOutcome::error(
-            Manager::Bun,
+            PLUGIN.id(),
             "*",
             "*",
             "*",
-            Manager::Bun.as_str(),
+            PLUGIN.id(),
             REASON_COMMAND_FAILED,
             err.to_string(),
         );
@@ -164,7 +179,7 @@ fn bun_outdated_global(bun: &str) -> Result<BTreeMap<String, OutdatedEntry>> {
         } else {
             stderr.trim()
         };
-        bail!("{} outdated -g failed: {err_text}", Manager::Bun.as_str());
+        bail!("bun outdated -g failed: {err_text}");
     }
 
     Ok(parse_bun_outdated_table(&stdout))
@@ -243,11 +258,7 @@ fn bun_resolve_target_with_min_age(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} pm view {name} time --json failed: {}",
-            Manager::Bun.as_str(),
-            stderr.trim()
-        );
+        bail!("bun pm view {name} time --json failed: {}", stderr.trim());
     }
 
     let stdout = String::from_utf8(output.stdout).context("bun pm view output not UTF-8")?;
@@ -347,14 +358,11 @@ fn bun_executable() -> String {
         return path;
     }
 
-    Manager::Bun.as_str().to_string()
+    PLUGIN.id().to_string()
 }
 
 fn bun_from_mise() -> Option<String> {
-    let output = Command::new("mise")
-        .args(["which", Manager::Bun.as_str()])
-        .output()
-        .ok()?;
+    let output = Command::new("mise").args(["which", "bun"]).output().ok()?;
     if !output.status.success() {
         return None;
     }

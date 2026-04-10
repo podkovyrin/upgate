@@ -1,5 +1,4 @@
-use crate::Cli;
-use crate::manager::Manager;
+use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
     DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
 };
@@ -15,8 +14,25 @@ use std::collections::{BTreeMap, HashSet};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const CARGO_MIN_AGE_DAYS: u64 = 7;
 const CARGO_MAX_PARALLEL_CHECKS: usize = 4;
+
+pub(crate) struct CargoPlugin;
+
+impl ManagerPlugin for CargoPlugin {
+    fn id(&self) -> &'static str {
+        "cargo"
+    }
+
+    fn default_min_release_age(&self) -> &'static str {
+        "7d"
+    }
+
+    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
+        run(ctx)
+    }
+}
+
+pub(crate) static PLUGIN: CargoPlugin = CargoPlugin;
 
 #[derive(Debug)]
 struct InstalledCrate {
@@ -29,8 +45,8 @@ struct CargoPlanItem {
     resolved: Result<Option<CargoResolvedTarget>, String>,
 }
 
-pub(crate) fn run(cli: &Cli) -> Result<()> {
-    let min_age = Duration::from_secs(CARGO_MIN_AGE_DAYS * 24 * 60 * 60);
+fn run(ctx: &ManagerCtx) -> Result<()> {
+    let min_age = ctx.policy.min_release_age.duration();
 
     let installed = cargo_installed_crates()?;
     if installed.is_empty() {
@@ -50,7 +66,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .map(|(name, entry)| (name.clone(), entry.version.clone()))
         .collect();
 
-    let threads = effective_parallelism(cli.max_parallel_checks, CARGO_MAX_PARALLEL_CHECKS);
+    let threads = effective_parallelism(ctx.max_parallel_checks, CARGO_MAX_PARALLEL_CHECKS);
     let plan: Vec<CargoPlanItem> = run_indexed_parallel(
         jobs,
         threads,
@@ -72,7 +88,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
     let upgradable = emit_plan_and_collect_upgradable(
         plan,
         |item| PlanMeta {
-            manager: Manager::Cargo,
+            manager: PLUGIN.id(),
             source: "crates.io",
             name: item.name.clone(),
             current: item.current.clone(),
@@ -82,7 +98,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
                 Ok(Some(target)) => target,
                 Ok(None) => {
                     return PlanDecision::DelayedNoEligible {
-                        required_age: format!("{CARGO_MIN_AGE_DAYS}d"),
+                        required_age: human_age(min_age.as_secs()),
                     };
                 }
                 Err(err) => return PlanDecision::Error(err.clone()),
@@ -112,7 +128,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         },
     );
 
-    if cli.dry_run {
+    if ctx.is_dry_run() {
         return Ok(());
     }
 
@@ -120,7 +136,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         let spec = format!("{name}@{version}");
         if let Err(err) = run_cargo(&["install", "--force", &spec]) {
             let outcome = ItemOutcome::error(
-                Manager::Cargo,
+                PLUGIN.id(),
                 name,
                 current,
                 version,
@@ -189,7 +205,7 @@ fn cargo_resolve_target_with_min_age(
         .with_context(|| {
             format!(
                 "failed to run {} search {name} --limit 1",
-                Manager::Cargo.as_str()
+                PLUGIN.id()
             )
         })?;
 
@@ -197,7 +213,7 @@ fn cargo_resolve_target_with_min_age(
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!(
             "{} search {name} --limit 1 failed: {}",
-            Manager::Cargo.as_str(),
+            PLUGIN.id(),
             stderr.trim()
         );
     }

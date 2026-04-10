@@ -1,5 +1,3 @@
-use crate::manager::Manager;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutcomeStatus {
     Update,
@@ -17,7 +15,7 @@ pub(crate) const REASON_COMMAND_FAILED: &str = "command_failed";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ItemOutcome {
-    pub(crate) manager: Manager,
+    pub(crate) manager: &'static str,
     pub(crate) name: String,
     pub(crate) from_version: String,
     pub(crate) to_version: String,
@@ -33,7 +31,7 @@ pub(crate) struct ItemOutcome {
 
 impl ItemOutcome {
     pub(crate) fn update(
-        manager: Manager,
+        manager: &'static str,
         name: impl Into<String>,
         from_version: impl Into<String>,
         to_version: impl Into<String>,
@@ -56,7 +54,7 @@ impl ItemOutcome {
     }
 
     pub(crate) fn update_with_delayed_latest(
-        manager: Manager,
+        manager: &'static str,
         name: impl Into<String>,
         from_version: impl Into<String>,
         to_version: impl Into<String>,
@@ -82,7 +80,7 @@ impl ItemOutcome {
     }
 
     pub(crate) fn delayed_no_eligible(
-        manager: Manager,
+        manager: &'static str,
         name: impl Into<String>,
         version: impl Into<String>,
         source: impl Into<String>,
@@ -106,7 +104,7 @@ impl ItemOutcome {
     }
 
     pub(crate) fn delayed_too_fresh(
-        manager: Manager,
+        manager: &'static str,
         name: impl Into<String>,
         from_version: impl Into<String>,
         to_version: impl Into<String>,
@@ -131,7 +129,7 @@ impl ItemOutcome {
     }
 
     pub(crate) fn skipped(
-        manager: Manager,
+        manager: &'static str,
         name: impl Into<String>,
         from_version: impl Into<String>,
         to_version: impl Into<String>,
@@ -156,7 +154,7 @@ impl ItemOutcome {
     }
 
     pub(crate) fn skipped_no_change(
-        manager: Manager,
+        manager: &'static str,
         name: impl Into<String>,
         version: impl Into<String>,
         source: impl Into<String>,
@@ -179,7 +177,7 @@ impl ItemOutcome {
     }
 
     pub(crate) fn error(
-        manager: Manager,
+        manager: &'static str,
         name: impl Into<String>,
         from_version: impl Into<String>,
         to_version: impl Into<String>,
@@ -204,12 +202,11 @@ impl ItemOutcome {
     }
 
     pub(crate) fn to_text_line(&self) -> Option<String> {
-        // Manager enum is the source of truth for the manager prefix.
         if self.status == OutcomeStatus::Skipped && self.reason_code == Some(REASON_NO_CHANGE) {
             return None;
         }
 
-        let manager = self.manager.as_str();
+        let manager = self.manager;
         let from = version_label(&self.from_version);
         let to = version_label(&self.to_version);
 

@@ -1,5 +1,4 @@
-use crate::Cli;
-use crate::manager::Manager;
+use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
     DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
 };
@@ -13,10 +12,27 @@ use semver::Version;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-const NPM_MIN_AGE_DAYS: u64 = 7;
 const NPM_MAX_PARALLEL_CHECKS: usize = 6;
+
+pub(crate) struct NpmPlugin;
+
+impl ManagerPlugin for NpmPlugin {
+    fn id(&self) -> &'static str {
+        "npm"
+    }
+
+    fn default_min_release_age(&self) -> &'static str {
+        "7d"
+    }
+
+    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
+        run(ctx)
+    }
+}
+
+pub(crate) static PLUGIN: NpmPlugin = NpmPlugin;
 
 #[derive(Debug, Deserialize)]
 struct OutdatedEntry {
@@ -29,8 +45,8 @@ struct NpmPlanItem {
     resolved: Result<Option<NpmResolvedTarget>, String>,
 }
 
-pub(crate) fn run(cli: &Cli) -> Result<()> {
-    let min_age = Duration::from_secs(NPM_MIN_AGE_DAYS * 24 * 60 * 60);
+fn run(ctx: &ManagerCtx) -> Result<()> {
+    let min_age = ctx.policy.min_release_age.duration();
 
     let outdated = npm_outdated_global()?;
     if outdated.is_empty() {
@@ -47,7 +63,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .map(|(name, entry)| (name.clone(), entry.current.clone()))
         .collect();
 
-    let threads = effective_parallelism(cli.max_parallel_checks, NPM_MAX_PARALLEL_CHECKS);
+    let threads = effective_parallelism(ctx.max_parallel_checks, NPM_MAX_PARALLEL_CHECKS);
     let plan: Vec<NpmPlanItem> = run_indexed_parallel(
         jobs,
         threads,
@@ -68,8 +84,8 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
     let _upgradable = emit_plan_and_collect_upgradable(
         plan,
         |item| PlanMeta {
-            manager: Manager::Npm,
-            source: Manager::Npm.as_str(),
+            manager: PLUGIN.id(),
+            source: PLUGIN.id(),
             name: item.name.clone(),
             current: item.current.clone(),
         },
@@ -78,7 +94,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
                 Ok(Some(target)) => target,
                 Ok(None) => {
                     return PlanDecision::DelayedNoEligible {
-                        required_age: format!("{NPM_MIN_AGE_DAYS}d"),
+                        required_age: human_age(min_age.as_secs()),
                     };
                 }
                 Err(err) => return PlanDecision::Error(err.clone()),
@@ -108,17 +124,24 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         },
     );
 
-    if cli.dry_run {
+    if ctx.is_dry_run() {
         return Ok(());
     }
 
-    if let Err(err) = run_npm(&["-g", "update", "--min-release-age", "7"]) {
+    let min_age_days = ctx.policy.min_release_age.whole_days();
+
+    if let Err(err) = run_npm(&[
+        "-g",
+        "update",
+        "--min-release-age",
+        &min_age_days.to_string(),
+    ]) {
         let outcome = ItemOutcome::error(
-            Manager::Npm,
+            PLUGIN.id(),
             "*",
             "*",
             "*",
-            Manager::Npm.as_str(),
+            PLUGIN.id(),
             REASON_COMMAND_FAILED,
             err.to_string(),
         );
@@ -132,16 +155,12 @@ fn npm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
     let output = Command::new("npm")
         .args(["outdated", "-g", "--json"])
         .output()
-        .with_context(|| format!("failed to run {} outdated -g --json", Manager::Npm.as_str()))?;
+        .with_context(|| "failed to run npm outdated -g --json")?;
 
     // npm outdated returns exit code 1 when outdated packages exist.
     if !output.status.success() && output.status.code() != Some(1) {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} outdated -g --json failed: {}",
-            Manager::Npm.as_str(),
-            stderr.trim()
-        );
+        bail!("npm outdated -g --json failed: {}", stderr.trim());
     }
 
     let stdout = String::from_utf8(output.stdout).context("npm outdated output not UTF-8")?;
@@ -165,25 +184,16 @@ fn npm_resolve_target_with_min_age(
     name: &str,
     current: &str,
     now_unix_secs: u64,
-    min_age: Duration,
+    min_age: std::time::Duration,
 ) -> Result<Option<NpmResolvedTarget>> {
     let output = Command::new("npm")
         .args(["view", name, "time", "--json"])
         .output()
-        .with_context(|| {
-            format!(
-                "failed to run {} view {name} time --json",
-                Manager::Npm.as_str()
-            )
-        })?;
+        .with_context(|| format!("failed to run npm view {name} time --json"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} view {name} time --json failed: {}",
-            Manager::Npm.as_str(),
-            stderr.trim()
-        );
+        bail!("npm view {name} time --json failed: {}", stderr.trim());
     }
 
     let stdout = String::from_utf8(output.stdout).context("npm view output not UTF-8")?;
