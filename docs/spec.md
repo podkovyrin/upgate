@@ -37,6 +37,9 @@ Global options:
 - `--max-parallel-checks <n>` (default `6`)
 - `--managers <list>` where list is comma-separated manager IDs (default: all managers)
 - `--set <manager.key=value>` / `-S <manager.key=value>` (repeatable config overrides)
+- `--plain` (force plain output: no color, ASCII arrow)
+- `--no-color` (disable ANSI color styling)
+- `--verbose` (show additional metadata segments such as source and delayed-latest note)
 
 Configuration file:
 - `$XDG_CONFIG_HOME/upnow/config.toml` (fallback `~/.config/upnow/config.toml`)
@@ -79,24 +82,37 @@ Statuses:
 - `skipped`
 - `error`
 
-General forms:
-- Update:
-  - `<manager>: <name> v<from> -> v<to> (source: <source>)`
-  - delayed-latest annotation variant:
-    - `<manager>: <name> v<from> -> v<to> (source: <source>; latest v<latest> delayed: <age> < <required>)`
-- Delayed (no eligible release):
-  - `<manager>: <name> v<current> -> v<current> (delayed, no eligible release >= current within <required> window, source: <source>)`
-- Skipped:
-  - `<manager>: <name> v<from> -> v<to> (skipped, <reason>, source: <source>)`
-- Error:
-  - `<manager>: <name> v<from> -> v<to> (error, <reason>, source: <source>)`
+Rendered prefix style:
+- `+ Update`
+- `~ Delayed`
+- `- Skipped`
+- `! Error`
+
+Base line shape:
+- `<status-prefix> [<manager>] <name> v<from> -> v<to>`
+- Unicode arrow `→` is used for non-plain terminal output.
+- ASCII arrow `->` is used in plain output.
+
+Metadata display policy:
+- Default output hides metadata segments.
+- `--verbose` shows metadata segments:
+  - `(source: <source>)`
+  - update delayed-latest annotation when present:
+    - `(latest v<latest> delayed: <age> < <required>)`
 
 Version labels:
 - Numeric versions get `v` prefix in output.
 - Non-numeric tokens (e.g. `*`) are printed as-is.
+- In colored output, the target version `v<to>` is bold.
+- Only changed target-version parts are highlighted in blue (while remaining bold).
 
 Suppression:
 - `skipped_no_change` (`already at selected target`) is not printed.
+
+Spinner behavior:
+- Manager spinner is shown on interactive terminal `stderr`.
+- Spinner is suppressed in plain output and non-interactive `stderr`.
+- Outcome lines are emitted while spinner rendering is suspended to avoid interleaving artifacts.
 
 Batch-error sentinel:
 - Managers with single batch apply commands can emit synthetic error outcome lines using `name="*"` and versions `* -> *`.

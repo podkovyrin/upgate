@@ -66,6 +66,21 @@ Supported keys:
 
 Unknown managers, unknown keys, or malformed values fail fast with an error.
 
+## Output flags (not config-backed)
+
+These output controls are CLI flags only (not config file keys):
+
+- `--plain` — force plain output (no color, ASCII arrow)
+- `--no-color` — disable ANSI color styling
+- `--verbose` — show additional metadata segments in output lines
+
+Example:
+
+```bash
+upnow plan --plain
+upnow apply --verbose --no-color
+```
+
 ## Duration format
 
 `min_release_age` values use these units:
