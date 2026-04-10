@@ -5,16 +5,25 @@ use crate::util::process::run_command_checked_stdout;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
+use rayon::prelude::*;
+use reqwest::blocking::Client;
 use semver::Version;
 use std::collections::{BTreeMap, HashSet};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const CARGO_MIN_AGE_DAYS: u64 = 7;
+const CARGO_MAX_PARALLEL_CHECKS: usize = 4;
 
 #[derive(Debug)]
 struct InstalledCrate {
     version: String,
+}
+
+struct CargoPlanItem {
+    name: String,
+    current: String,
+    resolved: Result<Option<CargoResolvedTarget>, String>,
 }
 
 pub(crate) fn run(cli: &Cli) -> Result<()> {
@@ -30,31 +39,84 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .context("system clock before UNIX_EPOCH")?
         .as_secs();
 
+    let crates_client = reqwest::blocking::Client::builder()
+        .user_agent("upnow/0.1")
+        .timeout(Duration::from_secs(8))
+        .build()
+        .context("failed to build crates.io HTTP client")?;
+
+    let jobs: Vec<(String, String)> = installed
+        .iter()
+        .map(|(name, entry)| (name.clone(), entry.version.clone()))
+        .collect();
+
+    let effective_parallelism = cli.max_parallel_checks.clamp(1, CARGO_MAX_PARALLEL_CHECKS);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(effective_parallelism)
+        .build()
+        .context("failed to build cargo planning thread pool")?;
+
+    let resolved_indexed: Vec<(usize, CargoPlanItem)> = pool.install(|| {
+        jobs.into_par_iter()
+            .enumerate()
+            .map(|(index, (name, current))| {
+                let resolved = cargo_resolve_target_with_min_age(
+                    &crates_client,
+                    &name,
+                    &current,
+                    now,
+                    min_age,
+                )
+                .map_err(|err| err.to_string());
+
+                (
+                    index,
+                    CargoPlanItem {
+                        name,
+                        current,
+                        resolved,
+                    },
+                )
+            })
+            .collect()
+    });
+
+    let mut plan_slots: Vec<Option<CargoPlanItem>> =
+        (0..resolved_indexed.len()).map(|_| None).collect();
+    for (index, item) in resolved_indexed {
+        plan_slots[index] = Some(item);
+    }
+
+    let plan: Vec<CargoPlanItem> = plan_slots
+        .into_iter()
+        .map(|item| item.context("internal error: missing cargo plan slot"))
+        .collect::<Result<Vec<_>>>()?;
+
     let mut upgradable: Vec<(String, String, String)> = Vec::new();
 
-    for (name, entry) in &installed {
-        let resolved = match cargo_resolve_target_with_min_age(name, &entry.version, now, min_age) {
-            Ok(resolved) => resolved,
+    for item in plan {
+        let target = match item.resolved {
+            Ok(target) => target,
             Err(err) => {
                 let outcome = ItemOutcome::error(
                     Manager::Cargo,
-                    name.clone(),
-                    entry.version.clone(),
-                    entry.version.clone(),
+                    item.name,
+                    item.current.clone(),
+                    item.current,
                     "crates.io",
                     REASON_COMMAND_FAILED,
-                    err.to_string(),
+                    err,
                 );
                 emit_text_outcome(&outcome);
                 continue;
             }
         };
 
-        let Some(target) = resolved else {
+        let Some(target) = target else {
             let outcome = ItemOutcome::delayed_no_eligible(
                 Manager::Cargo,
-                name.clone(),
-                entry.version.clone(),
+                item.name,
+                item.current,
                 "crates.io",
                 format!("{}d", CARGO_MIN_AGE_DAYS),
             );
@@ -62,26 +124,27 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
             continue;
         };
 
-        if target.version == entry.version {
+        if target.version == item.current {
             let outcome = ItemOutcome::skipped_no_change(
                 Manager::Cargo,
-                name.clone(),
-                entry.version.clone(),
+                item.name,
+                item.current,
                 "crates.io",
             );
             emit_text_outcome(&outcome);
             continue;
         }
 
+        let target_version = target.version;
         let outcome = if let (Some(age_secs), Some(skipped_ver)) = (
             target.skipped_latest_age_secs,
             target.skipped_latest_version.as_deref(),
         ) {
             ItemOutcome::update_with_delayed_latest(
                 Manager::Cargo,
-                name.clone(),
-                entry.version.clone(),
-                target.version.clone(),
+                item.name.clone(),
+                item.current.clone(),
+                target_version.clone(),
                 "crates.io",
                 skipped_ver.to_string(),
                 human_age(age_secs),
@@ -90,15 +153,15 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         } else {
             ItemOutcome::update(
                 Manager::Cargo,
-                name.clone(),
-                entry.version.clone(),
-                target.version.clone(),
+                item.name.clone(),
+                item.current.clone(),
+                target_version.clone(),
                 "crates.io",
             )
         };
 
         emit_text_outcome(&outcome);
-        upgradable.push((name.clone(), entry.version.clone(), target.version));
+        upgradable.push((item.name, item.current, target_version));
     }
 
     if cli.dry_run {
@@ -166,6 +229,7 @@ struct CargoResolvedTarget {
 }
 
 fn cargo_resolve_target_with_min_age(
+    crates_client: &Client,
     name: &str,
     current: &str,
     now_unix_secs: u64,
@@ -196,7 +260,7 @@ fn cargo_resolve_target_with_min_age(
     let current_ver = Version::parse(current)
         .with_context(|| format!("failed to parse current semver for {name}: {current}"))?;
 
-    let all_versions = crates_io_versions(name)?;
+    let all_versions = crates_io_versions(crates_client, name)?;
     let mut newest_any: Option<(Version, String, u64)> = None;
     let mut eligible: Option<(Version, String, u64)> = None;
 
@@ -287,14 +351,8 @@ struct CrateVersionItem {
     created_at_unix: u64,
 }
 
-fn crates_io_versions(crate_name: &str) -> Result<Vec<CrateVersionItem>> {
+fn crates_io_versions(client: &Client, crate_name: &str) -> Result<Vec<CrateVersionItem>> {
     let url = format!("https://crates.io/api/v1/crates/{crate_name}");
-
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("upnow/0.1")
-        .timeout(Duration::from_secs(8))
-        .build()
-        .context("failed to build crates.io HTTP client")?;
 
     let body = client
         .get(&url)

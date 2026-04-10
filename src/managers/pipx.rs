@@ -6,11 +6,14 @@ use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
 use pep440::Version;
+use rayon::prelude::*;
+use reqwest::blocking::Client;
 use std::collections::BTreeMap;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const PIPX_DELAY_DAYS: u64 = 7;
+const PIPX_MAX_PARALLEL_CHECKS: usize = 4;
 
 #[derive(Debug, serde::Deserialize)]
 struct PipxListRoot {
@@ -53,6 +56,12 @@ struct PypiReleaseFile {
     upload_time: Option<String>,
 }
 
+struct PipxPlanItem {
+    name: String,
+    current: String,
+    resolved: Result<Option<PypiResolvedTarget>, String>,
+}
+
 pub(crate) fn run(cli: &Cli) -> Result<()> {
     let min_age = Duration::from_secs(PIPX_DELAY_DAYS * 24 * 60 * 60);
 
@@ -66,31 +75,76 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .context("system clock before UNIX_EPOCH")?
         .as_secs();
 
+    let pypi_client = reqwest::blocking::Client::builder()
+        .user_agent("upnow/0.1")
+        .timeout(Duration::from_secs(8))
+        .build()
+        .context("failed to build PyPI HTTP client")?;
+
+    let jobs: Vec<(String, String)> = installed.into_iter().collect();
+
+    let effective_parallelism = cli.max_parallel_checks.clamp(1, PIPX_MAX_PARALLEL_CHECKS);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(effective_parallelism)
+        .build()
+        .context("failed to build pipx planning thread pool")?;
+
+    let resolved_indexed: Vec<(usize, PipxPlanItem)> = pool.install(|| {
+        jobs.into_par_iter()
+            .enumerate()
+            .map(|(index, (name, current))| {
+                let resolved =
+                    pypi_resolve_target_with_min_age(&pypi_client, &name, &current, now, min_age)
+                        .map_err(|err| err.to_string());
+
+                (
+                    index,
+                    PipxPlanItem {
+                        name,
+                        current,
+                        resolved,
+                    },
+                )
+            })
+            .collect()
+    });
+
+    let mut plan_slots: Vec<Option<PipxPlanItem>> =
+        (0..resolved_indexed.len()).map(|_| None).collect();
+    for (index, item) in resolved_indexed {
+        plan_slots[index] = Some(item);
+    }
+
+    let plan: Vec<PipxPlanItem> = plan_slots
+        .into_iter()
+        .map(|item| item.context("internal error: missing pipx plan slot"))
+        .collect::<Result<Vec<_>>>()?;
+
     let mut upgradable: Vec<(String, String, String)> = Vec::new();
 
-    for (name, current) in installed {
-        let resolved = match pypi_resolve_target_with_min_age(&name, &current, now, min_age) {
-            Ok(resolved) => resolved,
+    for item in plan {
+        let target = match item.resolved {
+            Ok(target) => target,
             Err(err) => {
                 let outcome = ItemOutcome::error(
                     Manager::Pipx,
-                    name.clone(),
-                    current.clone(),
-                    current.clone(),
+                    item.name,
+                    item.current.clone(),
+                    item.current,
                     "pypi",
                     REASON_COMMAND_FAILED,
-                    err.to_string(),
+                    err,
                 );
                 emit_text_outcome(&outcome);
                 continue;
             }
         };
 
-        let Some(target) = resolved else {
+        let Some(target) = target else {
             let outcome = ItemOutcome::delayed_no_eligible(
                 Manager::Pipx,
-                name.clone(),
-                current.clone(),
+                item.name,
+                item.current,
                 "pypi",
                 format!("{}d", PIPX_DELAY_DAYS),
             );
@@ -98,9 +152,9 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
             continue;
         };
 
-        if target.version == current {
+        if target.version == item.current {
             let outcome =
-                ItemOutcome::skipped_no_change(Manager::Pipx, name.clone(), current, "pypi");
+                ItemOutcome::skipped_no_change(Manager::Pipx, item.name, item.current, "pypi");
             emit_text_outcome(&outcome);
             continue;
         }
@@ -112,8 +166,8 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         ) {
             ItemOutcome::update_with_delayed_latest(
                 Manager::Pipx,
-                name.clone(),
-                current.clone(),
+                item.name.clone(),
+                item.current.clone(),
                 target_version.clone(),
                 "pypi",
                 skipped_ver.to_string(),
@@ -123,15 +177,15 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         } else {
             ItemOutcome::update(
                 Manager::Pipx,
-                name.clone(),
-                current.clone(),
+                item.name.clone(),
+                item.current.clone(),
                 target_version.clone(),
                 "pypi",
             )
         };
 
         emit_text_outcome(&outcome);
-        upgradable.push((name, current, target_version));
+        upgradable.push((item.name, item.current, target_version));
     }
 
     if cli.dry_run {
@@ -193,13 +247,16 @@ struct PypiResolvedTarget {
 }
 
 fn pypi_resolve_target_with_min_age(
+    pypi_client: &Client,
     pkg: &str,
     current: &str,
     now_unix_secs: u64,
     min_age: Duration,
 ) -> Result<Option<PypiResolvedTarget>> {
     let url = format!("https://pypi.org/pypi/{pkg}/json");
-    let body = reqwest::blocking::get(&url)
+    let body = pypi_client
+        .get(&url)
+        .send()
         .with_context(|| format!("failed to GET {url}"))?
         .error_for_status()
         .with_context(|| format!("PyPI returned error for {pkg}"))?
