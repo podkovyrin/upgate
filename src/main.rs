@@ -93,6 +93,10 @@ fn main() {
                 }
             };
 
+        if !manager_ctx.policy.mode.allows_run(run_mode == RunMode::Apply) {
+            continue;
+        }
+
         let spinner = start_manager_spinner(plugin.id(), run_mode);
         let run_result = plugin.run(&manager_ctx);
         finish_manager_spinner(spinner);

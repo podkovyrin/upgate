@@ -15,40 +15,54 @@ Config sections are keyed by manager ID.
 
 ```toml
 [brew]
+# mode = "apply"
 # min_release_age = "12h"
 # no_update = false
 
 [bun]
+# mode = "apply"
 # min_release_age = "7d"
 
 [cargo]
+# mode = "apply"
 # min_release_age = "7d"
 
 [npm]
+# mode = "apply"
 # min_release_age = "7d"
 
 [yarn]
+# mode = "apply"
 # min_release_age = "7d"
 
 [mise]
+# mode = "apply"
 # min_release_age = "7d"
 
 [pipx]
+# mode = "apply"
 # min_release_age = "7d"
 
 [pnpm]
+# mode = "apply"
 # min_release_age = "7d"
 
 [uv]
+# mode = "apply"
 # min_release_age = "7d"
 
 [go]
+# mode = "apply"
+# min_release_age = "7d"
+
+[gem]
+# mode = "off"
 # min_release_age = "7d"
 ```
 
 Known manager IDs in the built-in registry:
 
-- `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`
+- `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`, `gem`
 
 ## CLI overrides
 
@@ -64,10 +78,19 @@ Format:
 
 Supported keys:
 
+- `mode` for all managers (`off`, `plan`, `apply`)
 - `min_release_age` for all managers
 - `no_update` for `brew` only
 
 Unknown managers, unknown keys, or malformed values fail fast with an error.
+
+`mode` semantics:
+- `off`: manager never runs
+- `plan`: manager runs only in `upnow plan`
+- `apply`: manager runs in both `upnow plan` and `upnow apply`
+
+Safety behavior:
+- `--managers` does not bypass `mode`; use `--set <manager>.mode=...` to override.
 
 ## Output flags (not config-backed)
 

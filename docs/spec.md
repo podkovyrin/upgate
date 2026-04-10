@@ -21,6 +21,7 @@ This file is the manager-spec source of truth for current behavior.
 - `src/managers/pnpm.rs`
 - `src/managers/uv.rs`
 - `src/managers/go.rs`
+- `src/managers/gem.rs`
 - `src/outcome.rs`
 - `src/util/process.rs`
 - `src/util/timefmt.rs`
@@ -44,17 +45,25 @@ Global options:
 
 Configuration file:
 - `$XDG_CONFIG_HOME/upnow/config.toml` (fallback `~/.config/upnow/config.toml`)
+- Per-manager `mode` values are configured in TOML (`off`, `plan`, `apply`).
 - Per-manager `min_release_age` values are configured in TOML.
 - Brew-only `no_update` is configured under `[brew].no_update` (default `false`).
 - CLI `--set`/`-S` overrides have higher precedence than file config.
 
-Default manager set: all registered managers (`brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`).
+Default manager set: all registered managers (`brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`, `gem`) with default modes:
+- `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`: `apply`
+- `gem`: `off`
 
 Behavior notes:
 - `plan` is non-mutating.
 - `apply` performs updates.
 - Selected managers run in a fixed internal order:
-  `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`.
+  `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`, `gem`.
+- Manager execution is gated by per-manager `mode`:
+  - `off`: skip always
+  - `plan`: run only in `plan`
+  - `apply`: run in both `plan` and `apply`
+- `--managers` does not bypass `mode`; override with `--set <manager>.mode=...`.
 
 ## Architecture (current)
 
@@ -370,4 +379,35 @@ Apply flow:
 
 Concurrency:
 - Planning per-tool target resolution is parallelized.
+- Pool size: `clamp(1, --max-parallel-checks, 4)`.
+
+### gem (`src/managers/gem.rs`)
+
+Execution mode:
+- Default mode is `off`.
+
+Delay policy:
+- Uses config `[gem].min_release_age` (default `7d`).
+
+Planning semantics:
+- Scope is globally installed Ruby gems from `gem list` intersected with `gem outdated`.
+- Default gems are skipped (managed by Ruby runtime packaging).
+- Target is highest eligible RubyGems release (`age >= min_release_age`) with constraints:
+  - `target >= current`
+  - release is not prerelease
+  - release `ruby_version` requirement matches current Ruby runtime.
+
+Planning flow:
+1. `gem list` (identify default gems).
+2. `gem outdated` (candidate outdated gems).
+3. Per gem: `https://rubygems.org/api/v1/versions/<gem>.json`.
+4. Parse release versions/timestamps and Ruby version requirements.
+5. Select semver-max eligible target.
+
+Apply flow:
+- Per eligible gem: `gem install <name> -v <target>`.
+- Per-gem apply failures emit `error` and continue.
+
+Concurrency:
+- Planning per-gem target resolution is parallelized.
 - Pool size: `clamp(1, --max-parallel-checks, 4)`.

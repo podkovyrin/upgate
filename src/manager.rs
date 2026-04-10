@@ -1,4 +1,4 @@
-use crate::config::UpnowConfig;
+use crate::config::{ManagerMode, UpnowConfig};
 use crate::managers;
 use anyhow::{Result, bail};
 use std::collections::BTreeSet;
@@ -30,6 +30,9 @@ impl ManagerCtx {
 pub(crate) trait ManagerPlugin: Sync {
     fn id(&self) -> &'static str;
     fn default_min_release_age(&self) -> &'static str;
+    fn default_mode(&self) -> ManagerMode {
+        ManagerMode::Apply
+    }
     fn supports_no_update(&self) -> bool {
         false
     }
@@ -37,7 +40,7 @@ pub(crate) trait ManagerPlugin: Sync {
 }
 
 pub(crate) fn all_plugins() -> &'static [&'static dyn ManagerPlugin] {
-    static ALL: [&dyn ManagerPlugin; 10] = [
+    static ALL: [&dyn ManagerPlugin; 11] = [
         &managers::brew::PLUGIN,
         &managers::bun::PLUGIN,
         &managers::cargo::PLUGIN,
@@ -48,6 +51,7 @@ pub(crate) fn all_plugins() -> &'static [&'static dyn ManagerPlugin] {
         &managers::pnpm::PLUGIN,
         &managers::uv::PLUGIN,
         &managers::go::PLUGIN,
+        &managers::gem::PLUGIN,
     ];
 
     &ALL
@@ -62,6 +66,7 @@ pub(crate) fn build_ctx_for_plugin(
     let policy = config.resolve_manager_policy(
         plugin.id(),
         plugin.default_min_release_age(),
+        plugin.default_mode(),
         plugin.supports_no_update(),
     )?;
 

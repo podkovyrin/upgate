@@ -2,8 +2,10 @@ use crate::util::durationparse::parse_duration;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::Duration;
 
 const CONFIG_RELATIVE_PATH: &str = "upnow/config.toml";
@@ -20,6 +22,7 @@ pub(crate) struct UpnowConfig {
 struct ManagerSectionConfig {
     min_release_age: Option<String>,
     no_update: Option<bool>,
+    mode: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,10 +67,56 @@ impl ReleaseAge {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagerMode {
+    Off,
+    Plan,
+    Apply,
+}
+
+impl fmt::Display for ManagerMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Off => f.write_str("off"),
+            Self::Plan => f.write_str("plan"),
+            Self::Apply => f.write_str("apply"),
+        }
+    }
+}
+
+impl FromStr for ManagerMode {
+    type Err = anyhow::Error;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw {
+            "off" => Ok(Self::Off),
+            "plan" => Ok(Self::Plan),
+            "apply" => Ok(Self::Apply),
+            _ => bail!("expected one of off, plan, apply"),
+        }
+    }
+}
+
+impl ManagerMode {
+    fn parse_for(manager_id: &str, raw: &str) -> Result<Self> {
+        raw.parse::<Self>()
+            .with_context(|| format!("invalid config value [{}].mode='{}'", manager_id, raw))
+    }
+
+    pub(crate) fn allows_run(self, run_apply: bool) -> bool {
+        match self {
+            Self::Off => false,
+            Self::Plan => !run_apply,
+            Self::Apply => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ManagerPolicy {
     pub(crate) min_release_age: ReleaseAge,
     pub(crate) no_update: bool,
+    pub(crate) mode: ManagerMode,
 }
 
 impl UpnowConfig {
@@ -91,6 +140,7 @@ impl UpnowConfig {
         &self,
         manager_id: &str,
         default_min_release_age: &str,
+        default_mode: ManagerMode,
         supports_no_update: bool,
     ) -> Result<ManagerPolicy> {
         let section = self.sections.get(manager_id);
@@ -106,9 +156,16 @@ impl UpnowConfig {
             false
         };
 
+        let mode = if let Some(raw) = section.and_then(|cfg| cfg.mode.as_deref()) {
+            ManagerMode::parse_for(manager_id, raw)?
+        } else {
+            default_mode
+        };
+
         Ok(ManagerPolicy {
             min_release_age,
             no_update,
+            mode,
         })
     }
 
@@ -155,6 +212,16 @@ impl UpnowConfig {
                     .entry(manager_id.to_string())
                     .or_default()
                     .no_update = Some(parsed);
+                Ok(())
+            }
+            "mode" => {
+                let parsed = ManagerMode::parse_for(manager_id, value).with_context(|| {
+                    format!(
+                        "invalid override '{raw}': value for {manager_id}.mode must be one of off, plan, apply"
+                    )
+                })?;
+                self.sections.entry(manager_id.to_string()).or_default().mode =
+                    Some(parsed.to_string());
                 Ok(())
             }
             _ => bail!(

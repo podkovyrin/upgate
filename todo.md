@@ -14,7 +14,7 @@
 - [ ] Mac App Store CLI (`mas`)
 - [x] Yarn global (classic `yarn global`)
 - [ ] dotnet global tools (`dotnet tool update --global`)
-- [ ] RubyGems global (`gem update`)
+- [x] RubyGems global (`gem update`)
 - [x] Go-installed CLIs (`go install` workflow)
 - [ ] Nix profile packages (`nix profile`)
 
