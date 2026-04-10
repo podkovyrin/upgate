@@ -78,7 +78,7 @@ struct PypiReleaseFile {
 struct PipxPlanItem {
     name: String,
     current: String,
-    resolved: Result<Option<PypiResolvedTarget>, String>,
+    resolved: Result<PypiResolvedTarget, String>,
 }
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
@@ -128,35 +128,24 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         },
         |item| {
             let target = match &item.resolved {
-                Ok(Some(target)) => target,
-                Ok(None) => {
-                    return PlanDecision::DelayedNoEligible {
-                        required_age: human_age(min_age.as_secs()),
-                    };
-                }
+                Ok(target) => target,
                 Err(err) => return PlanDecision::Error(err.clone()),
             };
 
-            if target.version == item.current {
-                return PlanDecision::NoChange;
+            if let Some(selected) = target.selected_version.as_deref() {
+                if selected == item.current {
+                    return PlanDecision::NoChange;
+                }
+
+                return PlanDecision::Update {
+                    target: selected.to_string(),
+                    delayed_latest: target.delayed_latest(min_age),
+                };
             }
 
-            let delayed_latest = if let (Some(age_secs), Some(skipped_ver)) = (
-                target.skipped_latest_age_secs,
-                target.skipped_latest_version.as_deref(),
-            ) {
-                Some(DelayedLatest {
-                    latest_version: skipped_ver.to_string(),
-                    latest_age: human_age(age_secs),
-                    required_age: human_age(min_age.as_secs()),
-                })
-            } else {
-                None
-            };
-
-            PlanDecision::Update {
-                target: target.version.clone(),
-                delayed_latest,
+            PlanDecision::DelayedNoEligible {
+                required_age: human_age(min_age.as_secs()),
+                delayed_latest: target.delayed_latest(min_age),
             }
         },
     );
@@ -210,9 +199,25 @@ fn pipx_installed_main_packages() -> Result<BTreeMap<String, String>> {
 }
 
 struct PypiResolvedTarget {
-    version: String,
-    skipped_latest_age_secs: Option<u64>,
-    skipped_latest_version: Option<String>,
+    selected_version: Option<String>,
+    latest_version: Option<String>,
+    latest_age_secs: Option<u64>,
+}
+
+impl PypiResolvedTarget {
+    fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
+        let (Some(latest_version), Some(latest_age_secs)) =
+            (self.latest_version.as_deref(), self.latest_age_secs)
+        else {
+            return None;
+        };
+
+        Some(DelayedLatest {
+            latest_version: latest_version.to_string(),
+            latest_age: human_age(latest_age_secs),
+            required_age: human_age(min_age.as_secs()),
+        })
+    }
 }
 
 fn pypi_resolve_target_with_min_age(
@@ -221,7 +226,7 @@ fn pypi_resolve_target_with_min_age(
     current: &str,
     now_unix_secs: u64,
     min_age: Duration,
-) -> Result<Option<PypiResolvedTarget>> {
+) -> Result<PypiResolvedTarget> {
     let url = format!("https://pypi.org/pypi/{pkg}/json");
     let body = pypi_client
         .get(&url)
@@ -279,30 +284,23 @@ fn pypi_resolve_target_with_min_age(
         }
     }
 
-    let Some((eligible_ver, eligible_str, _)) = eligible else {
-        return Ok(None);
-    };
-
-    let (skipped_latest_age_secs, skipped_latest_version) =
-        if let Some((latest_ver, latest_str, latest_ts)) = newest_any {
-            if latest_ver > eligible_ver {
-                (
-                    Some(now_unix_secs.saturating_sub(latest_ts)),
-                    Some(latest_str),
-                )
-            } else {
-                (None, None)
-            }
+    let selected_version = eligible.map(|(_ver, ver_str, _)| ver_str);
+    let (latest_version, latest_age_secs) =
+        if let Some((_latest_ver, latest_str, latest_ts)) = newest_any {
+            (
+                Some(latest_str),
+                Some(now_unix_secs.saturating_sub(latest_ts)),
+            )
         } else {
             (None, None)
         };
 
     let _ = root.info.version;
-    Ok(Some(PypiResolvedTarget {
-        version: eligible_str,
-        skipped_latest_age_secs,
-        skipped_latest_version,
-    }))
+    Ok(PypiResolvedTarget {
+        selected_version,
+        latest_version,
+        latest_age_secs,
+    })
 }
 
 fn run_pipx(args: &[&str]) -> Result<Vec<u8>> {

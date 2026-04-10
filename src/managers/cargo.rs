@@ -42,7 +42,7 @@ struct InstalledCrate {
 struct CargoPlanItem {
     name: String,
     current: String,
-    resolved: Result<Option<CargoResolvedTarget>, String>,
+    resolved: Result<CargoResolvedTarget, String>,
 }
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
@@ -95,35 +95,24 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         },
         |item| {
             let target = match &item.resolved {
-                Ok(Some(target)) => target,
-                Ok(None) => {
-                    return PlanDecision::DelayedNoEligible {
-                        required_age: human_age(min_age.as_secs()),
-                    };
-                }
+                Ok(target) => target,
                 Err(err) => return PlanDecision::Error(err.clone()),
             };
 
-            if target.version == item.current {
-                return PlanDecision::NoChange;
+            if let Some(selected) = target.selected_version.as_deref() {
+                if selected == item.current {
+                    return PlanDecision::NoChange;
+                }
+
+                return PlanDecision::Update {
+                    target: selected.to_string(),
+                    delayed_latest: target.delayed_latest(min_age),
+                };
             }
 
-            let delayed_latest = if let (Some(age_secs), Some(skipped_ver)) = (
-                target.skipped_latest_age_secs,
-                target.skipped_latest_version.as_deref(),
-            ) {
-                Some(DelayedLatest {
-                    latest_version: skipped_ver.to_string(),
-                    latest_age: human_age(age_secs),
-                    required_age: human_age(min_age.as_secs()),
-                })
-            } else {
-                None
-            };
-
-            PlanDecision::Update {
-                target: target.version.clone(),
-                delayed_latest,
+            PlanDecision::DelayedNoEligible {
+                required_age: human_age(min_age.as_secs()),
+                delayed_latest: target.delayed_latest(min_age),
             }
         },
     );
@@ -187,9 +176,25 @@ fn parse_cargo_install_list(text: &str) -> BTreeMap<String, InstalledCrate> {
 }
 
 struct CargoResolvedTarget {
-    version: String,
-    skipped_latest_age_secs: Option<u64>,
-    skipped_latest_version: Option<String>,
+    selected_version: Option<String>,
+    latest_version: Option<String>,
+    latest_age_secs: Option<u64>,
+}
+
+impl CargoResolvedTarget {
+    fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
+        let (Some(latest_version), Some(latest_age_secs)) =
+            (self.latest_version.as_deref(), self.latest_age_secs)
+        else {
+            return None;
+        };
+
+        Some(DelayedLatest {
+            latest_version: latest_version.to_string(),
+            latest_age: human_age(latest_age_secs),
+            required_age: human_age(min_age.as_secs()),
+        })
+    }
 }
 
 fn cargo_resolve_target_with_min_age(
@@ -198,16 +203,11 @@ fn cargo_resolve_target_with_min_age(
     current: &str,
     now_unix_secs: u64,
     min_age: Duration,
-) -> Result<Option<CargoResolvedTarget>> {
+) -> Result<CargoResolvedTarget> {
     let output = Command::new("cargo")
         .args(["search", name, "--limit", "1"])
         .output()
-        .with_context(|| {
-            format!(
-                "failed to run {} search {name} --limit 1",
-                PLUGIN.id()
-            )
-        })?;
+        .with_context(|| format!("failed to run {} search {name} --limit 1", PLUGIN.id()))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -250,29 +250,25 @@ fn cargo_resolve_target_with_min_age(
         }
     }
 
-    let Some((eligible_ver, eligible_str, _)) = eligible else {
-        return Ok(None);
-    };
-
-    let mut skipped_latest_age_secs = None;
-    let mut skipped_latest_version = None;
-
-    if let Some((latest_ver, latest_str, latest_ts)) = newest_any
-        && latest_ver > eligible_ver
-    {
-        skipped_latest_age_secs = Some(now_unix_secs.saturating_sub(latest_ts));
-        skipped_latest_version = Some(latest_str);
-    }
+    let selected_version = eligible.map(|(ver, _, _)| ver.to_string());
+    let (latest_version, latest_age_secs) =
+        if let Some((_latest_ver, latest_str, latest_ts)) = newest_any {
+            (
+                Some(latest_str),
+                Some(now_unix_secs.saturating_sub(latest_ts)),
+            )
+        } else {
+            (None, None)
+        };
 
     // Keep the parsed search latest in scope to validate semver hygiene and avoid stale data.
     let _ = latest;
-    let _ = eligible_str;
 
-    Ok(Some(CargoResolvedTarget {
-        version: eligible_ver.to_string(),
-        skipped_latest_age_secs,
-        skipped_latest_version,
-    }))
+    Ok(CargoResolvedTarget {
+        selected_version,
+        latest_version,
+        latest_age_secs,
+    })
 }
 
 fn parse_cargo_search_latest_version(crate_name: &str, stdout: &str) -> Result<Version> {

@@ -41,7 +41,7 @@ struct InstalledEntry {
 struct YarnPlanItem {
     name: String,
     current: String,
-    resolved: Result<Option<YarnResolvedTarget>, String>,
+    resolved: Result<YarnResolvedTarget, String>,
 }
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
@@ -90,35 +90,24 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         },
         |item| {
             let target = match &item.resolved {
-                Ok(Some(target)) => target,
-                Ok(None) => {
-                    return PlanDecision::DelayedNoEligible {
-                        required_age: human_age(min_age.as_secs()),
-                    };
-                }
+                Ok(target) => target,
                 Err(err) => return PlanDecision::Error(err.clone()),
             };
 
-            if target.version == item.current {
-                return PlanDecision::NoChange;
+            if let Some(selected) = target.selected_version.as_deref() {
+                if selected == item.current {
+                    return PlanDecision::NoChange;
+                }
+
+                return PlanDecision::Update {
+                    target: selected.to_string(),
+                    delayed_latest: target.delayed_latest(min_age),
+                };
             }
 
-            let delayed_latest = if let (Some(age_secs), Some(skipped_ver)) = (
-                target.skipped_latest_age_secs,
-                target.skipped_latest_version.as_deref(),
-            ) {
-                Some(DelayedLatest {
-                    latest_version: skipped_ver.to_string(),
-                    latest_age: human_age(age_secs),
-                    required_age: human_age(min_age.as_secs()),
-                })
-            } else {
-                None
-            };
-
-            PlanDecision::Update {
-                target: target.version.clone(),
-                delayed_latest,
+            PlanDecision::DelayedNoEligible {
+                required_age: human_age(min_age.as_secs()),
+                delayed_latest: target.delayed_latest(min_age),
             }
         },
     );
@@ -186,9 +175,25 @@ fn parse_yarn_global_list(text: &str) -> BTreeMap<String, InstalledEntry> {
 }
 
 struct YarnResolvedTarget {
-    version: String,
-    skipped_latest_age_secs: Option<u64>,
-    skipped_latest_version: Option<String>,
+    selected_version: Option<String>,
+    latest_version: Option<String>,
+    latest_age_secs: Option<u64>,
+}
+
+impl YarnResolvedTarget {
+    fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
+        let (Some(latest_version), Some(latest_age_secs)) =
+            (self.latest_version.as_deref(), self.latest_age_secs)
+        else {
+            return None;
+        };
+
+        Some(DelayedLatest {
+            latest_version: latest_version.to_string(),
+            latest_age: human_age(latest_age_secs),
+            required_age: human_age(min_age.as_secs()),
+        })
+    }
 }
 
 fn yarn_resolve_target_with_min_age(
@@ -196,7 +201,7 @@ fn yarn_resolve_target_with_min_age(
     current: &str,
     now_unix_secs: u64,
     min_age: Duration,
-) -> Result<Option<YarnResolvedTarget>> {
+) -> Result<YarnResolvedTarget> {
     let stdout = run_yarn(&["info", name, "time", "--json"])?;
     let text = String::from_utf8(stdout).context("yarn info output not UTF-8")?;
 
@@ -241,30 +246,22 @@ fn yarn_resolve_target_with_min_age(
         }
     }
 
-    let Some((eligible_ver, eligible_str, _)) = eligible else {
-        return Ok(None);
-    };
-
-    let (skipped_latest_age_secs, skipped_latest_version) =
-        if let Some((latest_ver, latest_str, latest_ts)) = newest_any {
-            if latest_ver > eligible_ver {
-                (
-                    Some(now_unix_secs.saturating_sub(latest_ts)),
-                    Some(latest_str),
-                )
-            } else {
-                (None, None)
-            }
+    let selected_version = eligible.map(|(ver, _, _)| ver.to_string());
+    let (latest_version, latest_age_secs) =
+        if let Some((_latest_ver, latest_str, latest_ts)) = newest_any {
+            (
+                Some(latest_str),
+                Some(now_unix_secs.saturating_sub(latest_ts)),
+            )
         } else {
             (None, None)
         };
 
-    let _ = eligible_str;
-    Ok(Some(YarnResolvedTarget {
-        version: eligible_ver.to_string(),
-        skipped_latest_age_secs,
-        skipped_latest_version,
-    }))
+    Ok(YarnResolvedTarget {
+        selected_version,
+        latest_version,
+        latest_age_secs,
+    })
 }
 
 fn parse_yarn_inspect_object(

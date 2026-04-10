@@ -17,6 +17,7 @@ pub(crate) enum PlanDecision {
     Error(String),
     DelayedNoEligible {
         required_age: String,
+        delayed_latest: Option<DelayedLatest>,
     },
     NoChange,
     Update {
@@ -57,9 +58,28 @@ where
                 );
                 emit_text_outcome(&outcome);
             }
-            PlanDecision::DelayedNoEligible { required_age } => {
-                let outcome =
-                    ItemOutcome::delayed_no_eligible(manager, name, current, source, required_age);
+            PlanDecision::DelayedNoEligible {
+                required_age,
+                delayed_latest,
+            } => {
+                let outcome = if let Some(DelayedLatest {
+                    latest_version,
+                    latest_age,
+                    required_age,
+                }) = delayed_latest
+                {
+                    ItemOutcome::delayed_no_eligible_with_latest(
+                        manager,
+                        name,
+                        current,
+                        source,
+                        latest_version,
+                        latest_age,
+                        required_age,
+                    )
+                } else {
+                    ItemOutcome::delayed_no_eligible(manager, name, current, source, required_age)
+                };
                 emit_text_outcome(&outcome);
             }
             PlanDecision::NoChange => {

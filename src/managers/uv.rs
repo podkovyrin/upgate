@@ -82,8 +82,8 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         "failed to build uv planning thread pool",
         "internal error: missing uv plan slot",
         |tool| {
-            let target =
-                uv_resolve_target_with_exclude_newer(&tool, min_age_raw).map_err(|err| err.to_string());
+            let target = uv_resolve_target_with_exclude_newer(&tool, min_age_raw)
+                .map_err(|err| err.to_string());
             UvPlanItem { tool, target }
         },
     )?;
@@ -106,8 +106,27 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             };
 
             if pep440_compare(target, &item.tool.current) == Some(Ordering::Less) {
+                let delayed_latest = outdated_latest.get(&item.tool.name).map(|latest| {
+                    let latest_age = pypi_release_age_secs(
+                        &pypi_client,
+                        &mut pypi_cache,
+                        &item.tool.name,
+                        latest,
+                        now,
+                    )
+                    .ok()
+                    .flatten()
+                    .unwrap_or(0);
+                    DelayedLatest {
+                        latest_version: latest.clone(),
+                        latest_age: human_age(latest_age),
+                        required_age: human_age(min_age.as_secs()),
+                    }
+                });
+
                 return PlanDecision::DelayedNoEligible {
                     required_age: human_age(min_age.as_secs()),
+                    delayed_latest,
                 };
             }
 
@@ -123,8 +142,28 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                 .flatten()
                     && age_secs < min_age.as_secs()
                 {
+                    let delayed_latest = outdated_latest.get(&item.tool.name).map(|latest| {
+                        let latest_age = pypi_release_age_secs(
+                            &pypi_client,
+                            &mut pypi_cache,
+                            &item.tool.name,
+                            latest,
+                            now,
+                        )
+                        .ok()
+                        .flatten()
+                        .unwrap_or(age_secs);
+
+                        DelayedLatest {
+                            latest_version: latest.clone(),
+                            latest_age: human_age(latest_age),
+                            required_age: human_age(min_age.as_secs()),
+                        }
+                    });
+
                     return PlanDecision::DelayedNoEligible {
                         required_age: human_age(min_age.as_secs()),
+                        delayed_latest,
                     };
                 }
 

@@ -12,7 +12,7 @@ use semver::Version;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const NPM_MAX_PARALLEL_CHECKS: usize = 6;
 
@@ -42,7 +42,7 @@ struct OutdatedEntry {
 struct NpmPlanItem {
     name: String,
     current: String,
-    resolved: Result<Option<NpmResolvedTarget>, String>,
+    resolved: Result<NpmResolvedTarget, String>,
 }
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
@@ -91,35 +91,24 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         },
         |item| {
             let target = match &item.resolved {
-                Ok(Some(target)) => target,
-                Ok(None) => {
-                    return PlanDecision::DelayedNoEligible {
-                        required_age: human_age(min_age.as_secs()),
-                    };
-                }
+                Ok(target) => target,
                 Err(err) => return PlanDecision::Error(err.clone()),
             };
 
-            if target.version == item.current {
-                return PlanDecision::NoChange;
+            if let Some(selected) = target.selected_version.as_deref() {
+                if selected == item.current {
+                    return PlanDecision::NoChange;
+                }
+
+                return PlanDecision::Update {
+                    target: selected.to_string(),
+                    delayed_latest: target.delayed_latest(min_age),
+                };
             }
 
-            let delayed_latest = if let (Some(age_secs), Some(skipped_ver)) = (
-                target.skipped_latest_age_secs,
-                target.skipped_latest_version.as_deref(),
-            ) {
-                Some(DelayedLatest {
-                    latest_version: skipped_ver.to_string(),
-                    latest_age: human_age(age_secs),
-                    required_age: human_age(min_age.as_secs()),
-                })
-            } else {
-                None
-            };
-
-            PlanDecision::Update {
-                target: target.version.clone(),
-                delayed_latest,
+            PlanDecision::DelayedNoEligible {
+                required_age: human_age(min_age.as_secs()),
+                delayed_latest: target.delayed_latest(min_age),
             }
         },
     );
@@ -175,17 +164,33 @@ fn npm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
 }
 
 struct NpmResolvedTarget {
-    version: String,
-    skipped_latest_age_secs: Option<u64>,
-    skipped_latest_version: Option<String>,
+    selected_version: Option<String>,
+    latest_version: Option<String>,
+    latest_age_secs: Option<u64>,
+}
+
+impl NpmResolvedTarget {
+    fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
+        let (Some(latest_version), Some(latest_age_secs)) =
+            (self.latest_version.as_deref(), self.latest_age_secs)
+        else {
+            return None;
+        };
+
+        Some(DelayedLatest {
+            latest_version: latest_version.to_string(),
+            latest_age: human_age(latest_age_secs),
+            required_age: human_age(min_age.as_secs()),
+        })
+    }
 }
 
 fn npm_resolve_target_with_min_age(
     name: &str,
     current: &str,
     now_unix_secs: u64,
-    min_age: std::time::Duration,
-) -> Result<Option<NpmResolvedTarget>> {
+    min_age: Duration,
+) -> Result<NpmResolvedTarget> {
     let output = Command::new("npm")
         .args(["view", name, "time", "--json"])
         .output()
@@ -243,30 +248,22 @@ fn npm_resolve_target_with_min_age(
         }
     }
 
-    let Some((eligible_ver, eligible_str, _eligible_ts)) = eligible else {
-        return Ok(None);
-    };
-
-    let (skipped_latest_age_secs, skipped_latest_version) =
-        if let Some((latest_ver, latest_str, latest_ts)) = newest_any {
-            if latest_ver > eligible_ver {
-                (
-                    Some(now_unix_secs.saturating_sub(latest_ts)),
-                    Some(latest_str),
-                )
-            } else {
-                (None, None)
-            }
+    let selected_version = eligible.map(|(ver, _, _)| ver.to_string());
+    let (latest_version, latest_age_secs) =
+        if let Some((_latest_ver, latest_str, latest_ts)) = newest_any {
+            (
+                Some(latest_str),
+                Some(now_unix_secs.saturating_sub(latest_ts)),
+            )
         } else {
             (None, None)
         };
 
-    let _ = eligible_str;
-    Ok(Some(NpmResolvedTarget {
-        version: eligible_ver.to_string(),
-        skipped_latest_age_secs,
-        skipped_latest_version,
-    }))
+    Ok(NpmResolvedTarget {
+        selected_version,
+        latest_version,
+        latest_age_secs,
+    })
 }
 
 fn run_npm(args: &[&str]) -> Result<Vec<u8>> {

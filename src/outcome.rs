@@ -106,6 +106,31 @@ impl ItemOutcome {
         }
     }
 
+    pub(crate) fn delayed_no_eligible_with_latest(
+        manager: &'static str,
+        name: impl Into<String>,
+        current_version: impl Into<String>,
+        source: impl Into<String>,
+        latest_version: impl Into<String>,
+        latest_age: impl Into<String>,
+        required_age: impl Into<String>,
+    ) -> Self {
+        Self {
+            manager,
+            name: name.into(),
+            from_version: current_version.into(),
+            to_version: latest_version.into(),
+            status: OutcomeStatus::Delayed,
+            source: source.into(),
+            reason_code: Some(REASON_NO_ELIGIBLE_RELEASE),
+            reason_detail: None,
+            age: None,
+            required_age: Some(required_age.into()),
+            latest_version: None,
+            latest_age: Some(latest_age.into()),
+        }
+    }
+
     pub(crate) fn delayed_too_fresh(
         manager: &'static str,
         name: impl Into<String>,
@@ -288,6 +313,10 @@ fn append_status_note(line: &mut String, item: &ItemOutcome, theme: crate::ui::O
 fn delayed_note(item: &ItemOutcome) -> String {
     if item.reason_code == Some(REASON_NO_ELIGIBLE_RELEASE) {
         let required_age = item.required_age.as_deref().unwrap_or("unknown");
+        if let Some(latest_age) = item.latest_age.as_deref() {
+            return format!("(latest too fresh: {latest_age} < {required_age})");
+        }
+
         return format!("(no eligible release >= current within {required_age} window)");
     }
 
