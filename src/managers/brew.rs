@@ -184,11 +184,20 @@ struct GitHubCommitPerson {
 fn run(ctx: &ManagerCtx) -> Result<()> {
     let min_age = ctx.policy.min_release_age.duration();
 
-    if !ctx.policy.no_update {
-        run_brew(&["update", "--quiet"])?;
+    if !ctx.policy.no_update
+        && let Err(err) = run_brew(&["update", "--quiet"])
+    {
+        emit_manager_error(format!("brew metadata refresh failed: {err}"));
     }
 
-    let outdated: OutdatedRoot = brew_json(&["outdated", "--json=v2"])?;
+    let outdated: OutdatedRoot = match brew_json(&["outdated", "--json=v2"]) {
+        Ok(outdated) => outdated,
+        Err(err) => {
+            emit_manager_error(format!("failed to read brew outdated state: {err}"));
+            return Ok(());
+        }
+    };
+
     if outdated.formulae.is_empty() && outdated.casks.is_empty() {
         return Ok(());
     }
@@ -196,15 +205,38 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     let formula_names: Vec<String> = outdated.formulae.iter().map(|f| f.name.clone()).collect();
     let cask_names: Vec<String> = outdated.casks.iter().map(|c| c.name.clone()).collect();
 
-    let info = brew_info_for_names(&formula_names, &cask_names)?;
-    let tap_meta = brew_tap_meta()?;
+    let info = match brew_info_for_names(&formula_names, &cask_names) {
+        Ok(info) => info,
+        Err(err) => {
+            emit_manager_error(format!("failed to read brew package metadata: {err}"));
+            InfoRoot {
+                formulae: Vec::new(),
+                casks: Vec::new(),
+            }
+        }
+    };
+
+    let tap_meta = match brew_tap_meta() {
+        Ok(tap_meta) => tap_meta,
+        Err(err) => {
+            emit_manager_error(format!("failed to read brew tap metadata: {err}"));
+            HashMap::new()
+        }
+    };
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("system clock before UNIX_EPOCH")?
         .as_secs();
 
-    let github_client = github_client()?;
+    let github_client = match github_client() {
+        Ok(client) => Some(client),
+        Err(err) => {
+            emit_manager_error(format!("failed to initialize remote lookup client: {err}"));
+            None
+        }
+    };
+
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(ctx.max_parallel_checks.max(BREW_MAX_PARALLEL_CHECKS_MIN))
         .build()
@@ -300,24 +332,35 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             .build()
             .context("failed to build API fallback thread pool")?;
 
+        let api_client = github_client.clone();
         let api_results: Vec<(usize, PlanItem)> = api_pool.install(|| {
             api_jobs
                 .into_par_iter()
                 .map(|job| {
-                    let action = match github_last_commit_unix_seconds(
-                        &github_client,
-                        &job.remote,
-                        job.branch.as_deref(),
-                        &job.source_path,
-                    ) {
-                        Ok(ts) => action_from_commit_age(min_age, now, ts, DataSource::Api),
-                        Err(github_err) => PlanAction::Skipped {
+                    let action = if let Some(client) = api_client.as_ref() {
+                        match github_last_commit_unix_seconds(
+                            client,
+                            &job.remote,
+                            job.branch.as_deref(),
+                            &job.source_path,
+                        ) {
+                            Ok(ts) => action_from_commit_age(min_age, now, ts, DataSource::Api),
+                            Err(remote_err) => PlanAction::Skipped {
+                                reason: format!(
+                                    "failed age check: local git failed ({}); remote lookup failed ({})",
+                                    job.local_err, remote_err
+                                ),
+                                source: DataSource::Api,
+                            },
+                        }
+                    } else {
+                        PlanAction::Skipped {
                             reason: format!(
-                                "failed age check: local git failed ({}); GitHub fallback failed ({})",
-                                job.local_err, github_err
+                                "failed age check: local git failed ({}) and remote lookup is unavailable",
+                                job.local_err
                             ),
-                            source: DataSource::Api,
-                        },
+                            source: DataSource::None,
+                        }
                     };
 
                     (
@@ -374,13 +417,17 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     if !formula_to_upgrade.is_empty() {
         let mut args = vec!["upgrade".to_string(), "--formula".to_string()];
         args.extend(formula_to_upgrade);
-        run_brew_owned(&args)?;
+        if let Err(err) = run_brew_owned(&args) {
+            emit_manager_error(format!("failed to apply brew formula upgrades: {err}"));
+        }
     }
 
     if !casks_to_upgrade.is_empty() {
         let mut args = vec!["upgrade".to_string(), "--cask".to_string()];
         args.extend(casks_to_upgrade);
-        run_brew_owned(&args)?;
+        if let Err(err) = run_brew_owned(&args) {
+            emit_manager_error(format!("failed to apply brew cask upgrades: {err}"));
+        }
     }
 
     Ok(())
@@ -825,6 +872,19 @@ fn run_brew(args: &[&str]) -> Result<Vec<u8>> {
     let mut command = Command::new("brew");
     command.args(args);
     run_command_checked_stdout(command)
+}
+
+fn emit_manager_error(detail: String) {
+    let outcome = ItemOutcome::error(
+        PLUGIN.id(),
+        "*",
+        "*",
+        "*",
+        PLUGIN.id(),
+        REASON_COMMAND_FAILED,
+        format!("manager-level fallback: {detail}"),
+    );
+    emit_text_outcome(&outcome);
 }
 
 fn run_brew_owned(args: &[String]) -> Result<Vec<u8>> {

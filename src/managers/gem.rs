@@ -100,8 +100,22 @@ struct RubyGemsVersionItem {
 fn run(ctx: &ManagerCtx) -> Result<()> {
     let min_age = ctx.policy.min_release_age.duration();
 
-    let installed = gem_installed_map()?;
-    let outdated = gem_outdated_map()?;
+    let installed = match gem_installed_map() {
+        Ok(installed) => installed,
+        Err(err) => {
+            emit_gem_manager_error(format!("failed to read installed gems: {err}"));
+            return Ok(());
+        }
+    };
+
+    let outdated = match gem_outdated_map() {
+        Ok(outdated) => outdated,
+        Err(err) => {
+            emit_gem_manager_error(format!("failed to query outdated gems: {err}"));
+            return Ok(());
+        }
+    };
+
     if outdated.is_empty() {
         return Ok(());
     }
@@ -111,9 +125,21 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         .context("system clock before UNIX_EPOCH")?
         .as_secs();
 
-    let ruby_runtime = ruby_runtime_version()?;
-    let rubygems_client = crate::util::http::default_blocking_client()
-        .context("failed to build RubyGems HTTP client")?;
+    let ruby_runtime = match ruby_runtime_version() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            emit_gem_manager_error(format!("failed to detect Ruby runtime version: {err}"));
+            return Ok(());
+        }
+    };
+
+    let rubygems_client = match crate::util::http::default_blocking_client() {
+        Ok(client) => client,
+        Err(err) => {
+            emit_gem_manager_error(format!("failed to initialize metadata HTTP client: {err}"));
+            return Ok(());
+        }
+    };
 
     let discovered: Vec<GemDiscoveredItem> = outdated
         .into_iter()
@@ -578,6 +604,19 @@ fn run_ruby(args: &[&str]) -> Result<Vec<u8>> {
     let mut command = Command::new("ruby");
     command.args(args);
     run_command_checked_stdout(command)
+}
+
+fn emit_gem_manager_error(detail: String) {
+    let outcome = ItemOutcome::error(
+        PLUGIN.id(),
+        "*",
+        "*",
+        "*",
+        "rubygems",
+        REASON_COMMAND_FAILED,
+        format!("manager-level fallback: {detail}"),
+    );
+    emit_text_outcome(&outcome);
 }
 
 #[cfg(test)]

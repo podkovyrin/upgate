@@ -48,7 +48,14 @@ struct NpmPlanItem {
 fn run(ctx: &ManagerCtx) -> Result<()> {
     let min_age = ctx.policy.min_release_age.duration();
 
-    let outdated = npm_outdated_global()?;
+    let outdated = match npm_outdated_global() {
+        Ok(outdated) => outdated,
+        Err(err) => {
+            emit_npm_manager_error(format!("failed to query outdated npm packages: {err}"));
+            return Ok(());
+        }
+    };
+
     if outdated.is_empty() {
         return Ok(());
     }
@@ -270,4 +277,17 @@ fn run_npm(args: &[&str]) -> Result<Vec<u8>> {
     let mut command = Command::new("npm");
     command.args(args);
     run_command_checked_stdout(command)
+}
+
+fn emit_npm_manager_error(detail: String) {
+    let outcome = ItemOutcome::error(
+        PLUGIN.id(),
+        "*",
+        "*",
+        "*",
+        PLUGIN.id(),
+        REASON_COMMAND_FAILED,
+        format!("manager-level fallback: {detail}"),
+    );
+    emit_text_outcome(&outcome);
 }

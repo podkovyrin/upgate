@@ -230,11 +230,17 @@ impl ItemOutcome {
     }
 
     pub(crate) fn to_text_line(&self) -> Option<String> {
-        if self.status == OutcomeStatus::Skipped && self.reason_code == Some(REASON_NO_CHANGE) {
-            return None;
-        }
-
         let theme = output_theme();
+
+        if self.status == OutcomeStatus::Skipped {
+            if self.reason_code == Some(REASON_NO_CHANGE) {
+                return None;
+            }
+
+            if !theme.verbose && self.reason_code == Some(REASON_MISSING_METADATA) {
+                return None;
+            }
+        }
         let arrow = if theme.unicode() { "→" } else { "->" };
 
         let manager_rendered = if theme.color() {

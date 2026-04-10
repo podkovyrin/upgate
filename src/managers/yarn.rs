@@ -2,7 +2,9 @@ use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
     DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
 };
-use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
+use crate::outcome::{
+    ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, emit_text_outcome,
+};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::run_command_checked_stdout;
 use crate::util::timefmt::human_age;
@@ -47,7 +49,36 @@ struct YarnPlanItem {
 fn run(ctx: &ManagerCtx) -> Result<()> {
     let min_age = ctx.policy.min_release_age.duration();
 
-    let installed = yarn_global_installed()?;
+    let yarn_major = match yarn_major_version() {
+        Ok(v) => v,
+        Err(err) => {
+            emit_yarn_manager_error(format!("failed to detect Yarn major version: {err}"));
+            return Ok(());
+        }
+    };
+
+    if yarn_major >= 2 {
+        let outcome = ItemOutcome::skipped(
+            PLUGIN.id(),
+            "*",
+            "*",
+            "*",
+            PLUGIN.id(),
+            REASON_MISSING_METADATA,
+            "global upgrades are not supported for Yarn 2+; skipping manager",
+        );
+        emit_text_outcome(&outcome);
+        return Ok(());
+    }
+
+    let installed = match yarn_global_installed() {
+        Ok(installed) => installed,
+        Err(err) => {
+            emit_yarn_manager_error(format!("failed to query global Yarn packages: {err}"));
+            return Ok(());
+        }
+    };
+
     if installed.is_empty() {
         return Ok(());
     }
@@ -63,7 +94,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         .collect();
 
     let threads = effective_parallelism(ctx.max_parallel_checks, YARN_MAX_PARALLEL_CHECKS);
-    let plan: Vec<YarnPlanItem> = run_indexed_parallel(
+    let plan: Vec<YarnPlanItem> = match run_indexed_parallel(
         jobs,
         threads,
         "failed to build yarn planning thread pool",
@@ -78,7 +109,13 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                 resolved,
             }
         },
-    )?;
+    ) {
+        Ok(plan) => plan,
+        Err(err) => {
+            emit_yarn_manager_error(format!("planning execution failed: {err}"));
+            return Ok(());
+        }
+    };
 
     let upgradable = emit_plan_and_collect_upgradable(
         plan,
@@ -133,6 +170,26 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn yarn_major_version() -> Result<u64> {
+    let stdout = run_yarn(&["--version"])?;
+    let text = String::from_utf8(stdout).context("yarn --version output not UTF-8")?;
+
+    parse_yarn_major_version(&text)
+        .with_context(|| format!("failed to parse yarn major version from '{}'", text.trim()))
+}
+
+fn parse_yarn_major_version(text: &str) -> Option<u64> {
+    let raw = text.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let first_token = raw.split_whitespace().next()?;
+    let trimmed = first_token.strip_prefix('v').unwrap_or(first_token);
+    let major = trimmed.split('.').next()?;
+    major.parse::<u64>().ok()
 }
 
 fn yarn_global_installed() -> Result<BTreeMap<String, InstalledEntry>> {
@@ -307,6 +364,19 @@ fn run_yarn(args: &[&str]) -> Result<Vec<u8>> {
     run_command_checked_stdout(command)
 }
 
+fn emit_yarn_manager_error(detail: String) {
+    let outcome = ItemOutcome::error(
+        PLUGIN.id(),
+        "*",
+        "*",
+        "*",
+        PLUGIN.id(),
+        REASON_COMMAND_FAILED,
+        format!("manager-level fallback: {detail}"),
+    );
+    emit_text_outcome(&outcome);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,5 +408,15 @@ Done in 0.05s.
             parsed.get("1.0.0").and_then(serde_json::Value::as_str),
             Some("2025-01-01T00:00:00.000Z")
         );
+    }
+
+    #[test]
+    fn parse_yarn_major_version_plain() {
+        assert_eq!(parse_yarn_major_version("1.22.22\n"), Some(1));
+    }
+
+    #[test]
+    fn parse_yarn_major_version_with_v_prefix() {
+        assert_eq!(parse_yarn_major_version("v4.3.1\n"), Some(4));
     }
 }

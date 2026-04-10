@@ -119,6 +119,7 @@ Version labels:
 
 Suppression:
 - `skipped_no_change` (`already at selected target`) is not printed.
+- `skipped` with reason `missing_metadata` is hidden in default output and shown with `--verbose`.
 
 Spinner behavior:
 - Manager spinner is shown on interactive terminal `stderr`.
@@ -132,10 +133,11 @@ Batch-error sentinel:
 
 - Handled per-item failures emit `error` outcomes and continue within that manager loop.
 - Fatal manager-level failures still return an error from `run(...)`.
-- A fatal manager-level failure aborts subsequent manager execution in the current run.
+- Manager-level setup/run errors do not stop subsequent managers; remaining selected managers are still attempted.
 - Process exit today:
-  - `0` when run completes without fatal manager-level error (including handled per-item errors)
-  - `1` on fatal manager/runtime error
+  - `0` when all selected managers complete without manager-level setup/run errors (including handled per-item errors)
+  - `1` when one or more managers fail setup/run
+  - `130` when a manager failure comes from a signal-terminated subprocess
   - invalid CLI usage uses clap defaults (typically `2`)
 
 ## Manager behavior

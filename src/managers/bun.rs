@@ -48,7 +48,14 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     let min_age = ctx.policy.min_release_age.duration();
     let bun = bun_executable();
 
-    let outdated = bun_outdated_global(&bun)?;
+    let outdated = match bun_outdated_global(&bun) {
+        Ok(outdated) => outdated,
+        Err(err) => {
+            emit_bun_manager_error(format!("failed to query global Bun packages: {err}"));
+            return Ok(());
+        }
+    };
+
     if outdated.is_empty() {
         return Ok(());
     }
@@ -58,7 +65,13 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         .context("system clock before UNIX_EPOCH")?
         .as_secs();
 
-    let global_cwd = bun_global_cwd()?;
+    let global_cwd = match bun_global_cwd() {
+        Ok(path) => path,
+        Err(err) => {
+            emit_bun_manager_error(format!("failed to resolve Bun global directory: {err}"));
+            return Ok(());
+        }
+    };
 
     let jobs: Vec<(String, String)> = outdated
         .iter()
@@ -383,6 +396,19 @@ fn run_bun(bun: &str, args: &[&str]) -> Result<Vec<u8>> {
     let mut command = Command::new(bun);
     command.args(args);
     run_command_checked_stdout(command)
+}
+
+fn emit_bun_manager_error(detail: String) {
+    let outcome = ItemOutcome::error(
+        PLUGIN.id(),
+        "*",
+        "*",
+        "*",
+        PLUGIN.id(),
+        REASON_COMMAND_FAILED,
+        format!("manager-level fallback: {detail}"),
+    );
+    emit_text_outcome(&outcome);
 }
 
 #[cfg(test)]

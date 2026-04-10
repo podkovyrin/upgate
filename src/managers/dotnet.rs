@@ -122,7 +122,14 @@ struct NugetCatalogEntry {
 fn run(ctx: &ManagerCtx) -> Result<()> {
     let min_age = ctx.policy.min_release_age.duration();
 
-    let installed = dotnet_global_tools()?;
+    let installed = match dotnet_global_tools() {
+        Ok(installed) => installed,
+        Err(err) => {
+            emit_dotnet_manager_error(format!("failed to read installed .NET tools: {err}"));
+            return Ok(());
+        }
+    };
+
     if installed.is_empty() {
         return Ok(());
     }
@@ -132,8 +139,13 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         .context("system clock before UNIX_EPOCH")?
         .as_secs();
 
-    let nuget_client = crate::util::http::default_blocking_client()
-        .context("failed to build NuGet HTTP client")?;
+    let nuget_client = match crate::util::http::default_blocking_client() {
+        Ok(client) => client,
+        Err(err) => {
+            emit_dotnet_manager_error(format!("failed to initialize metadata HTTP client: {err}"));
+            return Ok(());
+        }
+    };
 
     let jobs: Vec<(String, String)> = installed
         .into_iter()
@@ -141,7 +153,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         .collect();
 
     let threads = effective_parallelism(ctx.max_parallel_checks, DOTNET_MAX_PARALLEL_CHECKS);
-    let plan: Vec<DotnetPlanItem> = run_indexed_parallel(
+    let plan: Vec<DotnetPlanItem> = match run_indexed_parallel(
         jobs,
         threads,
         "failed to build dotnet planning thread pool",
@@ -156,7 +168,13 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                 resolved,
             }
         },
-    )?;
+    ) {
+        Ok(plan) => plan,
+        Err(err) => {
+            emit_dotnet_manager_error(format!("planning execution failed: {err}"));
+            return Ok(());
+        }
+    };
 
     let upgradable = emit_plan_and_collect_upgradable(
         plan,
@@ -221,16 +239,44 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
 }
 
 fn dotnet_global_tools() -> Result<Vec<DotnetToolEntry>> {
-    let stdout = run_dotnet(&["tool", "list", "--global", "--format", "json"])?;
-    let text = String::from_utf8(stdout).context("dotnet tool list output not UTF-8")?;
+    let output = Command::new("dotnet")
+        .args(["tool", "list", "--global", "--format", "json"])
+        .output()
+        .context("failed to run dotnet tool list --global --format json")?;
 
-    if text.trim().is_empty() {
+    let stdout = String::from_utf8(output.stdout).context("dotnet tool list output not UTF-8")?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        if dotnet_missing_sdk_hint(&stdout) || dotnet_missing_sdk_hint(&stderr) {
+            return Ok(Vec::new());
+        }
+
+        let err_text = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        bail!("dotnet tool list --global --format json failed: {err_text}");
+    }
+
+    if stdout.trim().is_empty() {
         return Ok(Vec::new());
     }
 
     let parsed: DotnetToolListRoot =
-        serde_json::from_str(&text).context("failed to parse dotnet tool list JSON")?;
+        serde_json::from_str(&stdout).context("failed to parse dotnet tool list JSON")?;
     Ok(parsed.data)
+}
+
+fn dotnet_missing_sdk_hint(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+
+    let no_sdk_found = lower.contains(".net sdk") && lower.contains("no") && lower.contains("found");
+    let cannot_find_installed =
+        lower.contains("installed .net sdk") && lower.contains("not possible") && lower.contains("find");
+
+    no_sdk_found || cannot_find_installed
 }
 
 fn nuget_resolve_target_with_min_age(
@@ -396,6 +442,19 @@ fn run_dotnet(args: &[&str]) -> Result<Vec<u8>> {
     run_command_checked_stdout(command)
 }
 
+fn emit_dotnet_manager_error(detail: String) {
+    let outcome = ItemOutcome::error(
+        PLUGIN.id(),
+        "*",
+        "*",
+        "*",
+        "nuget",
+        REASON_COMMAND_FAILED,
+        format!("manager-level fallback: {detail}"),
+    );
+    emit_text_outcome(&outcome);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,5 +493,14 @@ mod tests {
         };
 
         assert!(target.delayed_latest(Duration::from_secs(7 * 24 * 60 * 60)).is_some());
+    }
+
+    #[test]
+    fn detects_dotnet_sdk_missing_hints() {
+        assert!(dotnet_missing_sdk_hint("No .NET SDKs were found"));
+        assert!(dotnet_missing_sdk_hint(
+            "It was not possible to find any installed .NET SDKs"
+        ));
+        assert!(!dotnet_missing_sdk_hint("some other error"));
     }
 }

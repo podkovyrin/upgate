@@ -5,6 +5,7 @@ mod outcome;
 mod ui;
 mod util;
 
+use anyhow::Error;
 use clap::{Parser, Subcommand};
 use config::UpnowConfig;
 use manager::{RunMode, all_plugins, build_ctx_for_plugin, resolve_selected_plugins};
@@ -83,13 +84,16 @@ fn main() {
         }
     };
 
+    let mut had_manager_failure = false;
+
     for plugin in selected_plugins {
         let manager_ctx =
             match build_ctx_for_plugin(plugin, run_mode, cli.max_parallel_checks, &config) {
                 Ok(ctx) => ctx,
                 Err(err) => {
-                    eprintln!("error: {err}");
-                    std::process::exit(1);
+                    eprintln!("error: manager '{}' setup failed: {err}", plugin.id());
+                    had_manager_failure = true;
+                    continue;
                 }
             };
 
@@ -102,8 +106,20 @@ fn main() {
         finish_manager_spinner(spinner);
 
         if let Err(err) = run_result {
-            eprintln!("error: {err}");
-            std::process::exit(1);
+            eprintln!("error: manager '{}' failed: {err}", plugin.id());
+            if is_signal_termination(&err) {
+                std::process::exit(130);
+            }
+            had_manager_failure = true;
         }
     }
+
+    if had_manager_failure {
+        std::process::exit(1);
+    }
+}
+
+fn is_signal_termination(err: &Error) -> bool {
+    err.chain()
+        .any(|cause| cause.downcast_ref::<util::process::CommandFailedError>().is_some_and(util::process::CommandFailedError::was_signaled))
 }

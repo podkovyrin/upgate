@@ -44,11 +44,10 @@ These are intentionally narrow and avoid introducing framework-style coupling.
 ## 5) Exit code contract (current)
 
 Current implementation behavior:
-- `0`: run completed without fatal manager-level error (can include handled per-item errors)
-- `1`: fatal manager/runtime error bubbled to `main`
+- `0`: run completed without manager-level setup/run errors (can include handled per-item errors)
+- `1`: one or more managers failed setup/run (other managers continue and are still attempted)
+- `130`: subprocess-backed manager failure was caused by signal termination
 - CLI parse/usage errors are clap-managed (typically `2`)
-
-Previously discussed explicit `130`/signal mapping is not yet implemented in dedicated handling.
 
 ## 6) Testing posture
 
@@ -58,6 +57,4 @@ Previously discussed explicit `130`/signal mapping is not yet implemented in ded
 
 ## 7) Deferred / open
 
-- Cross-manager parallel apply orchestration and dependency ordering policy
-- Optional summary/aggregation output lines
 - Optional structured log sinks for crash forensics

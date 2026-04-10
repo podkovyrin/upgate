@@ -40,21 +40,19 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     let min_age_raw = ctx.policy.min_release_age.cli_arg();
     let min_age = ctx.policy.min_release_age.duration();
 
-    let planned = mise_upgrade_dry_run_with_before(min_age_raw)?;
+    let planned = match mise_upgrade_dry_run_with_before(min_age_raw) {
+        Ok(planned) => planned,
+        Err(err) => {
+            emit_mise_manager_error(format!("failed to build mise upgrade plan: {err}"));
+            return Ok(());
+        }
+    };
+
     let plan_pairs = build_plan_pairs(&planned);
     let latest_map = match mise_outdated_latest_map() {
         Ok(map) => map,
         Err(err) => {
-            let outcome = ItemOutcome::error(
-                PLUGIN.id(),
-                "*",
-                "*",
-                "*",
-                PLUGIN.id(),
-                REASON_COMMAND_FAILED,
-                err.to_string(),
-            );
-            emit_text_outcome(&outcome);
+            emit_mise_manager_error(format!("failed to fetch latest version map: {err}"));
             BTreeMap::new()
         }
     };
@@ -75,7 +73,8 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     }
 
     let threads = effective_parallelism(ctx.max_parallel_checks, MISE_NPM_AGE_MAX_PARALLEL_CHECKS);
-    let age_results_indexed: Vec<(usize, MiseLatestAgeResult)> = run_indexed_parallel(
+    let mut npm_age_annotations_enabled = true;
+    let age_results_indexed: Vec<(usize, MiseLatestAgeResult)> = match run_indexed_parallel(
         age_jobs,
         threads,
         "failed to build mise npm-age planning thread pool",
@@ -84,7 +83,16 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             let age_secs = npm_latest_age_secs(&tool, &latest, now).map_err(|err| err.to_string());
             (idx, MiseLatestAgeResult { age_secs })
         },
-    )?;
+    ) {
+        Ok(results) => results,
+        Err(err) => {
+            npm_age_annotations_enabled = false;
+            emit_mise_manager_error(format!(
+                "npm delayed-latest age enrichment is unavailable: {err}"
+            ));
+            Vec::new()
+        }
+    };
 
     let mut age_by_index: BTreeMap<usize, MiseLatestAgeResult> = BTreeMap::new();
     for (idx, age_result) in age_results_indexed {
@@ -115,16 +123,15 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             }
 
             let age_secs = if item.tool.starts_with("npm:") {
-                match age_by_index.remove(idx) {
-                    Some(age_result) => match age_result.age_secs {
-                        Ok(age_secs) => age_secs,
-                        Err(err) => return PlanDecision::Error(err),
-                    },
-                    None => {
-                        return PlanDecision::Error(format!(
-                            "internal error: missing mise npm-age result for {}",
-                            item.tool
-                        ));
+                if !npm_age_annotations_enabled {
+                    0
+                } else {
+                    match age_by_index.remove(idx) {
+                        Some(age_result) => match age_result.age_secs {
+                            Ok(age_secs) => age_secs,
+                            Err(err) => return PlanDecision::Error(err),
+                        },
+                        None => 0,
                     }
                 }
             } else {
@@ -279,4 +286,17 @@ fn run_mise(args: &[&str]) -> Result<Vec<u8>> {
     let mut command = Command::new("mise");
     command.args(args);
     run_command_checked_stdout(command)
+}
+
+fn emit_mise_manager_error(detail: String) {
+    let outcome = ItemOutcome::error(
+        PLUGIN.id(),
+        "*",
+        "*",
+        "*",
+        PLUGIN.id(),
+        REASON_COMMAND_FAILED,
+        format!("manager-level fallback: {detail}"),
+    );
+    emit_text_outcome(&outcome);
 }

@@ -1,4 +1,5 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
+use std::fmt;
 use std::process::{Command, ExitStatus, Output};
 
 pub(crate) fn run_command(mut command: Command) -> Result<Output> {
@@ -25,15 +26,12 @@ pub(crate) fn expect_success(output: Output, command_display: &str) -> Result<Ou
         return Ok(output);
     }
 
-    let code = exit_code_label(output.status);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let detail = stderr.trim();
-
-    if detail.is_empty() {
-        bail!("{command_display} failed (exit {code})");
-    }
-
-    bail!("{command_display} failed (exit {code}): {detail}")
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    Err(anyhow::Error::new(CommandFailedError {
+        command_display: command_display.to_string(),
+        status: output.status,
+        stderr,
+    }))
 }
 
 pub(crate) fn command_display(command: &Command) -> String {
@@ -49,6 +47,34 @@ pub(crate) fn command_display(command: &Command) -> String {
         format!("{program} {}", args.join(" "))
     }
 }
+
+#[derive(Debug)]
+pub(crate) struct CommandFailedError {
+    command_display: String,
+    status: ExitStatus,
+    stderr: String,
+}
+
+impl CommandFailedError {
+    pub(crate) fn was_signaled(&self) -> bool {
+        self.status.code().is_none()
+    }
+}
+
+impl fmt::Display for CommandFailedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let code = exit_code_label(self.status);
+        let detail = self.stderr.trim();
+
+        if detail.is_empty() {
+            write!(f, "{} failed (exit {code})", self.command_display)
+        } else {
+            write!(f, "{} failed (exit {code}): {detail}", self.command_display)
+        }
+    }
+}
+
+impl std::error::Error for CommandFailedError {}
 
 fn exit_code_label(status: ExitStatus) -> String {
     match status.code() {

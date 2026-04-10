@@ -10,6 +10,7 @@ use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
 use reqwest::blocking::Client;
 use semver::Version;
+use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -37,6 +38,15 @@ pub(crate) static PLUGIN: CargoPlugin = CargoPlugin;
 #[derive(Debug)]
 struct InstalledCrate {
     version: String,
+    install_meta: Option<CargoInstallMeta>,
+}
+
+#[derive(Debug, Clone)]
+struct CargoInstallMeta {
+    bins: Vec<String>,
+    features: Vec<String>,
+    all_features: bool,
+    no_default_features: bool,
 }
 
 struct CargoPlanItem {
@@ -48,7 +58,14 @@ struct CargoPlanItem {
 fn run(ctx: &ManagerCtx) -> Result<()> {
     let min_age = ctx.policy.min_release_age.duration();
 
-    let installed = cargo_installed_crates()?;
+    let installed = match cargo_installed_crates() {
+        Ok(installed) => installed,
+        Err(err) => {
+            emit_cargo_manager_error(format!("failed to read installed Cargo tools: {err}"));
+            return Ok(());
+        }
+    };
+
     if installed.is_empty() {
         return Ok(());
     }
@@ -58,8 +75,13 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         .context("system clock before UNIX_EPOCH")?
         .as_secs();
 
-    let crates_client = crate::util::http::default_blocking_client()
-        .context("failed to build crates.io HTTP client")?;
+    let crates_client = match crate::util::http::default_blocking_client() {
+        Ok(client) => client,
+        Err(err) => {
+            emit_cargo_manager_error(format!("failed to initialize metadata HTTP client: {err}"));
+            return Ok(());
+        }
+    };
 
     let jobs: Vec<(String, String)> = installed
         .iter()
@@ -67,7 +89,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         .collect();
 
     let threads = effective_parallelism(ctx.max_parallel_checks, CARGO_MAX_PARALLEL_CHECKS);
-    let plan: Vec<CargoPlanItem> = run_indexed_parallel(
+    let plan: Vec<CargoPlanItem> = match run_indexed_parallel(
         jobs,
         threads,
         "failed to build cargo planning thread pool",
@@ -83,7 +105,13 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                 resolved,
             }
         },
-    )?;
+    ) {
+        Ok(plan) => plan,
+        Err(err) => {
+            emit_cargo_manager_error(format!("planning execution failed: {err}"));
+            return Ok(());
+        }
+    };
 
     let upgradable = emit_plan_and_collect_upgradable(
         plan,
@@ -122,8 +150,15 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     }
 
     for (name, current, version) in upgradable {
-        let spec = format!("{name}@{version}");
-        if let Err(err) = run_cargo(&["install", "--force", &spec]) {
+        let install_meta = installed
+            .get(&name)
+            .and_then(|entry| entry.install_meta.clone());
+
+        let mut args = vec!["install".to_string(), "--force".to_string()];
+        apply_cargo_install_meta_args(&mut args, install_meta.as_ref());
+        args.push(format!("{name}@{version}"));
+
+        if let Err(err) = run_cargo_owned(&args) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 name,
@@ -144,7 +179,14 @@ fn cargo_installed_crates() -> Result<BTreeMap<String, InstalledCrate>> {
     let stdout = run_cargo(&["install", "--list"])?;
     let text = String::from_utf8(stdout).context("cargo install --list output not UTF-8")?;
 
-    Ok(parse_cargo_install_list(&text))
+    let mut installed = parse_cargo_install_list(&text);
+
+    let install_meta = cargo_install_tracking_map().unwrap_or_default();
+    for (name, entry) in &mut installed {
+        entry.install_meta = install_meta.get(name).cloned();
+    }
+
+    Ok(installed)
 }
 
 fn parse_cargo_install_list(text: &str) -> BTreeMap<String, InstalledCrate> {
@@ -168,11 +210,106 @@ fn parse_cargo_install_list(text: &str) -> BTreeMap<String, InstalledCrate> {
             name.to_string(),
             InstalledCrate {
                 version: ver_raw.to_string(),
+                install_meta: None,
             },
         );
     }
 
     out
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoInstallLedger {
+    installs: BTreeMap<String, CargoInstallLedgerEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoInstallLedgerEntry {
+    #[serde(default)]
+    bins: Vec<String>,
+    #[serde(default)]
+    features: Vec<String>,
+    #[serde(default)]
+    all_features: bool,
+    #[serde(default)]
+    no_default_features: bool,
+}
+
+fn cargo_install_tracking_map() -> Result<BTreeMap<String, CargoInstallMeta>> {
+    let cargo_home = std::env::var("CARGO_HOME")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.trim().to_string())
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .map(|home| format!("{}/.cargo", home.trim()))
+        })
+        .context("CARGO_HOME and HOME are not set")?;
+
+    let path = std::path::Path::new(&cargo_home).join(".crates2.json");
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let parsed: CargoInstallLedger = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+
+    let mut out = BTreeMap::new();
+    for (key, value) in parsed.installs {
+        if let Some(crate_name) = parse_cargo_ledger_key_name(&key) {
+            out.insert(
+                crate_name,
+                CargoInstallMeta {
+                    bins: value.bins,
+                    features: value.features,
+                    all_features: value.all_features,
+                    no_default_features: value.no_default_features,
+                },
+            );
+        }
+    }
+
+    Ok(out)
+}
+
+fn parse_cargo_ledger_key_name(key: &str) -> Option<String> {
+    let (left, _) = key.split_once(" (")?;
+    let (name, _ver) = left.rsplit_once(' ')?;
+    if name.is_empty() {
+        return None;
+    }
+
+    Some(name.to_string())
+}
+
+fn apply_cargo_install_meta_args(args: &mut Vec<String>, meta: Option<&CargoInstallMeta>) {
+    let Some(meta) = meta else {
+        return;
+    };
+
+    if !meta.bins.is_empty() {
+        if meta.bins.len() == 1 {
+            args.push("--bin".to_string());
+            args.push(meta.bins[0].clone());
+        } else {
+            args.push("--bins".to_string());
+        }
+    }
+
+    if meta.all_features {
+        args.push("--all-features".to_string());
+    } else if !meta.features.is_empty() {
+        args.push("--features".to_string());
+        args.push(meta.features.join(","));
+    }
+
+    if meta.no_default_features {
+        args.push("--no-default-features".to_string());
+    }
 }
 
 struct CargoResolvedTarget {
@@ -359,6 +496,25 @@ fn run_cargo(args: &[&str]) -> Result<Vec<u8>> {
     run_command_checked_stdout(command)
 }
 
+fn run_cargo_owned(args: &[String]) -> Result<Vec<u8>> {
+    let mut command = Command::new("cargo");
+    command.args(args);
+    run_command_checked_stdout(command)
+}
+
+fn emit_cargo_manager_error(detail: String) {
+    let outcome = ItemOutcome::error(
+        PLUGIN.id(),
+        "*",
+        "*",
+        "*",
+        "crates.io",
+        REASON_COMMAND_FAILED,
+        format!("manager-level fallback: {detail}"),
+    );
+    emit_text_outcome(&outcome);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,5 +543,38 @@ cbindgen v0.29.2:
         let raw = "cargo-deny = \"0.19.0\"    # comment\n... and 12 crates more\n";
         let parsed = parse_cargo_search_latest_version("cargo-deny", raw).expect("should parse");
         assert_eq!(parsed, Version::new(0, 19, 0));
+    }
+
+    #[test]
+    fn parse_cargo_ledger_key_extracts_name() {
+        let key = "cargo-deny 0.19.0 (registry+https://github.com/rust-lang/crates.io-index)";
+        assert_eq!(
+            parse_cargo_ledger_key_name(key).as_deref(),
+            Some("cargo-deny")
+        );
+    }
+
+    #[test]
+    fn apply_install_meta_args_uses_single_bin_and_features() {
+        let meta = CargoInstallMeta {
+            bins: vec!["cargo-deny".to_string()],
+            features: vec!["vendored-openssl".to_string(), "native-tls".to_string()],
+            all_features: false,
+            no_default_features: true,
+        };
+
+        let mut args = Vec::new();
+        apply_cargo_install_meta_args(&mut args, Some(&meta));
+
+        assert_eq!(
+            args,
+            vec![
+                "--bin",
+                "cargo-deny",
+                "--features",
+                "vendored-openssl,native-tls",
+                "--no-default-features"
+            ]
+        );
     }
 }

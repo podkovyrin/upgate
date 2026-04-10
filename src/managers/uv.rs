@@ -61,14 +61,32 @@ struct UvPlanItem {
 fn run(ctx: &ManagerCtx) -> Result<()> {
     let min_age_raw = ctx.policy.min_release_age.cli_arg();
     let min_age = ctx.policy.min_release_age.duration();
-    let tool_dir = uv_tool_dir()?;
+    let tool_dir = match uv_tool_dir() {
+        Ok(tool_dir) => tool_dir,
+        Err(err) => {
+            emit_uv_manager_error(format!("failed to locate uv tool directory: {err}"));
+            return Ok(());
+        }
+    };
 
-    let installed = uv_installed_tools(&tool_dir)?;
+    let installed = match uv_installed_tools(&tool_dir) {
+        Ok(installed) => installed,
+        Err(err) => {
+            emit_uv_manager_error(format!("failed to discover installed uv tools: {err}"));
+            return Ok(());
+        }
+    };
     if installed.is_empty() {
         return Ok(());
     }
 
-    let outdated_latest = uv_outdated_latest_map()?;
+    let outdated_latest = match uv_outdated_latest_map() {
+        Ok(map) => map,
+        Err(err) => {
+            emit_uv_manager_error(format!("failed to query latest uv tool versions: {err}"));
+            BTreeMap::new()
+        }
+    };
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -89,8 +107,14 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     )?;
 
     let mut pypi_cache: HashMap<String, PypiRoot> = HashMap::new();
-    let pypi_client =
-        crate::util::http::default_blocking_client().context("failed to build PyPI HTTP client")?;
+    let pypi_client = match crate::util::http::default_blocking_client() {
+        Ok(client) => Some(client),
+        Err(err) => {
+            emit_uv_manager_error(format!("failed to initialize metadata HTTP client: {err}"));
+            None
+        }
+    };
+
     let upgradable_tools = emit_plan_and_collect_upgradable(
         plan,
         |item| PlanMeta {
@@ -107,16 +131,15 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
 
             if pep440_compare(target, &item.tool.current) == Some(Ordering::Less) {
                 let delayed_latest = outdated_latest.get(&item.tool.name).map(|latest| {
-                    let latest_age = pypi_release_age_secs(
-                        &pypi_client,
+                    let latest_age = resolve_pypi_age_secs(
+                        pypi_client.as_ref(),
                         &mut pypi_cache,
                         &item.tool.name,
                         latest,
                         now,
                     )
-                    .ok()
-                    .flatten()
                     .unwrap_or(0);
+
                     DelayedLatest {
                         latest_version: latest.clone(),
                         latest_age: human_age(latest_age),
@@ -131,27 +154,23 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             }
 
             if target == &item.tool.current {
-                if let Some(age_secs) = pypi_release_age_secs(
-                    &pypi_client,
+                if let Some(age_secs) = resolve_pypi_age_secs(
+                    pypi_client.as_ref(),
                     &mut pypi_cache,
                     &item.tool.name,
                     &item.tool.current,
                     now,
                 )
-                .ok()
-                .flatten()
                     && age_secs < min_age.as_secs()
                 {
                     let delayed_latest = outdated_latest.get(&item.tool.name).map(|latest| {
-                        let latest_age = pypi_release_age_secs(
-                            &pypi_client,
+                        let latest_age = resolve_pypi_age_secs(
+                            pypi_client.as_ref(),
                             &mut pypi_cache,
                             &item.tool.name,
                             latest,
                             now,
                         )
-                        .ok()
-                        .flatten()
                         .unwrap_or(age_secs);
 
                         DelayedLatest {
@@ -173,16 +192,15 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             let delayed_latest = if let Some(latest) = outdated_latest.get(&item.tool.name)
                 && latest != target
             {
-                let latest_age = pypi_release_age_secs(
-                    &pypi_client,
+                let latest_age = resolve_pypi_age_secs(
+                    pypi_client.as_ref(),
                     &mut pypi_cache,
                     &item.tool.name,
                     latest,
                     now,
                 )
-                .ok()
-                .flatten()
                 .unwrap_or(0);
+
                 Some(DelayedLatest {
                     latest_version: latest.clone(),
                     latest_age: human_age(latest_age),
@@ -476,6 +494,21 @@ fn pep440_compare(lhs: &str, rhs: &str) -> Option<Ordering> {
     Some(lhs.cmp(&rhs))
 }
 
+fn resolve_pypi_age_secs(
+    maybe_client: Option<&reqwest::blocking::Client>,
+    cache: &mut HashMap<String, PypiRoot>,
+    package: &str,
+    version: &str,
+    now_unix_secs: u64,
+) -> Option<u64> {
+    let client = maybe_client?;
+
+    match pypi_release_age_secs(client, cache, package, version, now_unix_secs) {
+        Ok(value) => value,
+        Err(_) => None,
+    }
+}
+
 fn pypi_release_age_secs(
     pypi_client: &reqwest::blocking::Client,
     cache: &mut HashMap<String, PypiRoot>,
@@ -555,6 +588,19 @@ fn run_uv(args: &[&str]) -> Result<Vec<u8>> {
     let mut command = Command::new("uv");
     command.args(args);
     run_command_checked_stdout(command)
+}
+
+fn emit_uv_manager_error(detail: String) {
+    let outcome = ItemOutcome::error(
+        PLUGIN.id(),
+        "*",
+        "*",
+        "*",
+        PLUGIN.id(),
+        REASON_COMMAND_FAILED,
+        format!("manager-level fallback: {detail}"),
+    );
+    emit_text_outcome(&outcome);
 }
 
 fn run_uv_owned(args: &[String]) -> Result<Vec<u8>> {
