@@ -5,6 +5,7 @@ use crate::util::process::run_command_checked_stdout;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
+use rayon::prelude::*;
 use semver::Version;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -12,10 +13,17 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const PNPM_MIN_AGE_DAYS: u64 = 7;
+const PNPM_MAX_PARALLEL_CHECKS: usize = 6;
 
 #[derive(Debug, Deserialize)]
 struct OutdatedEntry {
     current: String,
+}
+
+struct PnpmPlanItem {
+    name: String,
+    current: String,
+    resolved: Result<Option<PnpmResolvedTarget>, String>,
 }
 
 pub(crate) fn run(cli: &Cli) -> Result<()> {
@@ -31,31 +39,72 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .context("system clock before UNIX_EPOCH")?
         .as_secs();
 
+    let jobs: Vec<(String, String)> = outdated
+        .iter()
+        .map(|(name, entry)| (name.clone(), entry.current.clone()))
+        .collect();
+
+    let effective_parallelism = cli.max_parallel_checks.clamp(1, PNPM_MAX_PARALLEL_CHECKS);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(effective_parallelism)
+        .build()
+        .context("failed to build pnpm planning thread pool")?;
+
+    let resolved_indexed: Vec<(usize, PnpmPlanItem)> = pool.install(|| {
+        jobs.into_par_iter()
+            .enumerate()
+            .map(|(index, (name, current))| {
+                let resolved = pnpm_resolve_target_with_min_age(&name, &current, now, min_age)
+                    .map_err(|err| err.to_string());
+
+                (
+                    index,
+                    PnpmPlanItem {
+                        name,
+                        current,
+                        resolved,
+                    },
+                )
+            })
+            .collect()
+    });
+
+    let mut plan_slots: Vec<Option<PnpmPlanItem>> =
+        (0..resolved_indexed.len()).map(|_| None).collect();
+    for (index, item) in resolved_indexed {
+        plan_slots[index] = Some(item);
+    }
+
+    let plan: Vec<PnpmPlanItem> = plan_slots
+        .into_iter()
+        .map(|item| item.context("internal error: missing pnpm plan slot"))
+        .collect::<Result<Vec<_>>>()?;
+
     let mut upgradable: Vec<(String, String, String)> = Vec::new();
 
-    for (name, entry) in &outdated {
-        let resolved = match pnpm_resolve_target_with_min_age(name, &entry.current, now, min_age) {
-            Ok(resolved) => resolved,
+    for item in plan {
+        let target = match item.resolved {
+            Ok(target) => target,
             Err(err) => {
                 let outcome = ItemOutcome::error(
                     Manager::Pnpm,
-                    name.clone(),
-                    entry.current.clone(),
-                    entry.current.clone(),
+                    item.name,
+                    item.current.clone(),
+                    item.current,
                     Manager::Pnpm.as_str(),
                     REASON_COMMAND_FAILED,
-                    err.to_string(),
+                    err,
                 );
                 emit_text_outcome(&outcome);
                 continue;
             }
         };
 
-        let Some(target) = resolved else {
+        let Some(target) = target else {
             let outcome = ItemOutcome::delayed_no_eligible(
                 Manager::Pnpm,
-                name.clone(),
-                entry.current.clone(),
+                item.name,
+                item.current,
                 Manager::Pnpm.as_str(),
                 format!("{}d", PNPM_MIN_AGE_DAYS),
             );
@@ -63,26 +112,27 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
             continue;
         };
 
-        if target.version == entry.current {
+        if target.version == item.current {
             let outcome = ItemOutcome::skipped_no_change(
                 Manager::Pnpm,
-                name.clone(),
-                entry.current.clone(),
+                item.name,
+                item.current,
                 Manager::Pnpm.as_str(),
             );
             emit_text_outcome(&outcome);
             continue;
         }
 
+        let target_version = target.version;
         let outcome = if let (Some(age_secs), Some(skipped_ver)) = (
             target.skipped_latest_age_secs,
             target.skipped_latest_version.as_deref(),
         ) {
             ItemOutcome::update_with_delayed_latest(
                 Manager::Pnpm,
-                name.clone(),
-                entry.current.clone(),
-                target.version.clone(),
+                item.name.clone(),
+                item.current.clone(),
+                target_version.clone(),
                 Manager::Pnpm.as_str(),
                 skipped_ver.to_string(),
                 human_age(age_secs),
@@ -91,15 +141,15 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         } else {
             ItemOutcome::update(
                 Manager::Pnpm,
-                name.clone(),
-                entry.current.clone(),
-                target.version.clone(),
+                item.name.clone(),
+                item.current.clone(),
+                target_version.clone(),
                 Manager::Pnpm.as_str(),
             )
         };
 
         emit_text_outcome(&outcome);
-        upgradable.push((name.clone(), entry.current.clone(), target.version));
+        upgradable.push((item.name, item.current, target_version));
     }
 
     if cli.dry_run {

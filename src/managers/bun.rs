@@ -5,6 +5,7 @@ use crate::util::process::{run_command, run_command_checked_stdout};
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
+use rayon::prelude::*;
 use semver::Version;
 use std::collections::BTreeMap;
 use std::process::{Command, Output};
@@ -12,10 +13,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const BUN_MIN_AGE_DAYS: u64 = 7;
 const BUN_MIN_AGE_SECS: &str = "604800";
+const BUN_MAX_PARALLEL_CHECKS: usize = 6;
 
 #[derive(Debug)]
 struct OutdatedEntry {
     current: String,
+}
+
+struct BunPlanItem {
+    name: String,
+    current: String,
+    resolved: Result<Option<BunResolvedTarget>, String>,
 }
 
 pub(crate) fn run(cli: &Cli) -> Result<()> {
@@ -34,36 +42,79 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
 
     let global_cwd = bun_global_cwd()?;
 
-    for (name, entry) in &outdated {
-        let resolved = match bun_resolve_target_with_min_age(
-            &bun,
-            &global_cwd,
-            name,
-            &entry.current,
-            now,
-            min_age,
-        ) {
-            Ok(resolved) => resolved,
+    let jobs: Vec<(String, String)> = outdated
+        .iter()
+        .map(|(name, entry)| (name.clone(), entry.current.clone()))
+        .collect();
+
+    let effective_parallelism = cli.max_parallel_checks.clamp(1, BUN_MAX_PARALLEL_CHECKS);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(effective_parallelism)
+        .build()
+        .context("failed to build bun planning thread pool")?;
+
+    let bun_path = bun.clone();
+    let global_cwd_path = global_cwd.clone();
+    let resolved_indexed: Vec<(usize, BunPlanItem)> = pool.install(|| {
+        jobs.into_par_iter()
+            .enumerate()
+            .map(|(index, (name, current))| {
+                let resolved = bun_resolve_target_with_min_age(
+                    &bun_path,
+                    &global_cwd_path,
+                    &name,
+                    &current,
+                    now,
+                    min_age,
+                )
+                .map_err(|err| err.to_string());
+
+                (
+                    index,
+                    BunPlanItem {
+                        name,
+                        current,
+                        resolved,
+                    },
+                )
+            })
+            .collect()
+    });
+
+    let mut plan_slots: Vec<Option<BunPlanItem>> =
+        (0..resolved_indexed.len()).map(|_| None).collect();
+    for (index, item) in resolved_indexed {
+        plan_slots[index] = Some(item);
+    }
+
+    let plan: Vec<BunPlanItem> = plan_slots
+        .into_iter()
+        .map(|item| item.context("internal error: missing bun plan slot"))
+        .collect::<Result<Vec<_>>>()?;
+
+    for item in plan {
+        let target = match item.resolved {
+            Ok(target) => target,
             Err(err) => {
                 let outcome = ItemOutcome::error(
                     Manager::Bun,
-                    name.clone(),
-                    entry.current.clone(),
-                    entry.current.clone(),
+                    item.name,
+                    item.current.clone(),
+                    item.current,
                     Manager::Bun.as_str(),
                     REASON_COMMAND_FAILED,
-                    err.to_string(),
+                    err,
                 );
                 emit_text_outcome(&outcome);
                 continue;
             }
         };
 
-        let Some(target) = resolved else {
+        let Some(target) = target else {
             let outcome = ItemOutcome::delayed_no_eligible(
                 Manager::Bun,
-                name.clone(),
-                entry.current.clone(),
+                item.name,
+                item.current,
                 Manager::Bun.as_str(),
                 format!("{}d", BUN_MIN_AGE_DAYS),
             );
@@ -71,11 +122,11 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
             continue;
         };
 
-        if target.version == entry.current {
+        if target.version == item.current {
             let outcome = ItemOutcome::skipped_no_change(
                 Manager::Bun,
-                name.clone(),
-                entry.current.clone(),
+                item.name,
+                item.current,
                 Manager::Bun.as_str(),
             );
             emit_text_outcome(&outcome);
@@ -88,8 +139,8 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         ) {
             ItemOutcome::update_with_delayed_latest(
                 Manager::Bun,
-                name.clone(),
-                entry.current.clone(),
+                item.name,
+                item.current,
                 target.version,
                 Manager::Bun.as_str(),
                 skipped_ver.to_string(),
@@ -99,8 +150,8 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         } else {
             ItemOutcome::update(
                 Manager::Bun,
-                name.clone(),
-                entry.current.clone(),
+                item.name,
+                item.current,
                 target.version,
                 Manager::Bun.as_str(),
             )

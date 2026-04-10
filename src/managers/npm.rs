@@ -5,6 +5,7 @@ use crate::util::process::run_command_checked_stdout;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
+use rayon::prelude::*;
 use semver::Version;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -12,10 +13,17 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const NPM_MIN_AGE_DAYS: u64 = 7;
+const NPM_MAX_PARALLEL_CHECKS: usize = 6;
 
 #[derive(Debug, Deserialize)]
 struct OutdatedEntry {
     current: String,
+}
+
+struct NpmPlanItem {
+    name: String,
+    current: String,
+    resolved: Result<Option<NpmResolvedTarget>, String>,
 }
 
 pub(crate) fn run(cli: &Cli) -> Result<()> {
@@ -31,29 +39,70 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .context("system clock before UNIX_EPOCH")?
         .as_secs();
 
-    for (name, entry) in &outdated {
-        let resolved = match npm_resolve_target_with_min_age(name, &entry.current, now, min_age) {
-            Ok(resolved) => resolved,
+    let jobs: Vec<(String, String)> = outdated
+        .iter()
+        .map(|(name, entry)| (name.clone(), entry.current.clone()))
+        .collect();
+
+    let effective_parallelism = cli.max_parallel_checks.clamp(1, NPM_MAX_PARALLEL_CHECKS);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(effective_parallelism)
+        .build()
+        .context("failed to build npm planning thread pool")?;
+
+    let resolved_indexed: Vec<(usize, NpmPlanItem)> = pool.install(|| {
+        jobs.into_par_iter()
+            .enumerate()
+            .map(|(index, (name, current))| {
+                let resolved = npm_resolve_target_with_min_age(&name, &current, now, min_age)
+                    .map_err(|err| err.to_string());
+
+                (
+                    index,
+                    NpmPlanItem {
+                        name,
+                        current,
+                        resolved,
+                    },
+                )
+            })
+            .collect()
+    });
+
+    let mut plan_slots: Vec<Option<NpmPlanItem>> =
+        (0..resolved_indexed.len()).map(|_| None).collect();
+    for (index, item) in resolved_indexed {
+        plan_slots[index] = Some(item);
+    }
+
+    let plan: Vec<NpmPlanItem> = plan_slots
+        .into_iter()
+        .map(|item| item.context("internal error: missing npm plan slot"))
+        .collect::<Result<Vec<_>>>()?;
+
+    for item in plan {
+        let target = match item.resolved {
+            Ok(target) => target,
             Err(err) => {
                 let outcome = ItemOutcome::error(
                     Manager::Npm,
-                    name.clone(),
-                    entry.current.clone(),
-                    entry.current.clone(),
+                    item.name,
+                    item.current.clone(),
+                    item.current,
                     Manager::Npm.as_str(),
                     REASON_COMMAND_FAILED,
-                    err.to_string(),
+                    err,
                 );
                 emit_text_outcome(&outcome);
                 continue;
             }
         };
 
-        let Some(target) = resolved else {
+        let Some(target) = target else {
             let outcome = ItemOutcome::delayed_no_eligible(
                 Manager::Npm,
-                name.clone(),
-                entry.current.clone(),
+                item.name,
+                item.current,
                 Manager::Npm.as_str(),
                 format!("{}d", NPM_MIN_AGE_DAYS),
             );
@@ -61,11 +110,11 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
             continue;
         };
 
-        if target.version == entry.current {
+        if target.version == item.current {
             let outcome = ItemOutcome::skipped_no_change(
                 Manager::Npm,
-                name.clone(),
-                entry.current.clone(),
+                item.name,
+                item.current,
                 Manager::Npm.as_str(),
             );
             emit_text_outcome(&outcome);
@@ -78,8 +127,8 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         ) {
             ItemOutcome::update_with_delayed_latest(
                 Manager::Npm,
-                name.clone(),
-                entry.current.clone(),
+                item.name,
+                item.current,
                 target.version,
                 Manager::Npm.as_str(),
                 skipped_ver.to_string(),
@@ -89,8 +138,8 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         } else {
             ItemOutcome::update(
                 Manager::Npm,
-                name.clone(),
-                entry.current.clone(),
+                item.name,
+                item.current,
                 target.version,
                 Manager::Npm.as_str(),
             )
