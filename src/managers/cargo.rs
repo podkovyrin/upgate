@@ -213,9 +213,8 @@ fn cargo_resolve_target_with_min_age(
     let mut eligible: Option<(Version, String, u64)> = None;
 
     for item in &all_versions {
-        let version = match Version::parse(&item.version) {
-            Ok(v) => v,
-            Err(_) => continue,
+        let Ok(version) = Version::parse(&item.version) else {
+            continue;
         };
 
         if newest_any
@@ -354,11 +353,11 @@ mod tests {
 
     #[test]
     fn parse_install_list_entries() {
-        let raw = r#"cargo-deny v0.19.0:
+        let raw = r"cargo-deny v0.19.0:
     cargo-deny
 cbindgen v0.29.2:
     cbindgen
-"#;
+";
 
         let parsed = parse_cargo_install_list(raw);
         assert_eq!(

@@ -252,11 +252,11 @@ fn uv_installed_tools_from_receipts(tool_dir: &str) -> Result<Vec<UvTool>> {
 }
 
 fn uv_python_package_version(python_path: &str, package_name: &str) -> Result<String> {
-    let script = r#"import importlib.metadata as m
+    let script = r"import importlib.metadata as m
 import sys
 name = sys.argv[1]
 print(m.version(name))
-"#;
+";
 
     let output = Command::new(python_path)
         .arg("-c")

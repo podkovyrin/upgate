@@ -25,7 +25,7 @@ pub(crate) fn expect_success(output: Output, command_display: &str) -> Result<Ou
         return Ok(output);
     }
 
-    let code = exit_code_label(&output.status);
+    let code = exit_code_label(output.status);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let detail = stderr.trim();
 
@@ -50,7 +50,7 @@ pub(crate) fn command_display(command: &Command) -> String {
     }
 }
 
-fn exit_code_label(status: &ExitStatus) -> String {
+fn exit_code_label(status: ExitStatus) -> String {
     match status.code() {
         Some(code) => code.to_string(),
         None => "signal".to_string(),

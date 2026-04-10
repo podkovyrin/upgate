@@ -201,9 +201,8 @@ fn yarn_resolve_target_with_min_age(
             continue;
         };
 
-        let version = match Version::parse(&ver_str) {
-            Ok(v) => v,
-            Err(_) => continue,
+        let Ok(version) = Version::parse(&ver_str) else {
+            continue;
         };
 
         let ts = parse_rfc3339_unix(ts_raw)

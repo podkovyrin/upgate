@@ -167,10 +167,10 @@ fn bun_outdated_global(bun: &str) -> Result<BTreeMap<String, OutdatedEntry>> {
         bail!("{} outdated -g failed: {err_text}", Manager::Bun.as_str());
     }
 
-    parse_bun_outdated_table(&stdout)
+    Ok(parse_bun_outdated_table(&stdout))
 }
 
-fn parse_bun_outdated_table(stdout: &str) -> Result<BTreeMap<String, OutdatedEntry>> {
+fn parse_bun_outdated_table(stdout: &str) -> BTreeMap<String, OutdatedEntry> {
     let mut out = BTreeMap::new();
 
     for line in stdout.lines() {
@@ -206,7 +206,7 @@ fn parse_bun_outdated_table(stdout: &str) -> Result<BTreeMap<String, OutdatedEnt
         );
     }
 
-    Ok(out)
+    out
 }
 
 fn is_table_separator_line(line: &str) -> bool {
@@ -273,9 +273,8 @@ fn bun_resolve_target_with_min_age(
             continue;
         };
 
-        let version = match Version::parse(ver_str) {
-            Ok(v) => v,
-            Err(_) => continue,
+        let Ok(version) = Version::parse(ver_str) else {
+            continue;
         };
 
         let ts = parse_rfc3339_unix(ts_raw)
@@ -387,16 +386,16 @@ mod tests {
 
     #[test]
     fn parse_outdated_table() {
-        let raw = r#"bun outdated v1.3.11 (af24e281)
+        let raw = r"bun outdated v1.3.11 (af24e281)
 |----------------------------------------|
 | Package  | Current | Update  | Latest  |
 |----------|---------|---------|---------|
 | npm      | 11.12.0 | 11.12.0 | 11.12.1 |
 | typescript | 5.9.3 | 5.9.3 | 5.9.4 |
 |----------------------------------------|
-"#;
+";
 
-        let parsed = parse_bun_outdated_table(raw).expect("should parse");
+        let parsed = parse_bun_outdated_table(raw);
         assert_eq!(
             parsed.get("npm").map(|e| e.current.as_str()),
             Some("11.12.0")
@@ -410,7 +409,7 @@ mod tests {
     #[test]
     fn parse_outdated_without_rows() {
         let raw = "bun outdated v1.3.11 (af24e281)\n";
-        let parsed = parse_bun_outdated_table(raw).expect("should parse");
+        let parsed = parse_bun_outdated_table(raw);
         assert!(parsed.is_empty());
     }
 
