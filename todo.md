@@ -15,7 +15,7 @@
 - [x] Yarn global (classic `yarn global`)
 - [ ] dotnet global tools (`dotnet tool update --global`)
 - [ ] RubyGems global (`gem update`)
-- [ ] Go-installed CLIs (`go install` workflow)
+- [x] Go-installed CLIs (`go install` workflow)
 - [ ] Nix profile packages (`nix profile`)
 
 ## P2 (lower priority / niche / more complex)

@@ -20,6 +20,7 @@ This file is the manager-spec source of truth for current behavior.
 - `src/managers/pipx.rs`
 - `src/managers/pnpm.rs`
 - `src/managers/uv.rs`
+- `src/managers/go.rs`
 - `src/outcome.rs`
 - `src/util/process.rs`
 - `src/util/timefmt.rs`
@@ -47,13 +48,13 @@ Configuration file:
 - Brew-only `no_update` is configured under `[brew].no_update` (default `false`).
 - CLI `--set`/`-S` overrides have higher precedence than file config.
 
-Default manager set: all registered managers (`brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`).
+Default manager set: all registered managers (`brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`).
 
 Behavior notes:
 - `plan` is non-mutating.
 - `apply` performs updates.
 - Selected managers run in a fixed internal order:
-  `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`.
+  `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`.
 
 ## Architecture (current)
 
@@ -344,3 +345,29 @@ Apply flow:
 Concurrency:
 - Planning per-tool dry-run resolution is parallelized.
 - Pool size: `clamp(1, --max-parallel-checks, 2)`.
+
+### go (`src/managers/go.rs`)
+
+Delay policy:
+- Uses config `[go].min_release_age` (default `7d`).
+
+Planning semantics:
+- Scope is global Go tools discovered from effective Go bin directory (`GOBIN`, `GOPATH/bin`, fallback `~/go/bin`).
+- Only binaries with usable `go version -m` module/version metadata are managed.
+- Target is highest eligible release (`age >= min_release_age`) with constraint `target >= current`.
+
+Planning flow:
+1. Discover binaries in Go bin directory.
+2. For each binary: `go version -m <binary>`.
+3. Parse module and version metadata.
+4. Resolve module versions via `go list -m -json -versions <module>`.
+5. Resolve per-version release timestamps via `go list -m -json <module>@<version>`.
+6. Select semver-max eligible target.
+
+Apply flow:
+- Per eligible tool: `go install <path>@<target>` where `<path>` is from `go version -m` `path` field.
+- Per-tool apply failures emit `error` and continue.
+
+Concurrency:
+- Planning per-tool target resolution is parallelized.
+- Pool size: `clamp(1, --max-parallel-checks, 4)`.

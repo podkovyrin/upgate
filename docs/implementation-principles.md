@@ -37,6 +37,7 @@ Current shared utility modules:
 - `src/util/timefmt.rs` — human age formatting
 - `src/util/timeparse.rs` — RFC3339 -> unix seconds parsing
 - `src/util/durationparse.rs` — CLI duration parsing
+- `src/util/parallel.rs` — indexed internal parallel job execution helpers
 
 These are intentionally narrow and avoid introducing framework-style coupling.
 

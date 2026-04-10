@@ -41,11 +41,14 @@ Config sections are keyed by manager ID.
 
 [uv]
 # min_release_age = "7d"
+
+[go]
+# min_release_age = "7d"
 ```
 
 Known manager IDs in the built-in registry:
 
-- `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`
+- `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`
 
 ## CLI overrides
 
