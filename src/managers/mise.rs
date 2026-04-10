@@ -1,5 +1,8 @@
 use crate::Cli;
 use crate::manager::Manager;
+use crate::managers::common::{
+    DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
+};
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::durationparse::parse_duration;
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
@@ -71,58 +74,56 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         age_by_index.insert(idx, age_result);
     }
 
-    for (idx, item) in plan_pairs.iter().enumerate() {
-        if let Some(latest) = latest_map.get(&item.tool)
-            && latest != &item.to_version
-        {
+    let _upgradable = emit_plan_and_collect_upgradable(
+        plan_pairs.into_iter().enumerate().collect(),
+        |(_idx, item)| PlanMeta {
+            manager: Manager::Mise,
+            source: Manager::Mise.as_str(),
+            name: item.tool.clone(),
+            current: item.from_version.clone(),
+        },
+        |(idx, item)| {
+            let Some(latest) = latest_map.get(&item.tool) else {
+                return PlanDecision::Update {
+                    target: item.to_version.clone(),
+                    delayed_latest: None,
+                };
+            };
+
+            if latest == &item.to_version {
+                return PlanDecision::Update {
+                    target: item.to_version.clone(),
+                    delayed_latest: None,
+                };
+            }
+
             let age_secs = if item.tool.starts_with("npm:") {
-                if let Some(age_result) = age_by_index.remove(&idx) {
-                    match age_result.age_secs {
+                match age_by_index.remove(idx) {
+                    Some(age_result) => match age_result.age_secs {
                         Ok(age_secs) => age_secs,
-                        Err(err) => {
-                            let outcome = ItemOutcome::error(
-                                Manager::Mise,
-                                item.tool.clone(),
-                                item.from_version.clone(),
-                                item.to_version.clone(),
-                                Manager::Mise.as_str(),
-                                REASON_COMMAND_FAILED,
-                                err,
-                            );
-                            emit_text_outcome(&outcome);
-                            continue;
-                        }
+                        Err(err) => return PlanDecision::Error(err),
+                    },
+                    None => {
+                        return PlanDecision::Error(format!(
+                            "internal error: missing mise npm-age result for {}",
+                            item.tool
+                        ));
                     }
-                } else {
-                    0
                 }
             } else {
                 0
             };
 
-            let outcome = ItemOutcome::update_with_delayed_latest(
-                Manager::Mise,
-                item.tool.clone(),
-                item.from_version.clone(),
-                item.to_version.clone(),
-                Manager::Mise.as_str(),
-                latest.clone(),
-                human_age(age_secs),
-                human_age(min_age.as_secs()),
-            );
-            emit_text_outcome(&outcome);
-            continue;
-        }
-
-        let outcome = ItemOutcome::update(
-            Manager::Mise,
-            item.tool.clone(),
-            item.from_version.clone(),
-            item.to_version.clone(),
-            Manager::Mise.as_str(),
-        );
-        emit_text_outcome(&outcome);
-    }
+            PlanDecision::Update {
+                target: item.to_version.clone(),
+                delayed_latest: Some(DelayedLatest {
+                    latest_version: latest.clone(),
+                    latest_age: human_age(age_secs),
+                    required_age: human_age(min_age.as_secs()),
+                }),
+            }
+        },
+    );
 
     if cli.dry_run {
         return Ok(());

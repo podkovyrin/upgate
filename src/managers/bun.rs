@@ -1,5 +1,8 @@
 use crate::Cli;
 use crate::manager::Manager;
+use crate::managers::common::{
+    DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
+};
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{run_command, run_command_checked_stdout};
@@ -12,7 +15,7 @@ use std::process::{Command, Output};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const BUN_MIN_AGE_DAYS: u64 = 7;
-const BUN_MIN_AGE_SECS: &str = "604800";
+const BUN_MIN_AGE_SECS: u64 = BUN_MIN_AGE_DAYS * 24 * 60 * 60;
 const BUN_MAX_PARALLEL_CHECKS: usize = 6;
 
 #[derive(Debug)]
@@ -74,73 +77,48 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         },
     )?;
 
-    for item in plan {
-        let target = match item.resolved {
-            Ok(target) => target,
-            Err(err) => {
-                let outcome = ItemOutcome::error(
-                    Manager::Bun,
-                    item.name,
-                    item.current.clone(),
-                    item.current,
-                    Manager::Bun.as_str(),
-                    REASON_COMMAND_FAILED,
-                    err,
-                );
-                emit_text_outcome(&outcome);
-                continue;
+    let _upgradable = emit_plan_and_collect_upgradable(
+        plan,
+        |item| PlanMeta {
+            manager: Manager::Bun,
+            source: Manager::Bun.as_str(),
+            name: item.name.clone(),
+            current: item.current.clone(),
+        },
+        |item| {
+            let target = match &item.resolved {
+                Ok(Some(target)) => target,
+                Ok(None) => {
+                    return PlanDecision::DelayedNoEligible {
+                        required_age: format!("{BUN_MIN_AGE_DAYS}d"),
+                    };
+                }
+                Err(err) => return PlanDecision::Error(err.clone()),
+            };
+
+            if target.version == item.current {
+                return PlanDecision::NoChange;
             }
-        };
 
-        let Some(target) = target else {
-            let outcome = ItemOutcome::delayed_no_eligible(
-                Manager::Bun,
-                item.name,
-                item.current,
-                Manager::Bun.as_str(),
-                format!("{}d", BUN_MIN_AGE_DAYS),
-            );
-            emit_text_outcome(&outcome);
-            continue;
-        };
+            let delayed_latest = if let (Some(age_secs), Some(skipped_ver)) = (
+                target.skipped_latest_age_secs,
+                target.skipped_latest_version.as_deref(),
+            ) {
+                Some(DelayedLatest {
+                    latest_version: skipped_ver.to_string(),
+                    latest_age: human_age(age_secs),
+                    required_age: human_age(min_age.as_secs()),
+                })
+            } else {
+                None
+            };
 
-        if target.version == item.current {
-            let outcome = ItemOutcome::skipped_no_change(
-                Manager::Bun,
-                item.name,
-                item.current,
-                Manager::Bun.as_str(),
-            );
-            emit_text_outcome(&outcome);
-            continue;
-        }
-
-        let outcome = if let (Some(age_secs), Some(skipped_ver)) = (
-            target.skipped_latest_age_secs,
-            target.skipped_latest_version.as_deref(),
-        ) {
-            ItemOutcome::update_with_delayed_latest(
-                Manager::Bun,
-                item.name,
-                item.current,
-                target.version,
-                Manager::Bun.as_str(),
-                skipped_ver.to_string(),
-                human_age(age_secs),
-                human_age(min_age.as_secs()),
-            )
-        } else {
-            ItemOutcome::update(
-                Manager::Bun,
-                item.name,
-                item.current,
-                target.version,
-                Manager::Bun.as_str(),
-            )
-        };
-
-        emit_text_outcome(&outcome);
-    }
+            PlanDecision::Update {
+                target: target.version.clone(),
+                delayed_latest,
+            }
+        },
+    );
 
     if cli.dry_run {
         return Ok(());
@@ -148,7 +126,12 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
 
     if let Err(err) = run_bun(
         &bun,
-        &["update", "-g", "--minimum-release-age", BUN_MIN_AGE_SECS],
+        &[
+            "update",
+            "-g",
+            "--minimum-release-age",
+            &BUN_MIN_AGE_SECS.to_string(),
+        ],
     ) {
         let outcome = ItemOutcome::error(
             Manager::Bun,

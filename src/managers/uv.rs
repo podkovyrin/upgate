@@ -1,5 +1,8 @@
 use crate::Cli;
 use crate::manager::Manager;
+use crate::managers::common::{
+    DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
+};
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{run_command_checked, run_command_checked_stdout};
@@ -68,93 +71,77 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         },
     )?;
 
-    let mut upgradable_tools: Vec<(String, String, String)> = Vec::new();
     let mut pypi_cache: HashMap<String, PypiRoot> = HashMap::new();
+    let pypi_client =
+        crate::util::http::default_blocking_client().context("failed to build PyPI HTTP client")?;
+    let upgradable_tools = emit_plan_and_collect_upgradable(
+        plan,
+        |item| PlanMeta {
+            manager: Manager::Uv,
+            source: Manager::Uv.as_str(),
+            name: item.tool.name.clone(),
+            current: item.tool.current.clone(),
+        },
+        |item| {
+            let target = match &item.target {
+                Ok(target) => target,
+                Err(err) => return PlanDecision::Error(err.clone()),
+            };
 
-    for item in plan {
-        let tool = item.tool;
-        let target = match item.target {
-            Ok(target) => target,
-            Err(err) => {
-                let outcome = ItemOutcome::error(
-                    Manager::Uv,
-                    tool.name,
-                    tool.current.clone(),
-                    tool.current,
-                    Manager::Uv.as_str(),
-                    REASON_COMMAND_FAILED,
-                    err,
-                );
-                emit_text_outcome(&outcome);
-                continue;
+            if pep440_compare(target, &item.tool.current) == Some(Ordering::Less) {
+                return PlanDecision::DelayedNoEligible {
+                    required_age: format!("{UV_DELAY_DAYS}d"),
+                };
             }
-        };
 
-        if pep440_compare(&target, &tool.current) == Some(Ordering::Less) {
-            let outcome = ItemOutcome::delayed_no_eligible(
-                Manager::Uv,
-                tool.name,
-                tool.current,
-                Manager::Uv.as_str(),
-                format!("{}d", UV_DELAY_DAYS),
-            );
-            emit_text_outcome(&outcome);
-            continue;
-        }
+            if target == &item.tool.current {
+                if let Some(age_secs) = pypi_release_age_secs(
+                    &pypi_client,
+                    &mut pypi_cache,
+                    &item.tool.name,
+                    &item.tool.current,
+                    now,
+                )
+                .ok()
+                .flatten()
+                    && age_secs < min_age.as_secs()
+                {
+                    return PlanDecision::DelayedNoEligible {
+                        required_age: format!("{UV_DELAY_DAYS}d"),
+                    };
+                }
 
-        if target == tool.current {
-            if let Some(age_secs) =
-                pypi_release_age_secs(&mut pypi_cache, &tool.name, &tool.current, now)?
-                && age_secs < min_age.as_secs()
+                return PlanDecision::NoChange;
+            }
+
+            let delayed_latest = if let Some(latest) = outdated_latest.get(&item.tool.name)
+                && latest != target
             {
-                let outcome = ItemOutcome::delayed_no_eligible(
-                    Manager::Uv,
-                    tool.name,
-                    tool.current,
-                    Manager::Uv.as_str(),
-                    format!("{}d", UV_DELAY_DAYS),
-                );
-                emit_text_outcome(&outcome);
+                let latest_age = pypi_release_age_secs(
+                    &pypi_client,
+                    &mut pypi_cache,
+                    &item.tool.name,
+                    latest,
+                    now,
+                )
+                .ok()
+                .flatten()
+                .unwrap_or(0);
+                Some(DelayedLatest {
+                    latest_version: latest.clone(),
+                    latest_age: human_age(latest_age),
+                    required_age: human_age(min_age.as_secs()),
+                })
             } else {
-                let outcome = ItemOutcome::skipped_no_change(
-                    Manager::Uv,
-                    tool.name,
-                    tool.current,
-                    Manager::Uv.as_str(),
-                );
-                emit_text_outcome(&outcome);
+                None
+            };
+
+            PlanDecision::Update {
+                target: target.clone(),
+                delayed_latest,
             }
-            continue;
-        }
-
-        let outcome = if let Some(latest) = outdated_latest.get(&tool.name)
-            && latest != &target
-        {
-            let latest_age =
-                pypi_release_age_secs(&mut pypi_cache, &tool.name, latest, now)?.unwrap_or(0);
-            ItemOutcome::update_with_delayed_latest(
-                Manager::Uv,
-                tool.name.clone(),
-                tool.current.clone(),
-                target.clone(),
-                Manager::Uv.as_str(),
-                latest.clone(),
-                human_age(latest_age),
-                human_age(min_age.as_secs()),
-            )
-        } else {
-            ItemOutcome::update(
-                Manager::Uv,
-                tool.name.clone(),
-                tool.current.clone(),
-                target.clone(),
-                Manager::Uv.as_str(),
-            )
-        };
-
-        emit_text_outcome(&outcome);
-        upgradable_tools.push((tool.name, tool.current, target));
-    }
+        },
+    );
 
     if cli.dry_run {
         return Ok(());
@@ -434,6 +421,7 @@ fn pep440_compare(lhs: &str, rhs: &str) -> Option<Ordering> {
 }
 
 fn pypi_release_age_secs(
+    pypi_client: &reqwest::blocking::Client,
     cache: &mut HashMap<String, PypiRoot>,
     package: &str,
     version: &str,
@@ -441,7 +429,9 @@ fn pypi_release_age_secs(
 ) -> Result<Option<u64>> {
     if !cache.contains_key(package) {
         let url = format!("https://pypi.org/pypi/{package}/json");
-        let body = reqwest::blocking::get(&url)
+        let body = pypi_client
+            .get(&url)
+            .send()
             .with_context(|| format!("failed to GET {url}"))?
             .error_for_status()
             .with_context(|| format!("PyPI returned error for {package}"))?

@@ -1,5 +1,8 @@
 use crate::Cli;
 use crate::manager::Manager;
+use crate::managers::common::{
+    DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
+};
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::run_command_checked_stdout;
@@ -75,11 +78,8 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .context("system clock before UNIX_EPOCH")?
         .as_secs();
 
-    let pypi_client = reqwest::blocking::Client::builder()
-        .user_agent("upnow/0.1")
-        .timeout(Duration::from_secs(8))
-        .build()
-        .context("failed to build PyPI HTTP client")?;
+    let pypi_client =
+        crate::util::http::default_blocking_client().context("failed to build PyPI HTTP client")?;
 
     let jobs: Vec<(String, String)> = installed.into_iter().collect();
 
@@ -102,73 +102,48 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         },
     )?;
 
-    let mut upgradable: Vec<(String, String, String)> = Vec::new();
+    let upgradable = emit_plan_and_collect_upgradable(
+        plan,
+        |item| PlanMeta {
+            manager: Manager::Pipx,
+            source: "pypi",
+            name: item.name.clone(),
+            current: item.current.clone(),
+        },
+        |item| {
+            let target = match &item.resolved {
+                Ok(Some(target)) => target,
+                Ok(None) => {
+                    return PlanDecision::DelayedNoEligible {
+                        required_age: format!("{PIPX_DELAY_DAYS}d"),
+                    };
+                }
+                Err(err) => return PlanDecision::Error(err.clone()),
+            };
 
-    for item in plan {
-        let target = match item.resolved {
-            Ok(target) => target,
-            Err(err) => {
-                let outcome = ItemOutcome::error(
-                    Manager::Pipx,
-                    item.name,
-                    item.current.clone(),
-                    item.current,
-                    "pypi",
-                    REASON_COMMAND_FAILED,
-                    err,
-                );
-                emit_text_outcome(&outcome);
-                continue;
+            if target.version == item.current {
+                return PlanDecision::NoChange;
             }
-        };
 
-        let Some(target) = target else {
-            let outcome = ItemOutcome::delayed_no_eligible(
-                Manager::Pipx,
-                item.name,
-                item.current,
-                "pypi",
-                format!("{}d", PIPX_DELAY_DAYS),
-            );
-            emit_text_outcome(&outcome);
-            continue;
-        };
+            let delayed_latest = if let (Some(age_secs), Some(skipped_ver)) = (
+                target.skipped_latest_age_secs,
+                target.skipped_latest_version.as_deref(),
+            ) {
+                Some(DelayedLatest {
+                    latest_version: skipped_ver.to_string(),
+                    latest_age: human_age(age_secs),
+                    required_age: human_age(min_age.as_secs()),
+                })
+            } else {
+                None
+            };
 
-        if target.version == item.current {
-            let outcome =
-                ItemOutcome::skipped_no_change(Manager::Pipx, item.name, item.current, "pypi");
-            emit_text_outcome(&outcome);
-            continue;
-        }
-
-        let target_version = target.version;
-        let outcome = if let (Some(age_secs), Some(skipped_ver)) = (
-            target.skipped_latest_age_secs,
-            target.skipped_latest_version.as_deref(),
-        ) {
-            ItemOutcome::update_with_delayed_latest(
-                Manager::Pipx,
-                item.name.clone(),
-                item.current.clone(),
-                target_version.clone(),
-                "pypi",
-                skipped_ver.to_string(),
-                human_age(age_secs),
-                human_age(min_age.as_secs()),
-            )
-        } else {
-            ItemOutcome::update(
-                Manager::Pipx,
-                item.name.clone(),
-                item.current.clone(),
-                target_version.clone(),
-                "pypi",
-            )
-        };
-
-        emit_text_outcome(&outcome);
-        upgradable.push((item.name, item.current, target_version));
-    }
+            PlanDecision::Update {
+                target: target.version.clone(),
+                delayed_latest,
+            }
+        },
+    );
 
     if cli.dry_run {
         return Ok(());

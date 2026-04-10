@@ -1,5 +1,8 @@
 use crate::Cli;
 use crate::manager::Manager;
+use crate::managers::common::{
+    DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
+};
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::run_command_checked_stdout;
@@ -62,73 +65,48 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         },
     )?;
 
-    for item in plan {
-        let target = match item.resolved {
-            Ok(target) => target,
-            Err(err) => {
-                let outcome = ItemOutcome::error(
-                    Manager::Npm,
-                    item.name,
-                    item.current.clone(),
-                    item.current,
-                    Manager::Npm.as_str(),
-                    REASON_COMMAND_FAILED,
-                    err,
-                );
-                emit_text_outcome(&outcome);
-                continue;
+    let _upgradable = emit_plan_and_collect_upgradable(
+        plan,
+        |item| PlanMeta {
+            manager: Manager::Npm,
+            source: Manager::Npm.as_str(),
+            name: item.name.clone(),
+            current: item.current.clone(),
+        },
+        |item| {
+            let target = match &item.resolved {
+                Ok(Some(target)) => target,
+                Ok(None) => {
+                    return PlanDecision::DelayedNoEligible {
+                        required_age: format!("{NPM_MIN_AGE_DAYS}d"),
+                    };
+                }
+                Err(err) => return PlanDecision::Error(err.clone()),
+            };
+
+            if target.version == item.current {
+                return PlanDecision::NoChange;
             }
-        };
 
-        let Some(target) = target else {
-            let outcome = ItemOutcome::delayed_no_eligible(
-                Manager::Npm,
-                item.name,
-                item.current,
-                Manager::Npm.as_str(),
-                format!("{}d", NPM_MIN_AGE_DAYS),
-            );
-            emit_text_outcome(&outcome);
-            continue;
-        };
+            let delayed_latest = if let (Some(age_secs), Some(skipped_ver)) = (
+                target.skipped_latest_age_secs,
+                target.skipped_latest_version.as_deref(),
+            ) {
+                Some(DelayedLatest {
+                    latest_version: skipped_ver.to_string(),
+                    latest_age: human_age(age_secs),
+                    required_age: human_age(min_age.as_secs()),
+                })
+            } else {
+                None
+            };
 
-        if target.version == item.current {
-            let outcome = ItemOutcome::skipped_no_change(
-                Manager::Npm,
-                item.name,
-                item.current,
-                Manager::Npm.as_str(),
-            );
-            emit_text_outcome(&outcome);
-            continue;
-        }
-
-        let outcome = if let (Some(age_secs), Some(skipped_ver)) = (
-            target.skipped_latest_age_secs,
-            target.skipped_latest_version.as_deref(),
-        ) {
-            ItemOutcome::update_with_delayed_latest(
-                Manager::Npm,
-                item.name,
-                item.current,
-                target.version,
-                Manager::Npm.as_str(),
-                skipped_ver.to_string(),
-                human_age(age_secs),
-                human_age(min_age.as_secs()),
-            )
-        } else {
-            ItemOutcome::update(
-                Manager::Npm,
-                item.name,
-                item.current,
-                target.version,
-                Manager::Npm.as_str(),
-            )
-        };
-
-        emit_text_outcome(&outcome);
-    }
+            PlanDecision::Update {
+                target: target.version.clone(),
+                delayed_latest,
+            }
+        },
+    );
 
     if cli.dry_run {
         return Ok(());
