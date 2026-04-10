@@ -1,11 +1,11 @@
 use crate::Cli;
 use crate::manager::Manager;
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
+use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::run_command_checked_stdout;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
-use rayon::prelude::*;
 use semver::Version;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -44,41 +44,23 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .map(|(name, entry)| (name.clone(), entry.current.clone()))
         .collect();
 
-    let effective_parallelism = cli.max_parallel_checks.clamp(1, NPM_MAX_PARALLEL_CHECKS);
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(effective_parallelism)
-        .build()
-        .context("failed to build npm planning thread pool")?;
+    let threads = effective_parallelism(cli.max_parallel_checks, NPM_MAX_PARALLEL_CHECKS);
+    let plan: Vec<NpmPlanItem> = run_indexed_parallel(
+        jobs,
+        threads,
+        "failed to build npm planning thread pool",
+        "internal error: missing npm plan slot",
+        |(name, current)| {
+            let resolved = npm_resolve_target_with_min_age(&name, &current, now, min_age)
+                .map_err(|err| err.to_string());
 
-    let resolved_indexed: Vec<(usize, NpmPlanItem)> = pool.install(|| {
-        jobs.into_par_iter()
-            .enumerate()
-            .map(|(index, (name, current))| {
-                let resolved = npm_resolve_target_with_min_age(&name, &current, now, min_age)
-                    .map_err(|err| err.to_string());
-
-                (
-                    index,
-                    NpmPlanItem {
-                        name,
-                        current,
-                        resolved,
-                    },
-                )
-            })
-            .collect()
-    });
-
-    let mut plan_slots: Vec<Option<NpmPlanItem>> =
-        (0..resolved_indexed.len()).map(|_| None).collect();
-    for (index, item) in resolved_indexed {
-        plan_slots[index] = Some(item);
-    }
-
-    let plan: Vec<NpmPlanItem> = plan_slots
-        .into_iter()
-        .map(|item| item.context("internal error: missing npm plan slot"))
-        .collect::<Result<Vec<_>>>()?;
+            NpmPlanItem {
+                name,
+                current,
+                resolved,
+            }
+        },
+    )?;
 
     for item in plan {
         let target = match item.resolved {

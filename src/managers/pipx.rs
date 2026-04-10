@@ -1,12 +1,12 @@
 use crate::Cli;
 use crate::manager::Manager;
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
+use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::run_command_checked_stdout;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
 use pep440::Version;
-use rayon::prelude::*;
 use reqwest::blocking::Client;
 use std::collections::BTreeMap;
 use std::process::Command;
@@ -83,42 +83,24 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
 
     let jobs: Vec<(String, String)> = installed.into_iter().collect();
 
-    let effective_parallelism = cli.max_parallel_checks.clamp(1, PIPX_MAX_PARALLEL_CHECKS);
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(effective_parallelism)
-        .build()
-        .context("failed to build pipx planning thread pool")?;
+    let threads = effective_parallelism(cli.max_parallel_checks, PIPX_MAX_PARALLEL_CHECKS);
+    let plan: Vec<PipxPlanItem> = run_indexed_parallel(
+        jobs,
+        threads,
+        "failed to build pipx planning thread pool",
+        "internal error: missing pipx plan slot",
+        |(name, current)| {
+            let resolved =
+                pypi_resolve_target_with_min_age(&pypi_client, &name, &current, now, min_age)
+                    .map_err(|err| err.to_string());
 
-    let resolved_indexed: Vec<(usize, PipxPlanItem)> = pool.install(|| {
-        jobs.into_par_iter()
-            .enumerate()
-            .map(|(index, (name, current))| {
-                let resolved =
-                    pypi_resolve_target_with_min_age(&pypi_client, &name, &current, now, min_age)
-                        .map_err(|err| err.to_string());
-
-                (
-                    index,
-                    PipxPlanItem {
-                        name,
-                        current,
-                        resolved,
-                    },
-                )
-            })
-            .collect()
-    });
-
-    let mut plan_slots: Vec<Option<PipxPlanItem>> =
-        (0..resolved_indexed.len()).map(|_| None).collect();
-    for (index, item) in resolved_indexed {
-        plan_slots[index] = Some(item);
-    }
-
-    let plan: Vec<PipxPlanItem> = plan_slots
-        .into_iter()
-        .map(|item| item.context("internal error: missing pipx plan slot"))
-        .collect::<Result<Vec<_>>>()?;
+            PipxPlanItem {
+                name,
+                current,
+                resolved,
+            }
+        },
+    )?;
 
     let mut upgradable: Vec<(String, String, String)> = Vec::new();
 

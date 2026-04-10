@@ -2,11 +2,11 @@ use crate::Cli;
 use crate::manager::Manager;
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::durationparse::parse_duration;
+use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::run_command_checked_stdout;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
-use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -54,24 +54,17 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         }
     }
 
-    let effective_parallelism = cli
-        .max_parallel_checks
-        .clamp(1, MISE_NPM_AGE_MAX_PARALLEL_CHECKS);
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(effective_parallelism)
-        .build()
-        .context("failed to build mise npm-age planning thread pool")?;
-
-    let age_results_indexed: Vec<(usize, MiseLatestAgeResult)> = pool.install(|| {
-        age_jobs
-            .into_par_iter()
-            .map(|(idx, tool, latest)| {
-                let age_secs =
-                    npm_latest_age_secs(&tool, &latest, now).map_err(|err| err.to_string());
-                (idx, MiseLatestAgeResult { age_secs })
-            })
-            .collect()
-    });
+    let threads = effective_parallelism(cli.max_parallel_checks, MISE_NPM_AGE_MAX_PARALLEL_CHECKS);
+    let age_results_indexed: Vec<(usize, MiseLatestAgeResult)> = run_indexed_parallel(
+        age_jobs,
+        threads,
+        "failed to build mise npm-age planning thread pool",
+        "internal error: missing mise npm-age plan slot",
+        |(idx, tool, latest)| {
+            let age_secs = npm_latest_age_secs(&tool, &latest, now).map_err(|err| err.to_string());
+            (idx, MiseLatestAgeResult { age_secs })
+        },
+    )?;
 
     let mut age_by_index: BTreeMap<usize, MiseLatestAgeResult> = BTreeMap::new();
     for (idx, age_result) in age_results_indexed {

@@ -1,12 +1,12 @@
 use crate::Cli;
 use crate::manager::Manager;
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
+use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{run_command_checked, run_command_checked_stdout};
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
 use pep440::Version;
-use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -56,33 +56,17 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .context("system clock before UNIX_EPOCH")?
         .as_secs();
 
-    let effective_parallelism = cli.max_parallel_checks.clamp(1, UV_MAX_PARALLEL_CHECKS);
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(effective_parallelism)
-        .build()
-        .context("failed to build uv planning thread pool")?;
-
-    let plan_indexed: Vec<(usize, UvPlanItem)> = pool.install(|| {
-        installed
-            .into_par_iter()
-            .enumerate()
-            .map(|(index, tool)| {
-                let target =
-                    uv_resolve_target_with_exclude_newer(&tool).map_err(|err| err.to_string());
-                (index, UvPlanItem { tool, target })
-            })
-            .collect()
-    });
-
-    let mut plan_slots: Vec<Option<UvPlanItem>> = (0..plan_indexed.len()).map(|_| None).collect();
-    for (index, item) in plan_indexed {
-        plan_slots[index] = Some(item);
-    }
-
-    let plan: Vec<UvPlanItem> = plan_slots
-        .into_iter()
-        .map(|item| item.context("internal error: missing uv plan slot"))
-        .collect::<Result<Vec<_>>>()?;
+    let threads = effective_parallelism(cli.max_parallel_checks, UV_MAX_PARALLEL_CHECKS);
+    let plan: Vec<UvPlanItem> = run_indexed_parallel(
+        installed,
+        threads,
+        "failed to build uv planning thread pool",
+        "internal error: missing uv plan slot",
+        |tool| {
+            let target = uv_resolve_target_with_exclude_newer(&tool).map_err(|err| err.to_string());
+            UvPlanItem { tool, target }
+        },
+    )?;
 
     let mut upgradable_tools: Vec<(String, String, String)> = Vec::new();
     let mut pypi_cache: HashMap<String, PypiRoot> = HashMap::new();

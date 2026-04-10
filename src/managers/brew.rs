@@ -15,6 +15,9 @@ use std::collections::HashMap;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+const BREW_MAX_PARALLEL_CHECKS_MIN: usize = 1;
+const BREW_API_FALLBACK_MAX_PARALLEL_CHECKS: usize = 4;
+
 #[derive(Debug, Deserialize)]
 struct OutdatedRoot {
     formulae: Vec<OutdatedFormula>,
@@ -183,7 +186,7 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
 
     let github_client = github_client()?;
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(cli.max_parallel_checks.max(1))
+        .num_threads(cli.max_parallel_checks.max(BREW_MAX_PARALLEL_CHECKS_MIN))
         .build()
         .context("failed to build rayon thread pool")?;
 
@@ -268,7 +271,10 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
     }
 
     if !api_jobs.is_empty() {
-        let api_parallelism = cli.max_parallel_checks.clamp(1, 4);
+        let api_parallelism = cli.max_parallel_checks.clamp(
+            BREW_MAX_PARALLEL_CHECKS_MIN,
+            BREW_API_FALLBACK_MAX_PARALLEL_CHECKS,
+        );
         let api_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(api_parallelism)
             .build()

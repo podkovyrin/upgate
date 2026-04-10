@@ -1,11 +1,11 @@
 use crate::Cli;
 use crate::manager::Manager;
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
+use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::run_command_checked_stdout;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
-use rayon::prelude::*;
 use reqwest::blocking::Client;
 use semver::Version;
 use std::collections::{BTreeMap, HashSet};
@@ -50,47 +50,24 @@ pub(crate) fn run(cli: &Cli) -> Result<()> {
         .map(|(name, entry)| (name.clone(), entry.version.clone()))
         .collect();
 
-    let effective_parallelism = cli.max_parallel_checks.clamp(1, CARGO_MAX_PARALLEL_CHECKS);
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(effective_parallelism)
-        .build()
-        .context("failed to build cargo planning thread pool")?;
+    let threads = effective_parallelism(cli.max_parallel_checks, CARGO_MAX_PARALLEL_CHECKS);
+    let plan: Vec<CargoPlanItem> = run_indexed_parallel(
+        jobs,
+        threads,
+        "failed to build cargo planning thread pool",
+        "internal error: missing cargo plan slot",
+        |(name, current)| {
+            let resolved =
+                cargo_resolve_target_with_min_age(&crates_client, &name, &current, now, min_age)
+                    .map_err(|err| err.to_string());
 
-    let resolved_indexed: Vec<(usize, CargoPlanItem)> = pool.install(|| {
-        jobs.into_par_iter()
-            .enumerate()
-            .map(|(index, (name, current))| {
-                let resolved = cargo_resolve_target_with_min_age(
-                    &crates_client,
-                    &name,
-                    &current,
-                    now,
-                    min_age,
-                )
-                .map_err(|err| err.to_string());
-
-                (
-                    index,
-                    CargoPlanItem {
-                        name,
-                        current,
-                        resolved,
-                    },
-                )
-            })
-            .collect()
-    });
-
-    let mut plan_slots: Vec<Option<CargoPlanItem>> =
-        (0..resolved_indexed.len()).map(|_| None).collect();
-    for (index, item) in resolved_indexed {
-        plan_slots[index] = Some(item);
-    }
-
-    let plan: Vec<CargoPlanItem> = plan_slots
-        .into_iter()
-        .map(|item| item.context("internal error: missing cargo plan slot"))
-        .collect::<Result<Vec<_>>>()?;
+            CargoPlanItem {
+                name,
+                current,
+                resolved,
+            }
+        },
+    )?;
 
     let mut upgradable: Vec<(String, String, String)> = Vec::new();
 
