@@ -5,7 +5,7 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::RunCmd;
+use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
@@ -286,7 +286,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     }
 
     for (name, current, target) in upgradable {
-        if let Err(err) = RunCmd::Success.run("gem", ["install", &name, "-v", &target]) {
+        if let Err(err) = run_cmd("gem", ["install", &name, "-v", &target], CmdStatus::Success) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 name,
@@ -352,9 +352,10 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
 }
 
 fn gem_installed_inventory() -> Result<BTreeMap<String, GemInstalledEntry>> {
-    let text = RunCmd::Success.text("gem", ["list"])?;
+    let output = run_cmd("gem", ["list"], CmdStatus::Success)?;
+    let text = output.stdout()?;
 
-    Ok(parse_gem_installed_inventory(&text))
+    Ok(parse_gem_installed_inventory(text))
 }
 
 fn parse_gem_installed_inventory(text: &str) -> BTreeMap<String, GemInstalledEntry> {
@@ -409,9 +410,10 @@ fn parse_gem_installed_inventory(text: &str) -> BTreeMap<String, GemInstalledEnt
 }
 
 fn gem_outdated_map() -> Result<BTreeMap<String, OutdatedGem>> {
-    let text = RunCmd::Success.text("gem", ["outdated"])?;
+    let output = run_cmd("gem", ["outdated"], CmdStatus::Success)?;
+    let text = output.stdout()?;
 
-    Ok(parse_gem_outdated_output(&text))
+    Ok(parse_gem_outdated_output(text))
 }
 
 fn parse_gem_outdated_output(text: &str) -> BTreeMap<String, OutdatedGem> {
@@ -451,11 +453,11 @@ fn parse_gem_outdated_output(text: &str) -> BTreeMap<String, OutdatedGem> {
 }
 
 fn ruby_runtime_version() -> Result<Version> {
-    let raw = RunCmd::Success.text("ruby", ["-e", "print RUBY_VERSION"])?;
-    let trimmed = raw.trim();
+    let output = run_cmd("ruby", ["-e", "print RUBY_VERSION"], CmdStatus::Success)?;
+    let stdout = output.stdout()?;
 
-    parse_version_for_compare(trimmed)
-        .with_context(|| format!("failed to parse runtime Ruby version: {trimmed}"))
+    parse_version_for_compare(stdout)
+        .with_context(|| format!("failed to parse runtime Ruby version: {stdout}"))
 }
 
 fn rubygems_resolve_target_with_min_age(
@@ -649,7 +651,7 @@ fn pessimistic_upper_bound(raw: &str) -> Option<Version> {
 }
 
 fn parse_version_for_compare(raw: &str) -> Option<Version> {
-    let trimmed = raw.trim().strip_prefix('v').unwrap_or(raw.trim());
+    let trimmed = raw.strip_prefix('v').unwrap_or(&raw);
 
     if let Ok(v) = Version::parse(trimmed) {
         return Some(v);

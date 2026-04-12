@@ -5,47 +5,49 @@ use std::fmt;
 use std::process::{Command, ExitStatus, Output};
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum RunCmd<'a> {
+pub(crate) enum CmdStatus<'a> {
     Success,
     Allow(&'a [i32]),
     IgnoreStatus,
 }
 
-impl<'a> RunCmd<'a> {
-    pub(crate) fn run<P, I, A>(self, program: P, args: I) -> Result<Output>
-    where
-        P: AsRef<OsStr>,
-        I: IntoIterator<Item = A>,
-        A: AsRef<OsStr>,
-    {
-        let (output, _display) = run_cmd_with_display(program, args, self)?;
-        Ok(output)
+#[derive(Debug)]
+pub(crate) struct CmdOutput {
+    output: Output,
+    display: String,
+}
+
+impl CmdOutput {
+    pub(crate) fn stdout(&self) -> Result<&str> {
+        let s = std::str::from_utf8(&self.output.stdout)
+            .with_context(|| format!("{} stdout not UTF-8", self.display))?;
+        Ok(s.trim())
     }
 
-    pub(crate) fn text<P, I, A>(self, program: P, args: I) -> Result<String>
-    where
-        P: AsRef<OsStr>,
-        I: IntoIterator<Item = A>,
-        A: AsRef<OsStr>,
-    {
-        let (output, display) = run_cmd_with_display(program, args, self)?;
-        String::from_utf8(output.stdout).with_context(|| format!("{display} output not UTF-8"))
+    pub(crate) fn stderr(&self) -> Result<&str> {
+        let s = std::str::from_utf8(&self.output.stderr)
+            .with_context(|| format!("{} stderr not UTF-8", self.display))?;
+        Ok(s.trim())
     }
 
-    pub(crate) fn json<P, I, A, T>(self, program: P, args: I) -> Result<T>
+    pub(crate) fn json<T>(&self) -> Result<T>
     where
-        P: AsRef<OsStr>,
-        I: IntoIterator<Item = A>,
-        A: AsRef<OsStr>,
         T: DeserializeOwned,
     {
-        let (output, display) = run_cmd_with_display(program, args, self)?;
-        serde_json::from_slice(&output.stdout)
-            .with_context(|| format!("failed to parse JSON output from {display}"))
+        serde_json::from_slice(&self.output.stdout)
+            .with_context(|| format!("failed to parse JSON output from {}", self.display))
+    }
+
+    pub(crate) fn success(&self) -> bool {
+        self.output.status.success()
+    }
+
+    pub(crate) fn code(&self) -> Option<i32> {
+        self.output.status.code()
     }
 }
 
-fn run_cmd_with_display<P, I, A>(program: P, args: I, check: RunCmd<'_>) -> Result<(Output, String)>
+pub(crate) fn run_cmd<P, I, A>(program: P, args: I, check: CmdStatus) -> Result<CmdOutput>
 where
     P: AsRef<OsStr>,
     I: IntoIterator<Item = A>,
@@ -60,10 +62,10 @@ where
         .with_context(|| format!("failed to run {display}"))?;
 
     let output = ensure_status(output, &display, check)?;
-    Ok((output, display))
+    Ok(CmdOutput { output, display })
 }
 
-fn ensure_status(output: Output, command_display: &str, check: RunCmd<'_>) -> Result<Output> {
+fn ensure_status(output: Output, command_display: &str, check: CmdStatus<'_>) -> Result<Output> {
     if status_allowed(output.status, check) {
         return Ok(output);
     }
@@ -76,16 +78,16 @@ fn ensure_status(output: Output, command_display: &str, check: RunCmd<'_>) -> Re
     }))
 }
 
-fn status_allowed(status: ExitStatus, check: RunCmd<'_>) -> bool {
+fn status_allowed(status: ExitStatus, check: CmdStatus<'_>) -> bool {
     match check {
-        RunCmd::Success => status.success(),
-        RunCmd::Allow(extra_codes) => {
+        CmdStatus::Success => status.success(),
+        CmdStatus::Allow(extra_codes) => {
             status.success()
                 || status
                     .code()
                     .is_some_and(|code| extra_codes.contains(&code))
         }
-        RunCmd::IgnoreStatus => true,
+        CmdStatus::IgnoreStatus => true,
     }
 }
 

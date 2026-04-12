@@ -6,7 +6,7 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::RunCmd;
+use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
@@ -236,7 +236,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             tool.clone(),
         ];
 
-        if let Err(err) = RunCmd::Success.run("uv", &args) {
+        if let Err(err) = run_cmd("uv", &args, CmdStatus::Success) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 tool,
@@ -311,16 +311,21 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
 }
 
 fn uv_tool_dir() -> Result<String> {
-    let path = RunCmd::Success.text("uv", ["tool", "dir"])?;
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
+    let output = run_cmd("uv", ["tool", "dir"], CmdStatus::Success)?;
+    let path = output.stdout()?;
+    if path.is_empty() {
         bail!("uv tool dir returned an empty path");
     }
-    Ok(trimmed.to_string())
+    Ok(path.to_string())
 }
 
 fn uv_installed_tools(tool_dir: &str) -> Result<Vec<UvTool>> {
-    let text = RunCmd::Success.text("uv", ["tool", "list", "--show-version-specifiers"])?;
+    let output = run_cmd(
+        "uv",
+        ["tool", "list", "--show-version-specifiers"],
+        CmdStatus::Success,
+    )?;
+    let text = output.stdout()?;
 
     let mut out = Vec::new();
     for line in text.lines() {
@@ -388,8 +393,12 @@ name = sys.argv[1]
 print(m.version(name))
 ";
 
-    let stdout = RunCmd::Success.text(python_path, ["-c", script, package_name])?;
-    let version = stdout.trim();
+    let output = run_cmd(
+        python_path,
+        ["-c", script, package_name],
+        CmdStatus::Success,
+    )?;
+    let version = output.stdout()?;
     if version.is_empty() {
         bail!("python returned empty version for uv tool '{package_name}'");
     }
@@ -398,7 +407,8 @@ print(m.version(name))
 }
 
 fn uv_outdated_latest_map() -> Result<BTreeMap<String, String>> {
-    let text = RunCmd::Success.text("uv", ["tool", "list", "--outdated"])?;
+    let output = run_cmd("uv", ["tool", "list", "--outdated"], CmdStatus::Success)?;
+    let text = output.stdout()?;
 
     let mut out = BTreeMap::new();
     for line in text.lines() {
@@ -474,20 +484,18 @@ fn uv_resolve_target_with_exclude_newer(tool: &UvTool, min_age_raw: &str) -> Res
         requirement,
     ];
 
-    let output = RunCmd::Success.run("uv", &args)?;
-    let stdout = output.stdout;
-    let stderr = output.stderr;
+    let output = run_cmd("uv", &args, CmdStatus::Success)?;
 
     // `uv pip install --dry-run` writes the plan to stderr in non-interactive mode.
     // Parse both streams to be robust across uv versions.
-    let mut combined = String::new();
-    combined
-        .push_str(&String::from_utf8(stdout).context("uv pip install --dry-run stdout not UTF-8")?);
+    let stdout = output.stdout()?;
+    let stderr = output.stderr()?;
+    let mut combined = String::with_capacity(stdout.len() + 1 + stderr.len());
+    combined.push_str(stdout);
     if !combined.ends_with('\n') {
         combined.push('\n');
     }
-    combined
-        .push_str(&String::from_utf8(stderr).context("uv pip install --dry-run stderr not UTF-8")?);
+    combined.push_str(stderr);
 
     let target = uv_parse_install_target_for_package(&combined, &tool.name)
         .unwrap_or_else(|| tool.current.clone());

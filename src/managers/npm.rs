@@ -7,7 +7,7 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::RunCmd;
+use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result};
@@ -181,7 +181,7 @@ fn resolve_npm_plan(
 }
 
 fn apply_npm_updates(min_age_days: u64) {
-    if let Err(err) = RunCmd::Success.run(
+    if let Err(err) = run_cmd(
         "npm",
         [
             "-g",
@@ -189,6 +189,7 @@ fn apply_npm_updates(min_age_days: u64) {
             "--min-release-age",
             &min_age_days.to_string(),
         ],
+        CmdStatus::Success,
     ) {
         let outcome = ItemOutcome::error(
             PLUGIN.id(),
@@ -204,7 +205,12 @@ fn apply_npm_updates(min_age_days: u64) {
 }
 
 fn npm_installed_global() -> Result<BTreeMap<String, String>> {
-    let parsed: NpmLsJson = RunCmd::Success.json("npm", ["ls", "-g", "--depth=0", "--json"])?;
+    let parsed: NpmLsJson = run_cmd(
+        "npm",
+        ["ls", "-g", "--depth=0", "--json"],
+        CmdStatus::Success,
+    )?
+    .json()?;
 
     let mut out = BTreeMap::new();
     for (name, dep) in parsed.dependencies {
@@ -217,7 +223,7 @@ fn npm_installed_global() -> Result<BTreeMap<String, String>> {
 }
 
 fn npm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
-    RunCmd::Allow(&[1]).json("npm", ["outdated", "-g", "--json"])
+    run_cmd("npm", ["outdated", "-g", "--json"], CmdStatus::Allow(&[1]))?.json()
 }
 
 struct NpmResolvedTarget {
@@ -243,7 +249,7 @@ fn npm_resolve_target_with_min_age(
     min_age: Duration,
 ) -> Result<NpmResolvedTarget> {
     let timestamps_by_version: NpmTimeMap =
-        RunCmd::Success.json("npm", ["view", name, "time", "--json"])?;
+        run_cmd("npm", ["view", name, "time", "--json"], CmdStatus::Success)?.json()?;
 
     let releases = npm_semver_time_releases(name, &timestamps_by_version)?;
 
@@ -263,7 +269,7 @@ fn npm_resolve_target_with_min_age(
 
 fn npm_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Result<Option<u64>> {
     let timestamps_by_version: NpmTimeMap =
-        RunCmd::Success.json("npm", ["view", name, "time", "--json"])?;
+        run_cmd("npm", ["view", name, "time", "--json"], CmdStatus::Success)?.json()?;
 
     let releases = npm_semver_time_releases(name, &timestamps_by_version)?;
     Ok(release_age_secs_for_version(

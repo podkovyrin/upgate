@@ -4,7 +4,7 @@ use crate::outcome::{
     ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, REASON_PINNED, emit_text_outcome,
 };
 use crate::ui::output_theme;
-use crate::util::process::RunCmd;
+use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
@@ -226,13 +226,16 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
 
     maybe_refresh_brew_metadata(ctx.policy.no_update);
 
-    let outdated: OutdatedRoot = match RunCmd::Success.json("brew", &["outdated", "--json=v2"]) {
-        Ok(outdated) => outdated,
-        Err(err) => {
-            emit_manager_error(format!("failed to read brew outdated state: {err}"));
-            return Ok(());
-        }
-    };
+    let outdated: OutdatedRoot =
+        match run_cmd("brew", &["outdated", "--json=v2"], CmdStatus::Success)
+            .and_then(|output| output.json())
+        {
+            Ok(outdated) => outdated,
+            Err(err) => {
+                emit_manager_error(format!("failed to read brew outdated state: {err}"));
+                return Ok(());
+            }
+        };
 
     if outdated.formulae.is_empty() && outdated.casks.is_empty() {
         return Ok(());
@@ -281,7 +284,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
 }
 
 fn maybe_refresh_brew_metadata(no_update: bool) {
-    if !no_update && let Err(err) = RunCmd::Success.run("brew", ["update", "--quiet"]) {
+    if !no_update && let Err(err) = run_cmd("brew", ["update", "--quiet"], CmdStatus::Success) {
         emit_manager_error(format!("brew metadata refresh failed: {err}"));
     }
 }
@@ -486,7 +489,7 @@ fn apply_brew_plan(plan: &[PlanItem]) {
     if !formula_to_upgrade.is_empty() {
         let mut args = vec!["upgrade".to_string(), "--formula".to_string()];
         args.extend(formula_to_upgrade);
-        if let Err(err) = RunCmd::Success.run("brew", &args) {
+        if let Err(err) = run_cmd("brew", &args, CmdStatus::Success) {
             emit_manager_error(format!("failed to apply brew formula upgrades: {err}"));
         }
     }
@@ -494,7 +497,7 @@ fn apply_brew_plan(plan: &[PlanItem]) {
     if !casks_to_upgrade.is_empty() {
         let mut args = vec!["upgrade".to_string(), "--cask".to_string()];
         args.extend(casks_to_upgrade);
-        if let Err(err) = RunCmd::Success.run("brew", &args) {
+        if let Err(err) = run_cmd("brew", &args, CmdStatus::Success) {
             emit_manager_error(format!("failed to apply brew cask upgrades: {err}"));
         }
     }
@@ -901,7 +904,7 @@ fn git_last_commit_unix_seconds(
 }
 
 fn git_log_timestamp_for_ref(repo_path: &str, source_path: &str, git_ref: &str) -> Result<u64> {
-    let stdout = RunCmd::Success.text(
+    let output = run_cmd(
         "git",
         [
             "-C",
@@ -913,10 +916,11 @@ fn git_log_timestamp_for_ref(repo_path: &str, source_path: &str, git_ref: &str) 
             "--",
             source_path,
         ],
+        CmdStatus::Success,
     )?;
+    let stdout = output.stdout()?;
 
     let ts = stdout
-        .trim()
         .parse::<u64>()
         .with_context(|| format!("invalid git timestamp for {source_path}"))?;
     Ok(ts)
@@ -1015,8 +1019,12 @@ fn resolve_api_fallback_remote_branch(
 }
 
 fn brew_tap_meta() -> Result<HashMap<String, TapMeta>> {
-    let taps: Vec<TapInfo> =
-        RunCmd::Success.json("brew", &["tap-info", "--json", "--installed"])?;
+    let taps: Vec<TapInfo> = run_cmd(
+        "brew",
+        &["tap-info", "--json", "--installed"],
+        CmdStatus::Success,
+    )?
+    .json()?;
     Ok(taps
         .into_iter()
         .map(|t| {
@@ -1044,11 +1052,16 @@ fn brew_info_for_names(formula_names: &[String], cask_names: &[String]) -> Resul
     args.extend(formula_names.iter().cloned());
     args.extend(cask_names.iter().cloned());
 
-    RunCmd::Success.json("brew", &args)
+    run_cmd("brew", &args, CmdStatus::Success)?.json()
 }
 
 fn brew_info_installed() -> Result<InfoRoot> {
-    RunCmd::Success.json("brew", ["info", "--json=v2", "--installed"])
+    run_cmd(
+        "brew",
+        ["info", "--json=v2", "--installed"],
+        CmdStatus::Success,
+    )?
+    .json()
 }
 
 fn github_client() -> Result<Client> {

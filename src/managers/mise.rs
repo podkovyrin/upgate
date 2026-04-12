@@ -5,7 +5,7 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::RunCmd;
+use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
@@ -91,7 +91,11 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         return Ok(());
     }
 
-    if let Err(err) = RunCmd::Success.run("mise", ["upgrade", "--before", min_age_raw]) {
+    if let Err(err) = run_cmd(
+        "mise",
+        ["upgrade", "--before", min_age_raw],
+        CmdStatus::Success,
+    ) {
         let outcome = ItemOutcome::error(
             PLUGIN.id(),
             "*",
@@ -260,7 +264,12 @@ fn split_tool_and_version(input: &str) -> Option<(&str, &str)> {
 }
 
 fn mise_upgrade_dry_run_with_before(before: &str) -> Result<Vec<String>> {
-    let text = RunCmd::Success.text("mise", ["upgrade", "--dry-run", "--before", before])?;
+    let output = run_cmd(
+        "mise",
+        ["upgrade", "--dry-run", "--before", before],
+        CmdStatus::Success,
+    )?;
+    let text = output.stdout()?;
     Ok(text.lines().map(str::to_string).collect())
 }
 
@@ -271,7 +280,7 @@ struct MiseOutdatedItem {
 
 fn mise_outdated_latest_map() -> Result<BTreeMap<String, String>> {
     let parsed: BTreeMap<String, MiseOutdatedItem> =
-        RunCmd::Success.json("mise", ["outdated", "--json"])?;
+        run_cmd("mise", ["outdated", "--json"], CmdStatus::Success)?.json()?;
 
     Ok(parsed.into_iter().map(|(k, v)| (k, v.latest)).collect())
 }
@@ -280,7 +289,7 @@ fn npm_latest_age_secs(tool: &str, latest: &str, now_unix_secs: u64) -> Result<u
     let pkg = tool.trim_start_matches("npm:");
     let spec = format!("{pkg}@{latest}");
     let timestamps_by_version: NpmTimeMap =
-        RunCmd::Success.json("npm", ["view", &spec, "time", "--json"])?;
+        run_cmd("npm", ["view", &spec, "time", "--json"], CmdStatus::Success)?.json()?;
 
     let ts_raw = timestamps_by_version
         .get(latest)
@@ -343,7 +352,7 @@ fn emit_mise_scan_outcomes(
 }
 
 fn mise_installed_versions() -> Result<BTreeMap<String, String>> {
-    let parsed: MiseLsJson = RunCmd::Success.json("mise", ["ls", "--json"])?;
+    let parsed: MiseLsJson = run_cmd("mise", ["ls", "--json"], CmdStatus::Success)?.json()?;
 
     let mut out = BTreeMap::new();
     for (tool, entries) in parsed {

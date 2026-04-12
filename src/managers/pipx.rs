@@ -7,7 +7,7 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::RunCmd;
+use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result};
@@ -220,7 +220,7 @@ fn resolve_pipx_plan(
 
 fn apply_pipx_updates(upgradable: Vec<(String, String, String)>) {
     for (pkg, current, target) in upgradable {
-        if let Err(err) = RunCmd::Success.run("pipx", ["upgrade", &pkg]) {
+        if let Err(err) = run_cmd("pipx", ["upgrade", &pkg], CmdStatus::Success) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 pkg,
@@ -236,7 +236,7 @@ fn apply_pipx_updates(upgradable: Vec<(String, String, String)>) {
 }
 
 fn pipx_installed_main_packages() -> Result<BTreeMap<String, String>> {
-    let root: PipxListRoot = RunCmd::Success.json("pipx", ["list", "--json"])?;
+    let root: PipxListRoot = run_cmd("pipx", ["list", "--json"], CmdStatus::Success)?.json()?;
 
     let mut out = BTreeMap::new();
     for (_venv_name, venv) in root.venvs {

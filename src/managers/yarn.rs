@@ -9,7 +9,7 @@ use crate::outcome::{
     ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, emit_text_outcome,
 };
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::RunCmd;
+use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
@@ -256,7 +256,7 @@ fn resolve_yarn_plan(
 fn apply_yarn_updates(upgradable: Vec<(String, String, String)>) {
     for (name, current, version) in upgradable {
         let spec = format!("{name}@{version}");
-        if let Err(err) = RunCmd::Success.run("yarn", ["global", "add", &spec]) {
+        if let Err(err) = run_cmd("yarn", ["global", "add", &spec], CmdStatus::Success) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 name,
@@ -272,28 +272,33 @@ fn apply_yarn_updates(upgradable: Vec<(String, String, String)>) {
 }
 
 fn yarn_major_version() -> Result<u64> {
-    let text = RunCmd::Success.text("yarn", ["--version"])?;
+    let output = run_cmd("yarn", ["--version"], CmdStatus::Success)?;
+    let text = output.stdout()?;
 
-    parse_yarn_major_version(&text)
+    parse_yarn_major_version(text)
         .with_context(|| format!("failed to parse yarn major version from '{}'", text.trim()))
 }
 
 fn parse_yarn_major_version(text: &str) -> Option<u64> {
-    let raw = text.trim();
-    if raw.is_empty() {
+    if text.is_empty() {
         return None;
     }
 
-    let first_token = raw.split_whitespace().next()?;
+    let first_token = text.split_whitespace().next()?;
     let trimmed = first_token.strip_prefix('v').unwrap_or(first_token);
     let major = trimmed.split('.').next()?;
     major.parse::<u64>().ok()
 }
 
 fn yarn_global_installed() -> Result<BTreeMap<String, InstalledEntry>> {
-    let text = RunCmd::Success.text("yarn", ["global", "list", "--depth=0", "--json"])?;
+    let output = run_cmd(
+        "yarn",
+        ["global", "list", "--depth=0", "--json"],
+        CmdStatus::Success,
+    )?;
+    let text = output.stdout()?;
 
-    Ok(parse_yarn_global_list(&text))
+    Ok(parse_yarn_global_list(text))
 }
 
 fn parse_yarn_global_list(text: &str) -> BTreeMap<String, InstalledEntry> {
@@ -362,9 +367,10 @@ fn yarn_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
 ) -> Result<YarnResolvedTarget> {
-    let text = RunCmd::Success.text("yarn", ["info", name, "time", "--json"])?;
+    let output = run_cmd("yarn", ["info", name, "time", "--json"], CmdStatus::Success)?;
+    let text = output.stdout()?;
 
-    let obj = parse_yarn_inspect_object(&text, "time")?;
+    let obj = parse_yarn_inspect_object(text, "time")?;
     let releases = yarn_semver_time_releases(name, &obj)?;
 
     let SemverAgeResolution {
@@ -403,8 +409,9 @@ fn parse_yarn_inspect_object(text: &str, field: &str) -> Result<YarnTimeMap> {
 }
 
 fn yarn_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Result<Option<u64>> {
-    let text = RunCmd::Success.text("yarn", ["info", name, "time", "--json"])?;
-    let obj = parse_yarn_inspect_object(&text, "time")?;
+    let output = run_cmd("yarn", ["info", name, "time", "--json"], CmdStatus::Success)?;
+    let text = output.stdout()?;
+    let obj = parse_yarn_inspect_object(text, "time")?;
     let releases = yarn_semver_time_releases(name, &obj)?;
 
     Ok(release_age_secs_for_version(

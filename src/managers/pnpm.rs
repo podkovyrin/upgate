@@ -7,7 +7,7 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::RunCmd;
+use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
@@ -189,7 +189,7 @@ fn resolve_pnpm_plan(
 fn apply_pnpm_updates(upgradable: Vec<(String, String, String)>) {
     for (name, current, version) in upgradable {
         let spec = format!("{name}@{version}");
-        if let Err(err) = RunCmd::Success.run("pnpm", ["add", "-g", &spec]) {
+        if let Err(err) = run_cmd("pnpm", ["add", "-g", &spec], CmdStatus::Success) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 name,
@@ -205,8 +205,12 @@ fn apply_pnpm_updates(upgradable: Vec<(String, String, String)>) {
 }
 
 fn pnpm_installed_global() -> Result<BTreeMap<String, String>> {
-    let items: Vec<PnpmListItem> =
-        RunCmd::Success.json("pnpm", ["list", "-g", "--depth", "0", "--json"])?;
+    let items: Vec<PnpmListItem> = run_cmd(
+        "pnpm",
+        ["list", "-g", "--depth", "0", "--json"],
+        CmdStatus::Success,
+    )?
+    .json()?;
 
     let mut out = BTreeMap::new();
     for item in items {
@@ -221,24 +225,22 @@ fn pnpm_installed_global() -> Result<BTreeMap<String, String>> {
 }
 
 fn pnpm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
-    let output = RunCmd::IgnoreStatus
-        .run("pnpm", ["outdated", "-g", "--json"])
-        .with_context(|| "failed to run pnpm outdated -g --json")?;
+    let output = run_cmd(
+        "pnpm",
+        ["outdated", "-g", "--json"],
+        CmdStatus::IgnoreStatus,
+    )?;
 
-    let stdout = String::from_utf8(output.stdout).context("pnpm outdated output not UTF-8")?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = output.stdout()?;
+    let stderr = output.stderr().unwrap_or_default();
 
     if is_no_importer_manifest_error(&stdout) || is_no_importer_manifest_error(&stderr) {
         return Ok(BTreeMap::new());
     }
 
     // Similar to npm, pnpm can return non-zero when outdated packages exist.
-    if !output.status.success() && output.status.code() != Some(1) {
-        let err_text = if stderr.trim().is_empty() {
-            stdout.trim()
-        } else {
-            stderr.trim()
-        };
+    if !output.success() && output.code() != Some(1) {
+        let err_text = if stderr.is_empty() { stdout } else { stderr };
         bail!("pnpm outdated -g --json failed: {err_text}");
     }
 
@@ -292,7 +294,7 @@ fn pnpm_resolve_target_with_min_age(
     min_age: Duration,
 ) -> Result<PnpmResolvedTarget> {
     let timestamps_by_version: PnpmTimeMap =
-        RunCmd::Success.json("pnpm", ["view", name, "time", "--json"])?;
+        run_cmd("pnpm", ["view", name, "time", "--json"], CmdStatus::Success)?.json()?;
     let releases = pnpm_semver_time_releases(name, &timestamps_by_version)?;
 
     let SemverAgeResolution {
@@ -311,7 +313,7 @@ fn pnpm_resolve_target_with_min_age(
 
 fn pnpm_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Result<Option<u64>> {
     let timestamps_by_version: PnpmTimeMap =
-        RunCmd::Success.json("pnpm", ["view", name, "time", "--json"])?;
+        run_cmd("pnpm", ["view", name, "time", "--json"], CmdStatus::Success)?.json()?;
     let releases = pnpm_semver_time_releases(name, &timestamps_by_version)?;
     Ok(release_age_secs_for_version(
         &releases,
