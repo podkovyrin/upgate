@@ -429,18 +429,7 @@ fn cargo_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
 ) -> Result<CargoResolvedTarget> {
-    let output = RunCmd::Success.run("cargo", ["search", name, "--limit", "1"])?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} search {name} --limit 1 failed: {}",
-            PLUGIN.id(),
-            stderr.trim()
-        );
-    }
-
-    let stdout = String::from_utf8(output.stdout).context("cargo search output not UTF-8")?;
+    let stdout = RunCmd::Success.text("cargo", ["search", name, "--limit", "1"])?;
     let latest = parse_cargo_search_latest_version(name, &stdout)?;
 
     let all_versions = crates_io_versions(crates_client, name)?;

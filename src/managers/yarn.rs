@@ -13,6 +13,7 @@ use crate::util::process::RunCmd;
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -40,6 +41,36 @@ pub(crate) static PLUGIN: YarnPlugin = YarnPlugin;
 struct InstalledEntry {
     current: String,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum YarnInfoJsonLine {
+    #[serde(rename = "inspect")]
+    Inspect { data: BTreeMap<String, String> },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+struct YarnListTreeData {
+    trees: Vec<YarnListTreeNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct YarnListTreeNode {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum YarnGlobalListJsonLine {
+    #[serde(rename = "tree")]
+    Tree { data: YarnListTreeData },
+    #[serde(other)]
+    Other,
+}
+
+type YarnTimeMap = BTreeMap<String, String>;
 
 struct YarnPlanItem {
     name: String,
@@ -260,7 +291,7 @@ fn parse_yarn_major_version(text: &str) -> Option<u64> {
 }
 
 fn yarn_global_installed() -> Result<BTreeMap<String, InstalledEntry>> {
-    let text = RunCmd::Success.text("yarn", ["global", "list", "--depth=0"])?;
+    let text = RunCmd::Success.text("yarn", ["global", "list", "--depth=0", "--json"])?;
 
     Ok(parse_yarn_global_list(&text))
 }
@@ -270,31 +301,43 @@ fn parse_yarn_global_list(text: &str) -> BTreeMap<String, InstalledEntry> {
 
     for line in text.lines() {
         let trimmed = line.trim();
-        let Some(rest) = trimmed.strip_prefix("info \"") else {
-            continue;
-        };
-
-        let Some((spec, _)) = rest.split_once('"') else {
-            continue;
-        };
-
-        let Some((name, version)) = spec.rsplit_once('@') else {
-            continue;
-        };
-
-        if name.is_empty() || version.is_empty() {
+        if trimmed.is_empty() {
             continue;
         }
 
-        out.insert(
-            name.to_string(),
-            InstalledEntry {
-                current: version.to_string(),
-            },
-        );
+        let parsed: YarnGlobalListJsonLine = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let YarnGlobalListJsonLine::Tree { data } = parsed else {
+            continue;
+        };
+
+        for node in data.trees {
+            let Some((name, version)) = parse_yarn_package_spec(&node.name) else {
+                continue;
+            };
+
+            out.insert(
+                name.to_string(),
+                InstalledEntry {
+                    current: version.to_string(),
+                },
+            );
+        }
     }
 
     out
+}
+
+fn parse_yarn_package_spec(spec: &str) -> Option<(&str, &str)> {
+    let (name, version) = spec.rsplit_once('@')?;
+    if name.is_empty() || version.is_empty() {
+        return None;
+    }
+
+    Some((name, version))
 }
 
 struct YarnResolvedTarget {
@@ -338,38 +381,22 @@ fn yarn_resolve_target_with_min_age(
     })
 }
 
-fn parse_yarn_inspect_object(
-    text: &str,
-    field: &str,
-) -> Result<serde_json::Map<String, serde_json::Value>> {
+fn parse_yarn_inspect_object(text: &str, field: &str) -> Result<YarnTimeMap> {
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
 
-        let val: serde_json::Value = match serde_json::from_str(trimmed) {
+        let parsed: YarnInfoJsonLine = match serde_json::from_str(trimmed) {
             Ok(v) => v,
             Err(_) => continue,
         };
 
-        let Some(obj) = val.as_object() else {
-            continue;
-        };
-
-        if obj.get("type").and_then(serde_json::Value::as_str) != Some("inspect") {
-            continue;
+        match parsed {
+            YarnInfoJsonLine::Inspect { data } => return Ok(data),
+            YarnInfoJsonLine::Other => continue,
         }
-
-        let Some(data) = obj.get("data") else {
-            continue;
-        };
-
-        let Some(data_obj) = data.as_object() else {
-            bail!("yarn {field} payload is not an object");
-        };
-
-        return Ok(data_obj.clone());
     }
 
     bail!("failed to parse yarn {field} JSON payload")
@@ -389,9 +416,9 @@ fn yarn_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Resul
 
 fn yarn_semver_time_releases(
     name: &str,
-    obj: &serde_json::Map<String, serde_json::Value>,
+    timestamps_by_version: &YarnTimeMap,
 ) -> Result<Vec<SemverTimestamp>> {
-    parse_semver_time_releases(PLUGIN.id(), name, obj)
+    parse_semver_time_releases(PLUGIN.id(), name, timestamps_by_version)
 }
 
 fn emit_yarn_manager_error(detail: impl AsRef<str>) {
@@ -404,11 +431,7 @@ mod tests {
 
     #[test]
     fn parse_global_list_with_scoped_package() {
-        let raw = r#"yarn global v1.22.22
-info "npm@11.12.0" has binaries:
-info "@scope/tool@2.3.4" has binaries:
-Done in 0.05s.
-"#;
+        let raw = r#"{"type":"tree","data":{"type":"list","trees":[{"name":"npm@11.12.0","children":[],"hint":null,"color":"bold","depth":0},{"name":"@scope/tool@2.3.4","children":[],"hint":null,"color":"bold","depth":0}]}}"#;
 
         let parsed = parse_yarn_global_list(raw);
         assert_eq!(
@@ -426,7 +449,7 @@ Done in 0.05s.
         let raw = "{\"type\":\"inspect\",\"data\":{\"1.0.0\":\"2025-01-01T00:00:00.000Z\"}}\n";
         let parsed = parse_yarn_inspect_object(raw, "time").expect("should parse");
         assert_eq!(
-            parsed.get("1.0.0").and_then(serde_json::Value::as_str),
+            parsed.get("1.0.0").map(String::as_str),
             Some("2025-01-01T00:00:00.000Z")
         );
     }

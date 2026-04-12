@@ -40,6 +40,24 @@ struct OutdatedEntry {
     current: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct PnpmListItem {
+    #[serde(default)]
+    dependencies: BTreeMap<String, PnpmDependency>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PnpmDependency {
+    version: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PnpmOutdatedMapEntry {
+    current: Option<String>,
+}
+
+type PnpmTimeMap = BTreeMap<String, String>;
+
 struct PnpmPlanItem {
     name: String,
     current: String,
@@ -187,27 +205,13 @@ fn apply_pnpm_updates(upgradable: Vec<(String, String, String)>) {
 }
 
 fn pnpm_installed_global() -> Result<BTreeMap<String, String>> {
-    let val: serde_json::Value =
+    let items: Vec<PnpmListItem> =
         RunCmd::Success.json("pnpm", ["list", "-g", "--depth", "0", "--json"])?;
 
     let mut out = BTreeMap::new();
-    let Some(items) = val.as_array() else {
-        return Ok(out);
-    };
-
     for item in items {
-        let deps = item
-            .get("dependencies")
-            .and_then(serde_json::Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-
-        for (name, dep) in deps {
-            if let Some(version) = dep
-                .get("version")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-            {
+        for (name, dep) in item.dependencies {
+            if let Some(version) = dep.version {
                 out.insert(name, version);
             }
         }
@@ -250,62 +254,19 @@ fn is_no_importer_manifest_error(text: &str) -> bool {
 }
 
 fn parse_pnpm_outdated_json(stdout: &str) -> Result<BTreeMap<String, OutdatedEntry>> {
-    let val: serde_json::Value =
+    let entries: BTreeMap<String, PnpmOutdatedMapEntry> =
         serde_json::from_str(stdout).context("failed to parse pnpm outdated JSON")?;
 
     let mut out = BTreeMap::new();
+    for (name, entry) in entries {
+        let Some(current) = entry.current else {
+            continue;
+        };
 
-    if let Some(obj) = val.as_object() {
-        for (name, entry_val) in obj {
-            let Some(current) = entry_val
-                .as_object()
-                .and_then(|o| o.get("current"))
-                .and_then(serde_json::Value::as_str)
-            else {
-                continue;
-            };
-
-            out.insert(
-                name.clone(),
-                OutdatedEntry {
-                    current: current.to_string(),
-                },
-            );
-        }
-
-        return Ok(out);
+        out.insert(name, OutdatedEntry { current });
     }
 
-    if let Some(items) = val.as_array() {
-        for item in items {
-            let Some(obj) = item.as_object() else {
-                continue;
-            };
-
-            let name = obj
-                .get("name")
-                .or_else(|| obj.get("packageName"))
-                .or_else(|| obj.get("package"))
-                .and_then(serde_json::Value::as_str);
-
-            let current = obj.get("current").and_then(serde_json::Value::as_str);
-
-            let (Some(name), Some(current)) = (name, current) else {
-                continue;
-            };
-
-            out.insert(
-                name.to_string(),
-                OutdatedEntry {
-                    current: current.to_string(),
-                },
-            );
-        }
-
-        return Ok(out);
-    }
-
-    bail!("unsupported pnpm outdated JSON shape")
+    Ok(out)
 }
 
 struct PnpmResolvedTarget {
@@ -330,8 +291,9 @@ fn pnpm_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
 ) -> Result<PnpmResolvedTarget> {
-    let val: serde_json::Value = RunCmd::Success.json("pnpm", ["view", name, "time", "--json"])?;
-    let releases = pnpm_semver_time_releases(name, &val)?;
+    let timestamps_by_version: PnpmTimeMap =
+        RunCmd::Success.json("pnpm", ["view", name, "time", "--json"])?;
+    let releases = pnpm_semver_time_releases(name, &timestamps_by_version)?;
 
     let SemverAgeResolution {
         selected_version,
@@ -348,8 +310,9 @@ fn pnpm_resolve_target_with_min_age(
 }
 
 fn pnpm_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Result<Option<u64>> {
-    let val: serde_json::Value = RunCmd::Success.json("pnpm", ["view", name, "time", "--json"])?;
-    let releases = pnpm_semver_time_releases(name, &val)?;
+    let timestamps_by_version: PnpmTimeMap =
+        RunCmd::Success.json("pnpm", ["view", name, "time", "--json"])?;
+    let releases = pnpm_semver_time_releases(name, &timestamps_by_version)?;
     Ok(release_age_secs_for_version(
         &releases,
         version,
@@ -357,12 +320,15 @@ fn pnpm_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Resul
     ))
 }
 
-fn pnpm_semver_time_releases(name: &str, val: &serde_json::Value) -> Result<Vec<SemverTimestamp>> {
-    let obj = val
-        .as_object()
-        .with_context(|| format!("pnpm view time JSON is not an object for {name}"))?;
+fn pnpm_semver_time_releases(
+    name: &str,
+    timestamps_by_version: &PnpmTimeMap,
+) -> Result<Vec<SemverTimestamp>> {
+    if timestamps_by_version.is_empty() {
+        anyhow::bail!("pnpm view time JSON is empty for {name}");
+    }
 
-    parse_semver_time_releases(PLUGIN.id(), name, obj)
+    parse_semver_time_releases(PLUGIN.id(), name, timestamps_by_version)
 }
 
 fn emit_pnpm_manager_error(detail: impl AsRef<str>) {
@@ -386,15 +352,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_outdated_array_shape() {
-        let raw = r#"[
-          { "name": "foo", "current": "1.0.0" },
-          { "packageName": "bar", "current": "2.0.0" }
-        ]"#;
+    fn parse_outdated_ignores_entries_without_current() {
+        let raw = r#"{
+          "foo": { "current": "1.0.0" },
+          "bar": { "latest": "2.0.0" }
+        }"#;
 
         let parsed = parse_pnpm_outdated_json(raw).expect("should parse");
         assert_eq!(parsed.get("foo").map(|e| e.current.as_str()), Some("1.0.0"));
-        assert_eq!(parsed.get("bar").map(|e| e.current.as_str()), Some("2.0.0"));
+        assert!(parsed.get("bar").is_none());
     }
 
     #[test]

@@ -75,6 +75,17 @@ struct FormulaInfo {
     full_name: String,
     tap: Option<String>,
     ruby_source_path: Option<String>,
+    #[serde(default)]
+    installed: Vec<FormulaInstalledInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FormulaInstalledInfo {
+    version: String,
+    #[serde(default)]
+    installed_on_request: bool,
+    #[serde(default)]
+    installed_as_dependency: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,6 +93,24 @@ struct CaskInfo {
     token: String,
     tap: Option<String>,
     ruby_source_path: Option<String>,
+    #[serde(default)]
+    installed: Option<CaskInstalledVersions>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum CaskInstalledVersions {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+impl CaskInstalledVersions {
+    fn latest(&self) -> Option<&str> {
+        match self {
+            Self::Single(v) => Some(v.as_str()),
+            Self::Multiple(v) => v.last().map(String::as_str),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,6 +174,12 @@ struct PackageJob {
     target: String,
     is_formula: bool,
     initial_skip_reason: Option<String>,
+    tap_and_source: Option<(Option<String>, Option<String>)>,
+}
+
+struct ScanItem {
+    name: String,
+    version: String,
     tap_and_source: Option<(Option<String>, Option<String>)>,
 }
 
@@ -488,63 +523,59 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
     Ok(())
 }
 
-fn collect_brew_scan_items() -> Result<Vec<(String, String, bool)>> {
-    let formulae = brew_list_versions("--formula")
-        .with_context(|| "failed to list installed brew formulae")?;
+fn collect_brew_scan_items() -> Result<Vec<ScanItem>> {
+    let info = brew_info_installed().with_context(|| "failed to query installed brew packages")?;
 
-    let casks =
-        brew_list_versions("--cask").with_context(|| "failed to list installed brew casks")?;
+    let mut scan_items = Vec::with_capacity(info.formulae.len() + info.casks.len());
 
-    let mut scan_items: Vec<(String, String, bool)> =
-        Vec::with_capacity(formulae.len() + casks.len());
-    for (name, version) in formulae {
-        scan_items.push((name, version, true));
+    for formula in info.formulae {
+        let explicitly_installed = formula.installed.is_empty()
+            || formula
+                .installed
+                .iter()
+                .any(|item| item.installed_on_request || !item.installed_as_dependency);
+        if !explicitly_installed {
+            continue;
+        }
+
+        let version = formula
+            .installed
+            .last()
+            .map(|item| item.version.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        scan_items.push(ScanItem {
+            name: formula.full_name,
+            version,
+            tap_and_source: Some((formula.tap, formula.ruby_source_path)),
+        });
     }
-    for (name, version) in casks {
-        scan_items.push((name, version, false));
+
+    for cask in info.casks {
+        let version = cask
+            .installed
+            .as_ref()
+            .and_then(CaskInstalledVersions::latest)
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "unknown".to_string());
+
+        scan_items.push(ScanItem {
+            name: cask.token,
+            version,
+            tap_and_source: Some((cask.tap, cask.ruby_source_path)),
+        });
     }
 
     Ok(scan_items)
 }
 
 fn resolve_brew_scan_age_slots(
-    scan_items: &[(String, String, bool)],
+    scan_items: &[ScanItem],
     max_parallel_checks: usize,
 ) -> Result<Option<Vec<Option<u64>>>> {
-    let formula_names: Vec<String> = scan_items
-        .iter()
-        .filter(|(_, _, is_formula)| *is_formula)
-        .map(|(name, _, _)| name.clone())
-        .collect();
-    let cask_names: Vec<String> = scan_items
-        .iter()
-        .filter(|(_, _, is_formula)| !*is_formula)
-        .map(|(name, _, _)| name.clone())
-        .collect();
-
-    let info = match brew_info_for_names(&formula_names, &cask_names) {
-        Ok(info) => info,
-        Err(err) => {
-            emit_manager_error(format!(
-                "failed to read brew package metadata for scan: {err}"
-            ));
-            return Ok(None);
-        }
-    };
-
     let tap_meta = brew_tap_meta().unwrap_or_default();
     let github_client = github_client().ok();
     let now = now_unix_secs()?;
-
-    let mut formula_info_by_name: HashMap<String, FormulaInfo> = HashMap::new();
-    for formula in info.formulae {
-        formula_info_by_name.insert(formula.full_name.clone(), formula);
-    }
-
-    let mut cask_info_by_name: HashMap<String, CaskInfo> = HashMap::new();
-    for cask in info.casks {
-        cask_info_by_name.insert(cask.token.clone(), cask);
-    }
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(max_parallel_checks.max(BREW_MAX_PARALLEL_CHECKS_MIN))
@@ -552,24 +583,17 @@ fn resolve_brew_scan_age_slots(
         .context("failed to build brew scan thread pool")?;
 
     let tap_meta_ref = &tap_meta;
-    let formula_info_ref = &formula_info_by_name;
-    let cask_info_ref = &cask_info_by_name;
     let github_client_ref = github_client.as_ref();
 
     let age_indexed: Vec<(usize, Option<u64>)> = pool.install(|| {
         scan_items
             .par_iter()
             .enumerate()
-            .map(|(idx, (name, _version, is_formula))| {
-                let tap_and_source = if *is_formula {
-                    formula_info_ref
-                        .get(name)
-                        .map(|f| (f.tap.as_deref(), f.ruby_source_path.as_deref()))
-                } else {
-                    cask_info_ref
-                        .get(name)
-                        .map(|c| (c.tap.as_deref(), c.ruby_source_path.as_deref()))
-                };
+            .map(|(idx, item)| {
+                let tap_and_source = item
+                    .tap_and_source
+                    .as_ref()
+                    .map(|(tap, source_path)| (tap.as_deref(), source_path.as_deref()));
 
                 let age = brew_scan_age_secs(tap_and_source, tap_meta_ref, github_client_ref, now);
                 (idx, age)
@@ -586,41 +610,21 @@ fn resolve_brew_scan_age_slots(
 }
 
 fn emit_brew_scan_items(
-    scan_items: Vec<(String, String, bool)>,
+    scan_items: Vec<ScanItem>,
     age_slots: Option<&[Option<u64>]>,
     old_threshold: Duration,
 ) {
-    for (idx, (name, version, _is_formula)) in scan_items.into_iter().enumerate() {
+    for (idx, item) in scan_items.into_iter().enumerate() {
         let age = age_slots.and_then(|slots| slots.get(idx).copied().flatten());
-        emit_scan_current(PLUGIN.id(), PLUGIN.id(), name, version, age, old_threshold);
+        emit_scan_current(
+            PLUGIN.id(),
+            PLUGIN.id(),
+            item.name,
+            item.version,
+            age,
+            old_threshold,
+        );
     }
-}
-
-fn brew_list_versions(kind: &str) -> Result<Vec<(String, String)>> {
-    let text = RunCmd::Success.text("brew", ["list", kind, "--versions"])?;
-
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let mut parts = trimmed.split_whitespace();
-        let Some(name) = parts.next() else {
-            continue;
-        };
-
-        let versions: Vec<&str> = parts.collect();
-        if versions.is_empty() {
-            continue;
-        }
-
-        let version = versions.last().copied().unwrap_or("unknown").to_string();
-        out.push((name.to_string(), version));
-    }
-
-    Ok(out)
 }
 
 fn brew_scan_age_secs(
@@ -1041,6 +1045,10 @@ fn brew_info_for_names(formula_names: &[String], cask_names: &[String]) -> Resul
     args.extend(cask_names.iter().cloned());
 
     RunCmd::Success.json("brew", &args)
+}
+
+fn brew_info_installed() -> Result<InfoRoot> {
+    RunCmd::Success.json("brew", ["info", "--json=v2", "--installed"])
 }
 
 fn github_client() -> Result<Client> {

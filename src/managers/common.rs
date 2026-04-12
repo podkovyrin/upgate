@@ -323,18 +323,14 @@ pub(crate) fn release_age_secs_for_version(
 pub(crate) fn parse_semver_time_releases(
     source: &str,
     package: &str,
-    obj: &serde_json::Map<String, serde_json::Value>,
+    timestamps_by_version: &BTreeMap<String, String>,
 ) -> Result<Vec<SemverTimestamp>> {
     let mut releases = Vec::new();
 
-    for (ver_str, ts_val) in obj {
+    for (ver_str, ts_raw) in timestamps_by_version {
         if ver_str == "created" || ver_str == "modified" {
             continue;
         }
-
-        let Some(ts_raw) = ts_val.as_str() else {
-            continue;
-        };
 
         let ts = parse_rfc3339_unix(ts_raw).with_context(|| {
             format!("invalid {source} timestamp for {package}@{ver_str}: {ts_raw}")

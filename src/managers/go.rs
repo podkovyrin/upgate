@@ -436,6 +436,12 @@ fn go_discover_global_tools() -> Result<Vec<GoDiscoveredTool>> {
     Ok(entries)
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct GoEnvJson {
+    #[serde(rename = "GOPATH")]
+    gopath: Option<String>,
+}
+
 fn go_bin_dir() -> Result<PathBuf> {
     if let Ok(gobin) = std::env::var("GOBIN") {
         let trimmed = gobin.trim();
@@ -453,8 +459,10 @@ fn go_bin_dir() -> Result<PathBuf> {
         }
     }
 
-    if let Ok(text) = RunCmd::Success.text("go", ["env", "GOPATH"]) {
-        let trimmed = text.trim();
+    if let Ok(parsed) = RunCmd::Success.json::<_, _, _, GoEnvJson>("go", ["env", "-json", "GOPATH"])
+        && let Some(gopath) = parsed.gopath
+    {
+        let trimmed = gopath.trim();
         if !trimmed.is_empty()
             && let Some(first) = first_path_entry(trimmed)
         {

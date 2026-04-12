@@ -11,6 +11,7 @@ use crate::util::process::RunCmd;
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -34,10 +35,25 @@ impl ManagerPlugin for BunPlugin {
 
 pub(crate) static PLUGIN: BunPlugin = BunPlugin;
 
-#[derive(Debug)]
-struct OutdatedEntry {
-    current: String,
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum BunPmLsJson {
+    Root(BunPmLsRoot),
+    Roots(Vec<BunPmLsRoot>),
 }
+
+#[derive(Debug, Deserialize)]
+struct BunPmLsRoot {
+    #[serde(default)]
+    dependencies: BTreeMap<String, BunPmDependency>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BunPmDependency {
+    version: Option<String>,
+}
+
+type BunTimeMap = BTreeMap<String, String>;
 
 struct BunPlanItem {
     name: String,
@@ -53,15 +69,15 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     let min_age = ctx.policy.min_release_age.duration();
     let bun = bun_executable();
 
-    let outdated = match bun_outdated_global(&bun) {
-        Ok(outdated) => outdated,
+    let installed = match bun_installed_global(&bun) {
+        Ok(installed) => installed,
         Err(err) => {
             emit_bun_manager_error(format!("failed to query global Bun packages: {err}"));
             return Ok(());
         }
     };
 
-    if outdated.is_empty() {
+    if installed.is_empty() {
         return Ok(());
     }
 
@@ -78,7 +94,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     let plan = resolve_bun_plan(
         &bun,
         &global_cwd,
-        &outdated,
+        &installed,
         now,
         min_age,
         ctx.max_parallel_checks,
@@ -162,14 +178,14 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
 fn resolve_bun_plan(
     bun: &str,
     global_cwd: &str,
-    outdated: &BTreeMap<String, OutdatedEntry>,
+    installed: &BTreeMap<String, String>,
     now_unix_secs: u64,
     min_age: Duration,
     max_parallel_checks: usize,
 ) -> Result<Vec<BunPlanItem>> {
-    let jobs: Vec<(String, String)> = outdated
+    let jobs: Vec<(String, String)> = installed
         .iter()
-        .map(|(name, entry)| (name.clone(), entry.current.clone()))
+        .map(|(name, current)| (name.clone(), current.clone()))
         .collect();
 
     let threads = effective_parallelism(max_parallel_checks, BUN_MAX_PARALLEL_CHECKS);
@@ -251,29 +267,8 @@ fn emit_bun_scan_outcomes(
 }
 
 fn bun_installed_global(bun: &str) -> Result<BTreeMap<String, String>> {
-    let val: serde_json::Value = RunCmd::IgnoreStatus.json(bun, ["pm", "ls", "-g", "--json"])?;
-    let mut out = BTreeMap::new();
-    if let Some(obj) = val
-        .get("dependencies")
-        .and_then(serde_json::Value::as_object)
-    {
-        for (name, dep) in obj {
-            if let Some(version) = dep
-                .get("version")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-            {
-                out.insert(name.clone(), version);
-            }
-        }
-    }
-
-    Ok(out)
-}
-
-fn bun_outdated_global(bun: &str) -> Result<BTreeMap<String, OutdatedEntry>> {
-    let output = RunCmd::IgnoreStatus.run(bun, ["outdated", "-g"])?;
-    let stdout = String::from_utf8(output.stdout).context("bun outdated output not UTF-8")?;
+    let output = RunCmd::IgnoreStatus.run(bun, ["pm", "ls", "-g", "--json"])?;
+    let stdout = String::from_utf8(output.stdout).context("bun pm ls output not UTF-8")?;
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     if is_missing_global_manifest(&stdout) || is_missing_global_manifest(&stderr) {
@@ -286,54 +281,35 @@ fn bun_outdated_global(bun: &str) -> Result<BTreeMap<String, OutdatedEntry>> {
         } else {
             stderr.trim()
         };
-        bail!("bun outdated -g failed: {err_text}");
+        bail!("bun pm ls -g --json failed: {err_text}");
     }
 
-    Ok(parse_bun_outdated_table(&stdout))
+    parse_bun_pm_ls_json(&stdout)
 }
 
-fn parse_bun_outdated_table(stdout: &str) -> BTreeMap<String, OutdatedEntry> {
+fn parse_bun_pm_ls_json(stdout: &str) -> Result<BTreeMap<String, String>> {
+    if stdout.trim().is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let parsed: BunPmLsJson =
+        serde_json::from_str(stdout).context("failed to parse bun pm ls JSON")?;
+
     let mut out = BTreeMap::new();
+    let roots: Vec<BunPmLsRoot> = match parsed {
+        BunPmLsJson::Root(root) => vec![root],
+        BunPmLsJson::Roots(roots) => roots,
+    };
 
-    for line in stdout.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with('|') {
-            continue;
+    for root in roots {
+        for (name, dep) in root.dependencies {
+            if let Some(version) = dep.version {
+                out.insert(name, version);
+            }
         }
-
-        if is_table_separator_line(trimmed) {
-            continue;
-        }
-
-        let cols: Vec<&str> = trimmed
-            .trim_matches('|')
-            .split('|')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        if cols.len() < 2 {
-            continue;
-        }
-
-        if cols[0].eq_ignore_ascii_case("package") {
-            continue;
-        }
-
-        out.insert(
-            cols[0].to_string(),
-            OutdatedEntry {
-                current: cols[1].to_string(),
-            },
-        );
     }
 
-    out
-}
-
-fn is_table_separator_line(line: &str) -> bool {
-    line.chars()
-        .all(|c| c == '|' || c == '-' || c == ' ' || c == '\t')
+    Ok(out)
 }
 
 fn is_missing_global_manifest(text: &str) -> bool {
@@ -368,12 +344,12 @@ fn bun_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
 ) -> Result<BunResolvedTarget> {
-    let val: serde_json::Value = RunCmd::IgnoreStatus.json(
+    let timestamps_by_version: BunTimeMap = RunCmd::IgnoreStatus.json(
         bun,
         ["pm", "view", name, "time", "--json", "--cwd", global_cwd],
     )?;
 
-    let releases = bun_semver_time_releases(name, &val)?;
+    let releases = bun_semver_time_releases(name, &timestamps_by_version)?;
 
     let SemverAgeResolution {
         selected_version,
@@ -446,10 +422,10 @@ fn bun_release_age_secs(
     }
 
     let stdout = String::from_utf8(output.stdout).context("bun pm view output not UTF-8")?;
-    let val: serde_json::Value = serde_json::from_str(&stdout)
+    let timestamps_by_version: BunTimeMap = serde_json::from_str(&stdout)
         .with_context(|| format!("failed to parse bun pm view JSON for {name}"))?;
 
-    let releases = bun_semver_time_releases(name, &val)?;
+    let releases = bun_semver_time_releases(name, &timestamps_by_version)?;
     Ok(release_age_secs_for_version(
         &releases,
         version,
@@ -457,12 +433,15 @@ fn bun_release_age_secs(
     ))
 }
 
-fn bun_semver_time_releases(name: &str, val: &serde_json::Value) -> Result<Vec<SemverTimestamp>> {
-    let obj = val
-        .as_object()
-        .with_context(|| format!("bun pm view time JSON is not an object for {name}"))?;
+fn bun_semver_time_releases(
+    name: &str,
+    timestamps_by_version: &BunTimeMap,
+) -> Result<Vec<SemverTimestamp>> {
+    if timestamps_by_version.is_empty() {
+        anyhow::bail!("bun pm view time JSON is empty for {name}");
+    }
 
-    parse_semver_time_releases(PLUGIN.id(), name, obj)
+    parse_semver_time_releases(PLUGIN.id(), name, timestamps_by_version)
 }
 
 fn emit_bun_manager_error(detail: impl AsRef<str>) {
@@ -474,32 +453,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_outdated_table() {
-        let raw = r"bun outdated v1.3.11 (af24e281)
-|----------------------------------------|
-| Package  | Current | Update  | Latest  |
-|----------|---------|---------|---------|
-| npm      | 11.12.0 | 11.12.0 | 11.12.1 |
-| typescript | 5.9.3 | 5.9.3 | 5.9.4 |
-|----------------------------------------|
-";
+    fn parse_pm_ls_root_object_shape() {
+        let raw = r#"{
+          "dependencies": {
+            "npm": { "version": "11.12.0" },
+            "typescript": { "version": "5.9.3" }
+          }
+        }"#;
 
-        let parsed = parse_bun_outdated_table(raw);
-        assert_eq!(
-            parsed.get("npm").map(|e| e.current.as_str()),
-            Some("11.12.0")
-        );
-        assert_eq!(
-            parsed.get("typescript").map(|e| e.current.as_str()),
-            Some("5.9.3")
-        );
+        let parsed = parse_bun_pm_ls_json(raw).expect("should parse");
+        assert_eq!(parsed.get("npm").map(String::as_str), Some("11.12.0"));
+        assert_eq!(parsed.get("typescript").map(String::as_str), Some("5.9.3"));
     }
 
     #[test]
-    fn parse_outdated_without_rows() {
-        let raw = "bun outdated v1.3.11 (af24e281)\n";
-        let parsed = parse_bun_outdated_table(raw);
-        assert!(parsed.is_empty());
+    fn parse_pm_ls_array_shape() {
+        let raw = r#"[
+          {
+            "dependencies": {
+              "npm": { "version": "11.12.0" }
+            }
+          },
+          {
+            "dependencies": {
+              "typescript": { "version": "5.9.3" }
+            }
+          }
+        ]"#;
+
+        let parsed = parse_bun_pm_ls_json(raw).expect("should parse");
+        assert_eq!(parsed.get("npm").map(String::as_str), Some("11.12.0"));
+        assert_eq!(parsed.get("typescript").map(String::as_str), Some("5.9.3"));
     }
 
     #[test]

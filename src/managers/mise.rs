@@ -10,6 +10,7 @@ use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -36,6 +37,15 @@ pub(crate) static PLUGIN: MisePlugin = MisePlugin;
 struct MiseLatestAgeResult {
     age_secs: Result<u64, String>,
 }
+
+type NpmTimeMap = BTreeMap<String, String>;
+
+#[derive(Debug, Deserialize)]
+struct MiseLsByToolEntry {
+    version: Option<String>,
+}
+
+type MiseLsJson = BTreeMap<String, Vec<MiseLsByToolEntry>>;
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
     if ctx.is_scan() {
@@ -269,11 +279,11 @@ fn mise_outdated_latest_map() -> Result<BTreeMap<String, String>> {
 fn npm_latest_age_secs(tool: &str, latest: &str, now_unix_secs: u64) -> Result<u64> {
     let pkg = tool.trim_start_matches("npm:");
     let spec = format!("{pkg}@{latest}");
-    let val: serde_json::Value = RunCmd::Success.json("npm", ["view", &spec, "time", "--json"])?;
+    let timestamps_by_version: NpmTimeMap =
+        RunCmd::Success.json("npm", ["view", &spec, "time", "--json"])?;
 
-    let ts_raw = val
+    let ts_raw = timestamps_by_version
         .get(latest)
-        .and_then(serde_json::Value::as_str)
         .with_context(|| format!("npm view time missing timestamp for {spec}"))?;
 
     let ts = parse_rfc3339_unix(ts_raw)
@@ -333,36 +343,17 @@ fn emit_mise_scan_outcomes(
 }
 
 fn mise_installed_versions() -> Result<BTreeMap<String, String>> {
-    let val: serde_json::Value = RunCmd::Success.json("mise", ["ls", "--json"])?;
+    let parsed: MiseLsJson = RunCmd::Success.json("mise", ["ls", "--json"])?;
 
     let mut out = BTreeMap::new();
-    let Some(items) = val.as_array() else {
-        return Ok(out);
-    };
+    for (tool, entries) in parsed {
+        for entry in entries {
+            let Some(version) = entry.version else {
+                continue;
+            };
 
-    for item in items {
-        let tool = item
-            .get("plugin")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| item.get("tool").and_then(serde_json::Value::as_str));
-        let version = item
-            .get("version")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| item.get("current").and_then(serde_json::Value::as_str));
-
-        let (Some(tool), Some(version)) = (tool, version) else {
-            continue;
-        };
-
-        let key = if tool == "npm" {
-            item.get("name")
-                .and_then(serde_json::Value::as_str)
-                .map_or_else(|| tool.to_string(), |name| format!("npm:{name}"))
-        } else {
-            tool.to_string()
-        };
-
-        out.insert(key, version.to_string());
+            out.insert(tool.clone(), version);
+        }
     }
 
     Ok(out)

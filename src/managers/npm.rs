@@ -40,6 +40,19 @@ struct OutdatedEntry {
     current: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct NpmLsJson {
+    #[serde(default)]
+    dependencies: BTreeMap<String, NpmLsDependency>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NpmLsDependency {
+    version: Option<String>,
+}
+
+type NpmTimeMap = BTreeMap<String, String>;
+
 struct NpmPlanItem {
     name: String,
     current: String,
@@ -191,22 +204,11 @@ fn apply_npm_updates(min_age_days: u64) {
 }
 
 fn npm_installed_global() -> Result<BTreeMap<String, String>> {
-    let val: serde_json::Value =
-        RunCmd::Success.json("npm", ["ls", "-g", "--depth=0", "--json"])?;
+    let parsed: NpmLsJson = RunCmd::Success.json("npm", ["ls", "-g", "--depth=0", "--json"])?;
 
     let mut out = BTreeMap::new();
-    let deps = val
-        .get("dependencies")
-        .and_then(serde_json::Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-
-    for (name, dep_val) in deps {
-        if let Some(version) = dep_val
-            .get("version")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-        {
+    for (name, dep) in parsed.dependencies {
+        if let Some(version) = dep.version {
             out.insert(name, version);
         }
     }
@@ -240,9 +242,10 @@ fn npm_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
 ) -> Result<NpmResolvedTarget> {
-    let val: serde_json::Value = RunCmd::Success.json("npm", ["view", name, "time", "--json"])?;
+    let timestamps_by_version: NpmTimeMap =
+        RunCmd::Success.json("npm", ["view", name, "time", "--json"])?;
 
-    let releases = npm_semver_time_releases(name, &val)?;
+    let releases = npm_semver_time_releases(name, &timestamps_by_version)?;
 
     let SemverAgeResolution {
         selected_version,
@@ -259,9 +262,10 @@ fn npm_resolve_target_with_min_age(
 }
 
 fn npm_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Result<Option<u64>> {
-    let val: serde_json::Value = RunCmd::Success.json("npm", ["view", name, "time", "--json"])?;
+    let timestamps_by_version: NpmTimeMap =
+        RunCmd::Success.json("npm", ["view", name, "time", "--json"])?;
 
-    let releases = npm_semver_time_releases(name, &val)?;
+    let releases = npm_semver_time_releases(name, &timestamps_by_version)?;
     Ok(release_age_secs_for_version(
         &releases,
         version,
@@ -269,12 +273,15 @@ fn npm_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Result
     ))
 }
 
-fn npm_semver_time_releases(name: &str, val: &serde_json::Value) -> Result<Vec<SemverTimestamp>> {
-    let obj = val
-        .as_object()
-        .with_context(|| format!("npm view time JSON is not an object for {name}"))?;
+fn npm_semver_time_releases(
+    name: &str,
+    timestamps_by_version: &NpmTimeMap,
+) -> Result<Vec<SemverTimestamp>> {
+    if timestamps_by_version.is_empty() {
+        anyhow::bail!("npm view time JSON is empty for {name}");
+    }
 
-    parse_semver_time_releases(PLUGIN.id(), name, obj)
+    parse_semver_time_releases(PLUGIN.id(), name, timestamps_by_version)
 }
 
 fn emit_npm_manager_error(detail: impl AsRef<str>) {
