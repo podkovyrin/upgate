@@ -7,13 +7,12 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::run_command_checked_stdout;
+use crate::util::process::{RunCheck, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::process::Command;
 use std::time::Duration;
 
 const NPM_MAX_PARALLEL_CHECKS: usize = 6;
@@ -169,12 +168,16 @@ fn resolve_npm_plan(
 }
 
 fn apply_npm_updates(min_age_days: u64) {
-    if let Err(err) = run_npm(&[
-        "-g",
-        "update",
-        "--min-release-age",
-        &min_age_days.to_string(),
-    ]) {
+    if let Err(err) = run_cmd(
+        "npm",
+        [
+            "-g",
+            "update",
+            "--min-release-age",
+            &min_age_days.to_string(),
+        ],
+        RunCheck::Success,
+    ) {
         let outcome = ItemOutcome::error(
             PLUGIN.id(),
             "*",
@@ -189,15 +192,12 @@ fn apply_npm_updates(min_age_days: u64) {
 }
 
 fn npm_installed_global() -> Result<BTreeMap<String, String>> {
-    let output = Command::new("npm")
-        .args(["ls", "-g", "--depth=0", "--json"])
-        .output()
-        .with_context(|| "failed to run npm ls -g --depth=0 --json")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("npm ls -g --depth=0 --json failed: {}", stderr.trim());
-    }
+    let output = run_cmd(
+        "npm",
+        ["ls", "-g", "--depth=0", "--json"],
+        RunCheck::Success,
+    )
+    .with_context(|| "failed to run npm ls -g --depth=0 --json")?;
 
     let stdout = String::from_utf8(output.stdout).context("npm ls output not UTF-8")?;
     if stdout.trim().is_empty() {
@@ -228,16 +228,12 @@ fn npm_installed_global() -> Result<BTreeMap<String, String>> {
 }
 
 fn npm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
-    let output = Command::new("npm")
-        .args(["outdated", "-g", "--json"])
-        .output()
-        .with_context(|| "failed to run npm outdated -g --json")?;
-
-    // npm outdated returns exit code 1 when outdated packages exist.
-    if !output.status.success() && output.status.code() != Some(1) {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("npm outdated -g --json failed: {}", stderr.trim());
-    }
+    let output = run_cmd(
+        "npm",
+        ["outdated", "-g", "--json"],
+        RunCheck::Allow(&[1]),
+    )
+    .with_context(|| "failed to run npm outdated -g --json")?;
 
     let stdout = String::from_utf8(output.stdout).context("npm outdated output not UTF-8")?;
     if stdout.trim().is_empty() {
@@ -272,15 +268,8 @@ fn npm_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
 ) -> Result<NpmResolvedTarget> {
-    let output = Command::new("npm")
-        .args(["view", name, "time", "--json"])
-        .output()
+    let output = run_cmd("npm", ["view", name, "time", "--json"], RunCheck::Success)
         .with_context(|| format!("failed to run npm view {name} time --json"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("npm view {name} time --json failed: {}", stderr.trim());
-    }
 
     let stdout = String::from_utf8(output.stdout).context("npm view output not UTF-8")?;
     let val: serde_json::Value = serde_json::from_str(&stdout)
@@ -303,15 +292,8 @@ fn npm_resolve_target_with_min_age(
 }
 
 fn npm_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Result<Option<u64>> {
-    let output = Command::new("npm")
-        .args(["view", name, "time", "--json"])
-        .output()
+    let output = run_cmd("npm", ["view", name, "time", "--json"], RunCheck::Success)
         .with_context(|| format!("failed to run npm view {name} time --json"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("npm view {name} time --json failed: {}", stderr.trim());
-    }
 
     let stdout = String::from_utf8(output.stdout).context("npm view output not UTF-8")?;
     let val: serde_json::Value = serde_json::from_str(&stdout)
@@ -331,12 +313,6 @@ fn npm_semver_time_releases(name: &str, val: &serde_json::Value) -> Result<Vec<S
         .with_context(|| format!("npm view time JSON is not an object for {name}"))?;
 
     parse_semver_time_releases(PLUGIN.id(), name, obj)
-}
-
-fn run_npm(args: &[&str]) -> Result<Vec<u8>> {
-    let mut command = Command::new("npm");
-    command.args(args);
-    run_command_checked_stdout(command)
 }
 
 fn emit_npm_manager_error(detail: impl AsRef<str>) {

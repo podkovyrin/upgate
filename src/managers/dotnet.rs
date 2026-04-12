@@ -7,13 +7,12 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::run_command_checked_stdout;
+use crate::util::process::{RunCheck, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
 use reqwest::blocking::Client;
-use std::process::Command;
 use std::time::Duration;
 
 const DOTNET_MAX_PARALLEL_CHECKS: usize = 4;
@@ -261,15 +260,19 @@ fn resolve_dotnet_plan(
 
 fn apply_dotnet_updates(upgradable: Vec<(String, String, String)>) {
     for (name, current, target) in upgradable {
-        if let Err(err) = run_dotnet(&[
-            "tool",
-            "update",
-            "--global",
-            &name,
-            "--version",
-            &target,
-            "--allow-downgrade",
-        ]) {
+        if let Err(err) = run_cmd(
+            "dotnet",
+            [
+                "tool",
+                "update",
+                "--global",
+                &name,
+                "--version",
+                &target,
+                "--allow-downgrade",
+            ],
+            RunCheck::Success,
+        ) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 name,
@@ -311,10 +314,12 @@ fn emit_dotnet_scan_outcomes(
 }
 
 fn dotnet_global_tools() -> Result<Vec<DotnetToolEntry>> {
-    let output = Command::new("dotnet")
-        .args(["tool", "list", "--global", "--format", "json"])
-        .output()
-        .context("failed to run dotnet tool list --global --format json")?;
+    let output = run_cmd(
+        "dotnet",
+        ["tool", "list", "--global", "--format", "json"],
+        RunCheck::IgnoreStatus,
+    )
+    .context("failed to run dotnet tool list --global --format json")?;
 
     let stdout = String::from_utf8(output.stdout).context("dotnet tool list output not UTF-8")?;
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -493,12 +498,6 @@ fn fetch_text(client: &Client, url: &str, gzipped: bool) -> Result<String> {
         String::from_utf8(bytes.to_vec())
             .with_context(|| format!("NuGet payload was not UTF-8 for URL {url}"))
     }
-}
-
-fn run_dotnet(args: &[&str]) -> Result<Vec<u8>> {
-    let mut command = Command::new("dotnet");
-    command.args(args);
-    run_command_checked_stdout(command)
 }
 
 fn emit_dotnet_manager_error(detail: impl AsRef<str>) {

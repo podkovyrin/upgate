@@ -1,28 +1,34 @@
 use anyhow::{Context, Result};
+use std::ffi::OsStr;
 use std::fmt;
 use std::process::{Command, ExitStatus, Output};
 
-pub(crate) fn run_command(mut command: Command) -> Result<Output> {
-    let display = command_display(&command);
-    command
-        .output()
-        .with_context(|| format!("failed to run {display}"))
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RunCheck<'a> {
+    Success,
+    Allow(&'a [i32]),
+    IgnoreStatus,
 }
 
-pub(crate) fn run_command_checked(mut command: Command) -> Result<Output> {
+pub(crate) fn run_cmd<P, I, A>(program: P, args: I, check: RunCheck<'_>) -> Result<Output>
+where
+    P: AsRef<OsStr>,
+    I: IntoIterator<Item = A>,
+    A: AsRef<OsStr>,
+{
+    let mut command = Command::new(program);
+    command.args(args);
+
     let display = command_display(&command);
     let output = command
         .output()
         .with_context(|| format!("failed to run {display}"))?;
-    expect_success(output, &display)
+
+    ensure_status(output, &display, check)
 }
 
-pub(crate) fn run_command_checked_stdout(command: Command) -> Result<Vec<u8>> {
-    Ok(run_command_checked(command)?.stdout)
-}
-
-pub(crate) fn expect_success(output: Output, command_display: &str) -> Result<Output> {
-    if output.status.success() {
+fn ensure_status(output: Output, command_display: &str, check: RunCheck<'_>) -> Result<Output> {
+    if status_allowed(output.status, check) {
         return Ok(output);
     }
 
@@ -32,6 +38,16 @@ pub(crate) fn expect_success(output: Output, command_display: &str) -> Result<Ou
         status: output.status,
         stderr,
     }))
+}
+
+fn status_allowed(status: ExitStatus, check: RunCheck<'_>) -> bool {
+    match check {
+        RunCheck::Success => status.success(),
+        RunCheck::Allow(extra_codes) => {
+            status.success() || status.code().is_some_and(|code| extra_codes.contains(&code))
+        }
+        RunCheck::IgnoreStatus => true,
+    }
 }
 
 pub(crate) fn command_display(command: &Command) -> String {

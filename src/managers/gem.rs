@@ -5,7 +5,7 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::run_command_checked_stdout;
+use crate::util::process::{RunCheck, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
@@ -13,7 +13,6 @@ use anyhow::{Context, Result, bail};
 use reqwest::blocking::Client;
 use semver::Version;
 use std::collections::BTreeMap;
-use std::process::Command;
 use std::time::Duration;
 
 const GEM_MAX_PARALLEL_CHECKS: usize = 4;
@@ -287,7 +286,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     }
 
     for (name, current, target) in upgradable {
-        if let Err(err) = run_gem(&["install", &name, "-v", &target]) {
+        if let Err(err) = run_cmd("gem", ["install", &name, "-v", &target], RunCheck::Success) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 name,
@@ -353,7 +352,7 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
 }
 
 fn gem_installed_inventory() -> Result<BTreeMap<String, GemInstalledEntry>> {
-    let stdout = run_gem(&["list"])?;
+    let stdout = run_cmd("gem", ["list"], RunCheck::Success)?.stdout;
     let text = String::from_utf8(stdout).context("gem list output not UTF-8")?;
 
     Ok(parse_gem_installed_inventory(&text))
@@ -411,7 +410,7 @@ fn parse_gem_installed_inventory(text: &str) -> BTreeMap<String, GemInstalledEnt
 }
 
 fn gem_outdated_map() -> Result<BTreeMap<String, OutdatedGem>> {
-    let stdout = run_gem(&["outdated"])?;
+    let stdout = run_cmd("gem", ["outdated"], RunCheck::Success)?.stdout;
     let text = String::from_utf8(stdout).context("gem outdated output not UTF-8")?;
 
     Ok(parse_gem_outdated_output(&text))
@@ -454,7 +453,7 @@ fn parse_gem_outdated_output(text: &str) -> BTreeMap<String, OutdatedGem> {
 }
 
 fn ruby_runtime_version() -> Result<Version> {
-    let stdout = run_ruby(&["-e", "print RUBY_VERSION"])?;
+    let stdout = run_cmd("ruby", ["-e", "print RUBY_VERSION"], RunCheck::Success)?.stdout;
     let raw = String::from_utf8(stdout).context("ruby RUBY_VERSION output not UTF-8")?;
     let trimmed = raw.trim();
 
@@ -685,18 +684,6 @@ fn parse_version_for_compare(raw: &str) -> Option<Version> {
     }
 
     Version::parse(&format!("{}.{}.{}", nums[0], nums[1], nums[2])).ok()
-}
-
-fn run_gem(args: &[&str]) -> Result<Vec<u8>> {
-    let mut command = Command::new("gem");
-    command.args(args);
-    run_command_checked_stdout(command)
-}
-
-fn run_ruby(args: &[&str]) -> Result<Vec<u8>> {
-    let mut command = Command::new("ruby");
-    command.args(args);
-    run_command_checked_stdout(command)
 }
 
 fn emit_gem_manager_error(detail: impl AsRef<str>) {

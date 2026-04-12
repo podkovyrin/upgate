@@ -6,7 +6,7 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::{run_command_checked, run_command_checked_stdout};
+use crate::util::process::{RunCheck, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
@@ -14,7 +14,6 @@ use pep440::Version;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const UV_MAX_PARALLEL_CHECKS: usize = 2;
 
@@ -237,7 +236,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             tool.clone(),
         ];
 
-        if let Err(err) = run_uv_owned(&args) {
+        if let Err(err) = run_cmd("uv", &args, RunCheck::Success) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 tool,
@@ -312,7 +311,7 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
 }
 
 fn uv_tool_dir() -> Result<String> {
-    let stdout = run_uv(&["tool", "dir"])?;
+    let stdout = run_cmd("uv", ["tool", "dir"], RunCheck::Success)?.stdout;
     let path = String::from_utf8(stdout).context("uv tool dir output not UTF-8")?;
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -322,7 +321,7 @@ fn uv_tool_dir() -> Result<String> {
 }
 
 fn uv_installed_tools(tool_dir: &str) -> Result<Vec<UvTool>> {
-    let stdout = run_uv(&["tool", "list", "--show-version-specifiers"])?;
+    let stdout = run_cmd("uv", ["tool", "list", "--show-version-specifiers"], RunCheck::Success)?.stdout;
     let text = String::from_utf8(stdout).context("uv tool list output not UTF-8")?;
 
     let mut out = Vec::new();
@@ -391,22 +390,12 @@ name = sys.argv[1]
 print(m.version(name))
 ";
 
-    let output = Command::new(python_path)
-        .arg("-c")
-        .arg(script)
-        .arg(package_name)
-        .output()
-        .with_context(|| {
-            format!("failed to run python at {python_path} to query package version")
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "failed to query installed version for uv tool '{package_name}': {}",
-            stderr.trim()
-        );
-    }
+    let output = run_cmd(
+        python_path,
+        ["-c", script, package_name],
+        RunCheck::Success,
+    )
+    .with_context(|| format!("failed to run python at {python_path} to query package version"))?;
 
     let stdout =
         String::from_utf8(output.stdout).context("python version query output not UTF-8")?;
@@ -419,7 +408,7 @@ print(m.version(name))
 }
 
 fn uv_outdated_latest_map() -> Result<BTreeMap<String, String>> {
-    let stdout = run_uv(&["tool", "list", "--outdated"])?;
+    let stdout = run_cmd("uv", ["tool", "list", "--outdated"], RunCheck::Success)?.stdout;
     let text = String::from_utf8(stdout).context("uv tool list --outdated output not UTF-8")?;
 
     let mut out = BTreeMap::new();
@@ -496,7 +485,9 @@ fn uv_resolve_target_with_exclude_newer(tool: &UvTool, min_age_raw: &str) -> Res
         requirement,
     ];
 
-    let (stdout, stderr) = run_uv_owned_with_stderr(&args)?;
+    let output = run_cmd("uv", &args, RunCheck::Success)?;
+    let stdout = output.stdout;
+    let stderr = output.stderr;
 
     // `uv pip install --dry-run` writes the plan to stderr in non-interactive mode.
     // Parse both streams to be robust across uv versions.
@@ -640,27 +631,8 @@ fn uv_tool_python_path(tool_dir: &str, tool_name: &str) -> String {
         .to_string()
 }
 
-fn run_uv(args: &[&str]) -> Result<Vec<u8>> {
-    let mut command = Command::new("uv");
-    command.args(args);
-    run_command_checked_stdout(command)
-}
-
 fn emit_uv_manager_error(detail: impl AsRef<str>) {
     emit_manager_level_error(PLUGIN.id(), PLUGIN.id(), detail);
-}
-
-fn run_uv_owned(args: &[String]) -> Result<Vec<u8>> {
-    let mut command = Command::new("uv");
-    command.args(args);
-    run_command_checked_stdout(command)
-}
-
-fn run_uv_owned_with_stderr(args: &[String]) -> Result<(Vec<u8>, Vec<u8>)> {
-    let mut command = Command::new("uv");
-    command.args(args);
-    let output = run_command_checked(command)?;
-    Ok((output.stdout, output.stderr))
 }
 
 #[cfg(test)]

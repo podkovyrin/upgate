@@ -7,13 +7,12 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::run_command_checked_stdout;
+use crate::util::process::{RunCheck, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
 use reqwest::blocking::Client;
 use std::collections::BTreeMap;
-use std::process::Command;
 use std::time::Duration;
 
 const PIPX_MAX_PARALLEL_CHECKS: usize = 4;
@@ -221,7 +220,7 @@ fn resolve_pipx_plan(
 
 fn apply_pipx_updates(upgradable: Vec<(String, String, String)>) {
     for (pkg, current, target) in upgradable {
-        if let Err(err) = run_pipx(&["upgrade", &pkg]) {
+        if let Err(err) = run_cmd("pipx", ["upgrade", &pkg], RunCheck::Success) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 pkg,
@@ -237,9 +236,7 @@ fn apply_pipx_updates(upgradable: Vec<(String, String, String)>) {
 }
 
 fn pipx_installed_main_packages() -> Result<BTreeMap<String, String>> {
-    let output = Command::new("pipx")
-        .args(["list", "--json"])
-        .output()
+    let output = run_cmd("pipx", ["list", "--json"], RunCheck::Success)
         .with_context(|| "failed to run pipx list --json")?;
 
     if !output.status.success() {
@@ -340,12 +337,6 @@ fn pypi_root(pypi_client: &Client, pkg: &str) -> Result<PypiRoot> {
         .with_context(|| format!("failed to read PyPI response body for {pkg}"))?;
 
     serde_json::from_str(&body).with_context(|| format!("failed to parse PyPI JSON for {pkg}"))
-}
-
-fn run_pipx(args: &[&str]) -> Result<Vec<u8>> {
-    let mut command = Command::new("pipx");
-    command.args(args);
-    run_command_checked_stdout(command)
 }
 
 fn emit_pipx_manager_error(detail: impl AsRef<str>) {

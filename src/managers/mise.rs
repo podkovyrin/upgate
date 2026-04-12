@@ -5,13 +5,12 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::run_command_checked_stdout;
+use crate::util::process::{RunCheck, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
-use std::process::Command;
 use std::time::Duration;
 
 const MISE_NPM_AGE_MAX_PARALLEL_CHECKS: usize = 4;
@@ -82,7 +81,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         return Ok(());
     }
 
-    if let Err(err) = run_mise(&["upgrade", "--before", min_age_raw]) {
+    if let Err(err) = run_cmd("mise", ["upgrade", "--before", min_age_raw], RunCheck::Success) {
         let outcome = ItemOutcome::error(
             PLUGIN.id(),
             "*",
@@ -251,10 +250,12 @@ fn split_tool_and_version(input: &str) -> Option<(&str, &str)> {
 }
 
 fn mise_upgrade_dry_run_with_before(before: &str) -> Result<Vec<String>> {
-    let output = Command::new("mise")
-        .args(["upgrade", "--dry-run", "--before", before])
-        .output()
-        .with_context(|| format!("failed to run mise upgrade --dry-run --before {before}"))?;
+    let output = run_cmd(
+        "mise",
+        ["upgrade", "--dry-run", "--before", before],
+        RunCheck::Success,
+    )
+    .with_context(|| format!("failed to run mise upgrade --dry-run --before {before}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -274,9 +275,7 @@ struct MiseOutdatedItem {
 }
 
 fn mise_outdated_latest_map() -> Result<BTreeMap<String, String>> {
-    let output = Command::new("mise")
-        .args(["outdated", "--json"])
-        .output()
+    let output = run_cmd("mise", ["outdated", "--json"], RunCheck::Success)
         .with_context(|| "failed to run mise outdated --json")?;
 
     if !output.status.success() {
@@ -294,9 +293,7 @@ fn mise_outdated_latest_map() -> Result<BTreeMap<String, String>> {
 fn npm_latest_age_secs(tool: &str, latest: &str, now_unix_secs: u64) -> Result<u64> {
     let pkg = tool.trim_start_matches("npm:");
     let spec = format!("{pkg}@{latest}");
-    let output = Command::new("npm")
-        .args(["view", &spec, "time", "--json"])
-        .output()
+    let output = run_cmd("npm", ["view", &spec, "time", "--json"], RunCheck::Success)
         .with_context(|| format!("failed to run npm view {spec} time --json"))?;
 
     if !output.status.success() {
@@ -370,9 +367,7 @@ fn emit_mise_scan_outcomes(
 }
 
 fn mise_installed_versions() -> Result<BTreeMap<String, String>> {
-    let output = Command::new("mise")
-        .args(["ls", "--json"])
-        .output()
+    let output = run_cmd("mise", ["ls", "--json"], RunCheck::Success)
         .with_context(|| "failed to run mise ls --json")?;
 
     if !output.status.success() {
@@ -415,12 +410,6 @@ fn mise_installed_versions() -> Result<BTreeMap<String, String>> {
     }
 
     Ok(out)
-}
-
-fn run_mise(args: &[&str]) -> Result<Vec<u8>> {
-    let mut command = Command::new("mise");
-    command.args(args);
-    run_command_checked_stdout(command)
 }
 
 fn emit_mise_manager_error(detail: impl AsRef<str>) {

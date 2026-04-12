@@ -7,13 +7,12 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::run_command_checked_stdout;
+use crate::util::process::{RunCheck, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::process::Command;
 use std::time::Duration;
 
 const PNPM_MAX_PARALLEL_CHECKS: usize = 6;
@@ -172,7 +171,7 @@ fn resolve_pnpm_plan(
 fn apply_pnpm_updates(upgradable: Vec<(String, String, String)>) {
     for (name, current, version) in upgradable {
         let spec = format!("{name}@{version}");
-        if let Err(err) = run_pnpm(&["add", "-g", &spec]) {
+        if let Err(err) = run_cmd("pnpm", ["add", "-g", &spec], RunCheck::Success) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 name,
@@ -188,15 +187,12 @@ fn apply_pnpm_updates(upgradable: Vec<(String, String, String)>) {
 }
 
 fn pnpm_installed_global() -> Result<BTreeMap<String, String>> {
-    let output = Command::new("pnpm")
-        .args(["list", "-g", "--depth", "0", "--json"])
-        .output()
-        .with_context(|| "failed to run pnpm list -g --depth 0 --json")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("pnpm list -g --depth 0 --json failed: {}", stderr.trim());
-    }
+    let output = run_cmd(
+        "pnpm",
+        ["list", "-g", "--depth", "0", "--json"],
+        RunCheck::Success,
+    )
+    .with_context(|| "failed to run pnpm list -g --depth 0 --json")?;
 
     let stdout = String::from_utf8(output.stdout).context("pnpm list output not UTF-8")?;
     if stdout.trim().is_empty() {
@@ -233,10 +229,12 @@ fn pnpm_installed_global() -> Result<BTreeMap<String, String>> {
 }
 
 fn pnpm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
-    let output = Command::new("pnpm")
-        .args(["outdated", "-g", "--json"])
-        .output()
-        .with_context(|| "failed to run pnpm outdated -g --json")?;
+    let output = run_cmd(
+        "pnpm",
+        ["outdated", "-g", "--json"],
+        RunCheck::IgnoreStatus,
+    )
+    .with_context(|| "failed to run pnpm outdated -g --json")?;
 
     let stdout = String::from_utf8(output.stdout).context("pnpm outdated output not UTF-8")?;
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -347,15 +345,8 @@ fn pnpm_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
 ) -> Result<PnpmResolvedTarget> {
-    let output = Command::new("pnpm")
-        .args(["view", name, "time", "--json"])
-        .output()
+    let output = run_cmd("pnpm", ["view", name, "time", "--json"], RunCheck::Success)
         .with_context(|| format!("failed to run pnpm view {name} time --json"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("pnpm view {name} time --json failed: {}", stderr.trim());
-    }
 
     let stdout = String::from_utf8(output.stdout).context("pnpm view output not UTF-8")?;
     let val: serde_json::Value = serde_json::from_str(&stdout)
@@ -378,15 +369,8 @@ fn pnpm_resolve_target_with_min_age(
 }
 
 fn pnpm_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Result<Option<u64>> {
-    let output = Command::new("pnpm")
-        .args(["view", name, "time", "--json"])
-        .output()
+    let output = run_cmd("pnpm", ["view", name, "time", "--json"], RunCheck::Success)
         .with_context(|| format!("failed to run pnpm view {name} time --json"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("pnpm view {name} time --json failed: {}", stderr.trim());
-    }
 
     let stdout = String::from_utf8(output.stdout).context("pnpm view output not UTF-8")?;
     let val: serde_json::Value = serde_json::from_str(&stdout)
@@ -406,12 +390,6 @@ fn pnpm_semver_time_releases(name: &str, val: &serde_json::Value) -> Result<Vec<
         .with_context(|| format!("pnpm view time JSON is not an object for {name}"))?;
 
     parse_semver_time_releases(PLUGIN.id(), name, obj)
-}
-
-fn run_pnpm(args: &[&str]) -> Result<Vec<u8>> {
-    let mut command = Command::new("pnpm");
-    command.args(args);
-    run_command_checked_stdout(command)
 }
 
 fn emit_pnpm_manager_error(detail: impl AsRef<str>) {

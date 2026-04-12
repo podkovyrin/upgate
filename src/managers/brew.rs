@@ -4,7 +4,7 @@ use crate::outcome::{
     ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, REASON_PINNED, emit_text_outcome,
 };
 use crate::ui::output_theme;
-use crate::util::process::run_command_checked_stdout;
+use crate::util::process::{RunCheck, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
@@ -13,7 +13,6 @@ use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::process::Command;
 use std::time::Duration;
 
 const BREW_MAX_PARALLEL_CHECKS_MIN: usize = 1;
@@ -247,7 +246,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
 }
 
 fn maybe_refresh_brew_metadata(no_update: bool) {
-    if !no_update && let Err(err) = run_brew(&["update", "--quiet"]) {
+    if !no_update && let Err(err) = run_cmd("brew", ["update", "--quiet"], RunCheck::Success) {
         emit_manager_error(format!("brew metadata refresh failed: {err}"));
     }
 }
@@ -452,7 +451,7 @@ fn apply_brew_plan(plan: &[PlanItem]) {
     if !formula_to_upgrade.is_empty() {
         let mut args = vec!["upgrade".to_string(), "--formula".to_string()];
         args.extend(formula_to_upgrade);
-        if let Err(err) = run_brew_owned(&args) {
+        if let Err(err) = run_cmd("brew", &args, RunCheck::Success) {
             emit_manager_error(format!("failed to apply brew formula upgrades: {err}"));
         }
     }
@@ -460,7 +459,7 @@ fn apply_brew_plan(plan: &[PlanItem]) {
     if !casks_to_upgrade.is_empty() {
         let mut args = vec!["upgrade".to_string(), "--cask".to_string()];
         args.extend(casks_to_upgrade);
-        if let Err(err) = run_brew_owned(&args) {
+        if let Err(err) = run_cmd("brew", &args, RunCheck::Success) {
             emit_manager_error(format!("failed to apply brew cask upgrades: {err}"));
         }
     }
@@ -598,7 +597,7 @@ fn emit_brew_scan_items(
 }
 
 fn brew_list_versions(kind: &str) -> Result<Vec<(String, String)>> {
-    let stdout = run_brew(&["list", kind, "--versions"])?;
+    let stdout = run_cmd("brew", ["list", kind, "--versions"], RunCheck::Success)?.stdout;
     let text = String::from_utf8(stdout).context("brew list --versions output not UTF-8")?;
 
     let mut out = Vec::new();
@@ -899,17 +898,12 @@ fn git_last_commit_unix_seconds(
 }
 
 fn git_log_timestamp_for_ref(repo_path: &str, source_path: &str, git_ref: &str) -> Result<u64> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["log", "-1", "--format=%ct", git_ref, "--", source_path])
-        .output()
-        .with_context(|| format!("failed running git log {git_ref} for {source_path}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("{}", stderr.trim());
-    }
+    let output = run_cmd(
+        "git",
+        ["-C", repo_path, "log", "-1", "--format=%ct", git_ref, "--", source_path],
+        RunCheck::Success,
+    )
+    .with_context(|| format!("failed running git log {git_ref} for {source_path}"))?;
 
     let stdout = String::from_utf8(output.stdout).context("git log output was not UTF-8")?;
     let ts = stdout
@@ -1075,7 +1069,7 @@ fn brew_json<T>(args: &[&str]) -> Result<T>
 where
     T: for<'de> Deserialize<'de>,
 {
-    let stdout = run_brew(args)?;
+    let stdout = run_cmd("brew", args, RunCheck::Success)?.stdout;
     serde_json::from_slice(&stdout).with_context(|| {
         format!(
             "failed to parse brew JSON output for args: {}",
@@ -1088,7 +1082,7 @@ fn brew_json_owned<T>(args: &[String]) -> Result<T>
 where
     T: for<'de> Deserialize<'de>,
 {
-    let stdout = run_brew_owned(args)?;
+    let stdout = run_cmd("brew", args, RunCheck::Success)?.stdout;
     serde_json::from_slice(&stdout).with_context(|| {
         format!(
             "failed to parse brew JSON output for args: {}",
@@ -1097,20 +1091,8 @@ where
     })
 }
 
-fn run_brew(args: &[&str]) -> Result<Vec<u8>> {
-    let mut command = Command::new("brew");
-    command.args(args);
-    run_command_checked_stdout(command)
-}
-
 fn emit_manager_error(detail: impl AsRef<str>) {
     emit_manager_level_error(PLUGIN.id(), PLUGIN.id(), detail);
-}
-
-fn run_brew_owned(args: &[String]) -> Result<Vec<u8>> {
-    let mut command = Command::new("brew");
-    command.args(args);
-    run_command_checked_stdout(command)
 }
 
 #[cfg(test)]

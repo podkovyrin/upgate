@@ -9,12 +9,11 @@ use crate::outcome::{
     ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, emit_text_outcome,
 };
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::run_command_checked_stdout;
+use crate::util::process::{RunCheck, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
-use std::process::Command;
 use std::time::Duration;
 
 const YARN_MAX_PARALLEL_CHECKS: usize = 6;
@@ -226,7 +225,7 @@ fn resolve_yarn_plan(
 fn apply_yarn_updates(upgradable: Vec<(String, String, String)>) {
     for (name, current, version) in upgradable {
         let spec = format!("{name}@{version}");
-        if let Err(err) = run_yarn(&["global", "add", &spec]) {
+        if let Err(err) = run_cmd("yarn", ["global", "add", &spec], RunCheck::Success) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 name,
@@ -242,7 +241,7 @@ fn apply_yarn_updates(upgradable: Vec<(String, String, String)>) {
 }
 
 fn yarn_major_version() -> Result<u64> {
-    let stdout = run_yarn(&["--version"])?;
+    let stdout = run_cmd("yarn", ["--version"], RunCheck::Success)?.stdout;
     let text = String::from_utf8(stdout).context("yarn --version output not UTF-8")?;
 
     parse_yarn_major_version(&text)
@@ -262,7 +261,7 @@ fn parse_yarn_major_version(text: &str) -> Option<u64> {
 }
 
 fn yarn_global_installed() -> Result<BTreeMap<String, InstalledEntry>> {
-    let stdout = run_yarn(&["global", "list", "--depth=0"])?;
+    let stdout = run_cmd("yarn", ["global", "list", "--depth=0"], RunCheck::Success)?.stdout;
     let text = String::from_utf8(stdout).context("yarn global list output not UTF-8")?;
 
     Ok(parse_yarn_global_list(&text))
@@ -322,7 +321,7 @@ fn yarn_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
 ) -> Result<YarnResolvedTarget> {
-    let stdout = run_yarn(&["info", name, "time", "--json"])?;
+    let stdout = run_cmd("yarn", ["info", name, "time", "--json"], RunCheck::Success)?.stdout;
     let text = String::from_utf8(stdout).context("yarn info output not UTF-8")?;
 
     let obj = parse_yarn_inspect_object(&text, "time")?;
@@ -380,7 +379,7 @@ fn parse_yarn_inspect_object(
 }
 
 fn yarn_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Result<Option<u64>> {
-    let stdout = run_yarn(&["info", name, "time", "--json"])?;
+    let stdout = run_cmd("yarn", ["info", name, "time", "--json"], RunCheck::Success)?.stdout;
     let text = String::from_utf8(stdout).context("yarn info output not UTF-8")?;
     let obj = parse_yarn_inspect_object(&text, "time")?;
     let releases = yarn_semver_time_releases(name, &obj)?;
@@ -397,12 +396,6 @@ fn yarn_semver_time_releases(
     obj: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Vec<SemverTimestamp>> {
     parse_semver_time_releases(PLUGIN.id(), name, obj)
-}
-
-fn run_yarn(args: &[&str]) -> Result<Vec<u8>> {
-    let mut command = Command::new("yarn");
-    command.args(args);
-    run_command_checked_stdout(command)
 }
 
 fn emit_yarn_manager_error(detail: impl AsRef<str>) {

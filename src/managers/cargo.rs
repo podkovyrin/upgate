@@ -6,7 +6,7 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::run_command_checked_stdout;
+use crate::util::process::{RunCheck, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
@@ -15,7 +15,6 @@ use reqwest::blocking::Client;
 use semver::Version;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
-use std::process::Command;
 use std::time::Duration;
 
 const CARGO_MAX_PARALLEL_CHECKS: usize = 4;
@@ -230,7 +229,7 @@ fn apply_cargo_updates(
         apply_cargo_install_meta_args(&mut args, install_meta.as_ref());
         args.push(format!("{name}@{version}"));
 
-        if let Err(err) = run_cargo_owned(&args) {
+        if let Err(err) = run_cmd("cargo", &args, RunCheck::Success) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 name,
@@ -272,7 +271,7 @@ fn emit_cargo_scan_outcomes(
 }
 
 fn cargo_installed_crates() -> Result<BTreeMap<String, InstalledCrate>> {
-    let stdout = run_cargo(&["install", "--list"])?;
+    let stdout = run_cmd("cargo", ["install", "--list"], RunCheck::Success)?.stdout;
     let text = String::from_utf8(stdout).context("cargo install --list output not UTF-8")?;
 
     let mut installed = parse_cargo_install_list(&text);
@@ -431,9 +430,7 @@ fn cargo_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
 ) -> Result<CargoResolvedTarget> {
-    let output = Command::new("cargo")
-        .args(["search", name, "--limit", "1"])
-        .output()
+    let output = run_cmd("cargo", ["search", name, "--limit", "1"], RunCheck::Success)
         .with_context(|| format!("failed to run {} search {name} --limit 1", PLUGIN.id()))?;
 
     if !output.status.success() {
@@ -555,18 +552,6 @@ fn crates_io_versions(client: &Client, crate_name: &str) -> Result<Vec<SemverTim
     }
 
     Ok(out)
-}
-
-fn run_cargo(args: &[&str]) -> Result<Vec<u8>> {
-    let mut command = Command::new("cargo");
-    command.args(args);
-    run_command_checked_stdout(command)
-}
-
-fn run_cargo_owned(args: &[String]) -> Result<Vec<u8>> {
-    let mut command = Command::new("cargo");
-    command.args(args);
-    run_command_checked_stdout(command)
 }
 
 fn emit_cargo_manager_error(detail: impl AsRef<str>) {
