@@ -35,6 +35,7 @@ This file is the manager-spec source of truth for current behavior.
 Commands:
 - `plan` (default when omitted)
 - `apply`
+- `scan`
 
 Global options:
 - `--max-parallel-checks <n>` (default `6`)
@@ -46,6 +47,7 @@ Global options:
 
 Configuration file:
 - `$XDG_CONFIG_HOME/upnow/config.toml` (fallback `~/.config/upnow/config.toml`)
+- Global `[upnow].scan_old_age_threshold` controls scan old-age highlighting (default `365d`).
 - Per-manager `mode` values are configured in TOML (`off`, `plan`, `apply`).
 - Per-manager `min_release_age` values are configured in TOML.
 - Brew-only `no_update` is configured under `[brew].no_update` (default `false`).
@@ -57,13 +59,14 @@ Default manager set: all registered managers (`brew`, `bun`, `cargo`, `npm`, `ya
 
 Behavior notes:
 - `plan` is non-mutating.
+- `scan` is non-mutating and lists installed package/tool versions across managers.
 - `apply` performs updates.
 - Selected managers run in a fixed internal order:
   `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`, `gem`, `dotnet`.
 - Manager execution is gated by per-manager `mode`:
   - `off`: skip always
-  - `plan`: run only in `plan`
-  - `apply`: run in both `plan` and `apply`
+  - `plan`: run in `plan` and `scan`
+  - `apply`: run in `plan`, `scan`, and `apply`
 - `--managers` does not bypass `mode`; override with `--set <manager>.mode=...`.
 
 ## Architecture (current)
@@ -88,19 +91,22 @@ Internal planning parallelism (current):
 Outcomes are printed as text lines.
 
 Statuses:
+- `current`
 - `update`
 - `delayed`
 - `skipped`
 - `error`
 
 Rendered prefix style:
+- `= Current`
 - `+ Update`
 - `~ Delayed`
 - `- Skipped`
 - `! Error`
 
 Base line shape:
-- `<status-prefix> [<manager>] <name> v<from> -> v<to>`
+- `current`: `<status-prefix> [<manager>] <name> v<version>`
+- other statuses: `<status-prefix> [<manager>] <name> v<from> -> v<to>`
 - Unicode arrow `→` is used for non-plain terminal output.
 - ASCII arrow `->` is used in plain output.
 
@@ -110,6 +116,9 @@ Metadata display policy:
   - `(source: <source>)`
   - update delayed-latest annotation when present:
     - `(latest v<latest> delayed: <age> < <required>)`
+  - scan age annotation when available:
+    - `(released: <age>; old>= <threshold>)`
+    - `<age>` is highlighted when `age >= [upnow].scan_old_age_threshold`.
 
 Version labels:
 - Numeric versions get `v` prefix in output.

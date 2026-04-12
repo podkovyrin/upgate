@@ -9,12 +9,20 @@ use std::str::FromStr;
 use std::time::Duration;
 
 const CONFIG_RELATIVE_PATH: &str = "upnow/config.toml";
+const DEFAULT_SCAN_OLD_AGE_THRESHOLD: &str = "365d";
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct UpnowConfig {
+    upnow: GlobalSectionConfig,
     #[serde(flatten)]
     sections: BTreeMap<String, ManagerSectionConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+struct GlobalSectionConfig {
+    scan_old_age_threshold: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -35,18 +43,14 @@ impl ReleaseAge {
     fn parse_for(manager_id: &str, raw: &str) -> Result<Self> {
         let raw = raw.to_string();
         let duration = parse_duration(&raw).with_context(|| {
-            format!(
-                "invalid config value [{}].min_release_age='{}'",
-                manager_id, raw
-            )
+            format!("invalid config value [{manager_id}].min_release_age='{raw}'")
         })?;
 
         if manager_id == "npm" {
             let day_secs = 24 * 60 * 60;
             if duration.as_secs() % day_secs != 0 {
                 bail!(
-                    "invalid config value [npm].min_release_age='{}': npm requires whole-day values like 7d",
-                    raw
+                    "invalid config value [npm].min_release_age='{raw}': npm requires whole-day values like 7d"
                 );
             }
         }
@@ -100,7 +104,7 @@ impl FromStr for ManagerMode {
 impl ManagerMode {
     fn parse_for(manager_id: &str, raw: &str) -> Result<Self> {
         raw.parse::<Self>()
-            .with_context(|| format!("invalid config value [{}].mode='{}'", manager_id, raw))
+            .with_context(|| format!("invalid config value [{manager_id}].mode='{raw}'"))
     }
 
     pub(crate) fn allows_run(self, run_apply: bool) -> bool {
@@ -134,6 +138,16 @@ impl UpnowConfig {
 
         toml::from_str(&raw)
             .with_context(|| format!("failed to parse config TOML at {}", path.display()))
+    }
+
+    pub(crate) fn scan_old_age_threshold(&self) -> Result<Duration> {
+        let raw = self
+            .upnow
+            .scan_old_age_threshold
+            .as_deref()
+            .unwrap_or(DEFAULT_SCAN_OLD_AGE_THRESHOLD);
+        parse_duration(raw)
+            .with_context(|| format!("invalid config value [upnow].scan_old_age_threshold='{raw}'"))
     }
 
     pub(crate) fn resolve_manager_policy(
@@ -174,13 +188,13 @@ impl UpnowConfig {
         raw: &str,
         known_manager_ids: &[&str],
     ) -> Result<()> {
-        let (path, value) = raw
-            .split_once('=')
-            .with_context(|| format!("invalid override '{raw}': expected <manager>.<key>=<value>"))?;
+        let (path, value) = raw.split_once('=').with_context(|| {
+            format!("invalid override '{raw}': expected <manager>.<key>=<value>")
+        })?;
 
-        let (manager_id, key) = path
-            .split_once('.')
-            .with_context(|| format!("invalid override '{raw}': expected <manager>.<key>=<value>"))?;
+        let (manager_id, key) = path.split_once('.').with_context(|| {
+            format!("invalid override '{raw}': expected <manager>.<key>=<value>")
+        })?;
 
         if manager_id.is_empty() || key.is_empty() || value.is_empty() {
             bail!("invalid override '{raw}': expected <manager>.<key>=<value>");
@@ -200,7 +214,9 @@ impl UpnowConfig {
             }
             "no_update" => {
                 if manager_id != "brew" {
-                    bail!("invalid override '{raw}': key 'no_update' is only valid for manager 'brew'");
+                    bail!(
+                        "invalid override '{raw}': key 'no_update' is only valid for manager 'brew'"
+                    );
                 }
 
                 let parsed = value.parse::<bool>().with_context(|| {
@@ -220,13 +236,13 @@ impl UpnowConfig {
                         "invalid override '{raw}': value for {manager_id}.mode must be one of off, plan, apply"
                     )
                 })?;
-                self.sections.entry(manager_id.to_string()).or_default().mode =
-                    Some(parsed.to_string());
+                self.sections
+                    .entry(manager_id.to_string())
+                    .or_default()
+                    .mode = Some(parsed.to_string());
                 Ok(())
             }
-            _ => bail!(
-                "invalid override '{raw}': unknown key '{key}' for manager '{manager_id}'"
-            ),
+            _ => bail!("invalid override '{raw}': unknown key '{key}' for manager '{manager_id}'"),
         }
     }
 }
@@ -245,5 +261,9 @@ fn config_path() -> Option<PathBuf> {
         return None;
     }
 
-    Some(PathBuf::from(trimmed).join(".config").join(CONFIG_RELATIVE_PATH))
+    Some(
+        PathBuf::from(trimmed)
+            .join(".config")
+            .join(CONFIG_RELATIVE_PATH),
+    )
 }

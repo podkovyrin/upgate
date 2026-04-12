@@ -17,6 +17,8 @@ enum Command {
     Plan,
     /// Apply updates using manager-native upgrade commands.
     Apply,
+    /// List installed package/tool versions across managers.
+    Scan,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -58,6 +60,7 @@ fn main() {
     let run_mode = match cli.command.unwrap_or(Command::Plan) {
         Command::Plan => RunMode::Plan,
         Command::Apply => RunMode::Apply,
+        Command::Scan => RunMode::Scan,
     };
 
     let mut config = match UpnowConfig::load() {
@@ -97,7 +100,11 @@ fn main() {
                 }
             };
 
-        if !manager_ctx.policy.mode.allows_run(run_mode == RunMode::Apply) {
+        if !manager_ctx
+            .policy
+            .mode
+            .allows_run(matches!(run_mode, RunMode::Apply))
+        {
             continue;
         }
 
@@ -120,6 +127,9 @@ fn main() {
 }
 
 fn is_signal_termination(err: &Error) -> bool {
-    err.chain()
-        .any(|cause| cause.downcast_ref::<util::process::CommandFailedError>().is_some_and(util::process::CommandFailedError::was_signaled))
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<util::process::CommandFailedError>()
+            .is_some_and(util::process::CommandFailedError::was_signaled)
+    })
 }

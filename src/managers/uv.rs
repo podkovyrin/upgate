@@ -1,19 +1,20 @@
 use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
-    DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
+    DelayedLatest, Pep440Timestamp, PlanDecision, PlanMeta, emit_manager_level_error,
+    emit_plan_and_collect_upgradable, emit_scan_current, parse_pep440_release_timestamps,
+    release_age_secs_for_pep440_version, verbose_now_unix_secs,
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{run_command_checked, run_command_checked_stdout};
+use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
-use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
 use pep440::Version;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const UV_MAX_PARALLEL_CHECKS: usize = 2;
 
@@ -58,7 +59,12 @@ struct UvPlanItem {
     target: Result<String, String>,
 }
 
+#[allow(clippy::too_many_lines)]
 fn run(ctx: &ManagerCtx) -> Result<()> {
+    if ctx.is_scan() {
+        return scan(ctx);
+    }
+
     let min_age_raw = ctx.policy.min_release_age.cli_arg();
     let min_age = ctx.policy.min_release_age.duration();
     let tool_dir = match uv_tool_dir() {
@@ -88,10 +94,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         }
     };
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock before UNIX_EPOCH")?
-        .as_secs();
+    let now = now_unix_secs()?;
 
     let threads = effective_parallelism(ctx.max_parallel_checks, UV_MAX_PARALLEL_CHECKS);
     let plan: Vec<UvPlanItem> = run_indexed_parallel(
@@ -106,7 +109,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         },
     )?;
 
-    let mut pypi_cache: HashMap<String, PypiRoot> = HashMap::new();
+    let mut pypi_cache: HashMap<String, Vec<Pep440Timestamp>> = HashMap::new();
     let pypi_client = match crate::util::http::default_blocking_client() {
         Ok(client) => Some(client),
         Err(err) => {
@@ -160,8 +163,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                     &item.tool.name,
                     &item.tool.current,
                     now,
-                )
-                    && age_secs < min_age.as_secs()
+                ) && age_secs < min_age.as_secs()
                 {
                     let delayed_latest = outdated_latest.get(&item.tool.name).map(|latest| {
                         let latest_age = resolve_pypi_age_secs(
@@ -247,6 +249,63 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             );
             emit_text_outcome(&outcome);
         }
+    }
+
+    Ok(())
+}
+
+fn scan(ctx: &ManagerCtx) -> Result<()> {
+    let tool_dir = match uv_tool_dir() {
+        Ok(tool_dir) => tool_dir,
+        Err(err) => {
+            emit_uv_manager_error(format!("failed to locate uv tool directory: {err}"));
+            return Ok(());
+        }
+    };
+
+    let installed = match uv_installed_tools(&tool_dir) {
+        Ok(installed) => installed,
+        Err(err) => {
+            emit_uv_manager_error(format!("failed to discover installed uv tools: {err}"));
+            return Ok(());
+        }
+    };
+    if installed.is_empty() {
+        return Ok(());
+    }
+
+    let now = verbose_now_unix_secs()?;
+
+    let mut pypi_cache: HashMap<String, Vec<Pep440Timestamp>> = HashMap::new();
+    let pypi_client = if now.is_some() {
+        crate::util::http::default_blocking_client().ok()
+    } else {
+        None
+    };
+
+    for tool in installed {
+        let age_secs = if let (Some(client), Some(now_unix_secs)) = (pypi_client.as_ref(), now) {
+            pypi_release_age_secs(
+                client,
+                &mut pypi_cache,
+                &tool.name,
+                &tool.current,
+                now_unix_secs,
+            )
+            .ok()
+            .flatten()
+        } else {
+            None
+        };
+
+        emit_scan_current(
+            PLUGIN.id(),
+            PLUGIN.id(),
+            tool.name,
+            tool.current,
+            age_secs,
+            ctx.scan_old_age_threshold,
+        );
     }
 
     Ok(())
@@ -496,26 +555,36 @@ fn pep440_compare(lhs: &str, rhs: &str) -> Option<Ordering> {
 
 fn resolve_pypi_age_secs(
     maybe_client: Option<&reqwest::blocking::Client>,
-    cache: &mut HashMap<String, PypiRoot>,
+    cache: &mut HashMap<String, Vec<Pep440Timestamp>>,
     package: &str,
     version: &str,
     now_unix_secs: u64,
 ) -> Option<u64> {
     let client = maybe_client?;
 
-    match pypi_release_age_secs(client, cache, package, version, now_unix_secs) {
-        Ok(value) => value,
-        Err(_) => None,
-    }
+    pypi_release_age_secs(client, cache, package, version, now_unix_secs).unwrap_or_default()
 }
 
 fn pypi_release_age_secs(
     pypi_client: &reqwest::blocking::Client,
-    cache: &mut HashMap<String, PypiRoot>,
+    cache: &mut HashMap<String, Vec<Pep440Timestamp>>,
     package: &str,
     version: &str,
     now_unix_secs: u64,
 ) -> Result<Option<u64>> {
+    let releases = pypi_release_timeline(pypi_client, cache, package)?;
+    Ok(release_age_secs_for_pep440_version(
+        releases,
+        version,
+        now_unix_secs,
+    ))
+}
+
+fn pypi_release_timeline<'a>(
+    pypi_client: &reqwest::blocking::Client,
+    cache: &'a mut HashMap<String, Vec<Pep440Timestamp>>,
+    package: &str,
+) -> Result<&'a [Pep440Timestamp]> {
     if !cache.contains_key(package) {
         let url = format!("https://pypi.org/pypi/{package}/json");
         let body = pypi_client
@@ -529,33 +598,20 @@ fn pypi_release_age_secs(
 
         let root: PypiRoot = serde_json::from_str(&body)
             .with_context(|| format!("failed to parse PyPI JSON for {package}"))?;
-        cache.insert(package.to_string(), root);
+        let releases = pypi_pep440_releases(package, &root)?;
+        cache.insert(package.to_string(), releases);
     }
 
-    let Some(root) = cache.get(package) else {
-        return Ok(None);
-    };
+    Ok(cache.get(package).map_or(&[], Vec::as_slice))
+}
 
-    let Some(files) = root.releases.get(version) else {
-        return Ok(None);
-    };
-
-    let mut newest_ts = None::<u64>;
-    for file in files {
-        let raw = file
-            .upload_time_iso_8601
-            .as_deref()
-            .or(file.upload_time.as_deref());
-
-        if let Some(raw) = raw {
-            let ts = parse_rfc3339_unix(raw).with_context(|| {
-                format!("invalid upload timestamp for {package}@{version}: {raw}")
-            })?;
-            newest_ts = Some(newest_ts.map_or(ts, |curr| curr.max(ts)));
-        }
-    }
-
-    Ok(newest_ts.map(|ts| now_unix_secs.saturating_sub(ts)))
+fn pypi_pep440_releases(package: &str, root: &PypiRoot) -> Result<Vec<Pep440Timestamp>> {
+    parse_pep440_release_timestamps(
+        package,
+        &root.releases,
+        |file| file.upload_time_iso_8601.as_deref(),
+        |file| file.upload_time.as_deref(),
+    )
 }
 
 fn uv_tool_python_path(tool_dir: &str, tool_name: &str) -> String {
@@ -590,17 +646,8 @@ fn run_uv(args: &[&str]) -> Result<Vec<u8>> {
     run_command_checked_stdout(command)
 }
 
-fn emit_uv_manager_error(detail: String) {
-    let outcome = ItemOutcome::error(
-        PLUGIN.id(),
-        "*",
-        "*",
-        "*",
-        PLUGIN.id(),
-        REASON_COMMAND_FAILED,
-        format!("manager-level fallback: {detail}"),
-    );
-    emit_text_outcome(&outcome);
+fn emit_uv_manager_error(detail: impl AsRef<str>) {
+    emit_manager_level_error(PLUGIN.id(), PLUGIN.id(), detail);
 }
 
 fn run_uv_owned(args: &[String]) -> Result<Vec<u8>> {

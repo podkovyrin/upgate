@@ -94,10 +94,10 @@ pub(crate) fn start_manager_spinner(manager: &str, run_mode: RunMode) -> Manager
         return ManagerSpinner(None);
     }
 
-    let action = if run_mode.is_dry_run() {
-        "Planning"
-    } else {
-        "Applying"
+    let action = match run_mode {
+        RunMode::Plan => "Planning",
+        RunMode::Apply => "Applying",
+        RunMode::Scan => "Scanning",
     };
 
     let pb = ProgressBar::new_spinner().with_finish(ProgressFinish::AndClear);

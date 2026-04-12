@@ -1,16 +1,20 @@
 use crate::manager::{ManagerCtx, ManagerPlugin};
+use crate::managers::common::{
+    DelayedLatest, emit_manager_level_error, emit_scan_current, verbose_now_unix_secs,
+};
 use crate::outcome::{
     ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, emit_text_outcome,
 };
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::run_command_checked_stdout;
+use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
 use semver::Version;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const GO_MAX_PARALLEL_CHECKS: usize = 4;
 
@@ -58,30 +62,21 @@ struct GoResolvedTarget {
 }
 
 impl GoResolvedTarget {
-    fn delayed_latest(&self, min_age: Duration) -> Option<(String, String, String)> {
-        let (Some(latest_version), Some(latest_age_secs)) =
-            (self.latest_version.as_deref(), self.latest_age_secs)
-        else {
-            return None;
-        };
-
-        if latest_age_secs >= min_age.as_secs() {
-            return None;
-        }
-
-        if self.selected_version.as_deref() == Some(latest_version) {
-            return None;
-        }
-
-        Some((
-            latest_version.to_string(),
-            human_age(latest_age_secs),
-            human_age(min_age.as_secs()),
-        ))
+    fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
+        DelayedLatest::from_too_fresh_latest(
+            self.selected_version.as_deref(),
+            self.latest_version.as_deref(),
+            self.latest_age_secs,
+            min_age,
+        )
     }
 }
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
+    if ctx.is_scan() {
+        return scan(ctx);
+    }
+
     let min_age = ctx.policy.min_release_age.duration();
 
     let discovered = match go_discover_global_tools() {
@@ -96,6 +91,43 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         return Ok(());
     }
 
+    let now = now_unix_secs()?;
+    let plan = resolve_go_plan(&discovered, now, min_age, ctx.max_parallel_checks)?;
+    let upgradable = emit_go_plan_and_collect_upgradable(discovered, plan, min_age)?;
+
+    if ctx.is_dry_run() {
+        return Ok(());
+    }
+
+    apply_go_updates(upgradable);
+    Ok(())
+}
+
+fn scan(ctx: &ManagerCtx) -> Result<()> {
+    let discovered = match go_discover_global_tools() {
+        Ok(discovered) => discovered,
+        Err(err) => {
+            emit_go_manager_error(format!("failed to discover global Go tools: {err}"));
+            return Ok(());
+        }
+    };
+
+    if discovered.is_empty() {
+        return Ok(());
+    }
+
+    let now = verbose_now_unix_secs()?;
+
+    emit_go_scan_outcomes(discovered, now, ctx.scan_old_age_threshold);
+    Ok(())
+}
+
+fn resolve_go_plan(
+    discovered: &[GoDiscoveredTool],
+    now_unix_secs: u64,
+    min_age: Duration,
+    max_parallel_checks: usize,
+) -> Result<Vec<GoPlanItem>> {
     let managed_jobs: Vec<GoManagedTool> = discovered
         .iter()
         .filter_map(|item| match item {
@@ -104,13 +136,8 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         })
         .collect();
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock before UNIX_EPOCH")?
-        .as_secs();
-
-    let threads = effective_parallelism(ctx.max_parallel_checks, GO_MAX_PARALLEL_CHECKS);
-    let plan: Vec<GoPlanItem> = run_indexed_parallel(
+    let threads = effective_parallelism(max_parallel_checks, GO_MAX_PARALLEL_CHECKS);
+    run_indexed_parallel(
         managed_jobs,
         threads,
         "failed to build go planning thread pool",
@@ -119,16 +146,23 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             let resolved = go_resolve_target_with_min_age(
                 &tool.module_path,
                 &tool.current_version,
-                now,
+                now_unix_secs,
                 min_age,
             )
             .map_err(|err| err.to_string());
 
             GoPlanItem { tool, resolved }
         },
-    )?;
+    )
+}
 
-    let mut upgradable: Vec<(String, String, String, String)> = Vec::new();
+#[allow(clippy::too_many_lines)]
+fn emit_go_plan_and_collect_upgradable(
+    discovered: Vec<GoDiscoveredTool>,
+    plan: Vec<GoPlanItem>,
+    min_age: Duration,
+) -> Result<Vec<(String, String, String, String)>> {
+    let mut upgradable = Vec::new();
     let mut plan_iter = plan.into_iter();
 
     for item in discovered {
@@ -165,7 +199,9 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                         emit_text_outcome(&outcome);
                     }
                     Ok(target) => {
-                        if let Some(selected) = target.selected_version.clone() {
+                        let delayed_latest = target.delayed_latest(min_age);
+
+                        if let Some(selected) = target.selected_version {
                             if selected == tool.current_version {
                                 let outcome = ItemOutcome::skipped_no_change(
                                     PLUGIN.id(),
@@ -177,8 +213,11 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                                 continue;
                             }
 
-                            let outcome = if let Some((latest, latest_age, required_age)) =
-                                target.delayed_latest(min_age)
+                            let outcome = if let Some(DelayedLatest {
+                                latest_version,
+                                latest_age,
+                                required_age,
+                            }) = delayed_latest
                             {
                                 ItemOutcome::update_with_delayed_latest(
                                     PLUGIN.id(),
@@ -186,7 +225,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                                     tool.current_version.clone(),
                                     selected.clone(),
                                     PLUGIN.id(),
-                                    latest,
+                                    latest_version,
                                     latest_age,
                                     required_age,
                                 )
@@ -208,15 +247,18 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                                 tool.install_path,
                             ));
                         } else {
-                            let outcome = if let Some((latest, latest_age, required_age)) =
-                                target.delayed_latest(min_age)
+                            let outcome = if let Some(DelayedLatest {
+                                latest_version,
+                                latest_age,
+                                required_age,
+                            }) = delayed_latest
                             {
                                 ItemOutcome::delayed_no_eligible_with_latest(
                                     PLUGIN.id(),
                                     tool.binary_name,
                                     tool.current_version,
                                     PLUGIN.id(),
-                                    latest,
+                                    latest_version,
                                     latest_age,
                                     required_age,
                                 )
@@ -242,10 +284,10 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         bail!("internal error: unexpected extra go plan entries");
     }
 
-    if ctx.is_dry_run() {
-        return Ok(());
-    }
+    Ok(upgradable)
+}
 
+fn apply_go_updates(upgradable: Vec<(String, String, String, String)>) {
     for (binary_name, current, target, install_path) in upgradable {
         let spec = format!("{install_path}@{target}");
         if let Err(err) = run_go(&["install", &spec]) {
@@ -261,8 +303,48 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             emit_text_outcome(&outcome);
         }
     }
+}
 
-    Ok(())
+fn emit_go_scan_outcomes(
+    discovered: Vec<GoDiscoveredTool>,
+    now_unix_secs: Option<u64>,
+    old_threshold: Duration,
+) {
+    for item in discovered {
+        match item {
+            GoDiscoveredTool::Skipped { name, reason } => {
+                let outcome = ItemOutcome::skipped(
+                    PLUGIN.id(),
+                    name,
+                    "*",
+                    "*",
+                    PLUGIN.id(),
+                    REASON_MISSING_METADATA,
+                    reason,
+                );
+                emit_text_outcome(&outcome);
+            }
+            GoDiscoveredTool::Managed(tool) => {
+                let age_secs = if let Some(now_unix_secs) = now_unix_secs {
+                    go_module_version_release_unix(&tool.module_path, &tool.current_version)
+                        .ok()
+                        .flatten()
+                        .map(|released| now_unix_secs.saturating_sub(released))
+                } else {
+                    None
+                };
+
+                emit_scan_current(
+                    PLUGIN.id(),
+                    PLUGIN.id(),
+                    tool.binary_name,
+                    tool.current_version,
+                    age_secs,
+                    old_threshold,
+                );
+            }
+        }
+    }
 }
 
 fn go_discover_global_tools() -> Result<Vec<GoDiscoveredTool>> {
@@ -278,9 +360,8 @@ fn go_discover_global_tools() -> Result<Vec<GoDiscoveredTool>> {
         let entry = entry.context("failed to read Go bin directory entry")?;
         let path = entry.path();
 
-        let metadata = match std::fs::metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(_) => continue,
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
         };
 
         if !metadata.is_file() {
@@ -555,17 +636,8 @@ fn run_go(args: &[&str]) -> Result<Vec<u8>> {
     run_command_checked_stdout(command)
 }
 
-fn emit_go_manager_error(detail: String) {
-    let outcome = ItemOutcome::error(
-        PLUGIN.id(),
-        "*",
-        "*",
-        "*",
-        PLUGIN.id(),
-        REASON_COMMAND_FAILED,
-        format!("manager-level fallback: {detail}"),
-    );
-    emit_text_outcome(&outcome);
+fn emit_go_manager_error(detail: impl AsRef<str>) {
+    emit_manager_level_error(PLUGIN.id(), PLUGIN.id(), detail);
 }
 
 #[cfg(test)]
@@ -574,10 +646,10 @@ mod tests {
 
     #[test]
     fn parse_go_version_m_with_path_and_mod() {
-        let raw = r#"/usr/local/bin/gopls: go1.24.1
+        let raw = r"/usr/local/bin/gopls: go1.24.1
         path    golang.org/x/tools/gopls
         mod     golang.org/x/tools/gopls      v0.17.0  h1:hash
-"#;
+";
 
         let parsed = parse_go_version_m_output(raw).expect("should parse");
         assert_eq!(parsed.install_path, "golang.org/x/tools/gopls");
@@ -587,9 +659,9 @@ mod tests {
 
     #[test]
     fn parse_go_version_m_requires_mod_and_version() {
-        let raw = r#"/usr/local/bin/tool: go1.24.1
+        let raw = r"/usr/local/bin/tool: go1.24.1
         path    example.com/tool/cmd/tool
-"#;
+";
 
         assert!(parse_go_version_m_output(raw).is_none());
     }
@@ -619,7 +691,11 @@ mod tests {
             latest_age_secs: Some(10 * 24 * 60 * 60),
         };
 
-        assert!(target.delayed_latest(Duration::from_secs(7 * 24 * 60 * 60)).is_none());
+        assert!(
+            target
+                .delayed_latest(Duration::from_secs(7 * 24 * 60 * 60))
+                .is_none()
+        );
     }
 
     #[test]
@@ -630,6 +706,10 @@ mod tests {
             latest_age_secs: Some(2 * 24 * 60 * 60),
         };
 
-        assert!(target.delayed_latest(Duration::from_secs(7 * 24 * 60 * 60)).is_some());
+        assert!(
+            target
+                .delayed_latest(Duration::from_secs(7 * 24 * 60 * 60))
+                .is_some()
+        );
     }
 }

@@ -7,11 +7,16 @@ use std::collections::BTreeSet;
 pub(crate) enum RunMode {
     Plan,
     Apply,
+    Scan,
 }
 
 impl RunMode {
     pub(crate) fn is_dry_run(self) -> bool {
-        matches!(self, Self::Plan)
+        matches!(self, Self::Plan | Self::Scan)
+    }
+
+    pub(crate) fn is_scan(self) -> bool {
+        matches!(self, Self::Scan)
     }
 }
 
@@ -19,11 +24,16 @@ pub(crate) struct ManagerCtx {
     pub(crate) run_mode: RunMode,
     pub(crate) max_parallel_checks: usize,
     pub(crate) policy: crate::config::ManagerPolicy,
+    pub(crate) scan_old_age_threshold: std::time::Duration,
 }
 
 impl ManagerCtx {
     pub(crate) fn is_dry_run(&self) -> bool {
         self.run_mode.is_dry_run()
+    }
+
+    pub(crate) fn is_scan(&self) -> bool {
+        self.run_mode.is_scan()
     }
 }
 
@@ -75,6 +85,7 @@ pub(crate) fn build_ctx_for_plugin(
         run_mode,
         max_parallel_checks,
         policy,
+        scan_old_age_threshold: config.scan_old_age_threshold()?,
     })
 }
 

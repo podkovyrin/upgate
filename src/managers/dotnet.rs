@@ -1,18 +1,20 @@
 use crate::config::ManagerMode;
 use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
-    DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
+    DelayedLatest, PlanDecision, PlanMeta, SemverAgeResolution, SemverTimestamp,
+    emit_manager_level_error, emit_plan_and_collect_upgradable, emit_scan_current,
+    release_age_secs_for_version, resolve_semver_with_min_age, verbose_now_unix_secs,
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::run_command_checked_stdout;
+use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
 use reqwest::blocking::Client;
-use semver::Version;
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const DOTNET_MAX_PARALLEL_CHECKS: usize = 4;
 
@@ -65,25 +67,12 @@ struct NugetResolvedTarget {
 
 impl NugetResolvedTarget {
     fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
-        let (Some(latest_version), Some(latest_age_secs)) =
-            (self.latest_version.as_deref(), self.latest_age_secs)
-        else {
-            return None;
-        };
-
-        if latest_age_secs >= min_age.as_secs() {
-            return None;
-        }
-
-        if self.selected_version.as_deref() == Some(latest_version) {
-            return None;
-        }
-
-        Some(DelayedLatest {
-            latest_version: latest_version.to_string(),
-            latest_age: human_age(latest_age_secs),
-            required_age: human_age(min_age.as_secs()),
-        })
+        DelayedLatest::from_too_fresh_latest(
+            self.selected_version.as_deref(),
+            self.latest_version.as_deref(),
+            self.latest_age_secs,
+            min_age,
+        )
     }
 }
 
@@ -120,6 +109,10 @@ struct NugetCatalogEntry {
 }
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
+    if ctx.is_scan() {
+        return scan(ctx);
+    }
+
     let min_age = ctx.policy.min_release_age.duration();
 
     let installed = match dotnet_global_tools() {
@@ -134,10 +127,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         return Ok(());
     }
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock before UNIX_EPOCH")?
-        .as_secs();
+    let now = now_unix_secs()?;
 
     let nuget_client = match crate::util::http::default_blocking_client() {
         Ok(client) => client,
@@ -147,27 +137,12 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         }
     };
 
-    let jobs: Vec<(String, String)> = installed
-        .into_iter()
-        .map(|entry| (entry.package_id, entry.version))
-        .collect();
-
-    let threads = effective_parallelism(ctx.max_parallel_checks, DOTNET_MAX_PARALLEL_CHECKS);
-    let plan: Vec<DotnetPlanItem> = match run_indexed_parallel(
-        jobs,
-        threads,
-        "failed to build dotnet planning thread pool",
-        "internal error: missing dotnet plan slot",
-        |(name, current)| {
-            let resolved = nuget_resolve_target_with_min_age(&nuget_client, &name, &current, now, min_age)
-                .map_err(|err| err.to_string());
-
-            DotnetPlanItem {
-                name,
-                current,
-                resolved,
-            }
-        },
+    let plan = match resolve_dotnet_plan(
+        installed,
+        &nuget_client,
+        now,
+        min_age,
+        ctx.max_parallel_checks,
     ) {
         Ok(plan) => plan,
         Err(err) => {
@@ -212,6 +187,79 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         return Ok(());
     }
 
+    apply_dotnet_updates(upgradable);
+
+    Ok(())
+}
+
+fn scan(ctx: &ManagerCtx) -> Result<()> {
+    let installed = match dotnet_global_tools() {
+        Ok(installed) => installed,
+        Err(err) => {
+            emit_dotnet_manager_error(format!("failed to read installed .NET tools: {err}"));
+            return Ok(());
+        }
+    };
+
+    if installed.is_empty() {
+        return Ok(());
+    }
+
+    let now = verbose_now_unix_secs()?;
+
+    let nuget_client = if now.is_some() {
+        crate::util::http::default_blocking_client().ok()
+    } else {
+        None
+    };
+
+    emit_dotnet_scan_outcomes(
+        installed,
+        nuget_client.as_ref(),
+        now,
+        ctx.scan_old_age_threshold,
+    );
+    Ok(())
+}
+
+fn resolve_dotnet_plan(
+    installed: Vec<DotnetToolEntry>,
+    nuget_client: &Client,
+    now_unix_secs: u64,
+    min_age: Duration,
+    max_parallel_checks: usize,
+) -> Result<Vec<DotnetPlanItem>> {
+    let jobs: Vec<(String, String)> = installed
+        .into_iter()
+        .map(|entry| (entry.package_id, entry.version))
+        .collect();
+
+    let threads = effective_parallelism(max_parallel_checks, DOTNET_MAX_PARALLEL_CHECKS);
+    run_indexed_parallel(
+        jobs,
+        threads,
+        "failed to build dotnet planning thread pool",
+        "internal error: missing dotnet plan slot",
+        |(name, current)| {
+            let resolved = nuget_resolve_target_with_min_age(
+                nuget_client,
+                &name,
+                &current,
+                now_unix_secs,
+                min_age,
+            )
+            .map_err(|err| err.to_string());
+
+            DotnetPlanItem {
+                name,
+                current,
+                resolved,
+            }
+        },
+    )
+}
+
+fn apply_dotnet_updates(upgradable: Vec<(String, String, String)>) {
     for (name, current, target) in upgradable {
         if let Err(err) = run_dotnet(&[
             "tool",
@@ -234,8 +282,32 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             emit_text_outcome(&outcome);
         }
     }
+}
 
-    Ok(())
+fn emit_dotnet_scan_outcomes(
+    installed: Vec<DotnetToolEntry>,
+    nuget_client: Option<&Client>,
+    now_unix_secs: Option<u64>,
+    old_threshold: Duration,
+) {
+    for entry in installed {
+        let age_secs = if let (Some(client), Some(now_unix_secs)) = (nuget_client, now_unix_secs) {
+            nuget_release_age_secs(client, &entry.package_id, &entry.version, now_unix_secs)
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+
+        emit_scan_current(
+            PLUGIN.id(),
+            "nuget",
+            entry.package_id,
+            entry.version,
+            age_secs,
+            old_threshold,
+        );
+    }
 }
 
 fn dotnet_global_tools() -> Result<Vec<DotnetToolEntry>> {
@@ -272,9 +344,11 @@ fn dotnet_global_tools() -> Result<Vec<DotnetToolEntry>> {
 fn dotnet_missing_sdk_hint(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
 
-    let no_sdk_found = lower.contains(".net sdk") && lower.contains("no") && lower.contains("found");
-    let cannot_find_installed =
-        lower.contains("installed .net sdk") && lower.contains("not possible") && lower.contains("find");
+    let no_sdk_found =
+        lower.contains(".net sdk") && lower.contains("no") && lower.contains("found");
+    let cannot_find_installed = lower.contains("installed .net sdk")
+        && lower.contains("not possible")
+        && lower.contains("find");
 
     no_sdk_found || cannot_find_installed
 }
@@ -286,46 +360,14 @@ fn nuget_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
 ) -> Result<NugetResolvedTarget> {
-    let current_ver = Version::parse(current)
-        .with_context(|| format!("failed to parse current semver for {package_id}: {current}"))?;
-
     let versions = nuget_versions_with_publish_times(nuget_client, package_id)?;
 
-    let mut newest_any: Option<(Version, String, u64)> = None;
-    let mut eligible: Option<(Version, String, u64)> = None;
-
-    for (version_raw, published_unix) in versions {
-        let Ok(version) = Version::parse(&version_raw) else {
-            continue;
-        };
-
-        if newest_any
-            .as_ref()
-            .is_none_or(|(curr, _, _)| version > *curr)
-        {
-            newest_any = Some((version.clone(), version_raw.clone(), published_unix));
-        }
-
-        if version >= current_ver {
-            let age_secs = now_unix_secs.saturating_sub(published_unix);
-            if age_secs >= min_age.as_secs()
-                && eligible.as_ref().is_none_or(|(curr, _, _)| version > *curr)
-            {
-                eligible = Some((version, version_raw, published_unix));
-            }
-        }
-    }
-
-    let selected_version = eligible.map(|(_ver, raw, _)| raw);
-    let (latest_version, latest_age_secs) =
-        if let Some((_latest, latest_raw, latest_ts)) = newest_any {
-            (
-                Some(latest_raw),
-                Some(now_unix_secs.saturating_sub(latest_ts)),
-            )
-        } else {
-            (None, None)
-        };
+    let SemverAgeResolution {
+        selected_version,
+        latest_version,
+        latest_age_secs,
+    } = resolve_semver_with_min_age(current, &versions, now_unix_secs, min_age)
+        .with_context(|| format!("failed to resolve eligible semver target for {package_id}"))?;
 
     Ok(NugetResolvedTarget {
         selected_version,
@@ -334,10 +376,24 @@ fn nuget_resolve_target_with_min_age(
     })
 }
 
+fn nuget_release_age_secs(
+    client: &Client,
+    package_id: &str,
+    version: &str,
+    now_unix_secs: u64,
+) -> Result<Option<u64>> {
+    let versions = nuget_versions_with_publish_times(client, package_id)?;
+    Ok(release_age_secs_for_version(
+        &versions,
+        version,
+        now_unix_secs,
+    ))
+}
+
 fn nuget_versions_with_publish_times(
     client: &Client,
     package_id: &str,
-) -> Result<Vec<(String, u64)>> {
+) -> Result<Vec<SemverTimestamp>> {
     let id_lower = package_id.to_ascii_lowercase();
 
     let mut out = nuget_versions_with_publish_times_from_registration(
@@ -368,7 +424,7 @@ fn nuget_versions_with_publish_times_from_registration(
     package_id: &str,
     index_url: &str,
     gzipped: bool,
-) -> Result<Vec<(String, u64)>> {
+) -> Result<Vec<SemverTimestamp>> {
     let index_body = fetch_text(client, index_url, gzipped)
         .with_context(|| format!("failed to read NuGet registration index for {package_id}"))?;
 
@@ -405,7 +461,10 @@ fn nuget_versions_with_publish_times_from_registration(
                 )
             })?;
 
-            out.push((entry.version, published));
+            out.push(SemverTimestamp {
+                version: entry.version,
+                published_unix: published,
+            });
         }
     }
 
@@ -442,17 +501,8 @@ fn run_dotnet(args: &[&str]) -> Result<Vec<u8>> {
     run_command_checked_stdout(command)
 }
 
-fn emit_dotnet_manager_error(detail: String) {
-    let outcome = ItemOutcome::error(
-        PLUGIN.id(),
-        "*",
-        "*",
-        "*",
-        "nuget",
-        REASON_COMMAND_FAILED,
-        format!("manager-level fallback: {detail}"),
-    );
-    emit_text_outcome(&outcome);
+fn emit_dotnet_manager_error(detail: impl AsRef<str>) {
+    emit_manager_level_error(PLUGIN.id(), "nuget", detail);
 }
 
 #[cfg(test)]
@@ -481,7 +531,11 @@ mod tests {
             latest_age_secs: Some(10 * 24 * 60 * 60),
         };
 
-        assert!(target.delayed_latest(Duration::from_secs(7 * 24 * 60 * 60)).is_none());
+        assert!(
+            target
+                .delayed_latest(Duration::from_secs(7 * 24 * 60 * 60))
+                .is_none()
+        );
     }
 
     #[test]
@@ -492,7 +546,11 @@ mod tests {
             latest_age_secs: Some(2 * 24 * 60 * 60),
         };
 
-        assert!(target.delayed_latest(Duration::from_secs(7 * 24 * 60 * 60)).is_some());
+        assert!(
+            target
+                .delayed_latest(Duration::from_secs(7 * 24 * 60 * 60))
+                .is_some()
+        );
     }
 
     #[test]

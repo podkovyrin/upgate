@@ -3,6 +3,7 @@ use owo_colors::OwoColorize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutcomeStatus {
+    Current,
     Update,
     Delayed,
     Skipped,
@@ -30,9 +31,63 @@ pub(crate) struct ItemOutcome {
     pub(crate) required_age: Option<String>,
     pub(crate) latest_version: Option<String>,
     pub(crate) latest_age: Option<String>,
+    pub(crate) scan_age: Option<String>,
+    pub(crate) scan_is_old: bool,
 }
 
 impl ItemOutcome {
+    pub(crate) fn current(
+        manager: &'static str,
+        name: impl Into<String>,
+        version: impl Into<String>,
+        source: impl Into<String>,
+    ) -> Self {
+        let version = version.into();
+        Self {
+            manager,
+            name: name.into(),
+            from_version: version.clone(),
+            to_version: version,
+            status: OutcomeStatus::Current,
+            source: source.into(),
+            reason_code: None,
+            reason_detail: None,
+            age: None,
+            required_age: None,
+            latest_version: None,
+            latest_age: None,
+            scan_age: None,
+            scan_is_old: false,
+        }
+    }
+
+    pub(crate) fn current_with_age(
+        manager: &'static str,
+        name: impl Into<String>,
+        version: impl Into<String>,
+        source: impl Into<String>,
+        age: impl Into<String>,
+        is_old: bool,
+    ) -> Self {
+        let version = version.into();
+        Self {
+            manager,
+            name: name.into(),
+            from_version: version.clone(),
+            to_version: version,
+            status: OutcomeStatus::Current,
+            source: source.into(),
+            reason_code: None,
+            reason_detail: None,
+            age: None,
+            required_age: None,
+            latest_version: None,
+            latest_age: None,
+            scan_age: Some(age.into()),
+            scan_is_old: is_old,
+        }
+    }
+
     pub(crate) fn update(
         manager: &'static str,
         name: impl Into<String>,
@@ -53,9 +108,12 @@ impl ItemOutcome {
             required_age: None,
             latest_version: None,
             latest_age: None,
+            scan_age: None,
+            scan_is_old: false,
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn update_with_delayed_latest(
         manager: &'static str,
         name: impl Into<String>,
@@ -79,6 +137,8 @@ impl ItemOutcome {
             required_age: Some(required_age.into()),
             latest_version: Some(latest_version.into()),
             latest_age: Some(latest_age.into()),
+            scan_age: None,
+            scan_is_old: false,
         }
     }
 
@@ -103,6 +163,8 @@ impl ItemOutcome {
             required_age: Some(required_age.into()),
             latest_version: None,
             latest_age: None,
+            scan_age: None,
+            scan_is_old: false,
         }
     }
 
@@ -128,6 +190,8 @@ impl ItemOutcome {
             required_age: Some(required_age.into()),
             latest_version: None,
             latest_age: Some(latest_age.into()),
+            scan_age: None,
+            scan_is_old: false,
         }
     }
 
@@ -153,6 +217,8 @@ impl ItemOutcome {
             required_age: Some(required_age.into()),
             latest_version: None,
             latest_age: None,
+            scan_age: None,
+            scan_is_old: false,
         }
     }
 
@@ -178,6 +244,8 @@ impl ItemOutcome {
             required_age: None,
             latest_version: None,
             latest_age: None,
+            scan_age: None,
+            scan_is_old: false,
         }
     }
 
@@ -201,6 +269,8 @@ impl ItemOutcome {
             required_age: None,
             latest_version: None,
             latest_age: None,
+            scan_age: None,
+            scan_is_old: false,
         }
     }
 
@@ -226,6 +296,8 @@ impl ItemOutcome {
             required_age: None,
             latest_version: None,
             latest_age: None,
+            scan_age: None,
+            scan_is_old: false,
         }
     }
 
@@ -241,7 +313,6 @@ impl ItemOutcome {
                 return None;
             }
         }
-        let arrow = if theme.unicode() { "→" } else { "->" };
 
         let manager_rendered = if theme.color() {
             format!("[{}]", self.manager.bold())
@@ -256,21 +327,38 @@ impl ItemOutcome {
         };
 
         let from = version_label(&self.from_version);
-        let to = version_label(&self.to_version);
-        let to_rendered = render_to_version(&from, &to, theme.color());
-
-        let mut line = format!(
-            "{} {} {} {} {arrow} {}",
-            status_prefix(self.status, theme.color()),
-            manager_rendered,
-            name_rendered,
-            from,
-            to_rendered
-        );
+        let mut line = if self.status == OutcomeStatus::Current {
+            format!(
+                "{} {} {} {}",
+                status_prefix(self.status, theme.color()),
+                manager_rendered,
+                name_rendered,
+                from
+            )
+        } else {
+            let arrow = if theme.unicode() { "→" } else { "->" };
+            let to = version_label(&self.to_version);
+            let to_rendered = render_to_version(&from, &to, theme.color());
+            format!(
+                "{} {} {} {} {arrow} {}",
+                status_prefix(self.status, theme.color()),
+                manager_rendered,
+                name_rendered,
+                from,
+                to_rendered
+            )
+        };
 
         append_status_note(&mut line, self, theme);
 
         if theme.verbose {
+            if self.status == OutcomeStatus::Current
+                && let Some(age) = self.scan_age.as_deref()
+            {
+                line.push(' ');
+                line.push_str(&current_age_segment(age, self.scan_is_old, theme.color()));
+            }
+
             line.push(' ');
             line.push_str(&meta_segment(
                 &format!("(source: {})", self.source),
@@ -284,6 +372,7 @@ impl ItemOutcome {
 
 fn append_status_note(line: &mut String, item: &ItemOutcome, theme: crate::ui::OutputTheme) {
     match item.status {
+        OutcomeStatus::Current => {}
         OutcomeStatus::Update => {
             if theme.verbose
                 && let (Some(latest), Some(latest_age), Some(required_age)) = (
@@ -389,6 +478,13 @@ fn first_changed_part_index(from_parts: &[&str], to_parts: &[&str]) -> Option<us
 
 fn status_prefix(status: OutcomeStatus, color: bool) -> String {
     match status {
+        OutcomeStatus::Current => {
+            if color {
+                format!("{} {}", "=".cyan().bold(), "Current".cyan().bold())
+            } else {
+                "= Current".to_string()
+            }
+        }
         OutcomeStatus::Update => {
             if color {
                 format!("{} {}", "+".green().bold(), "Update".green().bold())
@@ -425,6 +521,18 @@ fn meta_segment(text: &str, color: bool) -> String {
         text.dimmed().to_string()
     } else {
         text.to_string()
+    }
+}
+
+fn current_age_segment(age: &str, is_old: bool, color: bool) -> String {
+    if !color {
+        return format!("(released: {age})");
+    }
+
+    if is_old {
+        format!("(released: {})", age.red().bold())
+    } else {
+        format!("(released: {age})").dimmed().to_string()
     }
 }
 

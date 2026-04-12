@@ -1,18 +1,20 @@
 use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
-    DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
+    DelayedLatest, PlanDecision, PlanMeta, SemverAgeResolution, SemverTimestamp,
+    emit_manager_level_error, emit_plan_and_collect_upgradable, emit_version_scan_outcomes,
+    parse_semver_time_releases, release_age_secs_for_version, resolve_semver_with_min_age,
+    verbose_now_unix_secs,
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::run_command_checked_stdout;
+use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
-use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
-use semver::Version;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const PNPM_MAX_PARALLEL_CHECKS: usize = 6;
 
@@ -46,6 +48,10 @@ struct PnpmPlanItem {
 }
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
+    if ctx.is_scan() {
+        return scan(ctx);
+    }
+
     let min_age = ctx.policy.min_release_age.duration();
 
     let outdated = match pnpm_outdated_global() {
@@ -60,33 +66,9 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         return Ok(());
     }
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock before UNIX_EPOCH")?
-        .as_secs();
+    let now = now_unix_secs()?;
 
-    let jobs: Vec<(String, String)> = outdated
-        .iter()
-        .map(|(name, entry)| (name.clone(), entry.current.clone()))
-        .collect();
-
-    let threads = effective_parallelism(ctx.max_parallel_checks, PNPM_MAX_PARALLEL_CHECKS);
-    let plan: Vec<PnpmPlanItem> = run_indexed_parallel(
-        jobs,
-        threads,
-        "failed to build pnpm planning thread pool",
-        "internal error: missing pnpm plan slot",
-        |(name, current)| {
-            let resolved = pnpm_resolve_target_with_min_age(&name, &current, now, min_age)
-                .map_err(|err| err.to_string());
-
-            PnpmPlanItem {
-                name,
-                current,
-                resolved,
-            }
-        },
-    )?;
+    let plan = resolve_pnpm_plan(&outdated, now, min_age, ctx.max_parallel_checks)?;
 
     let upgradable = emit_plan_and_collect_upgradable(
         plan,
@@ -124,6 +106,70 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         return Ok(());
     }
 
+    apply_pnpm_updates(upgradable);
+
+    Ok(())
+}
+
+fn scan(ctx: &ManagerCtx) -> Result<()> {
+    let installed = match pnpm_installed_global() {
+        Ok(installed) => installed,
+        Err(err) => {
+            emit_pnpm_manager_error(format!("failed to query installed pnpm packages: {err}"));
+            return Ok(());
+        }
+    };
+
+    if installed.is_empty() {
+        return Ok(());
+    }
+
+    let now = verbose_now_unix_secs()?;
+
+    emit_version_scan_outcomes(
+        PLUGIN.id(),
+        PLUGIN.id(),
+        installed,
+        now,
+        ctx.scan_old_age_threshold,
+        pnpm_release_age_secs,
+    );
+
+    Ok(())
+}
+
+fn resolve_pnpm_plan(
+    outdated: &BTreeMap<String, OutdatedEntry>,
+    now_unix_secs: u64,
+    min_age: Duration,
+    max_parallel_checks: usize,
+) -> Result<Vec<PnpmPlanItem>> {
+    let jobs: Vec<(String, String)> = outdated
+        .iter()
+        .map(|(name, entry)| (name.clone(), entry.current.clone()))
+        .collect();
+
+    let threads = effective_parallelism(max_parallel_checks, PNPM_MAX_PARALLEL_CHECKS);
+    run_indexed_parallel(
+        jobs,
+        threads,
+        "failed to build pnpm planning thread pool",
+        "internal error: missing pnpm plan slot",
+        |(name, current)| {
+            let resolved =
+                pnpm_resolve_target_with_min_age(&name, &current, now_unix_secs, min_age)
+                    .map_err(|err| err.to_string());
+
+            PnpmPlanItem {
+                name,
+                current,
+                resolved,
+            }
+        },
+    )
+}
+
+fn apply_pnpm_updates(upgradable: Vec<(String, String, String)>) {
     for (name, current, version) in upgradable {
         let spec = format!("{name}@{version}");
         if let Err(err) = run_pnpm(&["add", "-g", &spec]) {
@@ -139,8 +185,51 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             emit_text_outcome(&outcome);
         }
     }
+}
 
-    Ok(())
+fn pnpm_installed_global() -> Result<BTreeMap<String, String>> {
+    let output = Command::new("pnpm")
+        .args(["list", "-g", "--depth", "0", "--json"])
+        .output()
+        .with_context(|| "failed to run pnpm list -g --depth 0 --json")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("pnpm list -g --depth 0 --json failed: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("pnpm list output not UTF-8")?;
+    if stdout.trim().is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let val: serde_json::Value =
+        serde_json::from_str(&stdout).context("failed to parse pnpm list JSON")?;
+
+    let mut out = BTreeMap::new();
+    let Some(items) = val.as_array() else {
+        return Ok(out);
+    };
+
+    for item in items {
+        let deps = item
+            .get("dependencies")
+            .and_then(serde_json::Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+
+        for (name, dep) in deps {
+            if let Some(version) = dep
+                .get("version")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+            {
+                out.insert(name, version);
+            }
+        }
+    }
+
+    Ok(out)
 }
 
 fn pnpm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
@@ -244,17 +333,11 @@ struct PnpmResolvedTarget {
 
 impl PnpmResolvedTarget {
     fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
-        let (Some(latest_version), Some(latest_age_secs)) =
-            (self.latest_version.as_deref(), self.latest_age_secs)
-        else {
-            return None;
-        };
-
-        Some(DelayedLatest {
-            latest_version: latest_version.to_string(),
-            latest_age: human_age(latest_age_secs),
-            required_age: human_age(min_age.as_secs()),
-        })
+        DelayedLatest::from_latest(
+            self.latest_version.as_deref(),
+            self.latest_age_secs,
+            min_age,
+        )
     }
 }
 
@@ -278,59 +361,14 @@ fn pnpm_resolve_target_with_min_age(
     let val: serde_json::Value = serde_json::from_str(&stdout)
         .with_context(|| format!("failed to parse pnpm view JSON for {name}"))?;
 
-    let obj = val
-        .as_object()
-        .with_context(|| format!("pnpm view time JSON is not an object for {name}"))?;
+    let releases = pnpm_semver_time_releases(name, &val)?;
 
-    let current_ver = Version::parse(current)
-        .with_context(|| format!("failed to parse current semver for {name}: {current}"))?;
-
-    let mut eligible: Option<(Version, String, u64)> = None;
-    let mut newest_any: Option<(Version, String, u64)> = None;
-
-    for (ver_str, ts_val) in obj {
-        if ver_str == "created" || ver_str == "modified" {
-            continue;
-        }
-
-        let Some(ts_raw) = ts_val.as_str() else {
-            continue;
-        };
-
-        let Ok(version) = Version::parse(ver_str) else {
-            continue;
-        };
-
-        let ts = parse_rfc3339_unix(ts_raw)
-            .with_context(|| format!("invalid pnpm timestamp for {name}@{ver_str}: {ts_raw}"))?;
-
-        if newest_any
-            .as_ref()
-            .is_none_or(|(curr, _, _)| version > *curr)
-        {
-            newest_any = Some((version.clone(), ver_str.clone(), ts));
-        }
-
-        if version >= current_ver {
-            let age_secs = now_unix_secs.saturating_sub(ts);
-            if age_secs >= min_age.as_secs()
-                && eligible.as_ref().is_none_or(|(curr, _, _)| version > *curr)
-            {
-                eligible = Some((version, ver_str.clone(), ts));
-            }
-        }
-    }
-
-    let selected_version = eligible.map(|(ver, _, _)| ver.to_string());
-    let (latest_version, latest_age_secs) =
-        if let Some((_latest_ver, latest_str, latest_ts)) = newest_any {
-            (
-                Some(latest_str),
-                Some(now_unix_secs.saturating_sub(latest_ts)),
-            )
-        } else {
-            (None, None)
-        };
+    let SemverAgeResolution {
+        selected_version,
+        latest_version,
+        latest_age_secs,
+    } = resolve_semver_with_min_age(current, &releases, now_unix_secs, min_age)
+        .with_context(|| format!("failed to resolve eligible semver target for {name}"))?;
 
     Ok(PnpmResolvedTarget {
         selected_version,
@@ -339,23 +377,45 @@ fn pnpm_resolve_target_with_min_age(
     })
 }
 
+fn pnpm_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Result<Option<u64>> {
+    let output = Command::new("pnpm")
+        .args(["view", name, "time", "--json"])
+        .output()
+        .with_context(|| format!("failed to run pnpm view {name} time --json"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("pnpm view {name} time --json failed: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("pnpm view output not UTF-8")?;
+    let val: serde_json::Value = serde_json::from_str(&stdout)
+        .with_context(|| format!("failed to parse pnpm view JSON for {name}"))?;
+
+    let releases = pnpm_semver_time_releases(name, &val)?;
+    Ok(release_age_secs_for_version(
+        &releases,
+        version,
+        now_unix_secs,
+    ))
+}
+
+fn pnpm_semver_time_releases(name: &str, val: &serde_json::Value) -> Result<Vec<SemverTimestamp>> {
+    let obj = val
+        .as_object()
+        .with_context(|| format!("pnpm view time JSON is not an object for {name}"))?;
+
+    parse_semver_time_releases(PLUGIN.id(), name, obj)
+}
+
 fn run_pnpm(args: &[&str]) -> Result<Vec<u8>> {
     let mut command = Command::new("pnpm");
     command.args(args);
     run_command_checked_stdout(command)
 }
 
-fn emit_pnpm_manager_error(detail: String) {
-    let outcome = ItemOutcome::error(
-        PLUGIN.id(),
-        "*",
-        "*",
-        "*",
-        PLUGIN.id(),
-        REASON_COMMAND_FAILED,
-        format!("manager-level fallback: {detail}"),
-    );
-    emit_text_outcome(&outcome);
+fn emit_pnpm_manager_error(detail: impl AsRef<str>) {
+    emit_manager_level_error(PLUGIN.id(), PLUGIN.id(), detail);
 }
 
 #[cfg(test)]

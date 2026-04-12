@@ -1,8 +1,12 @@
 use crate::config::ManagerMode;
 use crate::manager::{ManagerCtx, ManagerPlugin};
+use crate::managers::common::{
+    DelayedLatest, emit_manager_level_error, emit_scan_current, verbose_now_unix_secs,
+};
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::run_command_checked_stdout;
+use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
@@ -10,7 +14,7 @@ use reqwest::blocking::Client;
 use semver::Version;
 use std::collections::BTreeMap;
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const GEM_MAX_PARALLEL_CHECKS: usize = 4;
 
@@ -37,7 +41,8 @@ impl ManagerPlugin for GemPlugin {
 pub(crate) static PLUGIN: GemPlugin = GemPlugin;
 
 #[derive(Debug, Clone)]
-struct InstalledGem {
+struct GemInstalledEntry {
+    version: String,
     is_default: bool,
 }
 
@@ -64,26 +69,13 @@ struct GemResolvedTarget {
 }
 
 impl GemResolvedTarget {
-    fn delayed_latest(&self, min_age: Duration) -> Option<(String, String, String)> {
-        let (Some(latest_version), Some(latest_age_secs)) =
-            (self.latest_version.as_deref(), self.latest_age_secs)
-        else {
-            return None;
-        };
-
-        if latest_age_secs >= min_age.as_secs() {
-            return None;
-        }
-
-        if self.selected_version.as_deref() == Some(latest_version) {
-            return None;
-        }
-
-        Some((
-            latest_version.to_string(),
-            human_age(latest_age_secs),
-            human_age(min_age.as_secs()),
-        ))
+    fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
+        DelayedLatest::from_too_fresh_latest(
+            self.selected_version.as_deref(),
+            self.latest_version.as_deref(),
+            self.latest_age_secs,
+            min_age,
+        )
     }
 }
 
@@ -97,10 +89,15 @@ struct RubyGemsVersionItem {
     ruby_version: Option<String>,
 }
 
+#[allow(clippy::too_many_lines)]
 fn run(ctx: &ManagerCtx) -> Result<()> {
+    if ctx.is_scan() {
+        return scan(ctx);
+    }
+
     let min_age = ctx.policy.min_release_age.duration();
 
-    let installed = match gem_installed_map() {
+    let installed = match gem_installed_inventory() {
         Ok(installed) => installed,
         Err(err) => {
             emit_gem_manager_error(format!("failed to read installed gems: {err}"));
@@ -120,10 +117,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         return Ok(());
     }
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock before UNIX_EPOCH")?
-        .as_secs();
+    let now = now_unix_secs()?;
 
     let ruby_runtime = match ruby_runtime_version() {
         Ok(runtime) => runtime,
@@ -224,7 +218,11 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                         continue;
                     }
 
-                    let outcome = if let Some((latest, latest_age, required_age)) = delayed_latest
+                    let outcome = if let Some(DelayedLatest {
+                        latest_version,
+                        latest_age,
+                        required_age,
+                    }) = delayed_latest
                     {
                         ItemOutcome::update_with_delayed_latest(
                             PLUGIN.id(),
@@ -232,7 +230,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                             planned.current.clone(),
                             selected.clone(),
                             "rubygems",
-                            latest,
+                            latest_version,
                             latest_age,
                             required_age,
                         )
@@ -249,14 +247,18 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                     emit_text_outcome(&outcome);
                     upgradable.push((planned.name, planned.current, selected));
                 } else {
-                    let outcome = if let Some((latest, latest_age, required_age)) = delayed_latest
+                    let outcome = if let Some(DelayedLatest {
+                        latest_version,
+                        latest_age,
+                        required_age,
+                    }) = delayed_latest
                     {
                         ItemOutcome::delayed_no_eligible_with_latest(
                             PLUGIN.id(),
                             planned.name,
                             planned.current,
                             "rubygems",
-                            latest,
+                            latest_version,
                             latest_age,
                             required_age,
                         )
@@ -302,14 +304,62 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     Ok(())
 }
 
-fn gem_installed_map() -> Result<BTreeMap<String, InstalledGem>> {
+fn scan(ctx: &ManagerCtx) -> Result<()> {
+    let installed = match gem_installed_inventory() {
+        Ok(installed) => installed,
+        Err(err) => {
+            emit_gem_manager_error(format!("failed to read installed gems: {err}"));
+            return Ok(());
+        }
+    };
+
+    if installed.is_empty() {
+        return Ok(());
+    }
+
+    let now = verbose_now_unix_secs()?;
+
+    let rubygems_client = if now.is_some() {
+        crate::util::http::default_blocking_client().ok()
+    } else {
+        None
+    };
+
+    for (name, installed) in installed {
+        if installed.is_default {
+            continue;
+        }
+
+        let age_secs = if let (Some(client), Some(now_unix_secs)) = (rubygems_client.as_ref(), now)
+        {
+            rubygems_release_age_secs(client, &name, &installed.version, now_unix_secs)
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+
+        emit_scan_current(
+            PLUGIN.id(),
+            "rubygems",
+            name,
+            installed.version,
+            age_secs,
+            ctx.scan_old_age_threshold,
+        );
+    }
+
+    Ok(())
+}
+
+fn gem_installed_inventory() -> Result<BTreeMap<String, GemInstalledEntry>> {
     let stdout = run_gem(&["list"])?;
     let text = String::from_utf8(stdout).context("gem list output not UTF-8")?;
 
-    Ok(parse_gem_list_output(&text))
+    Ok(parse_gem_installed_inventory(&text))
 }
 
-fn parse_gem_list_output(text: &str) -> BTreeMap<String, InstalledGem> {
+fn parse_gem_installed_inventory(text: &str) -> BTreeMap<String, GemInstalledEntry> {
     let mut out = BTreeMap::new();
 
     for line in text.lines() {
@@ -322,14 +372,39 @@ fn parse_gem_list_output(text: &str) -> BTreeMap<String, InstalledGem> {
             continue;
         };
 
-        let is_default = inner
-            .split(',')
-            .map(str::trim)
-            .any(|part| part.starts_with("default:"));
+        let mut parsed_version = None::<String>;
+        let mut is_default = false;
+        for part in inner.split(',').map(str::trim) {
+            if let Some(v) = part.strip_prefix("default:") {
+                is_default = true;
+                let vv = v.trim();
+                if !vv.is_empty() {
+                    parsed_version = Some(vv.to_string());
+                }
+            } else if parsed_version.is_none()
+                && part.chars().next().is_some_and(|c| c.is_ascii_digit())
+            {
+                parsed_version = Some(part.to_string());
+            }
+        }
+
+        let Some(version) = parsed_version else {
+            continue;
+        };
 
         out.entry(name.to_string())
-            .and_modify(|existing: &mut InstalledGem| existing.is_default |= is_default)
-            .or_insert(InstalledGem { is_default });
+            .and_modify(|existing: &mut GemInstalledEntry| {
+                if !existing.is_default && is_default {
+                    existing.is_default = true;
+                }
+                if existing.version.is_empty() {
+                    existing.version.clone_from(&version);
+                }
+            })
+            .or_insert(GemInstalledEntry {
+                version,
+                is_default,
+            });
     }
 
     out
@@ -457,6 +532,24 @@ fn rubygems_resolve_target_with_min_age(
         latest_version,
         latest_age_secs,
     })
+}
+
+fn rubygems_release_age_secs(
+    client: &Client,
+    gem_name: &str,
+    version: &str,
+    now_unix_secs: u64,
+) -> Result<Option<u64>> {
+    let versions = rubygems_versions(client, gem_name)?;
+
+    let ts = versions
+        .into_iter()
+        .find(|item| item.number == version)
+        .map(|item| parse_rfc3339_unix(&item.created_at))
+        .transpose()
+        .with_context(|| format!("invalid RubyGems release timestamp for {gem_name}@{version}"))?;
+
+    Ok(ts.map(|created| now_unix_secs.saturating_sub(created)))
 }
 
 fn rubygems_versions(client: &Client, gem_name: &str) -> Result<Vec<RubyGemsVersionItem>> {
@@ -606,17 +699,8 @@ fn run_ruby(args: &[&str]) -> Result<Vec<u8>> {
     run_command_checked_stdout(command)
 }
 
-fn emit_gem_manager_error(detail: String) {
-    let outcome = ItemOutcome::error(
-        PLUGIN.id(),
-        "*",
-        "*",
-        "*",
-        "rubygems",
-        REASON_COMMAND_FAILED,
-        format!("manager-level fallback: {detail}"),
-    );
-    emit_text_outcome(&outcome);
+fn emit_gem_manager_error(detail: impl AsRef<str>) {
+    emit_manager_level_error(PLUGIN.id(), "rubygems", detail);
 }
 
 #[cfg(test)]
@@ -627,7 +711,10 @@ mod tests {
     fn parse_gem_outdated_line() {
         let raw = "rake (13.2.1 < 13.3.1)\nbundler (2.6.9 < 4.0.10)\n";
         let parsed = parse_gem_outdated_output(raw);
-        assert_eq!(parsed.get("rake").map(|g| g.current.as_str()), Some("13.2.1"));
+        assert_eq!(
+            parsed.get("rake").map(|g| g.current.as_str()),
+            Some("13.2.1")
+        );
         assert_eq!(
             parsed.get("bundler").map(|g| g.current.as_str()),
             Some("2.6.9")
@@ -637,7 +724,7 @@ mod tests {
     #[test]
     fn parse_gem_list_marks_default() {
         let raw = "bundler (default: 2.6.9)\nrake (13.2.1)\n";
-        let parsed = parse_gem_list_output(raw);
+        let parsed = parse_gem_installed_inventory(raw);
         assert!(parsed.get("bundler").is_some_and(|g| g.is_default));
         assert!(parsed.get("rake").is_some_and(|g| !g.is_default));
     }
@@ -664,7 +751,11 @@ mod tests {
             latest_age_secs: Some(10 * 24 * 60 * 60),
         };
 
-        assert!(target.delayed_latest(Duration::from_secs(7 * 24 * 60 * 60)).is_none());
+        assert!(
+            target
+                .delayed_latest(Duration::from_secs(7 * 24 * 60 * 60))
+                .is_none()
+        );
     }
 
     #[test]
@@ -675,6 +766,10 @@ mod tests {
             latest_age_secs: Some(2 * 24 * 60 * 60),
         };
 
-        assert!(target.delayed_latest(Duration::from_secs(7 * 24 * 60 * 60)).is_some());
+        assert!(
+            target
+                .delayed_latest(Duration::from_secs(7 * 24 * 60 * 60))
+                .is_some()
+        );
     }
 }

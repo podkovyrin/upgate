@@ -1,8 +1,11 @@
 use crate::manager::{ManagerCtx, ManagerPlugin};
+use crate::managers::common::{emit_manager_level_error, emit_scan_current};
 use crate::outcome::{
     ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, REASON_PINNED, emit_text_outcome,
 };
+use crate::ui::output_theme;
 use crate::util::process::run_command_checked_stdout;
+use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
@@ -11,7 +14,7 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT}
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const BREW_MAX_PARALLEL_CHECKS_MIN: usize = 1;
 const BREW_API_FALLBACK_MAX_PARALLEL_CHECKS: usize = 4;
@@ -90,7 +93,7 @@ struct TapInfo {
     branch: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct TapMeta {
     path: String,
     remote: Option<String>,
@@ -180,15 +183,14 @@ struct GitHubCommitPerson {
     date: String,
 }
 
-#[allow(clippy::too_many_lines)]
 fn run(ctx: &ManagerCtx) -> Result<()> {
+    if ctx.is_scan() {
+        return scan(ctx);
+    }
+
     let min_age = ctx.policy.min_release_age.duration();
 
-    if !ctx.policy.no_update
-        && let Err(err) = run_brew(&["update", "--quiet"])
-    {
-        emit_manager_error(format!("brew metadata refresh failed: {err}"));
-    }
+    maybe_refresh_brew_metadata(ctx.policy.no_update);
 
     let outdated: OutdatedRoot = match brew_json(&["outdated", "--json=v2"]) {
         Ok(outdated) => outdated,
@@ -202,6 +204,55 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         return Ok(());
     }
 
+    let jobs = build_brew_plan_jobs(outdated);
+
+    let tap_meta = match brew_tap_meta() {
+        Ok(tap_meta) => tap_meta,
+        Err(err) => {
+            emit_manager_error(format!("failed to read brew tap metadata: {err}"));
+            HashMap::new()
+        }
+    };
+
+    let now = now_unix_secs()?;
+
+    let github_client = match github_client() {
+        Ok(client) => Some(client),
+        Err(err) => {
+            emit_manager_error(format!("failed to initialize remote lookup client: {err}"));
+            None
+        }
+    };
+
+    let plan = resolve_brew_plan(
+        jobs,
+        &tap_meta,
+        github_client.as_ref(),
+        min_age,
+        now,
+        ctx.max_parallel_checks,
+    )?;
+
+    for item in &plan {
+        let outcome = item_to_outcome(item);
+        emit_text_outcome(&outcome);
+    }
+
+    if ctx.is_dry_run() {
+        return Ok(());
+    }
+
+    apply_brew_plan(&plan);
+    Ok(())
+}
+
+fn maybe_refresh_brew_metadata(no_update: bool) {
+    if !no_update && let Err(err) = run_brew(&["update", "--quiet"]) {
+        emit_manager_error(format!("brew metadata refresh failed: {err}"));
+    }
+}
+
+fn build_brew_plan_jobs(outdated: OutdatedRoot) -> Vec<PackageJob> {
     let formula_names: Vec<String> = outdated.formulae.iter().map(|f| f.name.clone()).collect();
     let cask_names: Vec<String> = outdated.casks.iter().map(|c| c.name.clone()).collect();
 
@@ -215,32 +266,6 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             }
         }
     };
-
-    let tap_meta = match brew_tap_meta() {
-        Ok(tap_meta) => tap_meta,
-        Err(err) => {
-            emit_manager_error(format!("failed to read brew tap metadata: {err}"));
-            HashMap::new()
-        }
-    };
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock before UNIX_EPOCH")?
-        .as_secs();
-
-    let github_client = match github_client() {
-        Ok(client) => Some(client),
-        Err(err) => {
-            emit_manager_error(format!("failed to initialize remote lookup client: {err}"));
-            None
-        }
-    };
-
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(ctx.max_parallel_checks.max(BREW_MAX_PARALLEL_CHECKS_MIN))
-        .build()
-        .context("failed to build rayon thread pool")?;
 
     let mut formula_info_by_name: HashMap<String, FormulaInfo> = HashMap::new();
     for formula in info.formulae {
@@ -304,10 +329,26 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         });
     }
 
+    jobs
+}
+
+fn resolve_brew_plan(
+    jobs: Vec<PackageJob>,
+    tap_meta: &HashMap<String, TapMeta>,
+    github_client: Option<&Client>,
+    min_age: Duration,
+    now_unix_secs: u64,
+    max_parallel_checks: usize,
+) -> Result<Vec<PlanItem>> {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(max_parallel_checks.max(BREW_MAX_PARALLEL_CHECKS_MIN))
+        .build()
+        .context("failed to build rayon thread pool")?;
+
     let phase_one_results: Vec<PhaseOneResult> = pool.install(|| {
         jobs.into_par_iter()
             .enumerate()
-            .map(|(index, job)| phase_one_local_check(index, job, min_age, now, &tap_meta))
+            .map(|(index, job)| phase_one_local_check(index, job, min_age, now_unix_secs, tap_meta))
             .collect()
     });
 
@@ -323,7 +364,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     }
 
     if !api_jobs.is_empty() {
-        let api_parallelism = ctx.max_parallel_checks.clamp(
+        let api_parallelism = max_parallel_checks.clamp(
             BREW_MAX_PARALLEL_CHECKS_MIN,
             BREW_API_FALLBACK_MAX_PARALLEL_CHECKS,
         );
@@ -332,19 +373,20 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             .build()
             .context("failed to build API fallback thread pool")?;
 
-        let api_client = github_client.clone();
         let api_results: Vec<(usize, PlanItem)> = api_pool.install(|| {
             api_jobs
                 .into_par_iter()
                 .map(|job| {
-                    let action = if let Some(client) = api_client.as_ref() {
+                    let action = if let Some(client) = github_client {
                         match github_last_commit_unix_seconds(
                             client,
                             &job.remote,
                             job.branch.as_deref(),
                             &job.source_path,
                         ) {
-                            Ok(ts) => action_from_commit_age(min_age, now, ts, DataSource::Api),
+                            Ok(ts) => {
+                                action_from_commit_age(min_age, now_unix_secs, ts, DataSource::Api)
+                            }
                             Err(remote_err) => PlanAction::Skipped {
                                 reason: format!(
                                     "failed age check: local git failed ({}); remote lookup failed ({})",
@@ -382,20 +424,13 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         }
     }
 
-    let plan: Vec<PlanItem> = plan_slots
+    plan_slots
         .into_iter()
         .map(|item| item.context("internal error: missing plan slot"))
-        .collect::<Result<Vec<_>>>()?;
+        .collect()
+}
 
-    for item in &plan {
-        let outcome = item_to_outcome(item);
-        emit_text_outcome(&outcome);
-    }
-
-    if ctx.is_dry_run() {
-        return Ok(());
-    }
-
+fn apply_brew_plan(plan: &[PlanItem]) {
     let formula_to_upgrade: Vec<String> = plan
         .iter()
         .filter(|i| i.is_formula)
@@ -429,10 +464,204 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             emit_manager_error(format!("failed to apply brew cask upgrades: {err}"));
         }
     }
+}
 
+fn scan(ctx: &ManagerCtx) -> Result<()> {
+    let scan_items = match collect_brew_scan_items() {
+        Ok(items) => items,
+        Err(err) => {
+            emit_manager_error(err.to_string());
+            return Ok(());
+        }
+    };
+
+    if !output_theme().verbose {
+        emit_brew_scan_items(scan_items, None, ctx.scan_old_age_threshold);
+        return Ok(());
+    }
+
+    let Some(age_slots) = resolve_brew_scan_age_slots(&scan_items, ctx.max_parallel_checks)? else {
+        emit_brew_scan_items(scan_items, None, ctx.scan_old_age_threshold);
+        return Ok(());
+    };
+
+    emit_brew_scan_items(scan_items, Some(&age_slots), ctx.scan_old_age_threshold);
     Ok(())
 }
 
+fn collect_brew_scan_items() -> Result<Vec<(String, String, bool)>> {
+    let formulae = brew_list_versions("--formula")
+        .with_context(|| "failed to list installed brew formulae")?;
+
+    let casks =
+        brew_list_versions("--cask").with_context(|| "failed to list installed brew casks")?;
+
+    let mut scan_items: Vec<(String, String, bool)> =
+        Vec::with_capacity(formulae.len() + casks.len());
+    for (name, version) in formulae {
+        scan_items.push((name, version, true));
+    }
+    for (name, version) in casks {
+        scan_items.push((name, version, false));
+    }
+
+    Ok(scan_items)
+}
+
+fn resolve_brew_scan_age_slots(
+    scan_items: &[(String, String, bool)],
+    max_parallel_checks: usize,
+) -> Result<Option<Vec<Option<u64>>>> {
+    let formula_names: Vec<String> = scan_items
+        .iter()
+        .filter(|(_, _, is_formula)| *is_formula)
+        .map(|(name, _, _)| name.clone())
+        .collect();
+    let cask_names: Vec<String> = scan_items
+        .iter()
+        .filter(|(_, _, is_formula)| !*is_formula)
+        .map(|(name, _, _)| name.clone())
+        .collect();
+
+    let info = match brew_info_for_names(&formula_names, &cask_names) {
+        Ok(info) => info,
+        Err(err) => {
+            emit_manager_error(format!(
+                "failed to read brew package metadata for scan: {err}"
+            ));
+            return Ok(None);
+        }
+    };
+
+    let tap_meta = brew_tap_meta().unwrap_or_default();
+    let github_client = github_client().ok();
+    let now = now_unix_secs()?;
+
+    let mut formula_info_by_name: HashMap<String, FormulaInfo> = HashMap::new();
+    for formula in info.formulae {
+        formula_info_by_name.insert(formula.full_name.clone(), formula);
+    }
+
+    let mut cask_info_by_name: HashMap<String, CaskInfo> = HashMap::new();
+    for cask in info.casks {
+        cask_info_by_name.insert(cask.token.clone(), cask);
+    }
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(max_parallel_checks.max(BREW_MAX_PARALLEL_CHECKS_MIN))
+        .build()
+        .context("failed to build brew scan thread pool")?;
+
+    let tap_meta_ref = &tap_meta;
+    let formula_info_ref = &formula_info_by_name;
+    let cask_info_ref = &cask_info_by_name;
+    let github_client_ref = github_client.as_ref();
+
+    let age_indexed: Vec<(usize, Option<u64>)> = pool.install(|| {
+        scan_items
+            .par_iter()
+            .enumerate()
+            .map(|(idx, (name, _version, is_formula))| {
+                let tap_and_source = if *is_formula {
+                    formula_info_ref
+                        .get(name)
+                        .map(|f| (f.tap.as_deref(), f.ruby_source_path.as_deref()))
+                } else {
+                    cask_info_ref
+                        .get(name)
+                        .map(|c| (c.tap.as_deref(), c.ruby_source_path.as_deref()))
+                };
+
+                let age = brew_scan_age_secs(tap_and_source, tap_meta_ref, github_client_ref, now);
+                (idx, age)
+            })
+            .collect()
+    });
+
+    let mut age_slots: Vec<Option<u64>> = (0..scan_items.len()).map(|_| None).collect();
+    for (idx, age) in age_indexed {
+        age_slots[idx] = age;
+    }
+
+    Ok(Some(age_slots))
+}
+
+fn emit_brew_scan_items(
+    scan_items: Vec<(String, String, bool)>,
+    age_slots: Option<&[Option<u64>]>,
+    old_threshold: Duration,
+) {
+    for (idx, (name, version, _is_formula)) in scan_items.into_iter().enumerate() {
+        let age = age_slots.and_then(|slots| slots.get(idx).copied().flatten());
+        emit_scan_current(PLUGIN.id(), PLUGIN.id(), name, version, age, old_threshold);
+    }
+}
+
+fn brew_list_versions(kind: &str) -> Result<Vec<(String, String)>> {
+    let stdout = run_brew(&["list", kind, "--versions"])?;
+    let text = String::from_utf8(stdout).context("brew list --versions output not UTF-8")?;
+
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let mut parts = trimmed.split_whitespace();
+        let Some(name) = parts.next() else {
+            continue;
+        };
+
+        let versions: Vec<&str> = parts.collect();
+        if versions.is_empty() {
+            continue;
+        }
+
+        let version = versions.last().copied().unwrap_or("unknown").to_string();
+        out.push((name.to_string(), version));
+    }
+
+    Ok(out)
+}
+
+fn brew_scan_age_secs(
+    tap_and_source: Option<(Option<&str>, Option<&str>)>,
+    tap_meta: &HashMap<String, TapMeta>,
+    github_client: Option<&Client>,
+    now_unix_secs: u64,
+) -> Option<u64> {
+    let (tap, source_path) = tap_and_source?;
+    let tap = tap?;
+    let source_path = source_path?;
+
+    let (remote, branch, local_ts) = if let Some(meta) = tap_meta.get(tap) {
+        let local_ts =
+            git_last_commit_unix_seconds(&meta.path, meta.branch.as_deref(), source_path).ok();
+        (
+            meta.remote
+                .clone()
+                .or_else(|| resolve_api_fallback_remote_branch(tap, Some(meta)).map(|(r, _)| r)),
+            meta.branch.clone().or_else(|| {
+                resolve_api_fallback_remote_branch(tap, Some(meta)).and_then(|(_, b)| b)
+            }),
+            local_ts,
+        )
+    } else {
+        let (remote, branch) = resolve_api_fallback_remote_branch(tap, None)?;
+        (Some(remote), branch, None)
+    };
+
+    let commit_ts = local_ts.or_else(|| {
+        let remote = remote.as_deref()?;
+        let client = github_client?;
+        github_last_commit_unix_seconds(client, remote, branch.as_deref(), source_path).ok()
+    })?;
+
+    Some(now_unix_secs.saturating_sub(commit_ts))
+}
+
+#[allow(clippy::too_many_lines)]
 fn phase_one_local_check(
     index: usize,
     job: PackageJob,
@@ -874,17 +1103,8 @@ fn run_brew(args: &[&str]) -> Result<Vec<u8>> {
     run_command_checked_stdout(command)
 }
 
-fn emit_manager_error(detail: String) {
-    let outcome = ItemOutcome::error(
-        PLUGIN.id(),
-        "*",
-        "*",
-        "*",
-        PLUGIN.id(),
-        REASON_COMMAND_FAILED,
-        format!("manager-level fallback: {detail}"),
-    );
-    emit_text_outcome(&outcome);
+fn emit_manager_error(detail: impl AsRef<str>) {
+    emit_manager_level_error(PLUGIN.id(), PLUGIN.id(), detail);
 }
 
 fn run_brew_owned(args: &[String]) -> Result<Vec<u8>> {

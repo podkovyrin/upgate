@@ -1,18 +1,20 @@
 use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
-    DelayedLatest, PlanDecision, PlanMeta, emit_plan_and_collect_upgradable,
+    DelayedLatest, Pep440AgeResolution, Pep440Timestamp, PlanDecision, PlanMeta,
+    emit_manager_level_error, emit_plan_and_collect_upgradable, emit_version_scan_outcomes,
+    parse_pep440_release_timestamps, release_age_secs_for_pep440_version,
+    resolve_pep440_with_min_age, verbose_now_unix_secs,
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::run_command_checked_stdout;
+use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
-use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
-use pep440::Version;
 use reqwest::blocking::Client;
 use std::collections::BTreeMap;
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const PIPX_MAX_PARALLEL_CHECKS: usize = 4;
 
@@ -82,6 +84,10 @@ struct PipxPlanItem {
 }
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
+    if ctx.is_scan() {
+        return scan(ctx);
+    }
+
     let min_age = ctx.policy.min_release_age.duration();
 
     let installed = pipx_installed_main_packages()?;
@@ -89,33 +95,17 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         return Ok(());
     }
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock before UNIX_EPOCH")?
-        .as_secs();
+    let now = now_unix_secs()?;
 
     let pypi_client =
         crate::util::http::default_blocking_client().context("failed to build PyPI HTTP client")?;
 
-    let jobs: Vec<(String, String)> = installed.into_iter().collect();
-
-    let threads = effective_parallelism(ctx.max_parallel_checks, PIPX_MAX_PARALLEL_CHECKS);
-    let plan: Vec<PipxPlanItem> = run_indexed_parallel(
-        jobs,
-        threads,
-        "failed to build pipx planning thread pool",
-        "internal error: missing pipx plan slot",
-        |(name, current)| {
-            let resolved =
-                pypi_resolve_target_with_min_age(&pypi_client, &name, &current, now, min_age)
-                    .map_err(|err| err.to_string());
-
-            PipxPlanItem {
-                name,
-                current,
-                resolved,
-            }
-        },
+    let plan = resolve_pipx_plan(
+        installed,
+        &pypi_client,
+        now,
+        min_age,
+        ctx.max_parallel_checks,
     )?;
 
     let upgradable = emit_plan_and_collect_upgradable(
@@ -154,6 +144,82 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         return Ok(());
     }
 
+    apply_pipx_updates(upgradable);
+
+    Ok(())
+}
+
+fn scan(ctx: &ManagerCtx) -> Result<()> {
+    let installed = match pipx_installed_main_packages() {
+        Ok(installed) => installed,
+        Err(err) => {
+            emit_pipx_manager_error(format!("failed to read installed pipx tools: {err}"));
+            return Ok(());
+        }
+    };
+
+    if installed.is_empty() {
+        return Ok(());
+    }
+
+    let now = verbose_now_unix_secs()?;
+
+    let pypi_client = if now.is_some() {
+        crate::util::http::default_blocking_client().ok()
+    } else {
+        None
+    };
+
+    emit_version_scan_outcomes(
+        PLUGIN.id(),
+        "pypi",
+        installed,
+        now,
+        ctx.scan_old_age_threshold,
+        |name, version, now_unix_secs| {
+            pypi_client.as_ref().map_or(Ok(None), |client| {
+                pypi_release_age_secs(client, name, version, now_unix_secs)
+            })
+        },
+    );
+    Ok(())
+}
+
+fn resolve_pipx_plan(
+    installed: BTreeMap<String, String>,
+    pypi_client: &Client,
+    now_unix_secs: u64,
+    min_age: Duration,
+    max_parallel_checks: usize,
+) -> Result<Vec<PipxPlanItem>> {
+    let jobs: Vec<(String, String)> = installed.into_iter().collect();
+
+    let threads = effective_parallelism(max_parallel_checks, PIPX_MAX_PARALLEL_CHECKS);
+    run_indexed_parallel(
+        jobs,
+        threads,
+        "failed to build pipx planning thread pool",
+        "internal error: missing pipx plan slot",
+        |(name, current)| {
+            let resolved = pypi_resolve_target_with_min_age(
+                pypi_client,
+                &name,
+                &current,
+                now_unix_secs,
+                min_age,
+            )
+            .map_err(|err| err.to_string());
+
+            PipxPlanItem {
+                name,
+                current,
+                resolved,
+            }
+        },
+    )
+}
+
+fn apply_pipx_updates(upgradable: Vec<(String, String, String)>) {
     for (pkg, current, target) in upgradable {
         if let Err(err) = run_pipx(&["upgrade", &pkg]) {
             let outcome = ItemOutcome::error(
@@ -168,8 +234,6 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             emit_text_outcome(&outcome);
         }
     }
-
-    Ok(())
 }
 
 fn pipx_installed_main_packages() -> Result<BTreeMap<String, String>> {
@@ -206,17 +270,11 @@ struct PypiResolvedTarget {
 
 impl PypiResolvedTarget {
     fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
-        let (Some(latest_version), Some(latest_age_secs)) =
-            (self.latest_version.as_deref(), self.latest_age_secs)
-        else {
-            return None;
-        };
-
-        Some(DelayedLatest {
-            latest_version: latest_version.to_string(),
-            latest_age: human_age(latest_age_secs),
-            required_age: human_age(min_age.as_secs()),
-        })
+        DelayedLatest::from_latest(
+            self.latest_version.as_deref(),
+            self.latest_age_secs,
+            min_age,
+        )
     }
 }
 
@@ -227,6 +285,50 @@ fn pypi_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
 ) -> Result<PypiResolvedTarget> {
+    let root = pypi_root(pypi_client, pkg)?;
+    let releases = pypi_pep440_releases(pkg, &root)?;
+
+    let Pep440AgeResolution {
+        selected_version,
+        latest_version,
+        latest_age_secs,
+    } = resolve_pep440_with_min_age(current, &releases, now_unix_secs, min_age)
+        .with_context(|| format!("failed to resolve eligible PEP440 target for {pkg}"))?;
+
+    let _ = root.info.version;
+    Ok(PypiResolvedTarget {
+        selected_version,
+        latest_version,
+        latest_age_secs,
+    })
+}
+
+fn pypi_release_age_secs(
+    pypi_client: &Client,
+    pkg: &str,
+    version: &str,
+    now_unix_secs: u64,
+) -> Result<Option<u64>> {
+    let root = pypi_root(pypi_client, pkg)?;
+    let releases = pypi_pep440_releases(pkg, &root)?;
+
+    Ok(release_age_secs_for_pep440_version(
+        &releases,
+        version,
+        now_unix_secs,
+    ))
+}
+
+fn pypi_pep440_releases(pkg: &str, root: &PypiRoot) -> Result<Vec<Pep440Timestamp>> {
+    parse_pep440_release_timestamps(
+        pkg,
+        &root.releases,
+        |file| file.upload_time_iso_8601.as_deref(),
+        |file| file.upload_time.as_deref(),
+    )
+}
+
+fn pypi_root(pypi_client: &Client, pkg: &str) -> Result<PypiRoot> {
     let url = format!("https://pypi.org/pypi/{pkg}/json");
     let body = pypi_client
         .get(&url)
@@ -237,74 +339,15 @@ fn pypi_resolve_target_with_min_age(
         .text()
         .with_context(|| format!("failed to read PyPI response body for {pkg}"))?;
 
-    let root: PypiRoot = serde_json::from_str(&body)
-        .with_context(|| format!("failed to parse PyPI JSON for {pkg}"))?;
-
-    let current_ver = Version::parse(current)
-        .with_context(|| format!("failed to parse current PEP440 version for {pkg}: {current}"))?;
-
-    let mut eligible: Option<(Version, String, u64)> = None;
-    let mut newest_any: Option<(Version, String, u64)> = None;
-
-    for (ver_str, files) in &root.releases {
-        let Some(ver) = Version::parse(ver_str) else {
-            continue;
-        };
-
-        let mut newest_file_ts = None::<u64>;
-        for f in files {
-            let raw = f
-                .upload_time_iso_8601
-                .as_deref()
-                .or(f.upload_time.as_deref());
-
-            if let Some(raw) = raw {
-                let ts = parse_rfc3339_unix(raw).with_context(|| {
-                    format!("invalid upload timestamp for {pkg}@{ver_str}: {raw}")
-                })?;
-                newest_file_ts = Some(newest_file_ts.map_or(ts, |curr| curr.max(ts)));
-            }
-        }
-
-        let Some(ts) = newest_file_ts else {
-            continue;
-        };
-
-        if newest_any.as_ref().is_none_or(|(curr, _, _)| ver > *curr) {
-            newest_any = Some((ver.clone(), ver_str.clone(), ts));
-        }
-
-        if ver >= current_ver {
-            let age_secs = now_unix_secs.saturating_sub(ts);
-            if age_secs >= min_age.as_secs()
-                && eligible.as_ref().is_none_or(|(curr, _, _)| ver > *curr)
-            {
-                eligible = Some((ver, ver_str.clone(), ts));
-            }
-        }
-    }
-
-    let selected_version = eligible.map(|(_ver, ver_str, _)| ver_str);
-    let (latest_version, latest_age_secs) =
-        if let Some((_latest_ver, latest_str, latest_ts)) = newest_any {
-            (
-                Some(latest_str),
-                Some(now_unix_secs.saturating_sub(latest_ts)),
-            )
-        } else {
-            (None, None)
-        };
-
-    let _ = root.info.version;
-    Ok(PypiResolvedTarget {
-        selected_version,
-        latest_version,
-        latest_age_secs,
-    })
+    serde_json::from_str(&body).with_context(|| format!("failed to parse PyPI JSON for {pkg}"))
 }
 
 fn run_pipx(args: &[&str]) -> Result<Vec<u8>> {
     let mut command = Command::new("pipx");
     command.args(args);
     run_command_checked_stdout(command)
+}
+
+fn emit_pipx_manager_error(detail: impl AsRef<str>) {
+    emit_manager_level_error(PLUGIN.id(), "pypi", detail);
 }

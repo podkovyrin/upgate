@@ -11,9 +11,12 @@ If the config file exists but contains invalid TOML, `upnow` fails with an error
 
 ## Format
 
-Config sections are keyed by manager ID.
+Config supports a global `[upnow]` section and manager sections keyed by manager ID.
 
 ```toml
+[upnow]
+# scan_old_age_threshold = "365d"
+
 [brew]
 # mode = "apply"
 # min_release_age = "12h"
@@ -64,6 +67,10 @@ Config sections are keyed by manager ID.
 # min_release_age = "7d"
 ```
 
+Global keys:
+
+- `scan_old_age_threshold` (default `365d`) — used by `upnow scan` in `--verbose` output to mark old releases.
+
 Known manager IDs in the built-in registry:
 
 - `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`, `gem`, `dotnet`
@@ -85,6 +92,7 @@ Supported keys:
 - `mode` for all managers (`off`, `plan`, `apply`)
 - `min_release_age` for all managers
 - `no_update` for `brew` only
+- `upnow.scan_old_age_threshold` (global scan threshold)
 
 Unknown managers, unknown keys, or malformed values fail fast with an error.
 
