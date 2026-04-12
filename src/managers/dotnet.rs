@@ -7,7 +7,7 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::{RunCheck, run_cmd};
+use crate::util::process::RunCmd;
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
@@ -260,7 +260,7 @@ fn resolve_dotnet_plan(
 
 fn apply_dotnet_updates(upgradable: Vec<(String, String, String)>) {
     for (name, current, target) in upgradable {
-        if let Err(err) = run_cmd(
+        if let Err(err) = RunCmd::Success.run(
             "dotnet",
             [
                 "tool",
@@ -271,7 +271,6 @@ fn apply_dotnet_updates(upgradable: Vec<(String, String, String)>) {
                 &target,
                 "--allow-downgrade",
             ],
-            RunCheck::Success,
         ) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
@@ -314,12 +313,8 @@ fn emit_dotnet_scan_outcomes(
 }
 
 fn dotnet_global_tools() -> Result<Vec<DotnetToolEntry>> {
-    let output = run_cmd(
-        "dotnet",
-        ["tool", "list", "--global", "--format", "json"],
-        RunCheck::IgnoreStatus,
-    )
-    .context("failed to run dotnet tool list --global --format json")?;
+    let output =
+        RunCmd::IgnoreStatus.run("dotnet", ["tool", "list", "--global", "--format", "json"])?;
 
     let stdout = String::from_utf8(output.stdout).context("dotnet tool list output not UTF-8")?;
     let stderr = String::from_utf8_lossy(&output.stderr);

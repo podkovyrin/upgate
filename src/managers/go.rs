@@ -6,7 +6,7 @@ use crate::outcome::{
     ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, emit_text_outcome,
 };
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::{RunCheck, run_cmd};
+use crate::util::process::RunCmd;
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
@@ -289,7 +289,7 @@ fn emit_go_plan_and_collect_upgradable(
 fn apply_go_updates(upgradable: Vec<(String, String, String, String)>) {
     for (binary_name, current, target, install_path) in upgradable {
         let spec = format!("{install_path}@{target}");
-        if let Err(err) = run_cmd("go", ["install", &spec], RunCheck::Success) {
+        if let Err(err) = RunCmd::Success.run("go", ["install", &spec]) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 binary_name,
@@ -375,16 +375,16 @@ fn go_discover_global_tools() -> Result<Vec<GoDiscoveredTool>> {
             continue;
         };
 
-        let output = run_cmd(
-            "go",
-            [
-                std::ffi::OsStr::new("version"),
-                std::ffi::OsStr::new("-m"),
-                path.as_os_str(),
-            ],
-            RunCheck::IgnoreStatus,
-        )
-        .with_context(|| format!("failed to run go version -m {}", path.display()))?;
+        let output = RunCmd::IgnoreStatus
+            .run(
+                "go",
+                [
+                    std::ffi::OsStr::new("version"),
+                    std::ffi::OsStr::new("-m"),
+                    path.as_os_str(),
+                ],
+            )
+            .with_context(|| format!("failed to run go version -m {}", path.display()))?;
 
         if !output.status.success() {
             entries.push(GoDiscoveredTool::Skipped {
@@ -453,9 +453,7 @@ fn go_bin_dir() -> Result<PathBuf> {
         }
     }
 
-    if let Ok(output) = run_cmd("go", ["env", "GOPATH"], RunCheck::Success)
-        && let Ok(text) = String::from_utf8(output.stdout)
-    {
+    if let Ok(text) = RunCmd::Success.text("go", ["env", "GOPATH"]) {
         let trimmed = text.trim();
         if !trimmed.is_empty()
             && let Some(first) = first_path_entry(trimmed)
@@ -592,18 +590,8 @@ struct GoListVersionsResponse {
 }
 
 fn go_module_versions(module_path: &str) -> Result<Vec<String>> {
-    let stdout = run_cmd(
-        "go",
-        ["list", "-m", "-json", "-versions", module_path],
-        RunCheck::Success,
-    )?
-    .stdout;
-    let text = String::from_utf8(stdout).with_context(|| {
-        format!("go list -m -json -versions output not UTF-8 for {module_path}")
-    })?;
-
-    let parsed: GoListVersionsResponse = serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse go versions JSON for {module_path}"))?;
+    let parsed: GoListVersionsResponse =
+        RunCmd::Success.json("go", ["list", "-m", "-json", "-versions", module_path])?;
 
     Ok(parsed.versions)
 }
@@ -616,12 +604,8 @@ struct GoListModuleResponse {
 
 fn go_module_version_release_unix(module_path: &str, version: &str) -> Result<Option<u64>> {
     let module_spec = format!("{module_path}@{version}");
-    let stdout = run_cmd("go", ["list", "-m", "-json", &module_spec], RunCheck::Success)?.stdout;
-    let text = String::from_utf8(stdout)
-        .with_context(|| format!("go list -m -json output not UTF-8 for {module_spec}"))?;
-
-    let parsed: GoListModuleResponse = serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse go module JSON for {module_spec}"))?;
+    let parsed: GoListModuleResponse =
+        RunCmd::Success.json("go", ["list", "-m", "-json", &module_spec])?;
 
     let Some(time_raw) = parsed.time.as_deref() else {
         return Ok(None);

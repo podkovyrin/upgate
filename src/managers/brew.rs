@@ -4,7 +4,7 @@ use crate::outcome::{
     ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, REASON_PINNED, emit_text_outcome,
 };
 use crate::ui::output_theme;
-use crate::util::process::{RunCheck, run_cmd};
+use crate::util::process::RunCmd;
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
@@ -191,7 +191,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
 
     maybe_refresh_brew_metadata(ctx.policy.no_update);
 
-    let outdated: OutdatedRoot = match brew_json(&["outdated", "--json=v2"]) {
+    let outdated: OutdatedRoot = match RunCmd::Success.json("brew", &["outdated", "--json=v2"]) {
         Ok(outdated) => outdated,
         Err(err) => {
             emit_manager_error(format!("failed to read brew outdated state: {err}"));
@@ -246,7 +246,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
 }
 
 fn maybe_refresh_brew_metadata(no_update: bool) {
-    if !no_update && let Err(err) = run_cmd("brew", ["update", "--quiet"], RunCheck::Success) {
+    if !no_update && let Err(err) = RunCmd::Success.run("brew", ["update", "--quiet"]) {
         emit_manager_error(format!("brew metadata refresh failed: {err}"));
     }
 }
@@ -451,7 +451,7 @@ fn apply_brew_plan(plan: &[PlanItem]) {
     if !formula_to_upgrade.is_empty() {
         let mut args = vec!["upgrade".to_string(), "--formula".to_string()];
         args.extend(formula_to_upgrade);
-        if let Err(err) = run_cmd("brew", &args, RunCheck::Success) {
+        if let Err(err) = RunCmd::Success.run("brew", &args) {
             emit_manager_error(format!("failed to apply brew formula upgrades: {err}"));
         }
     }
@@ -459,7 +459,7 @@ fn apply_brew_plan(plan: &[PlanItem]) {
     if !casks_to_upgrade.is_empty() {
         let mut args = vec!["upgrade".to_string(), "--cask".to_string()];
         args.extend(casks_to_upgrade);
-        if let Err(err) = run_cmd("brew", &args, RunCheck::Success) {
+        if let Err(err) = RunCmd::Success.run("brew", &args) {
             emit_manager_error(format!("failed to apply brew cask upgrades: {err}"));
         }
     }
@@ -597,8 +597,7 @@ fn emit_brew_scan_items(
 }
 
 fn brew_list_versions(kind: &str) -> Result<Vec<(String, String)>> {
-    let stdout = run_cmd("brew", ["list", kind, "--versions"], RunCheck::Success)?.stdout;
-    let text = String::from_utf8(stdout).context("brew list --versions output not UTF-8")?;
+    let text = RunCmd::Success.text("brew", ["list", kind, "--versions"])?;
 
     let mut out = Vec::new();
     for line in text.lines() {
@@ -898,14 +897,20 @@ fn git_last_commit_unix_seconds(
 }
 
 fn git_log_timestamp_for_ref(repo_path: &str, source_path: &str, git_ref: &str) -> Result<u64> {
-    let output = run_cmd(
+    let stdout = RunCmd::Success.text(
         "git",
-        ["-C", repo_path, "log", "-1", "--format=%ct", git_ref, "--", source_path],
-        RunCheck::Success,
-    )
-    .with_context(|| format!("failed running git log {git_ref} for {source_path}"))?;
+        [
+            "-C",
+            repo_path,
+            "log",
+            "-1",
+            "--format=%ct",
+            git_ref,
+            "--",
+            source_path,
+        ],
+    )?;
 
-    let stdout = String::from_utf8(output.stdout).context("git log output was not UTF-8")?;
     let ts = stdout
         .trim()
         .parse::<u64>()
@@ -1006,7 +1011,8 @@ fn resolve_api_fallback_remote_branch(
 }
 
 fn brew_tap_meta() -> Result<HashMap<String, TapMeta>> {
-    let taps: Vec<TapInfo> = brew_json(&["tap-info", "--json", "--installed"])?;
+    let taps: Vec<TapInfo> =
+        RunCmd::Success.json("brew", &["tap-info", "--json", "--installed"])?;
     Ok(taps
         .into_iter()
         .map(|t| {
@@ -1034,7 +1040,7 @@ fn brew_info_for_names(formula_names: &[String], cask_names: &[String]) -> Resul
     args.extend(formula_names.iter().cloned());
     args.extend(cask_names.iter().cloned());
 
-    brew_json_owned(&args)
+    RunCmd::Success.json("brew", &args)
 }
 
 fn github_client() -> Result<Client> {
@@ -1063,32 +1069,6 @@ fn github_client() -> Result<Client> {
         .timeout(Duration::from_secs(8))
         .build()
         .context("failed to build HTTP client")
-}
-
-fn brew_json<T>(args: &[&str]) -> Result<T>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    let stdout = run_cmd("brew", args, RunCheck::Success)?.stdout;
-    serde_json::from_slice(&stdout).with_context(|| {
-        format!(
-            "failed to parse brew JSON output for args: {}",
-            args.join(" ")
-        )
-    })
-}
-
-fn brew_json_owned<T>(args: &[String]) -> Result<T>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    let stdout = run_cmd("brew", args, RunCheck::Success)?.stdout;
-    serde_json::from_slice(&stdout).with_context(|| {
-        format!(
-            "failed to parse brew JSON output for args: {}",
-            args.join(" ")
-        )
-    })
 }
 
 fn emit_manager_error(detail: impl AsRef<str>) {

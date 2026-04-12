@@ -7,7 +7,7 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::{RunCheck, run_cmd};
+use crate::util::process::RunCmd;
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
@@ -201,7 +201,7 @@ fn resolve_bun_plan(
 }
 
 fn apply_bun_updates(bun: &str, min_age: Duration) {
-    if let Err(err) = run_cmd(
+    if let Err(err) = RunCmd::Success.run(
         bun,
         [
             "update",
@@ -209,7 +209,6 @@ fn apply_bun_updates(bun: &str, min_age: Duration) {
             "--minimum-release-age",
             &min_age.as_secs().to_string(),
         ],
-        RunCheck::Success,
     ) {
         let outcome = ItemOutcome::error(
             PLUGIN.id(),
@@ -252,30 +251,7 @@ fn emit_bun_scan_outcomes(
 }
 
 fn bun_installed_global(bun: &str) -> Result<BTreeMap<String, String>> {
-    let output = run_cmd(bun, ["pm", "ls", "-g", "--json"], RunCheck::IgnoreStatus)?;
-    let stdout = String::from_utf8(output.stdout).context("bun pm ls output not UTF-8")?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if is_missing_global_manifest(&stdout) || is_missing_global_manifest(&stderr) {
-        return Ok(BTreeMap::new());
-    }
-
-    if !output.status.success() {
-        let err_text = if stderr.trim().is_empty() {
-            stdout.trim()
-        } else {
-            stderr.trim()
-        };
-        bail!("bun pm ls -g --json failed: {err_text}");
-    }
-
-    if stdout.trim().is_empty() {
-        return Ok(BTreeMap::new());
-    }
-
-    let val: serde_json::Value =
-        serde_json::from_str(&stdout).context("failed to parse bun pm ls JSON")?;
-
+    let val: serde_json::Value = RunCmd::IgnoreStatus.json(bun, ["pm", "ls", "-g", "--json"])?;
     let mut out = BTreeMap::new();
     if let Some(obj) = val
         .get("dependencies")
@@ -296,8 +272,7 @@ fn bun_installed_global(bun: &str) -> Result<BTreeMap<String, String>> {
 }
 
 fn bun_outdated_global(bun: &str) -> Result<BTreeMap<String, OutdatedEntry>> {
-    let output = run_cmd(bun, ["outdated", "-g"], RunCheck::IgnoreStatus)?;
-
+    let output = RunCmd::IgnoreStatus.run(bun, ["outdated", "-g"])?;
     let stdout = String::from_utf8(output.stdout).context("bun outdated output not UTF-8")?;
     let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -393,20 +368,10 @@ fn bun_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
 ) -> Result<BunResolvedTarget> {
-    let output = run_cmd(
+    let val: serde_json::Value = RunCmd::IgnoreStatus.json(
         bun,
         ["pm", "view", name, "time", "--json", "--cwd", global_cwd],
-        RunCheck::IgnoreStatus,
     )?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("bun pm view {name} time --json failed: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8(output.stdout).context("bun pm view output not UTF-8")?;
-    let val: serde_json::Value = serde_json::from_str(&stdout)
-        .with_context(|| format!("failed to parse bun pm view JSON for {name}"))?;
 
     let releases = bun_semver_time_releases(name, &val)?;
 
@@ -452,7 +417,7 @@ fn bun_executable() -> String {
 }
 
 fn bun_from_mise() -> Option<String> {
-    let output = run_cmd("mise", ["which", "bun"], RunCheck::Success).ok()?;
+    let output = RunCmd::Success.run("mise", ["which", "bun"]).ok()?;
 
     let path = String::from_utf8(output.stdout).ok()?;
     let trimmed = path.trim();
@@ -470,10 +435,9 @@ fn bun_release_age_secs(
     version: &str,
     now_unix_secs: u64,
 ) -> Result<Option<u64>> {
-    let output = run_cmd(
+    let output = RunCmd::IgnoreStatus.run(
         bun,
         ["pm", "view", name, "time", "--json", "--cwd", global_cwd],
-        RunCheck::IgnoreStatus,
     )?;
 
     if !output.status.success() {

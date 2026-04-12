@@ -7,10 +7,10 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::{RunCheck, run_cmd};
+use crate::util::process::RunCmd;
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use reqwest::blocking::Client;
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -220,7 +220,7 @@ fn resolve_pipx_plan(
 
 fn apply_pipx_updates(upgradable: Vec<(String, String, String)>) {
     for (pkg, current, target) in upgradable {
-        if let Err(err) = run_cmd("pipx", ["upgrade", &pkg], RunCheck::Success) {
+        if let Err(err) = RunCmd::Success.run("pipx", ["upgrade", &pkg]) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 pkg,
@@ -236,17 +236,7 @@ fn apply_pipx_updates(upgradable: Vec<(String, String, String)>) {
 }
 
 fn pipx_installed_main_packages() -> Result<BTreeMap<String, String>> {
-    let output = run_cmd("pipx", ["list", "--json"], RunCheck::Success)
-        .with_context(|| "failed to run pipx list --json")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("pipx list --json failed: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8(output.stdout).context("pipx list output not UTF-8")?;
-    let root: PipxListRoot =
-        serde_json::from_str(&stdout).context("failed to parse pipx list JSON")?;
+    let root: PipxListRoot = RunCmd::Success.json("pipx", ["list", "--json"])?;
 
     let mut out = BTreeMap::new();
     for (_venv_name, venv) in root.venvs {

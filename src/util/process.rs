@@ -1,16 +1,51 @@
 use anyhow::{Context, Result};
+use serde::de::DeserializeOwned;
 use std::ffi::OsStr;
 use std::fmt;
 use std::process::{Command, ExitStatus, Output};
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum RunCheck<'a> {
+pub(crate) enum RunCmd<'a> {
     Success,
     Allow(&'a [i32]),
     IgnoreStatus,
 }
 
-pub(crate) fn run_cmd<P, I, A>(program: P, args: I, check: RunCheck<'_>) -> Result<Output>
+impl<'a> RunCmd<'a> {
+    pub(crate) fn run<P, I, A>(self, program: P, args: I) -> Result<Output>
+    where
+        P: AsRef<OsStr>,
+        I: IntoIterator<Item = A>,
+        A: AsRef<OsStr>,
+    {
+        let (output, _display) = run_cmd_with_display(program, args, self)?;
+        Ok(output)
+    }
+
+    pub(crate) fn text<P, I, A>(self, program: P, args: I) -> Result<String>
+    where
+        P: AsRef<OsStr>,
+        I: IntoIterator<Item = A>,
+        A: AsRef<OsStr>,
+    {
+        let (output, display) = run_cmd_with_display(program, args, self)?;
+        String::from_utf8(output.stdout).with_context(|| format!("{display} output not UTF-8"))
+    }
+
+    pub(crate) fn json<P, I, A, T>(self, program: P, args: I) -> Result<T>
+    where
+        P: AsRef<OsStr>,
+        I: IntoIterator<Item = A>,
+        A: AsRef<OsStr>,
+        T: DeserializeOwned,
+    {
+        let (output, display) = run_cmd_with_display(program, args, self)?;
+        serde_json::from_slice(&output.stdout)
+            .with_context(|| format!("failed to parse JSON output from {display}"))
+    }
+}
+
+fn run_cmd_with_display<P, I, A>(program: P, args: I, check: RunCmd<'_>) -> Result<(Output, String)>
 where
     P: AsRef<OsStr>,
     I: IntoIterator<Item = A>,
@@ -24,10 +59,11 @@ where
         .output()
         .with_context(|| format!("failed to run {display}"))?;
 
-    ensure_status(output, &display, check)
+    let output = ensure_status(output, &display, check)?;
+    Ok((output, display))
 }
 
-fn ensure_status(output: Output, command_display: &str, check: RunCheck<'_>) -> Result<Output> {
+fn ensure_status(output: Output, command_display: &str, check: RunCmd<'_>) -> Result<Output> {
     if status_allowed(output.status, check) {
         return Ok(output);
     }
@@ -40,17 +76,20 @@ fn ensure_status(output: Output, command_display: &str, check: RunCheck<'_>) -> 
     }))
 }
 
-fn status_allowed(status: ExitStatus, check: RunCheck<'_>) -> bool {
+fn status_allowed(status: ExitStatus, check: RunCmd<'_>) -> bool {
     match check {
-        RunCheck::Success => status.success(),
-        RunCheck::Allow(extra_codes) => {
-            status.success() || status.code().is_some_and(|code| extra_codes.contains(&code))
+        RunCmd::Success => status.success(),
+        RunCmd::Allow(extra_codes) => {
+            status.success()
+                || status
+                    .code()
+                    .is_some_and(|code| extra_codes.contains(&code))
         }
-        RunCheck::IgnoreStatus => true,
+        RunCmd::IgnoreStatus => true,
     }
 }
 
-pub(crate) fn command_display(command: &Command) -> String {
+fn command_display(command: &Command) -> String {
     let program = command.get_program().to_string_lossy().to_string();
     let args: Vec<String> = command
         .get_args()

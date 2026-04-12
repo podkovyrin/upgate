@@ -7,7 +7,7 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::{RunCheck, run_cmd};
+use crate::util::process::RunCmd;
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
@@ -171,7 +171,7 @@ fn resolve_pnpm_plan(
 fn apply_pnpm_updates(upgradable: Vec<(String, String, String)>) {
     for (name, current, version) in upgradable {
         let spec = format!("{name}@{version}");
-        if let Err(err) = run_cmd("pnpm", ["add", "-g", &spec], RunCheck::Success) {
+        if let Err(err) = RunCmd::Success.run("pnpm", ["add", "-g", &spec]) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 name,
@@ -187,20 +187,8 @@ fn apply_pnpm_updates(upgradable: Vec<(String, String, String)>) {
 }
 
 fn pnpm_installed_global() -> Result<BTreeMap<String, String>> {
-    let output = run_cmd(
-        "pnpm",
-        ["list", "-g", "--depth", "0", "--json"],
-        RunCheck::Success,
-    )
-    .with_context(|| "failed to run pnpm list -g --depth 0 --json")?;
-
-    let stdout = String::from_utf8(output.stdout).context("pnpm list output not UTF-8")?;
-    if stdout.trim().is_empty() {
-        return Ok(BTreeMap::new());
-    }
-
     let val: serde_json::Value =
-        serde_json::from_str(&stdout).context("failed to parse pnpm list JSON")?;
+        RunCmd::Success.json("pnpm", ["list", "-g", "--depth", "0", "--json"])?;
 
     let mut out = BTreeMap::new();
     let Some(items) = val.as_array() else {
@@ -229,12 +217,9 @@ fn pnpm_installed_global() -> Result<BTreeMap<String, String>> {
 }
 
 fn pnpm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
-    let output = run_cmd(
-        "pnpm",
-        ["outdated", "-g", "--json"],
-        RunCheck::IgnoreStatus,
-    )
-    .with_context(|| "failed to run pnpm outdated -g --json")?;
+    let output = RunCmd::IgnoreStatus
+        .run("pnpm", ["outdated", "-g", "--json"])
+        .with_context(|| "failed to run pnpm outdated -g --json")?;
 
     let stdout = String::from_utf8(output.stdout).context("pnpm outdated output not UTF-8")?;
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -345,13 +330,7 @@ fn pnpm_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
 ) -> Result<PnpmResolvedTarget> {
-    let output = run_cmd("pnpm", ["view", name, "time", "--json"], RunCheck::Success)
-        .with_context(|| format!("failed to run pnpm view {name} time --json"))?;
-
-    let stdout = String::from_utf8(output.stdout).context("pnpm view output not UTF-8")?;
-    let val: serde_json::Value = serde_json::from_str(&stdout)
-        .with_context(|| format!("failed to parse pnpm view JSON for {name}"))?;
-
+    let val: serde_json::Value = RunCmd::Success.json("pnpm", ["view", name, "time", "--json"])?;
     let releases = pnpm_semver_time_releases(name, &val)?;
 
     let SemverAgeResolution {
@@ -369,13 +348,7 @@ fn pnpm_resolve_target_with_min_age(
 }
 
 fn pnpm_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Result<Option<u64>> {
-    let output = run_cmd("pnpm", ["view", name, "time", "--json"], RunCheck::Success)
-        .with_context(|| format!("failed to run pnpm view {name} time --json"))?;
-
-    let stdout = String::from_utf8(output.stdout).context("pnpm view output not UTF-8")?;
-    let val: serde_json::Value = serde_json::from_str(&stdout)
-        .with_context(|| format!("failed to parse pnpm view JSON for {name}"))?;
-
+    let val: serde_json::Value = RunCmd::Success.json("pnpm", ["view", name, "time", "--json"])?;
     let releases = pnpm_semver_time_releases(name, &val)?;
     Ok(release_age_secs_for_version(
         &releases,

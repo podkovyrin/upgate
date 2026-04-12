@@ -6,7 +6,7 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::{RunCheck, run_cmd};
+use crate::util::process::RunCmd;
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
@@ -229,7 +229,7 @@ fn apply_cargo_updates(
         apply_cargo_install_meta_args(&mut args, install_meta.as_ref());
         args.push(format!("{name}@{version}"));
 
-        if let Err(err) = run_cmd("cargo", &args, RunCheck::Success) {
+        if let Err(err) = RunCmd::Success.run("cargo", &args) {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 name,
@@ -271,8 +271,7 @@ fn emit_cargo_scan_outcomes(
 }
 
 fn cargo_installed_crates() -> Result<BTreeMap<String, InstalledCrate>> {
-    let stdout = run_cmd("cargo", ["install", "--list"], RunCheck::Success)?.stdout;
-    let text = String::from_utf8(stdout).context("cargo install --list output not UTF-8")?;
+    let text = RunCmd::Success.text("cargo", ["install", "--list"])?;
 
     let mut installed = parse_cargo_install_list(&text);
 
@@ -430,8 +429,7 @@ fn cargo_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
 ) -> Result<CargoResolvedTarget> {
-    let output = run_cmd("cargo", ["search", name, "--limit", "1"], RunCheck::Success)
-        .with_context(|| format!("failed to run {} search {name} --limit 1", PLUGIN.id()))?;
+    let output = RunCmd::Success.run("cargo", ["search", name, "--limit", "1"])?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

@@ -5,11 +5,11 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::{RunCheck, run_cmd};
+use crate::util::process::RunCmd;
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -81,7 +81,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         return Ok(());
     }
 
-    if let Err(err) = run_cmd("mise", ["upgrade", "--before", min_age_raw], RunCheck::Success) {
+    if let Err(err) = RunCmd::Success.run("mise", ["upgrade", "--before", min_age_raw]) {
         let outcome = ItemOutcome::error(
             PLUGIN.id(),
             "*",
@@ -250,23 +250,8 @@ fn split_tool_and_version(input: &str) -> Option<(&str, &str)> {
 }
 
 fn mise_upgrade_dry_run_with_before(before: &str) -> Result<Vec<String>> {
-    let output = run_cmd(
-        "mise",
-        ["upgrade", "--dry-run", "--before", before],
-        RunCheck::Success,
-    )
-    .with_context(|| format!("failed to run mise upgrade --dry-run --before {before}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "mise upgrade --dry-run --before {before} failed: {}",
-            stderr.trim()
-        );
-    }
-
-    let stdout = String::from_utf8(output.stdout).context("mise dry-run output not UTF-8")?;
-    Ok(stdout.lines().map(str::to_string).collect())
+    let text = RunCmd::Success.text("mise", ["upgrade", "--dry-run", "--before", before])?;
+    Ok(text.lines().map(str::to_string).collect())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -275,17 +260,8 @@ struct MiseOutdatedItem {
 }
 
 fn mise_outdated_latest_map() -> Result<BTreeMap<String, String>> {
-    let output = run_cmd("mise", ["outdated", "--json"], RunCheck::Success)
-        .with_context(|| "failed to run mise outdated --json")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("mise outdated --json failed: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8(output.stdout).context("mise outdated output not UTF-8")?;
     let parsed: BTreeMap<String, MiseOutdatedItem> =
-        serde_json::from_str(&stdout).context("failed to parse mise outdated JSON")?;
+        RunCmd::Success.json("mise", ["outdated", "--json"])?;
 
     Ok(parsed.into_iter().map(|(k, v)| (k, v.latest)).collect())
 }
@@ -293,17 +269,7 @@ fn mise_outdated_latest_map() -> Result<BTreeMap<String, String>> {
 fn npm_latest_age_secs(tool: &str, latest: &str, now_unix_secs: u64) -> Result<u64> {
     let pkg = tool.trim_start_matches("npm:");
     let spec = format!("{pkg}@{latest}");
-    let output = run_cmd("npm", ["view", &spec, "time", "--json"], RunCheck::Success)
-        .with_context(|| format!("failed to run npm view {spec} time --json"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("npm view {spec} time --json failed: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8(output.stdout).context("npm view output not UTF-8")?;
-    let val: serde_json::Value = serde_json::from_str(&stdout)
-        .with_context(|| format!("failed to parse npm view JSON for {spec}"))?;
+    let val: serde_json::Value = RunCmd::Success.json("npm", ["view", &spec, "time", "--json"])?;
 
     let ts_raw = val
         .get(latest)
@@ -367,17 +333,7 @@ fn emit_mise_scan_outcomes(
 }
 
 fn mise_installed_versions() -> Result<BTreeMap<String, String>> {
-    let output = run_cmd("mise", ["ls", "--json"], RunCheck::Success)
-        .with_context(|| "failed to run mise ls --json")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("mise ls --json failed: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8(output.stdout).context("mise ls output not UTF-8")?;
-    let val: serde_json::Value =
-        serde_json::from_str(&stdout).context("failed to parse mise ls JSON")?;
+    let val: serde_json::Value = RunCmd::Success.json("mise", ["ls", "--json"])?;
 
     let mut out = BTreeMap::new();
     let Some(items) = val.as_array() else {
