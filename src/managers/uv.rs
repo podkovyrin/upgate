@@ -185,7 +185,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             }
 
             let delayed_latest = if let Some(latest) = outdated_latest.get(&item.tool.name)
-                && latest != target
+                && pep440_compare(latest, target) == Some(Ordering::Greater)
             {
                 let latest_age = resolve_pypi_age_secs(
                     pypi_client.as_ref(),
@@ -193,13 +193,14 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                     &item.tool.name,
                     latest,
                     now,
-                )
-                .unwrap_or(0);
+                );
 
-                Some(DelayedLatest {
-                    latest_version: latest.clone(),
-                    latest_age: human_age(latest_age),
-                    required_age: human_age(min_age.as_secs()),
+                latest_age.and_then(|latest_age| {
+                    (latest_age < min_age.as_secs()).then(|| DelayedLatest {
+                        latest_version: latest.clone(),
+                        latest_age: human_age(latest_age),
+                        required_age: human_age(min_age.as_secs()),
+                    })
                 })
             } else {
                 None
@@ -666,5 +667,26 @@ mod tests {
     #[test]
     fn normalize_package_name_collapses_separators() {
         assert_eq!(normalize_package_name("My_Pkg.Name"), "my-pkg-name");
+    }
+
+    #[test]
+    fn delayed_latest_not_emitted_when_latest_is_older_than_target() {
+        let mut outdated_latest = BTreeMap::new();
+        outdated_latest.insert("ruff".to_string(), "0.15.8".to_string());
+
+        let target = "0.15.9";
+        let delayed_latest = if let Some(latest) = outdated_latest.get("ruff")
+            && pep440_compare(latest, target) == Some(Ordering::Greater)
+        {
+            Some(DelayedLatest {
+                latest_version: latest.clone(),
+                latest_age: human_age(2 * 24 * 60 * 60),
+                required_age: human_age(7 * 24 * 60 * 60),
+            })
+        } else {
+            None
+        };
+
+        assert!(delayed_latest.is_none());
     }
 }
