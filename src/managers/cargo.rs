@@ -229,7 +229,10 @@ fn apply_cargo_updates(
         apply_cargo_install_meta_args(&mut args, install_meta.as_ref());
         args.push(format!("{name}@{version}"));
 
-        if let Err(err) = run_cmd("cargo", &args, CmdStatus::Success) {
+        if let Err(err) = run_cmd("cargo", &args, CmdStatus::Success)
+            .mutating()
+            .output()
+        {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 name,
@@ -271,7 +274,7 @@ fn emit_cargo_scan_outcomes(
 }
 
 fn cargo_installed_crates() -> Result<BTreeMap<String, InstalledCrate>> {
-    let output = run_cmd("cargo", ["install", "--list"], CmdStatus::Success)?;
+    let output = run_cmd("cargo", ["install", "--list"], CmdStatus::Success).output()?;
     let text = output.stdout()?;
 
     let mut installed = parse_cargo_install_list(text);
@@ -434,7 +437,8 @@ fn cargo_resolve_target_with_min_age(
         "cargo",
         ["search", name, "--limit", "1"],
         CmdStatus::Success,
-    )?;
+    )
+    .output()?;
     let stdout = output.stdout()?;
     let latest = parse_cargo_search_latest_version(name, stdout)?;
 

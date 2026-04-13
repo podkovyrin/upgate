@@ -272,7 +272,10 @@ fn apply_dotnet_updates(upgradable: Vec<(String, String, String)>) {
                 "--allow-downgrade",
             ],
             CmdStatus::Success,
-        ) {
+        )
+        .mutating()
+        .output()
+        {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 name,
@@ -318,7 +321,8 @@ fn dotnet_global_tools() -> Result<Vec<DotnetToolEntry>> {
         "dotnet",
         ["tool", "list", "--global", "--format", "json"],
         CmdStatus::IgnoreStatus,
-    )?;
+    )
+    .output()?;
 
     let stdout = output.stdout()?;
     let stderr = output.stderr().unwrap_or_default();

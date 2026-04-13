@@ -189,7 +189,10 @@ fn resolve_pnpm_plan(
 fn apply_pnpm_updates(upgradable: Vec<(String, String, String)>) {
     for (name, current, version) in upgradable {
         let spec = format!("{name}@{version}");
-        if let Err(err) = run_cmd("pnpm", ["add", "-g", &spec], CmdStatus::Success) {
+        if let Err(err) = run_cmd("pnpm", ["add", "-g", &spec], CmdStatus::Success)
+            .mutating()
+            .output()
+        {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 name,
@@ -209,7 +212,8 @@ fn pnpm_installed_global() -> Result<BTreeMap<String, String>> {
         "pnpm",
         ["list", "-g", "--depth", "0", "--json"],
         CmdStatus::Success,
-    )?
+    )
+    .output()?
     .json()?;
 
     let mut out = BTreeMap::new();
@@ -229,7 +233,8 @@ fn pnpm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
         "pnpm",
         ["outdated", "-g", "--json"],
         CmdStatus::IgnoreStatus,
-    )?;
+    )
+    .output()?;
 
     let stdout = output.stdout()?;
     let stderr = output.stderr().unwrap_or_default();
@@ -294,7 +299,9 @@ fn pnpm_resolve_target_with_min_age(
     min_age: Duration,
 ) -> Result<PnpmResolvedTarget> {
     let timestamps_by_version: PnpmTimeMap =
-        run_cmd("pnpm", ["view", name, "time", "--json"], CmdStatus::Success)?.json()?;
+        run_cmd("pnpm", ["view", name, "time", "--json"], CmdStatus::Success)
+            .output()?
+            .json()?;
     let releases = pnpm_semver_time_releases(name, &timestamps_by_version)?;
 
     let SemverAgeResolution {
@@ -313,7 +320,9 @@ fn pnpm_resolve_target_with_min_age(
 
 fn pnpm_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Result<Option<u64>> {
     let timestamps_by_version: PnpmTimeMap =
-        run_cmd("pnpm", ["view", name, "time", "--json"], CmdStatus::Success)?.json()?;
+        run_cmd("pnpm", ["view", name, "time", "--json"], CmdStatus::Success)
+            .output()?
+            .json()?;
     let releases = pnpm_semver_time_releases(name, &timestamps_by_version)?;
     Ok(release_age_secs_for_version(
         &releases,

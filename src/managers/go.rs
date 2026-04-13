@@ -289,7 +289,10 @@ fn emit_go_plan_and_collect_upgradable(
 fn apply_go_updates(upgradable: Vec<(String, String, String, String)>) {
     for (binary_name, current, target, install_path) in upgradable {
         let spec = format!("{install_path}@{target}");
-        if let Err(err) = run_cmd("go", ["install", &spec], CmdStatus::Success) {
+        if let Err(err) = run_cmd("go", ["install", &spec], CmdStatus::Success)
+            .mutating()
+            .output()
+        {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 binary_name,
@@ -384,7 +387,7 @@ fn go_discover_global_tools() -> Result<Vec<GoDiscoveredTool>> {
             ],
             CmdStatus::IgnoreStatus,
         )
-        .with_context(|| format!("failed to run go version -m {}", path.display()))?;
+        .output()?;
 
         if !output.success() {
             entries.push(GoDiscoveredTool::Skipped {
@@ -394,9 +397,7 @@ fn go_discover_global_tools() -> Result<Vec<GoDiscoveredTool>> {
             continue;
         }
 
-        let stdout = output
-            .stdout()
-            .with_context(|| format!("go version -m output not UTF-8 for {}", path.display()))?;
+        let stdout = output.stdout()?;
 
         let Some(info) = parse_go_version_m_output(&stdout) else {
             entries.push(GoDiscoveredTool::Skipped {
@@ -461,6 +462,7 @@ fn go_bin_dir() -> Result<PathBuf> {
     }
 
     if let Ok(parsed) = run_cmd("go", ["env", "-json", "GOPATH"], CmdStatus::Success)
+        .output()
         .and_then(|output| output.json::<GoEnvJson>())
         && let Some(gopath) = parsed.gopath
     {
@@ -604,7 +606,8 @@ fn go_module_versions(module_path: &str) -> Result<Vec<String>> {
         "go",
         ["list", "-m", "-json", "-versions", module_path],
         CmdStatus::Success,
-    )?
+    )
+    .output()?
     .json()?;
 
     Ok(parsed.versions)
@@ -622,7 +625,8 @@ fn go_module_version_release_unix(module_path: &str, version: &str) -> Result<Op
         "go",
         ["list", "-m", "-json", &module_spec],
         CmdStatus::Success,
-    )?
+    )
+    .output()?
     .json()?;
 
     let Some(time_raw) = parsed.time.as_deref() else {

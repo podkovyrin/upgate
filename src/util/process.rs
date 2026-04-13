@@ -12,6 +12,24 @@ pub(crate) enum CmdStatus<'a> {
     IgnoreStatus,
 }
 
+pub(crate) struct Cmd<'a> {
+    program: OsString,
+    args: Vec<OsString>,
+    check: CmdStatus<'a>,
+    is_mutation: bool,
+}
+
+impl<'a> Cmd<'a> {
+    pub(crate) fn mutating(mut self) -> Self {
+        self.is_mutation = true;
+        self
+    }
+
+    pub(crate) fn output(self) -> Result<CmdOutput> {
+        execute_cmd(self.program, self.args, self.check, self.is_mutation)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct CmdOutput {
     output: Output,
@@ -48,23 +66,33 @@ impl CmdOutput {
     }
 }
 
-pub(crate) fn run_cmd<P, I, A>(program: P, args: I, check: CmdStatus) -> Result<CmdOutput>
+pub(crate) fn run_cmd<'a, P, I, A>(program: P, args: I, check: CmdStatus<'a>) -> Cmd<'a>
 where
     P: AsRef<OsStr>,
     I: IntoIterator<Item = A>,
     A: AsRef<OsStr>,
 {
-    let program = program.as_ref().to_os_string();
-    let args: Vec<OsString> = args
-        .into_iter()
-        .map(|arg| arg.as_ref().to_os_string())
-        .collect();
+    Cmd {
+        program: program.as_ref().to_os_string(),
+        args: args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_os_string())
+            .collect(),
+        check,
+        is_mutation: false,
+    }
+}
 
+fn execute_cmd(
+    program: OsString,
+    args: Vec<OsString>,
+    check: CmdStatus<'_>,
+    is_mutation: bool,
+) -> Result<CmdOutput> {
     let mut command = Command::new(&program);
     command.args(&args);
 
     let display = command_display(&command);
-    let is_mutation = crate::util::logging::is_mutating_command(&program, &args);
     crate::util::logging::on_command_start(&display, is_mutation);
 
     let started_at = Instant::now();

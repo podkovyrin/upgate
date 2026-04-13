@@ -228,6 +228,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
 
     let outdated: OutdatedRoot =
         match run_cmd("brew", &["outdated", "--json=v2"], CmdStatus::Success)
+            .output()
             .and_then(|output| output.json())
         {
             Ok(outdated) => outdated,
@@ -284,7 +285,11 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
 }
 
 fn maybe_refresh_brew_metadata(no_update: bool) {
-    if !no_update && let Err(err) = run_cmd("brew", ["update", "--quiet"], CmdStatus::Success) {
+    if !no_update
+        && let Err(err) = run_cmd("brew", ["update", "--quiet"], CmdStatus::Success)
+            .mutating()
+            .output()
+    {
         emit_manager_error(format!("brew metadata refresh failed: {err}"));
     }
 }
@@ -489,7 +494,10 @@ fn apply_brew_plan(plan: &[PlanItem]) {
     if !formula_to_upgrade.is_empty() {
         let mut args = vec!["upgrade".to_string(), "--formula".to_string()];
         args.extend(formula_to_upgrade);
-        if let Err(err) = run_cmd("brew", &args, CmdStatus::Success) {
+        if let Err(err) = run_cmd("brew", &args, CmdStatus::Success)
+            .mutating()
+            .output()
+        {
             emit_manager_error(format!("failed to apply brew formula upgrades: {err}"));
         }
     }
@@ -497,7 +505,10 @@ fn apply_brew_plan(plan: &[PlanItem]) {
     if !casks_to_upgrade.is_empty() {
         let mut args = vec!["upgrade".to_string(), "--cask".to_string()];
         args.extend(casks_to_upgrade);
-        if let Err(err) = run_cmd("brew", &args, CmdStatus::Success) {
+        if let Err(err) = run_cmd("brew", &args, CmdStatus::Success)
+            .mutating()
+            .output()
+        {
             emit_manager_error(format!("failed to apply brew cask upgrades: {err}"));
         }
     }
@@ -917,7 +928,8 @@ fn git_log_timestamp_for_ref(repo_path: &str, source_path: &str, git_ref: &str) 
             source_path,
         ],
         CmdStatus::Success,
-    )?;
+    )
+    .output()?;
     let stdout = output.stdout()?;
 
     let ts = stdout
@@ -1023,7 +1035,8 @@ fn brew_tap_meta() -> Result<HashMap<String, TapMeta>> {
         "brew",
         &["tap-info", "--json", "--installed"],
         CmdStatus::Success,
-    )?
+    )
+    .output()?
     .json()?;
     Ok(taps
         .into_iter()
@@ -1052,7 +1065,7 @@ fn brew_info_for_names(formula_names: &[String], cask_names: &[String]) -> Resul
     args.extend(formula_names.iter().cloned());
     args.extend(cask_names.iter().cloned());
 
-    run_cmd("brew", &args, CmdStatus::Success)?.json()
+    run_cmd("brew", &args, CmdStatus::Success).output()?.json()
 }
 
 fn brew_info_installed() -> Result<InfoRoot> {
@@ -1060,7 +1073,8 @@ fn brew_info_installed() -> Result<InfoRoot> {
         "brew",
         ["info", "--json=v2", "--installed"],
         CmdStatus::Success,
-    )?
+    )
+    .output()?
     .json()
 }
 

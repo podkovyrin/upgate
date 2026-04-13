@@ -256,7 +256,10 @@ fn resolve_yarn_plan(
 fn apply_yarn_updates(upgradable: Vec<(String, String, String)>) {
     for (name, current, version) in upgradable {
         let spec = format!("{name}@{version}");
-        if let Err(err) = run_cmd("yarn", ["global", "add", &spec], CmdStatus::Success) {
+        if let Err(err) = run_cmd("yarn", ["global", "add", &spec], CmdStatus::Success)
+            .mutating()
+            .output()
+        {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 name,
@@ -272,7 +275,7 @@ fn apply_yarn_updates(upgradable: Vec<(String, String, String)>) {
 }
 
 fn yarn_major_version() -> Result<u64> {
-    let output = run_cmd("yarn", ["--version"], CmdStatus::Success)?;
+    let output = run_cmd("yarn", ["--version"], CmdStatus::Success).output()?;
     let text = output.stdout()?;
 
     parse_yarn_major_version(text)
@@ -295,7 +298,8 @@ fn yarn_global_installed() -> Result<BTreeMap<String, InstalledEntry>> {
         "yarn",
         ["global", "list", "--depth=0", "--json"],
         CmdStatus::Success,
-    )?;
+    )
+    .output()?;
     let text = output.stdout()?;
 
     Ok(parse_yarn_global_list(text))
@@ -367,7 +371,7 @@ fn yarn_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
 ) -> Result<YarnResolvedTarget> {
-    let output = run_cmd("yarn", ["info", name, "time", "--json"], CmdStatus::Success)?;
+    let output = run_cmd("yarn", ["info", name, "time", "--json"], CmdStatus::Success).output()?;
     let text = output.stdout()?;
 
     let obj = parse_yarn_inspect_object(text, "time")?;
@@ -409,7 +413,7 @@ fn parse_yarn_inspect_object(text: &str, field: &str) -> Result<YarnTimeMap> {
 }
 
 fn yarn_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Result<Option<u64>> {
-    let output = run_cmd("yarn", ["info", name, "time", "--json"], CmdStatus::Success)?;
+    let output = run_cmd("yarn", ["info", name, "time", "--json"], CmdStatus::Success).output()?;
     let text = output.stdout()?;
     let obj = parse_yarn_inspect_object(text, "time")?;
     let releases = yarn_semver_time_releases(name, &obj)?;

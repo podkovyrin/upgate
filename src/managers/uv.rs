@@ -236,7 +236,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             tool.clone(),
         ];
 
-        if let Err(err) = run_cmd("uv", &args, CmdStatus::Success) {
+        if let Err(err) = run_cmd("uv", &args, CmdStatus::Success).mutating().output() {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 tool,
@@ -311,7 +311,7 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
 }
 
 fn uv_tool_dir() -> Result<String> {
-    let output = run_cmd("uv", ["tool", "dir"], CmdStatus::Success)?;
+    let output = run_cmd("uv", ["tool", "dir"], CmdStatus::Success).output()?;
     let path = output.stdout()?;
     if path.is_empty() {
         bail!("uv tool dir returned an empty path");
@@ -324,7 +324,8 @@ fn uv_installed_tools(tool_dir: &str) -> Result<Vec<UvTool>> {
         "uv",
         ["tool", "list", "--show-version-specifiers"],
         CmdStatus::Success,
-    )?;
+    )
+    .output()?;
     let text = output.stdout()?;
 
     let mut out = Vec::new();
@@ -397,7 +398,8 @@ print(m.version(name))
         python_path,
         ["-c", script, package_name],
         CmdStatus::Success,
-    )?;
+    )
+    .output()?;
     let version = output.stdout()?;
     if version.is_empty() {
         bail!("python returned empty version for uv tool '{package_name}'");
@@ -407,7 +409,7 @@ print(m.version(name))
 }
 
 fn uv_outdated_latest_map() -> Result<BTreeMap<String, String>> {
-    let output = run_cmd("uv", ["tool", "list", "--outdated"], CmdStatus::Success)?;
+    let output = run_cmd("uv", ["tool", "list", "--outdated"], CmdStatus::Success).output()?;
     let text = output.stdout()?;
 
     let mut out = BTreeMap::new();
@@ -484,7 +486,7 @@ fn uv_resolve_target_with_exclude_newer(tool: &UvTool, min_age_raw: &str) -> Res
         requirement,
     ];
 
-    let output = run_cmd("uv", &args, CmdStatus::Success)?;
+    let output = run_cmd("uv", &args, CmdStatus::Success).output()?;
 
     // `uv pip install --dry-run` writes the plan to stderr in non-interactive mode.
     // Parse both streams to be robust across uv versions.

@@ -1,7 +1,6 @@
-use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Output;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -169,90 +168,6 @@ pub(crate) fn on_command_finish(
         write_block(logger, &manager, "STDOUT", &stdout);
         write_block(logger, &manager, "STDERR", &stderr);
     }
-}
-
-pub(crate) fn is_mutating_command(program: &OsStr, args: &[OsString]) -> bool {
-    let program_name = Path::new(program)
-        .file_name()
-        .unwrap_or(program)
-        .to_string_lossy()
-        .to_ascii_lowercase();
-
-    let args_lower: Vec<String> = args
-        .iter()
-        .map(|arg| arg.to_string_lossy().to_ascii_lowercase())
-        .collect();
-
-    let first = args_lower.first().map(String::as_str);
-
-    match program_name.as_str() {
-        "brew" => matches!(
-            first,
-            Some("update")
-                | Some("update-reset")
-                | Some("upgrade")
-                | Some("install")
-                | Some("uninstall")
-                | Some("remove")
-                | Some("tap")
-        ),
-        "npm" => args_lower.iter().any(|arg| {
-            matches!(
-                arg.as_str(),
-                "update" | "install" | "uninstall" | "remove" | "add"
-            )
-        }),
-        "yarn" => args_lower
-            .iter()
-            .any(|arg| matches!(arg.as_str(), "add" | "remove" | "upgrade" | "up")),
-        "pnpm" => args_lower.iter().any(|arg| {
-            matches!(
-                arg.as_str(),
-                "add" | "install" | "update" | "up" | "remove" | "uninstall"
-            )
-        }),
-        "bun" => args_lower.iter().any(|arg| {
-            matches!(
-                arg.as_str(),
-                "update" | "add" | "install" | "remove" | "uninstall"
-            )
-        }),
-        "cargo" => matches!(first, Some("install") | Some("uninstall")),
-        "pipx" => matches!(
-            first,
-            Some("install")
-                | Some("upgrade")
-                | Some("upgrade-all")
-                | Some("uninstall")
-                | Some("reinstall")
-                | Some("inject")
-                | Some("uninject")
-        ),
-        "uv" => {
-            let is_dry_run = args_lower.iter().any(|arg| arg == "--dry-run");
-            starts_with_args(&args_lower, &["tool", "install"])
-                || starts_with_args(&args_lower, &["tool", "upgrade"])
-                || starts_with_args(&args_lower, &["tool", "uninstall"])
-                || (starts_with_args(&args_lower, &["pip", "install"]) && !is_dry_run)
-        }
-        "go" => first == Some("install"),
-        "gem" => matches!(first, Some("install") | Some("update") | Some("uninstall")),
-        "dotnet" => {
-            starts_with_args(&args_lower, &["tool", "install"])
-                || starts_with_args(&args_lower, &["tool", "update"])
-                || starts_with_args(&args_lower, &["tool", "uninstall"])
-        }
-        "mise" => first == Some("upgrade") && !args_lower.iter().any(|arg| arg == "--dry-run"),
-        _ => false,
-    }
-}
-
-fn starts_with_args(args: &[String], prefix: &[&str]) -> bool {
-    args.len() >= prefix.len()
-        && prefix
-            .iter()
-            .enumerate()
-            .all(|(idx, part)| args.get(idx).is_some_and(|arg| arg == part))
 }
 
 fn write_line(logger: &Logger, manager: &str, level: &str, message: &str) {

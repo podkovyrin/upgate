@@ -220,7 +220,10 @@ fn resolve_pipx_plan(
 
 fn apply_pipx_updates(upgradable: Vec<(String, String, String)>) {
     for (pkg, current, target) in upgradable {
-        if let Err(err) = run_cmd("pipx", ["upgrade", &pkg], CmdStatus::Success) {
+        if let Err(err) = run_cmd("pipx", ["upgrade", &pkg], CmdStatus::Success)
+            .mutating()
+            .output()
+        {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 pkg,
@@ -236,7 +239,9 @@ fn apply_pipx_updates(upgradable: Vec<(String, String, String)>) {
 }
 
 fn pipx_installed_main_packages() -> Result<BTreeMap<String, String>> {
-    let root: PipxListRoot = run_cmd("pipx", ["list", "--json"], CmdStatus::Success)?.json()?;
+    let root: PipxListRoot = run_cmd("pipx", ["list", "--json"], CmdStatus::Success)
+        .output()?
+        .json()?;
 
     let mut out = BTreeMap::new();
     for (_venv_name, venv) in root.venvs {

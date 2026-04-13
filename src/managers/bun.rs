@@ -226,7 +226,10 @@ fn apply_bun_updates(bun: &str, min_age: Duration) {
             &min_age.as_secs().to_string(),
         ],
         CmdStatus::Success,
-    ) {
+    )
+    .mutating()
+    .output()
+    {
         let outcome = ItemOutcome::error(
             PLUGIN.id(),
             "*",
@@ -268,8 +271,8 @@ fn emit_bun_scan_outcomes(
 }
 
 fn bun_installed_global(bun: &str) -> Result<BTreeMap<String, String>> {
-    let output = run_cmd(bun, ["pm", "ls", "-g", "--json"], CmdStatus::IgnoreStatus)?;
-    let stdout = output.stdout().context("bun pm ls output not UTF-8")?;
+    let output = run_cmd(bun, ["pm", "ls", "-g", "--json"], CmdStatus::IgnoreStatus).output()?;
+    let stdout = output.stdout()?;
     let stderr = output.stderr().unwrap_or_default();
 
     if is_missing_global_manifest(&stdout) || is_missing_global_manifest(&stderr) {
@@ -345,7 +348,8 @@ fn bun_resolve_target_with_min_age(
         bun,
         ["pm", "view", name, "time", "--json", "--cwd", global_cwd],
         CmdStatus::IgnoreStatus,
-    )?
+    )
+    .output()?
     .json()?;
 
     let releases = bun_semver_time_releases(name, &timestamps_by_version)?;
@@ -392,7 +396,9 @@ fn bun_executable() -> String {
 }
 
 fn bun_from_mise() -> Option<String> {
-    let output = run_cmd("mise", ["which", "bun"], CmdStatus::Success).ok()?;
+    let output = run_cmd("mise", ["which", "bun"], CmdStatus::Success)
+        .output()
+        .ok()?;
     let path = output.stdout().ok()?;
     if path.is_empty() {
         None
@@ -412,14 +418,15 @@ fn bun_release_age_secs(
         bun,
         ["pm", "view", name, "time", "--json", "--cwd", global_cwd],
         CmdStatus::IgnoreStatus,
-    )?;
+    )
+    .output()?;
 
     if !output.success() {
         let stderr = output.stderr().unwrap_or_default();
         bail!("bun pm view {name} time --json failed: {}", stderr);
     }
 
-    let stdout = output.stdout().context("bun pm view output not UTF-8")?;
+    let stdout = output.stdout()?;
     let timestamps_by_version: BunTimeMap = serde_json::from_str(&stdout)
         .with_context(|| format!("failed to parse bun pm view JSON for {name}"))?;
 

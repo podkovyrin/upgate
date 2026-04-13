@@ -95,7 +95,10 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         "mise",
         ["upgrade", "--before", min_age_raw],
         CmdStatus::Success,
-    ) {
+    )
+    .mutating()
+    .output()
+    {
         let outcome = ItemOutcome::error(
             PLUGIN.id(),
             "*",
@@ -268,7 +271,8 @@ fn mise_upgrade_dry_run_with_before(before: &str) -> Result<Vec<String>> {
         "mise",
         ["upgrade", "--dry-run", "--before", before],
         CmdStatus::Success,
-    )?;
+    )
+    .output()?;
     let text = output.stdout()?;
     Ok(text.lines().map(str::to_string).collect())
 }
@@ -280,7 +284,9 @@ struct MiseOutdatedItem {
 
 fn mise_outdated_latest_map() -> Result<BTreeMap<String, String>> {
     let parsed: BTreeMap<String, MiseOutdatedItem> =
-        run_cmd("mise", ["outdated", "--json"], CmdStatus::Success)?.json()?;
+        run_cmd("mise", ["outdated", "--json"], CmdStatus::Success)
+            .output()?
+            .json()?;
 
     Ok(parsed.into_iter().map(|(k, v)| (k, v.latest)).collect())
 }
@@ -289,7 +295,9 @@ fn npm_latest_age_secs(tool: &str, latest: &str, now_unix_secs: u64) -> Result<u
     let pkg = tool.trim_start_matches("npm:");
     let spec = format!("{pkg}@{latest}");
     let timestamps_by_version: NpmTimeMap =
-        run_cmd("npm", ["view", &spec, "time", "--json"], CmdStatus::Success)?.json()?;
+        run_cmd("npm", ["view", &spec, "time", "--json"], CmdStatus::Success)
+            .output()?
+            .json()?;
 
     let ts_raw = timestamps_by_version
         .get(latest)
@@ -352,7 +360,9 @@ fn emit_mise_scan_outcomes(
 }
 
 fn mise_installed_versions() -> Result<BTreeMap<String, String>> {
-    let parsed: MiseLsJson = run_cmd("mise", ["ls", "--json"], CmdStatus::Success)?.json()?;
+    let parsed: MiseLsJson = run_cmd("mise", ["ls", "--json"], CmdStatus::Success)
+        .output()?
+        .json()?;
 
     let mut out = BTreeMap::new();
     for (tool, entries) in parsed {

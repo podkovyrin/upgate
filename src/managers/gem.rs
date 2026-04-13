@@ -286,7 +286,10 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     }
 
     for (name, current, target) in upgradable {
-        if let Err(err) = run_cmd("gem", ["install", &name, "-v", &target], CmdStatus::Success) {
+        if let Err(err) = run_cmd("gem", ["install", &name, "-v", &target], CmdStatus::Success)
+            .mutating()
+            .output()
+        {
             let outcome = ItemOutcome::error(
                 PLUGIN.id(),
                 name,
@@ -352,7 +355,7 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
 }
 
 fn gem_installed_inventory() -> Result<BTreeMap<String, GemInstalledEntry>> {
-    let output = run_cmd("gem", ["list"], CmdStatus::Success)?;
+    let output = run_cmd("gem", ["list"], CmdStatus::Success).output()?;
     let text = output.stdout()?;
 
     Ok(parse_gem_installed_inventory(text))
@@ -410,7 +413,7 @@ fn parse_gem_installed_inventory(text: &str) -> BTreeMap<String, GemInstalledEnt
 }
 
 fn gem_outdated_map() -> Result<BTreeMap<String, OutdatedGem>> {
-    let output = run_cmd("gem", ["outdated"], CmdStatus::Success)?;
+    let output = run_cmd("gem", ["outdated"], CmdStatus::Success).output()?;
     let text = output.stdout()?;
 
     Ok(parse_gem_outdated_output(text))
@@ -453,7 +456,7 @@ fn parse_gem_outdated_output(text: &str) -> BTreeMap<String, OutdatedGem> {
 }
 
 fn ruby_runtime_version() -> Result<Version> {
-    let output = run_cmd("ruby", ["-e", "print RUBY_VERSION"], CmdStatus::Success)?;
+    let output = run_cmd("ruby", ["-e", "print RUBY_VERSION"], CmdStatus::Success).output()?;
     let stdout = output.stdout()?;
 
     parse_version_for_compare(stdout)
