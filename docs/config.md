@@ -98,8 +98,8 @@ Unknown managers, unknown keys, or malformed values fail fast with an error.
 
 `mode` semantics:
 - `off`: manager never runs
-- `plan`: manager runs only in `upnow plan`
-- `apply`: manager runs in both `upnow plan` and `upnow apply`
+- `plan`: manager runs in `upnow plan` and `upnow scan`
+- `apply`: manager runs in `upnow plan`, `upnow scan`, and `upnow apply`
 
 Safety behavior:
 - `--managers` does not bypass `mode`; use `--set <manager>.mode=...` to override.
@@ -138,5 +138,5 @@ Examples: `"12h"`, `"7d"`, `"90m"`.
 
 For npm apply, `min_release_age` must be a whole number of days (for example `"7d"`, `"14d"`).
 
-This is validated when running `upnow apply` with npm selected.
-If `[npm].min_release_age` is not a whole-day value (for example `"12h"`), `upnow` fails with an explanatory config error.
+This is validated during manager policy setup whenever npm is selected.
+If `[npm].min_release_age` is not a whole-day value (for example `"12h"`), `upnow` fails with an explanatory config error before npm runs.

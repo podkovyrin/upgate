@@ -200,6 +200,18 @@ impl UpnowConfig {
             bail!("invalid override '{raw}': expected <manager>.<key>=<value>");
         }
 
+        if manager_id == "upnow" {
+            return match key {
+                "scan_old_age_threshold" => {
+                    self.upnow.scan_old_age_threshold = Some(value.to_string());
+                    Ok(())
+                }
+                _ => bail!(
+                    "invalid override '{raw}': unknown key '{key}' for global section 'upnow'"
+                ),
+            };
+        }
+
         if !known_manager_ids.contains(&manager_id) {
             bail!("invalid override '{raw}': unknown manager '{manager_id}'");
         }

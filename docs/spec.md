@@ -121,7 +121,7 @@ Metadata display policy:
   - update delayed-latest annotation when present:
     - `(latest v<latest> delayed: <age> < <required>)`
   - scan age annotation when available:
-    - `(released: <age>; old>= <threshold>)`
+    - `(released: <age>)`
     - `<age>` is highlighted when `age >= [upnow].scan_old_age_threshold`.
 
 Version labels:
@@ -237,7 +237,7 @@ Planning flow:
 
 Apply flow:
 - Batch command: `npm -g update --min-release-age <days>`.
-- `<days>` is derived from `[npm].min_release_age` and must be whole days (validated on apply path).
+- `<days>` is derived from `[npm].min_release_age` and must be whole days (validated during npm manager setup).
 - Batch apply failure emits one synthetic `*` error outcome.
 
 Concurrency:
@@ -273,7 +273,7 @@ Planning flow:
 3. Parse timestamps and choose semver-max eligible target (`>= current`, age eligible).
 
 Notes:
-- Handles both object and array JSON shapes for `pnpm outdated`.
+- Expects object-shaped JSON for `pnpm outdated`.
 - Treats `ERR_PNPM_NO_IMPORTER_MANIFEST_FOUND` as no-op/empty.
 
 Apply flow:
@@ -290,7 +290,7 @@ Delay policy:
 - Uses config `[bun].min_release_age` (default `7d`).
 
 Planning flow:
-1. `bun outdated -g`.
+1. `bun pm ls -g --json` (installed global inventory).
 2. Per package: `bun pm view <name> time --json --cwd <global>`.
 3. Parse timestamps and choose semver-max eligible target (`>= current`, age eligible).
 
@@ -355,7 +355,7 @@ Planning flow:
 3. Parse releases/timestamps and choose eligible target.
 
 Apply flow:
-- Per eligible package: `pipx upgrade <name>`.
+- Per eligible package: `pipx upgrade <name>==<target>`.
 - Per-package apply failures emit `error` and continue.
 
 Concurrency:
