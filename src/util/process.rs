@@ -3,7 +3,10 @@ use serde::de::DeserializeOwned;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::process::{Command, ExitStatus, Output};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
+
+static SKIP_MUTATING_COMMANDS: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CmdStatus<'a> {
@@ -96,11 +99,20 @@ fn execute_cmd(
     crate::util::logging::on_command_start(&display, is_mutation);
 
     let started_at = Instant::now();
-    let output = match command.output() {
-        Ok(output) => output,
-        Err(err) => {
-            crate::util::logging::on_command_spawn_error(&display, is_mutation, &err);
-            return Err(err).with_context(|| format!("failed to run {display}"));
+
+    let output = if is_mutation && SKIP_MUTATING_COMMANDS.load(Ordering::Relaxed) {
+        Output {
+            status: success_exit_status(),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }
+    } else {
+        match command.output() {
+            Ok(output) => output,
+            Err(err) => {
+                crate::util::logging::on_command_spawn_error(&display, is_mutation, &err);
+                return Err(err).with_context(|| format!("failed to run {display}"));
+            }
         }
     };
     let status_allowed = status_allowed(output.status, check);
@@ -114,6 +126,13 @@ fn execute_cmd(
 
     let output = ensure_status(output, &display, check)?;
     Ok(CmdOutput { output, display })
+}
+
+#[cfg(unix)]
+fn success_exit_status() -> ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+
+    ExitStatus::from_raw(0)
 }
 
 fn ensure_status(output: Output, command_display: &str, check: CmdStatus<'_>) -> Result<Output> {
