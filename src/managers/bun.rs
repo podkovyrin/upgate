@@ -269,7 +269,7 @@ fn bun_installed_global(bun: &str) -> Result<BTreeMap<String, String>> {
     let stdout = output.stdout()?;
     let stderr = output.stderr().unwrap_or_default();
 
-    if is_missing_global_manifest(&stdout) || is_missing_global_manifest(&stderr) {
+    if is_missing_global_manifest(stdout) || is_missing_global_manifest(stderr) {
         return Ok(BTreeMap::new());
     }
 
@@ -278,7 +278,7 @@ fn bun_installed_global(bun: &str) -> Result<BTreeMap<String, String>> {
         bail!("bun pm ls -g --json failed: {err_text}");
     }
 
-    parse_bun_pm_ls_json(&stdout)
+    parse_bun_pm_ls_json(stdout)
 }
 
 fn parse_bun_pm_ls_json(stdout: &str) -> Result<BTreeMap<String, String>> {
@@ -322,7 +322,8 @@ struct BunResolvedTarget {
 
 impl BunResolvedTarget {
     fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
-        DelayedLatest::from_latest(
+        DelayedLatest::from_too_fresh_latest(
+            self.selected_version.as_deref(),
             self.latest_version.as_deref(),
             self.latest_age_secs,
             min_age,
@@ -417,11 +418,11 @@ fn bun_release_age_secs(
 
     if !output.success() {
         let stderr = output.stderr().unwrap_or_default();
-        bail!("bun pm view {name} time --json failed: {}", stderr);
+        bail!("bun pm view {name} time --json failed: {stderr}");
     }
 
     let stdout = output.stdout()?;
-    let timestamps_by_version: BunTimeMap = serde_json::from_str(&stdout)
+    let timestamps_by_version: BunTimeMap = serde_json::from_str(stdout)
         .with_context(|| format!("failed to parse bun pm view JSON for {name}"))?;
 
     let releases = bun_semver_time_releases(name, &timestamps_by_version)?;

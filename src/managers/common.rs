@@ -34,14 +34,6 @@ impl DelayedLatest {
         }
     }
 
-    pub(crate) fn from_latest(
-        latest_version: Option<&str>,
-        latest_age_secs: Option<u64>,
-        min_age: Duration,
-    ) -> Option<Self> {
-        Some(Self::new(latest_version?, latest_age_secs?, min_age))
-    }
-
     pub(crate) fn from_too_fresh_latest(
         selected_version: Option<&str>,
         latest_version: Option<&str>,

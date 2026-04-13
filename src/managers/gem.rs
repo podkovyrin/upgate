@@ -649,7 +649,7 @@ fn pessimistic_upper_bound(raw: &str) -> Option<Version> {
 }
 
 fn parse_version_for_compare(raw: &str) -> Option<Version> {
-    let trimmed = raw.strip_prefix('v').unwrap_or(&raw);
+    let trimmed = raw.strip_prefix('v').unwrap_or(raw);
 
     if let Ok(v) = Version::parse(trimmed) {
         return Some(v);

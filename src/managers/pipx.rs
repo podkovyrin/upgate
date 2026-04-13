@@ -209,7 +209,8 @@ fn resolve_pipx_plan(
 
 fn apply_pipx_updates(upgradable: Vec<(String, String, String)>) {
     for (pkg, current, target) in upgradable {
-        if let Err(err) = run_cmd("pipx", ["upgrade", &pkg], CmdStatus::Success)
+        let spec = format!("{pkg}=={target}");
+        if let Err(err) = run_cmd("pipx", ["upgrade", &spec], CmdStatus::Success)
             .mutating()
             .output()
         {
@@ -251,7 +252,8 @@ struct PypiResolvedTarget {
 
 impl PypiResolvedTarget {
     fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
-        DelayedLatest::from_latest(
+        DelayedLatest::from_too_fresh_latest(
+            self.selected_version.as_deref(),
             self.latest_version.as_deref(),
             self.latest_age_secs,
             min_age,

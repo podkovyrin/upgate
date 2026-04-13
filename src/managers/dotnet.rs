@@ -322,7 +322,7 @@ fn dotnet_global_tools() -> Result<Vec<DotnetToolEntry>> {
     let stderr = output.stderr().unwrap_or_default();
 
     if !output.success() {
-        if dotnet_missing_sdk_hint(&stdout) || dotnet_missing_sdk_hint(&stderr) {
+        if dotnet_missing_sdk_hint(stdout) || dotnet_missing_sdk_hint(stderr) {
             return Ok(Vec::new());
         }
 
@@ -335,7 +335,7 @@ fn dotnet_global_tools() -> Result<Vec<DotnetToolEntry>> {
     }
 
     let parsed: DotnetToolListRoot =
-        serde_json::from_str(&stdout).context("failed to parse dotnet tool list JSON")?;
+        serde_json::from_str(stdout).context("failed to parse dotnet tool list JSON")?;
     Ok(parsed.data)
 }
 

@@ -227,7 +227,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     maybe_refresh_brew_metadata(ctx.policy.no_update);
 
     let outdated: OutdatedRoot =
-        match run_cmd("brew", &["outdated", "--json=v2"], CmdStatus::Success)
+        match run_cmd("brew", ["outdated", "--json=v2"], CmdStatus::Success)
             .output()
             .and_then(|output| output.json())
         {
@@ -555,8 +555,7 @@ fn collect_brew_scan_items() -> Result<Vec<ScanItem>> {
         let version = formula
             .installed
             .last()
-            .map(|item| item.version.clone())
-            .unwrap_or_else(|| "unknown".to_string());
+            .map_or_else(|| "unknown".to_string(), |item| item.version.clone());
 
         scan_items.push(ScanItem {
             name: formula.full_name,
@@ -570,8 +569,7 @@ fn collect_brew_scan_items() -> Result<Vec<ScanItem>> {
             .installed
             .as_ref()
             .and_then(CaskInstalledVersions::latest)
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "unknown".to_string());
+            .map_or_else(|| "unknown".to_string(), ToString::to_string);
 
         scan_items.push(ScanItem {
             name: cask.token,
@@ -1033,7 +1031,7 @@ fn resolve_api_fallback_remote_branch(
 fn brew_tap_meta() -> Result<HashMap<String, TapMeta>> {
     let taps: Vec<TapInfo> = run_cmd(
         "brew",
-        &["tap-info", "--json", "--installed"],
+        ["tap-info", "--json", "--installed"],
         CmdStatus::Success,
     )
     .output()?

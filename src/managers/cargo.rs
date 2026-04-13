@@ -412,7 +412,8 @@ struct CargoResolvedTarget {
 
 impl CargoResolvedTarget {
     fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
-        DelayedLatest::from_latest(
+        DelayedLatest::from_too_fresh_latest(
+            self.selected_version.as_deref(),
             self.latest_version.as_deref(),
             self.latest_age_secs,
             min_age,

@@ -393,7 +393,7 @@ fn go_discover_global_tools() -> Result<Vec<GoDiscoveredTool>> {
 
         let stdout = output.stdout()?;
 
-        let Some(info) = parse_go_version_m_output(&stdout) else {
+        let Some(info) = parse_go_version_m_output(stdout) else {
             entries.push(GoDiscoveredTool::Skipped {
                 name,
                 reason: "missing go module/version metadata".to_string(),

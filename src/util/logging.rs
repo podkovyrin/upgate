@@ -178,9 +178,8 @@ fn write_line(logger: &Logger, manager: &str, level: &str, message: &str) {
     let path = logger
         .session_dir
         .join(format!("{}.log", sanitize_manager(manager)));
-    let mut file = match OpenOptions::new().create(true).append(true).open(&path) {
-        Ok(file) => file,
-        Err(_) => return,
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) else {
+        return;
     };
 
     let _ = writeln!(file, "[{}] [{}] {}", ts(), level, message);
@@ -194,9 +193,8 @@ fn write_block(logger: &Logger, manager: &str, stream: &str, content: &str) {
     let path = logger
         .session_dir
         .join(format!("{}.log", sanitize_manager(manager)));
-    let mut file = match OpenOptions::new().create(true).append(true).open(&path) {
-        Ok(file) => file,
-        Err(_) => return,
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) else {
+        return;
     };
 
     let _ = writeln!(file, "[{}] [DEBUG] {stream} <<<", ts());
@@ -284,8 +282,5 @@ fn ts() -> String {
 }
 
 fn exit_code_label(code: Option<i32>) -> String {
-    match code {
-        Some(code) => code.to_string(),
-        None => "signal".to_string(),
-    }
+    code.map_or_else(|| "signal".to_string(), |code| code.to_string())
 }

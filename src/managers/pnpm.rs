@@ -232,7 +232,7 @@ fn pnpm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
     let stdout = output.stdout()?;
     let stderr = output.stderr().unwrap_or_default();
 
-    if is_no_importer_manifest_error(&stdout) || is_no_importer_manifest_error(&stderr) {
+    if is_no_importer_manifest_error(stdout) || is_no_importer_manifest_error(stderr) {
         return Ok(BTreeMap::new());
     }
 
@@ -246,7 +246,7 @@ fn pnpm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
         return Ok(BTreeMap::new());
     }
 
-    parse_pnpm_outdated_json(&stdout)
+    parse_pnpm_outdated_json(stdout)
 }
 
 fn is_no_importer_manifest_error(text: &str) -> bool {
@@ -277,7 +277,8 @@ struct PnpmResolvedTarget {
 
 impl PnpmResolvedTarget {
     fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
-        DelayedLatest::from_latest(
+        DelayedLatest::from_too_fresh_latest(
+            self.selected_version.as_deref(),
             self.latest_version.as_deref(),
             self.latest_age_secs,
             min_age,
@@ -364,7 +365,7 @@ mod tests {
 
         let parsed = parse_pnpm_outdated_json(raw).expect("should parse");
         assert_eq!(parsed.get("foo").map(|e| e.current.as_str()), Some("1.0.0"));
-        assert!(parsed.get("bar").is_none());
+        assert!(!parsed.contains_key("bar"));
     }
 
     #[test]

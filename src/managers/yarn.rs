@@ -350,7 +350,8 @@ struct YarnResolvedTarget {
 
 impl YarnResolvedTarget {
     fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
-        DelayedLatest::from_latest(
+        DelayedLatest::from_too_fresh_latest(
+            self.selected_version.as_deref(),
             self.latest_version.as_deref(),
             self.latest_age_secs,
             min_age,
@@ -396,9 +397,8 @@ fn parse_yarn_inspect_object(text: &str, field: &str) -> Result<YarnTimeMap> {
             Err(_) => continue,
         };
 
-        match parsed {
-            YarnInfoJsonLine::Inspect { data } => return Ok(data),
-            YarnInfoJsonLine::Other => continue,
+        if let YarnInfoJsonLine::Inspect { data } = parsed {
+            return Ok(data);
         }
     }
 

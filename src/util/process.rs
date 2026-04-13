@@ -19,14 +19,14 @@ pub(crate) struct Cmd<'a> {
     is_mutation: bool,
 }
 
-impl<'a> Cmd<'a> {
+impl Cmd<'_> {
     pub(crate) fn mutating(mut self) -> Self {
         self.is_mutation = true;
         self
     }
 
     pub(crate) fn output(self) -> Result<CmdOutput> {
-        execute_cmd(self.program, self.args, self.check, self.is_mutation)
+        execute_cmd(&self.program, &self.args, self.check, self.is_mutation)
     }
 }
 
@@ -66,7 +66,7 @@ impl CmdOutput {
     }
 }
 
-pub(crate) fn run_cmd<'a, P, I, A>(program: P, args: I, check: CmdStatus<'a>) -> Cmd<'a>
+pub(crate) fn run_cmd<P, I, A>(program: P, args: I, check: CmdStatus<'_>) -> Cmd<'_>
 where
     P: AsRef<OsStr>,
     I: IntoIterator<Item = A>,
@@ -84,13 +84,13 @@ where
 }
 
 fn execute_cmd(
-    program: OsString,
-    args: Vec<OsString>,
+    program: &OsStr,
+    args: &[OsString],
     check: CmdStatus<'_>,
     is_mutation: bool,
 ) -> Result<CmdOutput> {
-    let mut command = Command::new(&program);
-    command.args(&args);
+    let mut command = Command::new(program);
+    command.args(args);
 
     let display = command_display(&command);
     crate::util::logging::on_command_start(&display, is_mutation);
@@ -185,8 +185,7 @@ impl fmt::Display for CommandFailedError {
 impl std::error::Error for CommandFailedError {}
 
 fn exit_code_label(status: ExitStatus) -> String {
-    match status.code() {
-        Some(code) => code.to_string(),
-        None => "signal".to_string(),
-    }
+    status
+        .code()
+        .map_or_else(|| "signal".to_string(), |code| code.to_string())
 }

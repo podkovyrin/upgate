@@ -26,6 +26,7 @@ enum Command {
 #[command(name = "upnow")]
 #[command(about = "Delay-aware global package upgrades")]
 #[command(version)]
+#[allow(clippy::struct_excessive_bools)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
