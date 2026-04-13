@@ -6,6 +6,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use owo_colors::OwoColorize;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct LoggingOptions {
@@ -87,7 +88,15 @@ pub(crate) fn on_command_start(command_display: &str, is_mutation: bool) {
 
     if logger.options.show_commands {
         crate::ui::with_spinner_suspended(|| {
-            eprintln!("$ {command_display}");
+            if crate::ui::output_theme().color() {
+                if is_mutation {
+                    eprintln!("{} {command_display}", "$".bright_red());
+                } else {
+                    eprintln!("{} {command_display}", "$".cyan());
+                }
+            } else {
+                eprintln!("$ {command_display}");
+            }
         });
     }
 
