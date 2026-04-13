@@ -157,12 +157,8 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         .collect();
 
     let threads = effective_parallelism(ctx.max_parallel_checks, GEM_MAX_PARALLEL_CHECKS);
-    let plan: Vec<GemPlanItem> = run_indexed_parallel(
-        managed_jobs,
-        threads,
-        "failed to build gem planning thread pool",
-        "internal error: missing gem plan slot",
-        |(name, current)| {
+    let plan: Vec<GemPlanItem> =
+        run_indexed_parallel(managed_jobs, threads, PLUGIN.id(), |(name, current)| {
             let resolved = rubygems_resolve_target_with_min_age(
                 &rubygems_client,
                 &name,
@@ -178,8 +174,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                 current,
                 resolved,
             }
-        },
-    )?;
+        })?;
 
     let mut upgradable: Vec<(String, String, String)> = Vec::new();
     let mut plan_iter = plan.into_iter();

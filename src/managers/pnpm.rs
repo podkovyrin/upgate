@@ -167,23 +167,16 @@ fn resolve_pnpm_plan(
         .collect();
 
     let threads = effective_parallelism(max_parallel_checks, PNPM_MAX_PARALLEL_CHECKS);
-    run_indexed_parallel(
-        jobs,
-        threads,
-        "failed to build pnpm planning thread pool",
-        "internal error: missing pnpm plan slot",
-        |(name, current)| {
-            let resolved =
-                pnpm_resolve_target_with_min_age(&name, &current, now_unix_secs, min_age)
-                    .map_err(|err| err.to_string());
+    run_indexed_parallel(jobs, threads, PLUGIN.id(), |(name, current)| {
+        let resolved = pnpm_resolve_target_with_min_age(&name, &current, now_unix_secs, min_age)
+            .map_err(|err| err.to_string());
 
-            PnpmPlanItem {
-                name,
-                current,
-                resolved,
-            }
-        },
-    )
+        PnpmPlanItem {
+            name,
+            current,
+            resolved,
+        }
+    })
 }
 
 fn apply_pnpm_updates(upgradable: Vec<(String, String, String)>) {

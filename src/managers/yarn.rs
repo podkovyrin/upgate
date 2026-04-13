@@ -234,23 +234,16 @@ fn resolve_yarn_plan(
         .collect();
 
     let threads = effective_parallelism(max_parallel_checks, YARN_MAX_PARALLEL_CHECKS);
-    run_indexed_parallel(
-        jobs,
-        threads,
-        "failed to build yarn planning thread pool",
-        "internal error: missing yarn plan slot",
-        |(name, current)| {
-            let resolved =
-                yarn_resolve_target_with_min_age(&name, &current, now_unix_secs, min_age)
-                    .map_err(|err| err.to_string());
+    run_indexed_parallel(jobs, threads, PLUGIN.id(), |(name, current)| {
+        let resolved = yarn_resolve_target_with_min_age(&name, &current, now_unix_secs, min_age)
+            .map_err(|err| err.to_string());
 
-            YarnPlanItem {
-                name,
-                current,
-                resolved,
-            }
-        },
-    )
+        YarnPlanItem {
+            name,
+            current,
+            resolved,
+        }
+    })
 }
 
 fn apply_yarn_updates(upgradable: Vec<(String, String, String)>) {

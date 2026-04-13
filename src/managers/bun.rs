@@ -191,29 +191,23 @@ fn resolve_bun_plan(
     let threads = effective_parallelism(max_parallel_checks, BUN_MAX_PARALLEL_CHECKS);
     let bun_path = bun.to_string();
     let global_cwd_path = global_cwd.to_string();
-    run_indexed_parallel(
-        jobs,
-        threads,
-        "failed to build bun planning thread pool",
-        "internal error: missing bun plan slot",
-        move |(name, current)| {
-            let resolved = bun_resolve_target_with_min_age(
-                &bun_path,
-                &global_cwd_path,
-                &name,
-                &current,
-                now_unix_secs,
-                min_age,
-            )
-            .map_err(|err| err.to_string());
+    run_indexed_parallel(jobs, threads, PLUGIN.id(), move |(name, current)| {
+        let resolved = bun_resolve_target_with_min_age(
+            &bun_path,
+            &global_cwd_path,
+            &name,
+            &current,
+            now_unix_secs,
+            min_age,
+        )
+        .map_err(|err| err.to_string());
 
-            BunPlanItem {
-                name,
-                current,
-                resolved,
-            }
-        },
-    )
+        BunPlanItem {
+            name,
+            current,
+            resolved,
+        }
+    })
 }
 
 fn apply_bun_updates(bun: &str, min_age: Duration) {

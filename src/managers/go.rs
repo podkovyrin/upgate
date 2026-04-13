@@ -136,23 +136,17 @@ fn resolve_go_plan(
         .collect();
 
     let threads = effective_parallelism(max_parallel_checks, GO_MAX_PARALLEL_CHECKS);
-    run_indexed_parallel(
-        managed_jobs,
-        threads,
-        "failed to build go planning thread pool",
-        "internal error: missing go plan slot",
-        |tool| {
-            let resolved = go_resolve_target_with_min_age(
-                &tool.module_path,
-                &tool.current_version,
-                now_unix_secs,
-                min_age,
-            )
-            .map_err(|err| err.to_string());
+    run_indexed_parallel(managed_jobs, threads, PLUGIN.id(), |tool| {
+        let resolved = go_resolve_target_with_min_age(
+            &tool.module_path,
+            &tool.current_version,
+            now_unix_secs,
+            min_age,
+        )
+        .map_err(|err| err.to_string());
 
-            GoPlanItem { tool, resolved }
-        },
-    )
+        GoPlanItem { tool, resolved }
+    })
 }
 
 #[allow(clippy::too_many_lines)]

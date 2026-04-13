@@ -146,25 +146,20 @@ fn resolve_mise_age_annotations(
     }
 
     let threads = effective_parallelism(max_parallel_checks, MISE_NPM_AGE_MAX_PARALLEL_CHECKS);
-    let age_results_indexed: Vec<(usize, MiseLatestAgeResult)> = match run_indexed_parallel(
-        age_jobs,
-        threads,
-        "failed to build mise npm-age planning thread pool",
-        "internal error: missing mise npm-age plan slot",
-        |(idx, tool, latest)| {
+    let age_results_indexed: Vec<(usize, MiseLatestAgeResult)> =
+        match run_indexed_parallel(age_jobs, threads, PLUGIN.id(), |(idx, tool, latest)| {
             let age_secs =
                 npm_latest_age_secs(&tool, &latest, now_unix_secs).map_err(|err| err.to_string());
             (idx, MiseLatestAgeResult { age_secs })
-        },
-    ) {
-        Ok(results) => results,
-        Err(err) => {
-            emit_mise_manager_error(format!(
-                "npm delayed-latest age enrichment is unavailable: {err}"
-            ));
-            return (BTreeMap::new(), false);
-        }
-    };
+        }) {
+            Ok(results) => results,
+            Err(err) => {
+                emit_mise_manager_error(format!(
+                    "npm delayed-latest age enrichment is unavailable: {err}"
+                ));
+                return (BTreeMap::new(), false);
+            }
+        };
 
     let mut age_by_index: BTreeMap<usize, MiseLatestAgeResult> = BTreeMap::new();
     for (idx, age_result) in age_results_indexed {

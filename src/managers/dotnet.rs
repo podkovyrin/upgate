@@ -234,28 +234,22 @@ fn resolve_dotnet_plan(
         .collect();
 
     let threads = effective_parallelism(max_parallel_checks, DOTNET_MAX_PARALLEL_CHECKS);
-    run_indexed_parallel(
-        jobs,
-        threads,
-        "failed to build dotnet planning thread pool",
-        "internal error: missing dotnet plan slot",
-        |(name, current)| {
-            let resolved = nuget_resolve_target_with_min_age(
-                nuget_client,
-                &name,
-                &current,
-                now_unix_secs,
-                min_age,
-            )
-            .map_err(|err| err.to_string());
+    run_indexed_parallel(jobs, threads, PLUGIN.id(), |(name, current)| {
+        let resolved = nuget_resolve_target_with_min_age(
+            nuget_client,
+            &name,
+            &current,
+            now_unix_secs,
+            min_age,
+        )
+        .map_err(|err| err.to_string());
 
-            DotnetPlanItem {
-                name,
-                current,
-                resolved,
-            }
-        },
-    )
+        DotnetPlanItem {
+            name,
+            current,
+            resolved,
+        }
+    })
 }
 
 fn apply_dotnet_updates(upgradable: Vec<(String, String, String)>) {

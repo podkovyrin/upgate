@@ -8,8 +8,7 @@ pub(crate) fn effective_parallelism(requested: usize, manager_cap: usize) -> usi
 pub(crate) fn run_indexed_parallel<J, R, F>(
     jobs: Vec<J>,
     threads: usize,
-    pool_error_context: &'static str,
-    missing_slot_context: &'static str,
+    manager_id: &str,
     resolver: F,
 ) -> Result<Vec<R>>
 where
@@ -20,7 +19,7 @@ where
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .build()
-        .context(pool_error_context)?;
+        .with_context(|| format!("failed to build {manager_id} planning thread pool"))?;
 
     let indexed: Vec<(usize, R)> = pool.install(|| {
         jobs.into_par_iter()
@@ -36,6 +35,6 @@ where
 
     slots
         .into_iter()
-        .map(|item| item.context(missing_slot_context))
+        .map(|item| item.with_context(|| format!("internal error: missing {manager_id} plan slot")))
         .collect()
 }

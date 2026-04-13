@@ -162,22 +162,16 @@ fn resolve_npm_plan(
         .collect();
 
     let threads = effective_parallelism(max_parallel_checks, NPM_MAX_PARALLEL_CHECKS);
-    run_indexed_parallel(
-        jobs,
-        threads,
-        "failed to build npm planning thread pool",
-        "internal error: missing npm plan slot",
-        |(name, current)| {
-            let resolved = npm_resolve_target_with_min_age(&name, &current, now_unix_secs, min_age)
-                .map_err(|err| err.to_string());
+    run_indexed_parallel(jobs, threads, PLUGIN.id(), |(name, current)| {
+        let resolved = npm_resolve_target_with_min_age(&name, &current, now_unix_secs, min_age)
+            .map_err(|err| err.to_string());
 
-            NpmPlanItem {
-                name,
-                current,
-                resolved,
-            }
-        },
-    )
+        NpmPlanItem {
+            name,
+            current,
+            resolved,
+        }
+    })
 }
 
 fn apply_npm_updates(min_age_days: u64) {

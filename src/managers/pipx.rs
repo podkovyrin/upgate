@@ -194,28 +194,17 @@ fn resolve_pipx_plan(
     let jobs: Vec<(String, String)> = installed.into_iter().collect();
 
     let threads = effective_parallelism(max_parallel_checks, PIPX_MAX_PARALLEL_CHECKS);
-    run_indexed_parallel(
-        jobs,
-        threads,
-        "failed to build pipx planning thread pool",
-        "internal error: missing pipx plan slot",
-        |(name, current)| {
-            let resolved = pypi_resolve_target_with_min_age(
-                pypi_client,
-                &name,
-                &current,
-                now_unix_secs,
-                min_age,
-            )
-            .map_err(|err| err.to_string());
+    run_indexed_parallel(jobs, threads, PLUGIN.id(), |(name, current)| {
+        let resolved =
+            pypi_resolve_target_with_min_age(pypi_client, &name, &current, now_unix_secs, min_age)
+                .map_err(|err| err.to_string());
 
-            PipxPlanItem {
-                name,
-                current,
-                resolved,
-            }
-        },
-    )
+        PipxPlanItem {
+            name,
+            current,
+            resolved,
+        }
+    })
 }
 
 fn apply_pipx_updates(upgradable: Vec<(String, String, String)>) {

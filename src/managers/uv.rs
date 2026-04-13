@@ -96,17 +96,11 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     let now = now_unix_secs()?;
 
     let threads = effective_parallelism(ctx.max_parallel_checks, UV_MAX_PARALLEL_CHECKS);
-    let plan: Vec<UvPlanItem> = run_indexed_parallel(
-        installed,
-        threads,
-        "failed to build uv planning thread pool",
-        "internal error: missing uv plan slot",
-        |tool| {
-            let target = uv_resolve_target_with_exclude_newer(&tool, min_age_raw)
-                .map_err(|err| err.to_string());
-            UvPlanItem { tool, target }
-        },
-    )?;
+    let plan: Vec<UvPlanItem> = run_indexed_parallel(installed, threads, PLUGIN.id(), |tool| {
+        let target =
+            uv_resolve_target_with_exclude_newer(&tool, min_age_raw).map_err(|err| err.to_string());
+        UvPlanItem { tool, target }
+    })?;
 
     let mut pypi_cache: HashMap<String, Vec<Pep440Timestamp>> = HashMap::new();
     let pypi_client = match crate::util::http::default_blocking_client() {

@@ -192,28 +192,22 @@ fn resolve_cargo_plan(
         .collect();
 
     let threads = effective_parallelism(max_parallel_checks, CARGO_MAX_PARALLEL_CHECKS);
-    run_indexed_parallel(
-        jobs,
-        threads,
-        "failed to build cargo planning thread pool",
-        "internal error: missing cargo plan slot",
-        |(name, current)| {
-            let resolved = cargo_resolve_target_with_min_age(
-                crates_client,
-                &name,
-                &current,
-                now_unix_secs,
-                min_age,
-            )
-            .map_err(|err| err.to_string());
+    run_indexed_parallel(jobs, threads, PLUGIN.id(), |(name, current)| {
+        let resolved = cargo_resolve_target_with_min_age(
+            crates_client,
+            &name,
+            &current,
+            now_unix_secs,
+            min_age,
+        )
+        .map_err(|err| err.to_string());
 
-            CargoPlanItem {
-                name,
-                current,
-                resolved,
-            }
-        },
-    )
+        CargoPlanItem {
+            name,
+            current,
+            resolved,
+        }
+    })
 }
 
 fn apply_cargo_updates(
