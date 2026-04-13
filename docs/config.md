@@ -111,12 +111,16 @@ These output controls are CLI flags only (not config file keys):
 - `--plain` — force plain output (no color, ASCII arrow)
 - `--no-color` — disable ANSI color styling
 - `--verbose` — show additional metadata segments in output lines
+- `--debug-commands` — persist command debug logs (stdout/stderr/timing) under XDG state
+- `--show-commands` (alias: `--print-commands`) — print each command to stderr before execution
 
 Example:
 
 ```bash
 upnow plan --plain
 upnow apply --verbose --no-color
+upnow plan --show-commands
+upnow plan --debug-commands
 ```
 
 ## Duration format

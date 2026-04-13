@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::process::{Command, ExitStatus, Output};
+use std::time::Instant;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CmdStatus<'a> {
@@ -53,13 +54,35 @@ where
     I: IntoIterator<Item = A>,
     A: AsRef<OsStr>,
 {
-    let mut command = Command::new(program);
-    command.args(args);
+    let program = program.as_ref().to_os_string();
+    let args: Vec<OsString> = args
+        .into_iter()
+        .map(|arg| arg.as_ref().to_os_string())
+        .collect();
+
+    let mut command = Command::new(&program);
+    command.args(&args);
 
     let display = command_display(&command);
-    let output = command
-        .output()
-        .with_context(|| format!("failed to run {display}"))?;
+    let is_mutation = crate::util::logging::is_mutating_command(&program, &args);
+    crate::util::logging::on_command_start(&display, is_mutation);
+
+    let started_at = Instant::now();
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(err) => {
+            crate::util::logging::on_command_spawn_error(&display, is_mutation, &err);
+            return Err(err).with_context(|| format!("failed to run {display}"));
+        }
+    };
+    let status_allowed = status_allowed(output.status, check);
+    crate::util::logging::on_command_finish(
+        &display,
+        &output,
+        is_mutation,
+        status_allowed,
+        started_at.elapsed(),
+    );
 
     let output = ensure_status(output, &display, check)?;
     Ok(CmdOutput { output, display })

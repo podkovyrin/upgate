@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand};
 use config::UpnowConfig;
 use manager::{RunMode, all_plugins, build_ctx_for_plugin, resolve_selected_plugins};
 use ui::{finish_manager_spinner, init_output_theme, start_manager_spinner};
+use util::logging::{LoggingOptions, init_logging, set_current_manager};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
 enum Command {
@@ -52,11 +53,33 @@ struct Cli {
     /// Show additional metadata in outcome lines.
     #[arg(long, global = true)]
     verbose: bool,
+
+    /// Persist full command debug logs (stdout/stderr + timing) under XDG state.
+    #[arg(long, global = true)]
+    debug_commands: bool,
+
+    /// Print each command to stderr before execution.
+    #[arg(long, visible_alias = "print-commands", global = true)]
+    show_commands: bool,
 }
 
 fn main() {
     let cli = Cli::parse();
     init_output_theme(cli.plain, cli.no_color, cli.verbose);
+
+    if let Err(err) = init_logging(LoggingOptions {
+        debug_commands: cli.debug_commands,
+        show_commands: cli.show_commands,
+    }) {
+        eprintln!("error: failed to initialize logging: {err}");
+        std::process::exit(1);
+    }
+
+    if cli.debug_commands
+        && let Some(path) = util::logging::session_dir()
+    {
+        eprintln!("debug logs: {}", path.display());
+    }
     let run_mode = match cli.command.unwrap_or(Command::Plan) {
         Command::Plan => RunMode::Plan,
         Command::Apply => RunMode::Apply,
@@ -90,6 +113,8 @@ fn main() {
     let mut had_manager_failure = false;
 
     for plugin in selected_plugins {
+        set_current_manager(Some(plugin.id()));
+
         let manager_ctx =
             match build_ctx_for_plugin(plugin, run_mode, cli.max_parallel_checks, &config) {
                 Ok(ctx) => ctx,
@@ -120,6 +145,8 @@ fn main() {
             had_manager_failure = true;
         }
     }
+
+    set_current_manager(None);
 
     if had_manager_failure {
         std::process::exit(1);

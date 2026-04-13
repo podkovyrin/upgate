@@ -34,6 +34,7 @@ This supports consistent text rendering and future aggregation/machine output.
 
 Current shared utility modules:
 - `src/util/process.rs` — subprocess execution + common failure formatting
+- `src/util/logging.rs` — XDG state-backed command/session logging
 - `src/util/timefmt.rs` — human age formatting
 - `src/util/timeparse.rs` — RFC3339 -> unix seconds parsing
 - `src/util/durationparse.rs` — CLI duration parsing
@@ -55,6 +56,12 @@ Current implementation behavior:
 - Avoid large snapshot/golden sprawl.
 - Keep fixtures and test strings hand-curated/minimal.
 
-## 7) Deferred / open
+## 7) Logging posture
+
+- Mutating subprocesses are always logged for audit/debugability.
+- Non-mutating subprocess logging is opt-in via `--debug-commands`.
+- User-facing command echoing is opt-in via `--show-commands` (alias `--print-commands`).
+
+## 8) Deferred / open
 
 - Optional structured log sinks for crash forensics

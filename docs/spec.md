@@ -29,6 +29,7 @@ This file is the manager-spec source of truth for current behavior.
 - `src/util/timeparse.rs`
 - `src/util/durationparse.rs`
 - `src/util/parallel.rs`
+- `src/util/logging.rs`
 
 ## CLI contract
 
@@ -44,6 +45,8 @@ Global options:
 - `--plain` (force plain output: no color, ASCII arrow)
 - `--no-color` (disable ANSI color styling)
 - `--verbose` (show additional metadata segments such as source and delayed-latest note)
+- `--debug-commands` (persist full per-command debug logs: status, timing, stdout, stderr)
+- `--show-commands` / `--print-commands` (print each command before execution)
 
 Configuration file:
 - `$XDG_CONFIG_HOME/upnow/config.toml` (fallback `~/.config/upnow/config.toml`)
@@ -74,6 +77,7 @@ Behavior notes:
 - Manager-native parsing/selection/apply logic remains in manager modules.
 - Shared utility modules are used for narrow cross-cutting concerns:
   - subprocess execution/formatting (`util/process`)
+  - command/session logging (`util/logging`)
   - human age formatting (`util/timefmt`)
   - RFC3339 parse to unix seconds (`util/timeparse`)
   - duration parsing (`util/durationparse`)
@@ -137,6 +141,25 @@ Spinner behavior:
 
 Batch-error sentinel:
 - Managers with single batch apply commands can emit synthetic error outcome lines using `name="*"` and versions `* -> *`.
+
+Command visibility:
+- `--show-commands` (alias `--print-commands`) prints each command to stderr before execution.
+- Command display is independent from spinner rendering (spinner is suspended while printing).
+
+## Runtime logging
+
+Log root:
+- macOS: `~/Library/Logs/upnow`
+- other platforms: `$XDG_STATE_HOME/upnow/logs` (fallback `~/.local/state/upnow/logs`)
+
+Session layout:
+- One session directory per run: `<epoch-seconds>-<pid>`
+- One log file per manager bucket: `<manager>.log` (for example `brew.log`, `npm.log`)
+
+Policy:
+- Mutating commands are always logged (start + finish, with captured stdout/stderr).
+- `--debug-commands` logs all commands (including non-mutating checks) with stdout/stderr and timing.
+- Command spawn failures are logged.
 
 ## Failure/exit behavior (current)
 
