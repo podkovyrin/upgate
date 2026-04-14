@@ -4,11 +4,11 @@ use crate::managers::common::{
     emit_plan_and_collect_upgradable, emit_scan_current, parse_pep440_release_timestamps,
     release_age_secs_for_pep440_version, run_per_item_apply_flow, verbose_now_unix_secs,
 };
-use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
+use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{CmdStatus, run_cmd};
+use crate::util::time::human_age;
 use crate::util::time::now_unix_secs;
-use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
 use pep440::Version;
 use std::cmp::Ordering;
@@ -23,7 +23,7 @@ struct UvTool {
     python_path: String,
 }
 
-pub(crate) struct UvPlugin;
+pub struct UvPlugin;
 
 impl ManagerPlugin for UvPlugin {
     fn id(&self) -> &'static str {
@@ -39,7 +39,7 @@ impl ManagerPlugin for UvPlugin {
     }
 }
 
-pub(crate) static PLUGIN: UvPlugin = UvPlugin;
+pub static PLUGIN: UvPlugin = UvPlugin;
 
 #[derive(Debug, serde::Deserialize)]
 struct PypiRoot {
@@ -113,103 +113,107 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
 
     let upgradable_tools = emit_plan_and_collect_upgradable(
         plan,
-        |item| PlanMeta {
-            manager: PLUGIN.id(),
-            source: PLUGIN.id(),
-            name: item.tool.name.clone(),
-            current: item.tool.current.clone(),
-        },
         |item| {
-            let target = match &item.target {
-                Ok(target) => target,
-                Err(err) => return PlanDecision::Error(err.clone()),
-            };
+            let UvPlanItem { tool, target } = item;
 
-            if pep440_compare(target, &item.tool.current) == Some(Ordering::Less) {
-                let delayed_latest = outdated_latest.get(&item.tool.name).map(|latest| {
-                    let latest_age = resolve_pypi_age_secs(
-                        pypi_client.as_ref(),
-                        &mut pypi_cache,
-                        &item.tool.name,
-                        latest,
-                        now,
-                    )
-                    .unwrap_or(0);
+            let decision = match target {
+                Ok(target) => {
+                    if pep440_compare(&target, &tool.current) == Some(Ordering::Less) {
+                        let delayed_latest = outdated_latest.get(&tool.name).map(|latest| {
+                            let latest_age = resolve_pypi_age_secs(
+                                pypi_client.as_ref(),
+                                &mut pypi_cache,
+                                &tool.name,
+                                latest,
+                                now,
+                            )
+                            .unwrap_or(0);
 
-                    DelayedLatest {
-                        latest_version: latest.clone(),
-                        latest_age: human_age(latest_age),
-                        required_age: human_age(min_age.as_secs()),
-                    }
-                });
+                            DelayedLatest {
+                                latest_version: latest.clone(),
+                                latest_age: human_age(latest_age),
+                                required_age: human_age(min_age.as_secs()),
+                            }
+                        });
 
-                return PlanDecision::DelayedNoEligible {
-                    required_age: human_age(min_age.as_secs()),
-                    delayed_latest,
-                };
-            }
-
-            if target == &item.tool.current {
-                if let Some(age_secs) = resolve_pypi_age_secs(
-                    pypi_client.as_ref(),
-                    &mut pypi_cache,
-                    &item.tool.name,
-                    &item.tool.current,
-                    now,
-                ) && age_secs < min_age.as_secs()
-                {
-                    let delayed_latest = outdated_latest.get(&item.tool.name).map(|latest| {
-                        let latest_age = resolve_pypi_age_secs(
+                        PlanDecision::DelayedNoEligible {
+                            required_age: human_age(min_age.as_secs()),
+                            delayed_latest,
+                        }
+                    } else if target == tool.current {
+                        if let Some(age_secs) = resolve_pypi_age_secs(
                             pypi_client.as_ref(),
                             &mut pypi_cache,
-                            &item.tool.name,
-                            latest,
+                            &tool.name,
+                            &tool.current,
                             now,
-                        )
-                        .unwrap_or(age_secs);
+                        ) && age_secs < min_age.as_secs()
+                        {
+                            let delayed_latest = outdated_latest.get(&tool.name).map(|latest| {
+                                let latest_age = resolve_pypi_age_secs(
+                                    pypi_client.as_ref(),
+                                    &mut pypi_cache,
+                                    &tool.name,
+                                    latest,
+                                    now,
+                                )
+                                .unwrap_or(age_secs);
 
-                        DelayedLatest {
-                            latest_version: latest.clone(),
-                            latest_age: human_age(latest_age),
-                            required_age: human_age(min_age.as_secs()),
+                                DelayedLatest {
+                                    latest_version: latest.clone(),
+                                    latest_age: human_age(latest_age),
+                                    required_age: human_age(min_age.as_secs()),
+                                }
+                            });
+
+                            PlanDecision::DelayedNoEligible {
+                                required_age: human_age(min_age.as_secs()),
+                                delayed_latest,
+                            }
+                        } else {
+                            PlanDecision::NoChange
                         }
-                    });
+                    } else {
+                        let delayed_latest = if let Some(latest) = outdated_latest.get(&tool.name)
+                            && pep440_compare(latest, &target) == Some(Ordering::Greater)
+                        {
+                            let latest_age = resolve_pypi_age_secs(
+                                pypi_client.as_ref(),
+                                &mut pypi_cache,
+                                &tool.name,
+                                latest,
+                                now,
+                            );
 
-                    return PlanDecision::DelayedNoEligible {
-                        required_age: human_age(min_age.as_secs()),
-                        delayed_latest,
-                    };
+                            latest_age.and_then(|latest_age| {
+                                (latest_age < min_age.as_secs()).then(|| DelayedLatest {
+                                    latest_version: latest.clone(),
+                                    latest_age: human_age(latest_age),
+                                    required_age: human_age(min_age.as_secs()),
+                                })
+                            })
+                        } else {
+                            None
+                        };
+
+                        PlanDecision::Update {
+                            target,
+                            delayed_latest,
+                        }
+                    }
                 }
-
-                return PlanDecision::NoChange;
-            }
-
-            let delayed_latest = if let Some(latest) = outdated_latest.get(&item.tool.name)
-                && pep440_compare(latest, target) == Some(Ordering::Greater)
-            {
-                let latest_age = resolve_pypi_age_secs(
-                    pypi_client.as_ref(),
-                    &mut pypi_cache,
-                    &item.tool.name,
-                    latest,
-                    now,
-                );
-
-                latest_age.and_then(|latest_age| {
-                    (latest_age < min_age.as_secs()).then(|| DelayedLatest {
-                        latest_version: latest.clone(),
-                        latest_age: human_age(latest_age),
-                        required_age: human_age(min_age.as_secs()),
-                    })
-                })
-            } else {
-                None
+                Err(err) => PlanDecision::Error(err),
             };
 
-            PlanDecision::Update {
-                target: target.clone(),
-                delayed_latest,
-            }
+            (
+                PlanMeta {
+                    manager: PLUGIN.id(),
+                    source: PLUGIN.id(),
+                    name: tool.name,
+                    current: tool.current,
+                },
+                decision,
+            )
         },
         ctx.is_interactive_apply(),
         Some(&ctx.policy.pinned),
@@ -243,7 +247,7 @@ fn apply_uv_updates(min_age_raw: &str, upgradable: Vec<crate::managers::common::
                 current,
                 target,
                 PLUGIN.id(),
-                REASON_COMMAND_FAILED,
+                ReasonCode::CommandFailed,
                 err.to_string(),
             );
             emit_text_outcome(&outcome);

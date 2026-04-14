@@ -1,4 +1,4 @@
-pub(crate) fn human_age(total_secs: u64) -> String {
+pub fn human_age(total_secs: u64) -> String {
     let minute = 60;
     let hour = 60 * minute;
     let day = 24 * hour;

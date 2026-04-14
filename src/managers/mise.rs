@@ -5,9 +5,9 @@ use crate::managers::common::{
 };
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{CmdStatus, run_cmd};
+use crate::util::time::human_age;
 use crate::util::time::now_unix_secs;
-use crate::util::timefmt::human_age;
-use crate::util::timeparse::parse_rfc3339_unix;
+use crate::util::time::parse_rfc3339_unix;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -15,7 +15,7 @@ use std::time::Duration;
 
 const MISE_NPM_AGE_MAX_PARALLEL_CHECKS: usize = 4;
 
-pub(crate) struct MisePlugin;
+pub struct MisePlugin;
 
 impl ManagerPlugin for MisePlugin {
     fn id(&self) -> &'static str {
@@ -31,7 +31,7 @@ impl ManagerPlugin for MisePlugin {
     }
 }
 
-pub(crate) static PLUGIN: MisePlugin = MisePlugin;
+pub static PLUGIN: MisePlugin = MisePlugin;
 
 struct MiseLatestAgeResult {
     age_secs: Result<u64, String>,
@@ -70,20 +70,25 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
 
     let upgradable = emit_plan_and_collect_upgradable(
         plan_pairs.into_iter().enumerate().collect(),
-        |(_idx, item)| PlanMeta {
-            manager: PLUGIN.id(),
-            source: PLUGIN.id(),
-            name: item.tool.clone(),
-            current: item.from_version.clone(),
-        },
         |(idx, item)| {
-            mise_plan_decision(
-                *idx,
-                item,
+            let decision = mise_plan_decision(
+                idx,
+                &item.tool,
+                item.to_version,
                 &latest_map,
                 &mut age_by_index,
                 npm_age_annotations_enabled,
                 min_age,
+            );
+
+            (
+                PlanMeta {
+                    manager: PLUGIN.id(),
+                    source: PLUGIN.id(),
+                    name: item.tool,
+                    current: item.from_version,
+                },
+                decision,
             )
         },
         ctx.is_interactive_apply(),
@@ -162,27 +167,28 @@ fn resolve_mise_age_annotations(
 
 fn mise_plan_decision(
     idx: usize,
-    item: &MisePlanItem,
+    tool: &str,
+    to_version: String,
     latest_map: &BTreeMap<String, String>,
     age_by_index: &mut BTreeMap<usize, MiseLatestAgeResult>,
     npm_age_annotations_enabled: bool,
     min_age: Duration,
 ) -> PlanDecision {
-    let Some(latest) = latest_map.get(&item.tool) else {
+    let Some(latest) = latest_map.get(tool) else {
         return PlanDecision::Update {
-            target: item.to_version.clone(),
+            target: to_version,
             delayed_latest: None,
         };
     };
 
-    if latest == &item.to_version {
+    if latest == &to_version {
         return PlanDecision::Update {
-            target: item.to_version.clone(),
+            target: to_version,
             delayed_latest: None,
         };
     }
 
-    let age_secs = if item.tool.starts_with("npm:") {
+    let age_secs = if tool.starts_with("npm:") {
         if npm_age_annotations_enabled {
             match age_by_index.remove(&idx) {
                 Some(age_result) => match age_result.age_secs {
@@ -199,7 +205,7 @@ fn mise_plan_decision(
     };
 
     PlanDecision::Update {
-        target: item.to_version.clone(),
+        target: to_version,
         delayed_latest: Some(DelayedLatest {
             latest_version: latest.clone(),
             latest_age: human_age(age_secs),
@@ -214,12 +220,12 @@ struct MisePlanItem {
     to_version: String,
 }
 
-fn build_plan_pairs(lines: &[String]) -> Vec<MisePlanItem> {
+fn build_plan_pairs<S: AsRef<str>>(lines: &[S]) -> Vec<MisePlanItem> {
     let mut old_versions: BTreeMap<String, String> = BTreeMap::new();
     let mut result = Vec::new();
 
     for line in lines {
-        let trimmed = line.trim();
+        let trimmed = line.as_ref().trim();
 
         if let Some(rest) = trimmed.strip_prefix("Would uninstall ") {
             if let Some((tool, from_ver)) = split_tool_and_version(rest) {
@@ -324,15 +330,13 @@ fn emit_mise_scan_outcomes(
     old_threshold: Duration,
 ) {
     for (tool, version) in installed {
-        let age_secs = if let Some(now_unix_secs) = now_unix_secs {
+        let age_secs = now_unix_secs.and_then(|now_unix_secs| {
             if tool.starts_with("npm:") {
                 npm_latest_age_secs(&tool, &version, now_unix_secs).ok()
             } else {
                 None
             }
-        } else {
-            None
-        };
+        });
 
         emit_scan_current(
             PLUGIN.id(),

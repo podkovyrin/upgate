@@ -9,21 +9,21 @@ use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct LoggingOptions {
-    pub(crate) debug_commands: bool,
-    pub(crate) show_commands: bool,
+pub struct LoggingOptions {
+    pub debug_commands: bool,
+    pub show_commands: bool,
 }
 
 struct Logger {
     session_dir: PathBuf,
     options: LoggingOptions,
-    current_manager: Mutex<String>,
+    current_manager: Mutex<&'static str>,
     write_lock: Mutex<()>,
 }
 
 static LOGGER: OnceLock<Logger> = OnceLock::new();
 
-pub(crate) fn init_logging(options: LoggingOptions) -> Result<PathBuf> {
+pub fn init_logging(options: LoggingOptions) -> Result<PathBuf> {
     if let Some(logger) = LOGGER.get() {
         return Ok(logger.session_dir.clone());
     }
@@ -40,7 +40,7 @@ pub(crate) fn init_logging(options: LoggingOptions) -> Result<PathBuf> {
     let logger = Logger {
         session_dir,
         options,
-        current_manager: Mutex::new("core".to_string()),
+        current_manager: Mutex::new("core"),
         write_lock: Mutex::new(()),
     };
 
@@ -63,11 +63,11 @@ pub(crate) fn init_logging(options: LoggingOptions) -> Result<PathBuf> {
     Ok(logger.session_dir.clone())
 }
 
-pub(crate) fn session_dir() -> Option<PathBuf> {
+pub fn session_dir() -> Option<PathBuf> {
     LOGGER.get().map(|logger| logger.session_dir.clone())
 }
 
-pub(crate) fn set_current_manager(manager: Option<&str>) {
+pub fn set_current_manager(manager: Option<&'static str>) {
     let Some(logger) = LOGGER.get() else {
         return;
     };
@@ -76,10 +76,10 @@ pub(crate) fn set_current_manager(manager: Option<&str>) {
         .current_manager
         .lock()
         .expect("logger manager mutex poisoned");
-    *slot = manager.unwrap_or("core").to_string();
+    *slot = manager.unwrap_or("core");
 }
 
-pub(crate) fn on_command_start(command_display: &str, is_mutation: bool) {
+pub fn on_command_start(command_display: &str, is_mutation: bool) {
     let Some(logger) = LOGGER.get() else {
         return;
     };
@@ -103,25 +103,21 @@ pub(crate) fn on_command_start(command_display: &str, is_mutation: bool) {
     if is_mutation {
         write_line(
             logger,
-            &manager,
+            manager,
             "INFO",
             &format!("mutation command start: {command_display}"),
         );
     } else if logger.options.debug_commands {
         write_line(
             logger,
-            &manager,
+            manager,
             "DEBUG",
             &format!("command start: {command_display}"),
         );
     }
 }
 
-pub(crate) fn on_command_spawn_error(
-    command_display: &str,
-    is_mutation: bool,
-    err: &std::io::Error,
-) {
+pub fn on_command_spawn_error(command_display: &str, is_mutation: bool, err: &std::io::Error) {
     let Some(logger) = LOGGER.get() else {
         return;
     };
@@ -131,13 +127,13 @@ pub(crate) fn on_command_spawn_error(
 
     write_line(
         logger,
-        &manager,
+        manager,
         level,
         &format!("failed to spawn command: {command_display}; error={err}"),
     );
 }
 
-pub(crate) fn on_command_finish(
+pub fn on_command_finish(
     command_display: &str,
     output: &Output,
     is_mutation: bool,
@@ -163,7 +159,7 @@ pub(crate) fn on_command_finish(
     if should_dump_streams {
         write_line(
             logger,
-            &manager,
+            manager,
             level,
             &format!(
                 "command finish: {command_display}; exit={raw_code}; accepted={status_allowed}; elapsed_ms={}",
@@ -174,9 +170,17 @@ pub(crate) fn on_command_finish(
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        write_block(logger, &manager, "STDOUT", &stdout);
-        write_block(logger, &manager, "STDERR", &stderr);
+        write_block(logger, manager, "STDOUT", &stdout);
+        write_block(logger, manager, "STDERR", &stderr);
     }
+}
+
+pub fn log_warning(message: impl AsRef<str>) {
+    let Some(logger) = LOGGER.get() else {
+        return;
+    };
+
+    write_line(logger, current_manager(logger), "WARN", message.as_ref());
 }
 
 fn write_line(logger: &Logger, manager: &str, level: &str, message: &str) {
@@ -230,12 +234,11 @@ fn sanitize_manager(manager: &str) -> String {
         .collect()
 }
 
-fn current_manager(logger: &Logger) -> String {
-    logger
+fn current_manager(logger: &Logger) -> &'static str {
+    *logger
         .current_manager
         .lock()
         .expect("logger manager mutex poisoned")
-        .clone()
 }
 
 fn log_base_dir() -> Option<PathBuf> {

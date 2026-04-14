@@ -4,14 +4,12 @@ use crate::managers::common::{
     DelayedLatest, PlannedUpdate, emit_manager_level_error, emit_scan_current,
     run_per_item_apply_flow, verbose_now_unix_secs,
 };
-use crate::outcome::{
-    ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, REASON_PINNED, emit_text_outcome,
-};
+use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{CmdStatus, run_cmd};
+use crate::util::time::human_age;
 use crate::util::time::now_unix_secs;
-use crate::util::timefmt::human_age;
-use crate::util::timeparse::parse_rfc3339_unix;
+use crate::util::time::parse_rfc3339_unix;
 use anyhow::{Context, Result, bail};
 use semver::Version;
 use std::path::PathBuf;
@@ -19,7 +17,7 @@ use std::time::Duration;
 
 const GO_MAX_PARALLEL_CHECKS: usize = 4;
 
-pub(crate) struct GoPlugin;
+pub struct GoPlugin;
 
 impl ManagerPlugin for GoPlugin {
     fn id(&self) -> &'static str {
@@ -35,7 +33,7 @@ impl ManagerPlugin for GoPlugin {
     }
 }
 
-pub(crate) static PLUGIN: GoPlugin = GoPlugin;
+pub static PLUGIN: GoPlugin = GoPlugin;
 
 #[derive(Debug, Clone)]
 struct GoManagedTool {
@@ -172,7 +170,7 @@ fn emit_go_plan_and_collect_upgradable(
                     "*",
                     "*",
                     PLUGIN.id(),
-                    REASON_MISSING_METADATA,
+                    ReasonCode::MissingMetadata,
                     reason,
                 );
                 emit_text_outcome(&outcome);
@@ -191,7 +189,7 @@ fn emit_go_plan_and_collect_upgradable(
                             tool.current_version.clone(),
                             tool.current_version,
                             PLUGIN.id(),
-                            REASON_COMMAND_FAILED,
+                            ReasonCode::CommandFailed,
                             err,
                         );
                         emit_text_outcome(&outcome);
@@ -229,7 +227,7 @@ fn emit_go_plan_and_collect_upgradable(
                                         tool.current_version,
                                         selected,
                                         PLUGIN.id(),
-                                        REASON_PINNED,
+                                        ReasonCode::Pinned,
                                         "pinned",
                                     );
                                     emit_text_outcome(&outcome);
@@ -309,7 +307,7 @@ fn apply_go_updates(upgradable: Vec<PlannedUpdate>) {
                 current,
                 target,
                 PLUGIN.id(),
-                REASON_COMMAND_FAILED,
+                ReasonCode::CommandFailed,
                 err.to_string(),
             );
             emit_text_outcome(&outcome);
@@ -331,7 +329,7 @@ fn emit_go_scan_outcomes(
                     "*",
                     "*",
                     PLUGIN.id(),
-                    REASON_MISSING_METADATA,
+                    ReasonCode::MissingMetadata,
                     reason,
                 );
                 emit_text_outcome(&outcome);

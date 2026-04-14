@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 
-pub(crate) fn effective_parallelism(requested: usize, manager_cap: usize) -> usize {
+pub fn effective_parallelism(requested: usize, manager_cap: usize) -> usize {
     requested.clamp(1, manager_cap.max(1))
 }
 
-pub(crate) fn run_indexed_parallel<J, R, F>(
+pub fn run_indexed_parallel<J, R, F>(
     jobs: Vec<J>,
     threads: usize,
     manager_id: &str,
@@ -21,20 +21,27 @@ where
         .build()
         .with_context(|| format!("failed to build {manager_id} planning thread pool"))?;
 
-    let indexed: Vec<(usize, R)> = pool.install(|| {
-        jobs.into_par_iter()
-            .enumerate()
-            .map(|(index, job)| (index, resolver(job)))
-            .collect()
-    });
+    Ok(pool.install(|| jobs.into_par_iter().map(resolver).collect()))
+}
 
-    let mut slots: Vec<Option<R>> = (0..indexed.len()).map(|_| None).collect();
-    for (index, item) in indexed {
-        slots[index] = Some(item);
+#[cfg(test)]
+mod tests {
+    use super::run_indexed_parallel;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn run_indexed_parallel_preserves_input_order() {
+        let jobs: Vec<usize> = (0..32).collect();
+
+        let result = run_indexed_parallel(jobs.clone(), 4, "test", |job| {
+            // Force uneven completion times to exercise ordering guarantees.
+            thread::sleep(Duration::from_millis(((31 - job) % 5) as u64));
+            job * 2
+        })
+        .expect("parallel planning should succeed");
+
+        let expected: Vec<usize> = jobs.into_iter().map(|job| job * 2).collect();
+        assert_eq!(result, expected);
     }
-
-    slots
-        .into_iter()
-        .map(|item| item.with_context(|| format!("internal error: missing {manager_id} plan slot")))
-        .collect()
 }

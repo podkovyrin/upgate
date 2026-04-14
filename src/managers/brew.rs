@@ -3,13 +3,11 @@ use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
     PlannedUpdate, emit_manager_level_error, emit_scan_current, run_per_item_apply_flow,
 };
-use crate::outcome::{
-    ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, REASON_PINNED, emit_text_outcome,
-};
+use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 use crate::ui::output_theme;
 use crate::util::process::{CmdStatus, run_cmd};
+use crate::util::time::human_age;
 use crate::util::time::now_unix_secs;
-use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 use reqwest::blocking::Client;
@@ -21,7 +19,7 @@ use std::time::Duration;
 const BREW_MAX_PARALLEL_CHECKS_MIN: usize = 1;
 const BREW_API_FALLBACK_MAX_PARALLEL_CHECKS: usize = 4;
 
-pub(crate) struct BrewPlugin;
+pub struct BrewPlugin;
 
 impl ManagerPlugin for BrewPlugin {
     fn id(&self) -> &'static str {
@@ -41,7 +39,7 @@ impl ManagerPlugin for BrewPlugin {
     }
 }
 
-pub(crate) static PLUGIN: BrewPlugin = BrewPlugin;
+pub static PLUGIN: BrewPlugin = BrewPlugin;
 
 #[derive(Debug, Deserialize)]
 struct OutdatedRoot {
@@ -139,7 +137,7 @@ enum DataSource {
 }
 
 impl DataSource {
-    fn as_str(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Self::Git => "git",
             Self::Api => "api",
@@ -288,7 +286,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                 item.installed.clone(),
                 item.target.clone(),
                 PLUGIN.id(),
-                REASON_PINNED,
+                ReasonCode::Pinned,
                 "pinned",
             )
         } else {
@@ -890,15 +888,15 @@ fn item_to_outcome(item: &PlanItem) -> ItemOutcome {
                     item.installed.clone(),
                     item.target.clone(),
                     source.as_str(),
-                    REASON_COMMAND_FAILED,
+                    ReasonCode::CommandFailed,
                     reason.clone(),
                 );
             }
 
             let reason_code = if reason.starts_with("pinned") {
-                REASON_PINNED
+                ReasonCode::Pinned
             } else {
-                REASON_MISSING_METADATA
+                ReasonCode::MissingMetadata
             };
 
             ItemOutcome::skipped(
@@ -1109,7 +1107,10 @@ fn brew_tap_meta() -> Result<HashMap<String, TapMeta>> {
         .collect())
 }
 
-fn brew_info_for_names(formula_names: &[String], cask_names: &[String]) -> Result<InfoRoot> {
+fn brew_info_for_names<S1: AsRef<str>, S2: AsRef<str>>(
+    formula_names: &[S1],
+    cask_names: &[S2],
+) -> Result<InfoRoot> {
     if formula_names.is_empty() && cask_names.is_empty() {
         return Ok(InfoRoot {
             formulae: Vec::new(),
@@ -1117,9 +1118,9 @@ fn brew_info_for_names(formula_names: &[String], cask_names: &[String]) -> Resul
         });
     }
 
-    let mut args = vec!["info".to_string(), "--json=v2".to_string()];
-    args.extend(formula_names.iter().cloned());
-    args.extend(cask_names.iter().cloned());
+    let mut args: Vec<&str> = vec!["info", "--json=v2"];
+    args.extend(formula_names.iter().map(AsRef::as_ref));
+    args.extend(cask_names.iter().map(AsRef::as_ref));
 
     run_cmd("brew", &args, CmdStatus::Success).output()?.json()
 }

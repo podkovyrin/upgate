@@ -11,9 +11,9 @@ enum OutputMode {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct OutputTheme {
+pub struct OutputTheme {
     mode: OutputMode,
-    pub(crate) verbose: bool,
+    pub verbose: bool,
 }
 
 impl OutputTheme {
@@ -37,18 +37,18 @@ impl OutputTheme {
         }
     }
 
-    pub(crate) fn plain(self) -> bool {
+    pub const fn plain(self) -> bool {
         matches!(self.mode, OutputMode::Plain)
     }
 
-    pub(crate) fn color(self) -> bool {
+    pub const fn color(self) -> bool {
         match self.mode {
             OutputMode::Plain => false,
             OutputMode::Styled { color } => color,
         }
     }
 
-    pub(crate) fn unicode(self) -> bool {
+    pub const fn unicode(self) -> bool {
         !self.plain()
     }
 }
@@ -63,7 +63,7 @@ struct ThemeOptions {
 static OUTPUT_THEME: OnceLock<OutputTheme> = OnceLock::new();
 static ACTIVE_SPINNER: OnceLock<Mutex<Option<ProgressBar>>> = OnceLock::new();
 
-pub(crate) fn init_output_theme(plain_flag: bool, no_color_flag: bool, verbose_flag: bool) {
+pub fn init_output_theme(plain_flag: bool, no_color_flag: bool, verbose_flag: bool) {
     let options = ThemeOptions {
         plain_flag,
         no_color_flag,
@@ -73,7 +73,7 @@ pub(crate) fn init_output_theme(plain_flag: bool, no_color_flag: bool, verbose_f
     let _ = OUTPUT_THEME.set(theme);
 }
 
-pub(crate) fn output_theme() -> OutputTheme {
+pub fn output_theme() -> OutputTheme {
     *OUTPUT_THEME.get_or_init(|| {
         OutputTheme::from_options(ThemeOptions {
             plain_flag: false,
@@ -83,13 +83,13 @@ pub(crate) fn output_theme() -> OutputTheme {
     })
 }
 
-pub(crate) struct ManagerSpinner(Option<ProgressBar>);
+pub struct ManagerSpinner(Option<ProgressBar>);
 
 fn active_spinner_slot() -> &'static Mutex<Option<ProgressBar>> {
     ACTIVE_SPINNER.get_or_init(|| Mutex::new(None))
 }
 
-pub(crate) fn start_manager_spinner(manager: &str, run_mode: RunMode) -> ManagerSpinner {
+pub fn start_manager_spinner(manager: &str, run_mode: RunMode) -> ManagerSpinner {
     if output_theme().plain() || !std::io::stderr().is_terminal() {
         return ManagerSpinner(None);
     }
@@ -122,7 +122,7 @@ pub(crate) fn start_manager_spinner(manager: &str, run_mode: RunMode) -> Manager
     ManagerSpinner(Some(pb))
 }
 
-pub(crate) fn with_spinner_suspended<F, R>(f: F) -> R
+pub fn with_spinner_suspended<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
 {
@@ -138,7 +138,7 @@ where
     }
 }
 
-pub(crate) fn finish_manager_spinner(spinner: ManagerSpinner) {
+pub fn finish_manager_spinner(spinner: ManagerSpinner) {
     if let Some(pb) = spinner.0 {
         *active_spinner_slot()
             .lock()

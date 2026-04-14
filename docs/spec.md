@@ -9,8 +9,29 @@ This file is the manager-spec source of truth for current behavior.
 ## Source of truth in code
 
 - `src/main.rs`
-- `src/manager.rs`
+- `src/app/cli.rs`
+- `src/app/mod.rs`
+- `src/config/mod.rs`
+- `src/config/load.rs`
+- `src/config/model.rs`
+- `src/config/overrides.rs`
+- `src/config/path.rs`
+- `src/config/pins.rs`
+- `src/manager/mod.rs`
+- `src/manager/context.rs`
+- `src/manager/plugin.rs`
+- `src/manager/registry.rs`
 - `src/managers/mod.rs`
+- `src/managers/common/mod.rs`
+- `src/managers/common/apply.rs`
+- `src/managers/common/plan/mod.rs`
+- `src/managers/common/plan/collect.rs`
+- `src/managers/common/plan/decision.rs`
+- `src/managers/common/plan/emit.rs`
+- `src/managers/common/plan/types.rs`
+- `src/managers/common/versioning/mod.rs`
+- `src/managers/common/versioning/pep440.rs`
+- `src/managers/common/versioning/semver.rs`
 - `src/managers/brew.rs`
 - `src/managers/bun.rs`
 - `src/managers/cargo.rs`
@@ -23,13 +44,22 @@ This file is the manager-spec source of truth for current behavior.
 - `src/managers/go.rs`
 - `src/managers/gem.rs`
 - `src/managers/dotnet.rs`
-- `src/outcome.rs`
+- `src/outcome/mod.rs`
+- `src/outcome/item.rs`
+- `src/outcome/render.rs`
+- `src/outcome/types.rs`
+- `src/interactive/mod.rs`
+- `src/interactive/apply.rs`
+- `src/ui.rs`
+- `src/util/http.rs`
 - `src/util/process.rs`
-- `src/util/timefmt.rs`
-- `src/util/timeparse.rs`
-- `src/util/durationparse.rs`
 - `src/util/parallel.rs`
 - `src/util/logging.rs`
+- `src/util/time/mod.rs`
+- `src/util/time/clock.rs`
+- `src/util/time/duration.rs`
+- `src/util/time/format.rs`
+- `src/util/time/parse.rs`
 
 ## CLI contract
 
@@ -41,7 +71,7 @@ Commands:
 Global options:
 - `--max-parallel-checks <n>` (default `6`)
 - `--managers <list>` where list is comma-separated manager IDs (default: all managers)
-- `--set <manager.key=value>` / `-S <manager.key=value>` (repeatable config overrides)
+- `--set <section.key=value>` / `-S <section.key=value>` (repeatable config overrides)
 - `--plain` (force plain output: no color, ASCII arrow)
 - `--no-color` (disable ANSI color styling)
 - `--verbose` (show additional metadata segments such as source and delayed-latest note)
@@ -63,12 +93,14 @@ Default manager set: all registered managers (`brew`, `bun`, `cargo`, `npm`, `ya
 - `gem`, `dotnet`: `off`
 
 Behavior notes:
-- `plan` is non-mutating.
+- `plan` does not apply package/tool upgrades. (Note: manager-specific metadata refresh commands can still run; e.g. Homebrew may run `brew update --quiet` unless disabled.)
 - `scan` is non-mutating and lists installed package/tool versions across managers.
 - `apply` performs updates.
 - `--interactive` is valid only with `apply` and requires interactive `stdin` + `stdout` TTY; otherwise execution fails.
-- Interactive flow is per manager, with all upgradable items selected by default and optional deselection.
-- Deselected items are persisted as manager-local pins in config.
+- Interactive flow:
+  - per-item managers prompt with all upgradable items selected by default and allow deselection
+  - global-apply managers (`npm`, `bun`, `mise`) use all-or-nothing confirmation
+- Deselected/skipped choices are persisted as manager-local pins in config.
 - Selected managers run in a fixed internal order:
   `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`, `gem`, `dotnet`.
 - Manager execution is gated by per-manager `mode`:
@@ -79,17 +111,30 @@ Behavior notes:
 
 ## Architecture (current)
 
+- Manager orchestration is split by concern:
+  - `manager/context`: run mode + per-manager runtime context/state
+  - `manager/plugin`: plugin trait contract
+  - `manager/registry`: plugin registry order + selection + context build
 - Manager-native parsing/selection/apply logic remains in manager modules.
+- Shared manager helpers are grouped under `managers/common`:
+  - `common/plan`: planning decisions, outcome emission, shared plan models
+  - `common/apply`: per-item and global apply flow orchestration
+  - `common/versioning`: semver/PEP440 timeline parsing and age-window selection
 - Shared interactive selection helper applies pinned filtering and per-manager selection.
 - Interactive pin persistence updates only the manager `pinned` key while preserving existing config structure/comments.
 - Shared utility modules are used for narrow cross-cutting concerns:
   - subprocess execution/formatting (`util/process`)
   - command/session logging (`util/logging`)
-  - human age formatting (`util/timefmt`)
-  - RFC3339 parse to unix seconds (`util/timeparse`)
-  - duration parsing (`util/durationparse`)
   - indexed internal parallel job execution helpers (`util/parallel`)
-- Outcome formatting contract is centralized in `src/outcome.rs`.
+  - time helpers (`util/time`):
+    - clock (`util/time/clock`)
+    - duration parsing (`util/time/duration`)
+    - human-age formatting (`util/time/format`)
+    - RFC3339 parse to unix seconds (`util/time/parse`)
+- Outcome contract is split by concern:
+  - `outcome/types`: status/reason enums
+  - `outcome/item`: `ItemOutcome` constructors/payload
+  - `outcome/render`: text rendering policy and line emission
 
 Internal planning parallelism (current):
 - Manager execution remains sequential (registry order).
@@ -258,12 +303,16 @@ Concurrency:
 Delay policy:
 - Uses config `[yarn].min_release_age` (default `7d`).
 
-Planning flow:
+Version gate:
+- Yarn major version is detected first.
+- Yarn 2+ global upgrades are not supported by this manager; it emits a skipped manager-level outcome and exits early for both `plan/apply` and `scan`.
+
+Planning flow (Yarn 1):
 1. `yarn global list --depth=0`.
 2. Per package: `yarn info <name> time --json`.
 3. Parse version timestamps and choose semver-max eligible target (`>= current`, age eligible).
 
-Apply flow:
+Apply flow (Yarn 1):
 - Per eligible package: `yarn global add <name>@<target>`.
 - Per-package apply failures emit `error` and continue.
 
@@ -336,7 +385,8 @@ Planning flow:
 
 Latest-age annotation source:
 - `npm:` tools use `npm view <pkg>@<latest> time --json`.
-- Non-`npm:` tools currently use `0s` as placeholder age.
+- Non-`npm:` tools are currently annotated as `0s` (placeholder).
+- For `npm:` tools, if age enrichment is unavailable or per-item age lookup is missing, delayed-latest age currently falls back to `0s`.
 
 Error handling:
 - `mise outdated --json` failure emits one synthetic `*` error outcome and planning continues without latest-map annotations.

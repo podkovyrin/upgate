@@ -1,10 +1,10 @@
+use super::{choose_items_for_manager, confirm_global_manager_apply};
 use crate::config::PIN_ALL;
-use crate::interactive;
 use crate::manager::ManagerCtx;
 use crate::managers::common::PlannedUpdate;
-use crate::outcome::{ItemOutcome, REASON_PINNED, emit_text_outcome};
+use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 
-pub(crate) fn select_upgradable_items(
+pub fn select_upgradable_items(
     ctx: &ManagerCtx,
     manager_id: &'static str,
     upgradable: Vec<PlannedUpdate>,
@@ -23,7 +23,7 @@ pub(crate) fn select_upgradable_items(
         return Ok(selected);
     }
 
-    let chosen_items = interactive::choose_items_for_manager(manager_id, &upgradable, &pinned)?;
+    let chosen_items = choose_items_for_manager(manager_id, &upgradable, &pinned)?;
     assert_eq!(chosen_items.len(), upgradable.len());
 
     let mut selected_items = Vec::new();
@@ -50,7 +50,7 @@ pub(crate) fn select_upgradable_items(
             item.current.clone(),
             item.target.clone(),
             "selected",
-            REASON_PINNED,
+            ReasonCode::Pinned,
             "pinned",
         ));
     }
@@ -60,7 +60,7 @@ pub(crate) fn select_upgradable_items(
     Ok(selected_items)
 }
 
-pub(crate) fn should_apply_global_manager(
+pub fn should_apply_global_manager(
     ctx: &ManagerCtx,
     manager_id: &'static str,
     upgradable: &[PlannedUpdate],
@@ -69,8 +69,7 @@ pub(crate) fn should_apply_global_manager(
         return Ok(false);
     }
 
-    let apply =
-        interactive::confirm_global_manager_apply(manager_id, ctx.policy.pinned.is_empty())?;
+    let apply = confirm_global_manager_apply(manager_id, ctx.policy.pinned.is_empty())?;
     if !apply {
         emit_global_skipped_items(upgradable);
         let next_pins = std::iter::once(PIN_ALL.to_string()).collect();
@@ -91,7 +90,7 @@ fn emit_global_skipped_items(upgradable: &[PlannedUpdate]) {
             item.current.clone(),
             item.target.clone(),
             item.source,
-            REASON_PINNED,
+            ReasonCode::Pinned,
             "pinned",
         ));
     }

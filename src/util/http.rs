@@ -2,10 +2,10 @@ use anyhow::{Context, Result};
 use reqwest::blocking::Client;
 use std::time::Duration;
 
-pub(crate) const HTTP_USER_AGENT: &str = "upnow/0.1";
-pub(crate) const HTTP_TIMEOUT_SECS: u64 = 8;
+pub const HTTP_USER_AGENT: &str = "upnow/0.1";
+pub const HTTP_TIMEOUT_SECS: u64 = 8;
 
-pub(crate) fn default_blocking_client() -> Result<Client> {
+pub fn default_blocking_client() -> Result<Client> {
     Client::builder()
         .user_agent(HTTP_USER_AGENT)
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))

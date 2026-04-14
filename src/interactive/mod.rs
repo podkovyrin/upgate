@@ -1,3 +1,5 @@
+pub mod apply;
+
 use crate::config::PIN_ALL;
 use crate::managers::common::PlannedUpdate;
 use crate::outcome::version_label;
@@ -16,7 +18,7 @@ use std::io::{self, IsTerminal, Write};
 type Line = (String, String);
 
 #[derive(Debug)]
-pub(crate) struct InteractiveCancelled;
+pub struct InteractiveCancelled;
 
 impl fmt::Display for InteractiveCancelled {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -26,7 +28,7 @@ impl fmt::Display for InteractiveCancelled {
 
 impl Error for InteractiveCancelled {}
 
-pub(crate) fn ensure_tty_available() -> Result<()> {
+pub fn ensure_tty_available() -> Result<()> {
     if !std::io::stdin().is_terminal() {
         bail!("--interactive requires an interactive terminal on stdin");
     }
@@ -38,7 +40,7 @@ pub(crate) fn ensure_tty_available() -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn choose_items_for_manager(
+pub fn choose_items_for_manager(
     manager: &str,
     items: &[PlannedUpdate],
     pinned: &BTreeSet<String>,
@@ -50,7 +52,7 @@ pub(crate) fn choose_items_for_manager(
     with_spinner_suspended(|| run_multi_select_dialog(manager, items, pinned))
 }
 
-pub(crate) fn confirm_global_manager_apply(manager: &str, default_apply_all: bool) -> Result<bool> {
+pub fn confirm_global_manager_apply(manager: &str, default_apply_all: bool) -> Result<bool> {
     with_spinner_suspended(|| run_global_choice_dialog(manager, default_apply_all))
 }
 
@@ -224,10 +226,7 @@ fn run_global_choice_dialog(manager: &str, default_apply_all: bool) -> Result<bo
             }
 
             match key.code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    apply_all = !apply_all;
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
+                KeyCode::Up | KeyCode::Down | KeyCode::Char('k' | 'j') => {
                     apply_all = !apply_all;
                 }
                 KeyCode::Char('a') => {
@@ -334,11 +333,7 @@ fn clear_dialog(out: &mut io::Stdout, lines: usize) -> Result<()> {
 }
 
 fn cleanup_terminal(out: &mut io::Stdout, last_height: usize) -> Result<()> {
-    let mut cleanup_error: Option<anyhow::Error> = None;
-
-    if let Err(err) = clear_dialog(out, last_height) {
-        cleanup_error = Some(err);
-    }
+    let mut cleanup_error: Option<anyhow::Error> = clear_dialog(out, last_height).err();
     if let Err(err) = terminal::disable_raw_mode()
         && cleanup_error.is_none()
     {

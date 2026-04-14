@@ -9,13 +9,13 @@ use std::time::Instant;
 static SKIP_MUTATING_COMMANDS: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum CmdStatus<'a> {
+pub enum CmdStatus<'a> {
     Success,
     Allow(&'a [i32]),
     IgnoreStatus,
 }
 
-pub(crate) struct Cmd<'a> {
+pub struct Cmd<'a> {
     program: OsString,
     args: Vec<OsString>,
     check: CmdStatus<'a>,
@@ -23,36 +23,36 @@ pub(crate) struct Cmd<'a> {
 }
 
 impl Cmd<'_> {
-    pub(crate) fn mutating(mut self) -> Self {
+    pub const fn mutating(mut self) -> Self {
         self.is_mutation = true;
         self
     }
 
-    pub(crate) fn output(self) -> Result<CmdOutput> {
+    pub fn output(self) -> Result<CmdOutput> {
         execute_cmd(&self.program, &self.args, self.check, self.is_mutation)
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct CmdOutput {
+pub struct CmdOutput {
     output: Output,
     display: String,
 }
 
 impl CmdOutput {
-    pub(crate) fn stdout(&self) -> Result<&str> {
+    pub fn stdout(&self) -> Result<&str> {
         let s = std::str::from_utf8(&self.output.stdout)
             .with_context(|| format!("{} stdout not UTF-8", self.display))?;
         Ok(s.trim())
     }
 
-    pub(crate) fn stderr(&self) -> Result<&str> {
+    pub fn stderr(&self) -> Result<&str> {
         let s = std::str::from_utf8(&self.output.stderr)
             .with_context(|| format!("{} stderr not UTF-8", self.display))?;
         Ok(s.trim())
     }
 
-    pub(crate) fn json<T>(&self) -> Result<T>
+    pub fn json<T>(&self) -> Result<T>
     where
         T: DeserializeOwned,
     {
@@ -60,16 +60,16 @@ impl CmdOutput {
             .with_context(|| format!("failed to parse JSON output from {}", self.display))
     }
 
-    pub(crate) fn success(&self) -> bool {
+    pub fn success(&self) -> bool {
         self.output.status.success()
     }
 
-    pub(crate) fn code(&self) -> Option<i32> {
+    pub fn code(&self) -> Option<i32> {
         self.output.status.code()
     }
 }
 
-pub(crate) fn run_cmd<P, I, A>(program: P, args: I, check: CmdStatus<'_>) -> Cmd<'_>
+pub fn run_cmd<P, I, A>(program: P, args: I, check: CmdStatus<'_>) -> Cmd<'_>
 where
     P: AsRef<OsStr>,
     I: IntoIterator<Item = A>,
@@ -162,28 +162,24 @@ fn status_allowed(status: ExitStatus, check: CmdStatus<'_>) -> bool {
 }
 
 fn command_display(command: &Command) -> String {
-    let program = command.get_program().to_string_lossy().to_string();
-    let args: Vec<String> = command
-        .get_args()
-        .map(|arg| arg.to_string_lossy().to_string())
-        .collect();
-
-    if args.is_empty() {
-        program
-    } else {
-        format!("{program} {}", args.join(" "))
+    let mut display = command.get_program().to_string_lossy().into_owned();
+    for arg in command.get_args() {
+        display.push(' ');
+        display.push_str(arg.to_string_lossy().as_ref());
     }
+
+    display
 }
 
 #[derive(Debug)]
-pub(crate) struct CommandFailedError {
+pub struct CommandFailedError {
     command_display: String,
     status: ExitStatus,
     stderr: String,
 }
 
 impl CommandFailedError {
-    pub(crate) fn was_signaled(&self) -> bool {
+    pub fn was_signaled(&self) -> bool {
         self.status.code().is_none()
     }
 }

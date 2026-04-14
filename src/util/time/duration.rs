@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use std::time::Duration;
 
-pub(crate) fn parse_duration(raw: &str) -> Result<Duration> {
+pub fn parse_duration(raw: &str) -> Result<Duration> {
     let trimmed = raw.trim();
     if trimmed.len() < 2 {
         bail!("invalid duration '{raw}', expected values like 12h or 7d");

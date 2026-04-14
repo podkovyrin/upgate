@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-pub(crate) fn parse_rfc3339_unix(raw: &str) -> Result<u64> {
+pub fn parse_rfc3339_unix(raw: &str) -> Result<u64> {
     let dt = chrono::DateTime::parse_from_rfc3339(raw)
         .with_context(|| format!("invalid RFC3339 timestamp: {raw}"))?;
 

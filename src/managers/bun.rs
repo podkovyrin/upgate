@@ -1,14 +1,13 @@
 use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
-    DelayedLatest, PlanDecision, PlanMeta, SemverAgeResolution, SemverTimestamp,
+    DelayedLatest, PlanMeta, ResolvedPlanTarget, SemverAgeResolution, SemverTimestamp,
     emit_manager_level_error, emit_plan_and_collect_upgradable, emit_scan_current,
-    parse_semver_time_releases, release_age_secs_for_version, resolve_semver_with_min_age,
-    run_global_apply_flow, verbose_now_unix_secs,
+    parse_semver_time_releases, plan_decision_from_resolution, release_age_secs_for_version,
+    resolve_semver_with_min_age, run_global_apply_flow, verbose_now_unix_secs,
 };
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::time::now_unix_secs;
-use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -16,7 +15,7 @@ use std::time::Duration;
 
 const BUN_MAX_PARALLEL_CHECKS: usize = 6;
 
-pub(crate) struct BunPlugin;
+pub struct BunPlugin;
 
 impl ManagerPlugin for BunPlugin {
     fn id(&self) -> &'static str {
@@ -32,7 +31,7 @@ impl ManagerPlugin for BunPlugin {
     }
 }
 
-pub(crate) static PLUGIN: BunPlugin = BunPlugin;
+pub static PLUGIN: BunPlugin = BunPlugin;
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
@@ -103,33 +102,24 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
 
     let upgradable = emit_plan_and_collect_upgradable(
         plan,
-        |item| PlanMeta {
-            manager: PLUGIN.id(),
-            source: PLUGIN.id(),
-            name: item.name.clone(),
-            current: item.current.clone(),
-        },
         |item| {
-            let target = match &item.resolved {
-                Ok(target) => target,
-                Err(err) => return PlanDecision::Error(err.clone()),
-            };
+            let BunPlanItem {
+                name,
+                current,
+                resolved,
+            } = item;
 
-            if let Some(selected) = target.selected_version.as_deref() {
-                if selected == item.current {
-                    return PlanDecision::NoChange;
-                }
+            let decision = plan_decision_from_resolution(&current, resolved, min_age);
 
-                return PlanDecision::Update {
-                    target: selected.to_string(),
-                    delayed_latest: target.delayed_latest(min_age),
-                };
-            }
-
-            PlanDecision::DelayedNoEligible {
-                required_age: human_age(min_age.as_secs()),
-                delayed_latest: target.delayed_latest(min_age),
-            }
+            (
+                PlanMeta {
+                    manager: PLUGIN.id(),
+                    source: PLUGIN.id(),
+                    name,
+                    current,
+                },
+                decision,
+            )
         },
         ctx.is_interactive_apply(),
         pinned_for_global,
@@ -311,7 +301,11 @@ struct BunResolvedTarget {
     latest_age_secs: Option<u64>,
 }
 
-impl BunResolvedTarget {
+impl ResolvedPlanTarget for BunResolvedTarget {
+    fn selected_version(&self) -> Option<&str> {
+        self.selected_version.as_deref()
+    }
+
     fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
         DelayedLatest::from_too_fresh_latest(
             self.selected_version.as_deref(),

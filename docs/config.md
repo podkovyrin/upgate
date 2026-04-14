@@ -9,6 +9,13 @@ If the config file does not exist, built-in defaults are used.
 
 If the config file exists but contains invalid TOML, `upnow` fails with an error.
 
+## Source of truth in code
+
+- `src/app/cli.rs`, `src/app/mod.rs` (CLI flags, validation, orchestration, exit behavior)
+- `src/config/mod.rs`, `src/config/load.rs`, `src/config/model.rs`, `src/config/overrides.rs`, `src/config/path.rs`, `src/config/pins.rs` (config parsing/defaults/validation, CLI overrides, pin persistence)
+- `src/manager/registry.rs` and `src/manager/context.rs` (manager registry, policy/context construction, pending interactive pins)
+- `src/interactive/mod.rs` and `src/interactive/apply.rs` (interactive dialogs and apply/pin flow)
+
 ## Format
 
 Config supports a global `[upnow]` section and manager sections keyed by manager ID.
@@ -86,7 +93,8 @@ upnow plan -S brew.no_update=true -S npm.min_release_age=14d
 
 Format:
 
-- `<manager>.<key>=<value>`
+- `<section>.<key>=<value>`
+- `<section>` is either a manager ID (for manager keys) or `upnow` (for global keys)
 
 Supported keys:
 
@@ -113,6 +121,7 @@ Safety behavior:
 You can deselect items; deselected items are persisted into that manager's `pinned` list in config.
 
 Pinned items are skipped in subsequent runs.
+Interactive pin persistence updates only the manager `pinned` key and keeps unrelated config keys as-is.
 
 Managers that only support global apply (`npm`, `bun`, `mise`) cannot honor per-item deselection.
 In interactive mode they show an all-or-nothing prompt.

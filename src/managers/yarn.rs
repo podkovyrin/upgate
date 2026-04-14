@@ -1,17 +1,14 @@
 use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
-    DelayedLatest, PlanDecision, PlanMeta, SemverAgeResolution, SemverTimestamp,
+    DelayedLatest, PlanMeta, ResolvedPlanTarget, SemverAgeResolution, SemverTimestamp,
     emit_manager_level_error, emit_plan_and_collect_upgradable, emit_version_scan_outcomes,
-    parse_semver_time_releases, release_age_secs_for_version, resolve_semver_with_min_age,
-    run_per_item_apply_flow, verbose_now_unix_secs,
+    parse_semver_time_releases, plan_decision_from_resolution, release_age_secs_for_version,
+    resolve_semver_with_min_age, run_per_item_apply_flow, verbose_now_unix_secs,
 };
-use crate::outcome::{
-    ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, emit_text_outcome,
-};
+use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::time::now_unix_secs;
-use crate::util::timefmt::human_age;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -19,7 +16,7 @@ use std::time::Duration;
 
 const YARN_MAX_PARALLEL_CHECKS: usize = 6;
 
-pub(crate) struct YarnPlugin;
+pub struct YarnPlugin;
 
 impl ManagerPlugin for YarnPlugin {
     fn id(&self) -> &'static str {
@@ -35,7 +32,7 @@ impl ManagerPlugin for YarnPlugin {
     }
 }
 
-pub(crate) static PLUGIN: YarnPlugin = YarnPlugin;
+pub static PLUGIN: YarnPlugin = YarnPlugin;
 
 #[derive(Debug)]
 struct InstalledEntry {
@@ -100,7 +97,7 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             "*",
             "*",
             PLUGIN.id(),
-            REASON_MISSING_METADATA,
+            ReasonCode::MissingMetadata,
             "global upgrades are not supported for Yarn 2+; skipping manager",
         );
         emit_text_outcome(&outcome);
@@ -131,33 +128,24 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
 
     let upgradable = emit_plan_and_collect_upgradable(
         plan,
-        |item| PlanMeta {
-            manager: PLUGIN.id(),
-            source: PLUGIN.id(),
-            name: item.name.clone(),
-            current: item.current.clone(),
-        },
         |item| {
-            let target = match &item.resolved {
-                Ok(target) => target,
-                Err(err) => return PlanDecision::Error(err.clone()),
-            };
+            let YarnPlanItem {
+                name,
+                current,
+                resolved,
+            } = item;
 
-            if let Some(selected) = target.selected_version.as_deref() {
-                if selected == item.current {
-                    return PlanDecision::NoChange;
-                }
+            let decision = plan_decision_from_resolution(&current, resolved, min_age);
 
-                return PlanDecision::Update {
-                    target: selected.to_string(),
-                    delayed_latest: target.delayed_latest(min_age),
-                };
-            }
-
-            PlanDecision::DelayedNoEligible {
-                required_age: human_age(min_age.as_secs()),
-                delayed_latest: target.delayed_latest(min_age),
-            }
+            (
+                PlanMeta {
+                    manager: PLUGIN.id(),
+                    source: PLUGIN.id(),
+                    name,
+                    current,
+                },
+                decision,
+            )
         },
         ctx.is_interactive_apply(),
         Some(&ctx.policy.pinned),
@@ -184,7 +172,7 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
             "*",
             "*",
             PLUGIN.id(),
-            REASON_MISSING_METADATA,
+            ReasonCode::MissingMetadata,
             "global upgrades are not supported for Yarn 2+; skipping manager",
         );
         emit_text_outcome(&outcome);
@@ -260,7 +248,7 @@ fn apply_yarn_updates(upgradable: Vec<crate::managers::common::PlannedUpdate>) {
                 current,
                 version,
                 PLUGIN.id(),
-                REASON_COMMAND_FAILED,
+                ReasonCode::CommandFailed,
                 err.to_string(),
             );
             emit_text_outcome(&outcome);
@@ -349,7 +337,11 @@ struct YarnResolvedTarget {
     latest_age_secs: Option<u64>,
 }
 
-impl YarnResolvedTarget {
+impl ResolvedPlanTarget for YarnResolvedTarget {
+    fn selected_version(&self) -> Option<&str> {
+        self.selected_version.as_deref()
+    }
+
     fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
         DelayedLatest::from_too_fresh_latest(
             self.selected_version.as_deref(),
