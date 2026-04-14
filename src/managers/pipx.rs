@@ -3,7 +3,7 @@ use crate::managers::common::{
     DelayedLatest, Pep440AgeResolution, Pep440Timestamp, PlanDecision, PlanMeta,
     emit_manager_level_error, emit_plan_and_collect_upgradable, emit_version_scan_outcomes,
     parse_pep440_release_timestamps, release_age_secs_for_pep440_version,
-    resolve_pep440_with_min_age, verbose_now_unix_secs,
+    resolve_pep440_with_min_age, run_per_item_apply_flow, verbose_now_unix_secs,
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
@@ -137,13 +137,11 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                 delayed_latest: target.delayed_latest(min_age),
             }
         },
+        ctx.is_interactive_apply(),
+        Some(&ctx.policy.pinned),
     );
 
-    if ctx.is_dry_run() {
-        return Ok(());
-    }
-
-    apply_pipx_updates(upgradable);
+    run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, apply_pipx_updates)?;
 
     Ok(())
 }
@@ -207,8 +205,11 @@ fn resolve_pipx_plan(
     })
 }
 
-fn apply_pipx_updates(upgradable: Vec<(String, String, String)>) {
-    for (pkg, current, target) in upgradable {
+fn apply_pipx_updates(upgradable: Vec<crate::managers::common::PlannedUpdate>) {
+    for item in upgradable {
+        let pkg = item.name;
+        let current = item.current;
+        let target = item.target;
         let spec = format!("{pkg}=={target}");
         if let Err(err) = run_cmd("pipx", ["upgrade", &spec], CmdStatus::Success)
             .mutating()

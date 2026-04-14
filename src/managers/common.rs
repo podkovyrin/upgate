@@ -1,11 +1,13 @@
-use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
+use crate::config::PIN_ALL;
+use crate::manager::ManagerCtx;
+use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, REASON_PINNED, emit_text_outcome};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
 use anyhow::{Context, Result};
 use pep440::Version as Pep440Version;
 use semver::Version;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 pub(crate) struct PlanMeta {
@@ -15,6 +17,7 @@ pub(crate) struct PlanMeta {
     pub(crate) current: String,
 }
 
+#[derive(Debug, Clone)]
 pub(crate) struct DelayedLatest {
     pub(crate) latest_version: String,
     pub(crate) latest_age: String,
@@ -62,6 +65,47 @@ pub(crate) enum PlanDecision {
         target: String,
         delayed_latest: Option<DelayedLatest>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PlannedUpdate {
+    pub(crate) manager: &'static str,
+    pub(crate) source: &'static str,
+    pub(crate) name: String,
+    pub(crate) current: String,
+    pub(crate) target: String,
+    pub(crate) delayed_latest: Option<DelayedLatest>,
+    pub(crate) apply_spec_base: Option<String>,
+}
+
+impl PlannedUpdate {
+    pub(crate) fn to_update_outcome(&self) -> ItemOutcome {
+        if let Some(DelayedLatest {
+            latest_version,
+            latest_age,
+            required_age,
+        }) = &self.delayed_latest
+        {
+            return ItemOutcome::update_with_delayed_latest(
+                self.manager,
+                self.name.clone(),
+                self.current.clone(),
+                self.target.clone(),
+                self.source,
+                latest_version.clone(),
+                latest_age.clone(),
+                required_age.clone(),
+            );
+        }
+
+        ItemOutcome::update(
+            self.manager,
+            self.name.clone(),
+            self.current.clone(),
+            self.target.clone(),
+            self.source,
+        )
+    }
 }
 
 pub(crate) fn emit_manager_level_error(
@@ -138,7 +182,9 @@ pub(crate) fn emit_plan_and_collect_upgradable<T, M, D>(
     items: Vec<T>,
     mut meta_fn: M,
     mut decision_fn: D,
-) -> Vec<(String, String, String)>
+    suppress_update_outcomes: bool,
+    pinned: Option<&BTreeSet<String>>,
+) -> Vec<PlannedUpdate>
 where
     M: FnMut(&T) -> PlanMeta,
     D: FnMut(&T) -> PlanDecision,
@@ -153,84 +199,228 @@ where
             current,
         } = meta_fn(&item);
 
-        match decision_fn(&item) {
-            PlanDecision::Error(err) => {
-                let outcome = ItemOutcome::error(
-                    manager,
-                    name,
-                    current.clone(),
-                    current,
-                    source,
-                    REASON_COMMAND_FAILED,
-                    err,
-                );
-                emit_text_outcome(&outcome);
-            }
-            PlanDecision::DelayedNoEligible {
-                required_age,
-                delayed_latest,
-            } => {
-                let outcome = if let Some(DelayedLatest {
-                    latest_version,
-                    latest_age,
-                    required_age,
-                }) = delayed_latest
-                {
-                    ItemOutcome::delayed_no_eligible_with_latest(
-                        manager,
-                        name,
-                        current,
-                        source,
-                        latest_version,
-                        latest_age,
-                        required_age,
-                    )
-                } else {
-                    ItemOutcome::delayed_no_eligible(manager, name, current, source, required_age)
-                };
-                emit_text_outcome(&outcome);
-            }
-            PlanDecision::NoChange => {
-                let outcome = ItemOutcome::skipped_no_change(manager, name, current, source);
-                emit_text_outcome(&outcome);
-            }
-            PlanDecision::Update {
-                target,
-                delayed_latest,
-            } => {
-                let outcome = if let Some(DelayedLatest {
-                    latest_version,
-                    latest_age,
-                    required_age,
-                }) = delayed_latest
-                {
-                    ItemOutcome::update_with_delayed_latest(
-                        manager,
-                        name.clone(),
-                        current.clone(),
-                        target.clone(),
-                        source,
-                        latest_version,
-                        latest_age,
-                        required_age,
-                    )
-                } else {
-                    ItemOutcome::update(
-                        manager,
-                        name.clone(),
-                        current.clone(),
-                        target.clone(),
-                        source,
-                    )
-                };
+        let decision = decision_fn(&item);
 
-                emit_text_outcome(&outcome);
-                upgradable.push((name, current, target));
-            }
+        if is_pinned(manager, &name, pinned) {
+            handle_pinned_decision(
+                &mut upgradable,
+                manager,
+                source,
+                name,
+                current,
+                decision,
+                suppress_update_outcomes,
+            );
+            continue;
         }
+
+        handle_regular_decision(
+            &mut upgradable,
+            manager,
+            source,
+            name,
+            current,
+            decision,
+            suppress_update_outcomes,
+        );
     }
 
     upgradable
+}
+
+pub(crate) fn run_per_item_apply_flow<F>(
+    ctx: &ManagerCtx,
+    manager_id: &'static str,
+    upgradable: Vec<PlannedUpdate>,
+    apply_selected: F,
+) -> Result<()>
+where
+    F: FnOnce(Vec<PlannedUpdate>),
+{
+    let selected =
+        crate::util::interactive_apply::select_upgradable_items(ctx, manager_id, upgradable)?;
+    if selected.is_empty() || ctx.is_dry_run() {
+        return Ok(());
+    }
+
+    apply_selected(selected);
+    Ok(())
+}
+
+pub(crate) fn run_global_apply_flow<F, E>(
+    ctx: &ManagerCtx,
+    manager_id: &'static str,
+    source: &'static str,
+    upgradable: Vec<PlannedUpdate>,
+    apply_all: F,
+) -> Result<()>
+where
+    F: FnOnce() -> std::result::Result<(), E>,
+    E: std::fmt::Display,
+{
+    if upgradable.is_empty() || ctx.is_dry_run() {
+        return Ok(());
+    }
+
+    if ctx.is_interactive_apply() {
+        if !crate::util::interactive_apply::should_apply_global_manager(
+            ctx,
+            manager_id,
+            &upgradable,
+        )? {
+            return Ok(());
+        }
+
+        for item in &upgradable {
+            emit_text_outcome(&item.to_update_outcome());
+        }
+    }
+
+    if let Err(err) = apply_all() {
+        let outcome = ItemOutcome::error(
+            manager_id,
+            "*",
+            "*",
+            "*",
+            source,
+            REASON_COMMAND_FAILED,
+            err.to_string(),
+        );
+        emit_text_outcome(&outcome);
+    }
+
+    Ok(())
+}
+
+fn is_pinned(manager: &'static str, name: &str, pinned: Option<&BTreeSet<String>>) -> bool {
+    pinned.is_some_and(|set| {
+        (matches!(manager, "npm" | "bun" | "mise") && !set.is_empty())
+            || set.contains(name)
+            || set.contains(PIN_ALL)
+    })
+}
+
+fn handle_pinned_decision(
+    upgradable: &mut Vec<PlannedUpdate>,
+    manager: &'static str,
+    source: &'static str,
+    name: String,
+    current: String,
+    decision: PlanDecision,
+    suppress_update_outcomes: bool,
+) {
+    if suppress_update_outcomes {
+        if let PlanDecision::Update {
+            target,
+            delayed_latest,
+        } = decision
+        {
+            upgradable.push(PlannedUpdate {
+                manager,
+                source,
+                name,
+                current,
+                target,
+                delayed_latest,
+                apply_spec_base: None,
+            });
+        }
+        return;
+    }
+
+    let outcome = ItemOutcome::skipped(
+        manager,
+        name,
+        current.clone(),
+        current,
+        source,
+        REASON_PINNED,
+        "pinned",
+    );
+    emit_text_outcome(&outcome);
+}
+
+fn handle_regular_decision(
+    upgradable: &mut Vec<PlannedUpdate>,
+    manager: &'static str,
+    source: &'static str,
+    name: String,
+    current: String,
+    decision: PlanDecision,
+    suppress_update_outcomes: bool,
+) {
+    match decision {
+        PlanDecision::Error(err) => {
+            let outcome = ItemOutcome::error(
+                manager,
+                name,
+                current.clone(),
+                current,
+                source,
+                REASON_COMMAND_FAILED,
+                err,
+            );
+            emit_text_outcome(&outcome);
+        }
+        PlanDecision::DelayedNoEligible {
+            required_age,
+            delayed_latest,
+        } => {
+            let outcome =
+                delayed_outcome(manager, source, name, current, required_age, delayed_latest);
+            emit_text_outcome(&outcome);
+        }
+        PlanDecision::NoChange => {
+            let outcome = ItemOutcome::skipped_no_change(manager, name, current, source);
+            emit_text_outcome(&outcome);
+        }
+        PlanDecision::Update {
+            target,
+            delayed_latest,
+        } => {
+            let planned = PlannedUpdate {
+                manager,
+                source,
+                name,
+                current,
+                target,
+                delayed_latest,
+                apply_spec_base: None,
+            };
+            if !suppress_update_outcomes {
+                emit_text_outcome(&planned.to_update_outcome());
+            }
+            upgradable.push(planned);
+        }
+    }
+}
+
+fn delayed_outcome(
+    manager: &'static str,
+    source: &'static str,
+    name: String,
+    current: String,
+    required_age: String,
+    delayed_latest: Option<DelayedLatest>,
+) -> ItemOutcome {
+    if let Some(DelayedLatest {
+        latest_version,
+        latest_age,
+        required_age,
+    }) = delayed_latest
+    {
+        return ItemOutcome::delayed_no_eligible_with_latest(
+            manager,
+            name,
+            current,
+            source,
+            latest_version,
+            latest_age,
+            required_age,
+        );
+    }
+
+    ItemOutcome::delayed_no_eligible(manager, name, current, source, required_age)
 }
 
 #[derive(Debug, Clone)]

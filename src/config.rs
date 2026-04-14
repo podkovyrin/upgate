@@ -1,15 +1,17 @@
 use crate::util::durationparse::parse_duration;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
+use toml_edit::{Array, DocumentMut, Item, Table, Value};
 
 const CONFIG_RELATIVE_PATH: &str = "upnow/config.toml";
 const DEFAULT_SCAN_OLD_AGE_THRESHOLD: &str = "365d";
+pub(crate) const PIN_ALL: &str = "*";
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -22,15 +24,21 @@ pub(crate) struct UpnowConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 struct GlobalSectionConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     scan_old_age_threshold: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 struct ManagerSectionConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     min_release_age: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     no_update: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pinned: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +129,7 @@ pub(crate) struct ManagerPolicy {
     pub(crate) min_release_age: ReleaseAge,
     pub(crate) no_update: bool,
     pub(crate) mode: ManagerMode,
+    pub(crate) pinned: BTreeSet<String>,
 }
 
 impl UpnowConfig {
@@ -180,7 +189,72 @@ impl UpnowConfig {
             min_release_age,
             no_update,
             mode,
+            pinned: section
+                .map(|cfg| cfg.pinned.iter().cloned().collect())
+                .unwrap_or_default(),
         })
+    }
+
+    pub(crate) fn set_manager_pins(&mut self, manager_id: &str, pins: BTreeSet<String>) {
+        let section = self.sections.entry(manager_id.to_string()).or_default();
+        section.pinned = pins.into_iter().collect();
+    }
+
+    pub(crate) fn persist_manager_pins(&self, manager_id: &str) -> Result<()> {
+        let Some(path) = config_path() else {
+            bail!("cannot determine config path from environment");
+        };
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create config directory {}", parent.display())
+            })?;
+        }
+
+        let mut doc = if path.exists() {
+            let raw = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read config file {}", path.display()))?;
+            if raw.trim().is_empty() {
+                DocumentMut::new()
+            } else {
+                raw.parse::<DocumentMut>()
+                    .with_context(|| format!("failed to parse config TOML at {}", path.display()))?
+            }
+        } else {
+            DocumentMut::new()
+        };
+
+        let pins: Vec<String> = self
+            .sections
+            .get(manager_id)
+            .map(|cfg| cfg.pinned.clone())
+            .unwrap_or_default();
+
+        if pins.is_empty() {
+            if let Some(item) = doc.get_mut(manager_id) {
+                let Some(table) = item.as_table_like_mut() else {
+                    bail!("failed to persist pins: key '{manager_id}' is not a table");
+                };
+                table.remove("pinned");
+            }
+        } else {
+            if !doc.contains_key(manager_id) {
+                doc[manager_id] = Item::Table(Table::new());
+            }
+
+            let Some(table) = doc[manager_id].as_table_like_mut() else {
+                bail!("failed to persist pins: key '{manager_id}' is not a table");
+            };
+
+            let mut array = Array::default();
+            for pin in pins {
+                array.push(Value::from(pin));
+            }
+            table.insert("pinned", Item::Value(Value::Array(array)));
+        }
+
+        fs::write(&path, doc.to_string())
+            .with_context(|| format!("failed to write config file {}", path.display()))
     }
 
     pub(crate) fn apply_cli_override(
@@ -224,6 +298,9 @@ impl UpnowConfig {
                     .min_release_age = Some(value.to_string());
                 Ok(())
             }
+            "pinned" => bail!(
+                "invalid override '{raw}': key 'pinned' is interactive-only in this iteration"
+            ),
             "no_update" => {
                 if manager_id != "brew" {
                     bail!(

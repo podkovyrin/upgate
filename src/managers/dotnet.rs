@@ -3,7 +3,8 @@ use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
     DelayedLatest, PlanDecision, PlanMeta, SemverAgeResolution, SemverTimestamp,
     emit_manager_level_error, emit_plan_and_collect_upgradable, emit_scan_current,
-    release_age_secs_for_version, resolve_semver_with_min_age, verbose_now_unix_secs,
+    release_age_secs_for_version, resolve_semver_with_min_age, run_per_item_apply_flow,
+    verbose_now_unix_secs,
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
@@ -180,13 +181,11 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                 delayed_latest: target.delayed_latest(min_age),
             }
         },
+        ctx.is_interactive_apply(),
+        Some(&ctx.policy.pinned),
     );
 
-    if ctx.is_dry_run() {
-        return Ok(());
-    }
-
-    apply_dotnet_updates(upgradable);
+    run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, apply_dotnet_updates)?;
 
     Ok(())
 }
@@ -252,8 +251,11 @@ fn resolve_dotnet_plan(
     })
 }
 
-fn apply_dotnet_updates(upgradable: Vec<(String, String, String)>) {
-    for (name, current, target) in upgradable {
+fn apply_dotnet_updates(upgradable: Vec<crate::managers::common::PlannedUpdate>) {
+    for item in upgradable {
+        let name = item.name;
+        let current = item.current;
+        let target = item.target;
         if let Err(err) = run_cmd(
             "dotnet",
             [

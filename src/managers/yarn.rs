@@ -3,7 +3,7 @@ use crate::managers::common::{
     DelayedLatest, PlanDecision, PlanMeta, SemverAgeResolution, SemverTimestamp,
     emit_manager_level_error, emit_plan_and_collect_upgradable, emit_version_scan_outcomes,
     parse_semver_time_releases, release_age_secs_for_version, resolve_semver_with_min_age,
-    verbose_now_unix_secs,
+    run_per_item_apply_flow, verbose_now_unix_secs,
 };
 use crate::outcome::{
     ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, emit_text_outcome,
@@ -159,13 +159,11 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                 delayed_latest: target.delayed_latest(min_age),
             }
         },
+        ctx.is_interactive_apply(),
+        Some(&ctx.policy.pinned),
     );
 
-    if ctx.is_dry_run() {
-        return Ok(());
-    }
-
-    apply_yarn_updates(upgradable);
+    run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, apply_yarn_updates)?;
 
     Ok(())
 }
@@ -246,8 +244,11 @@ fn resolve_yarn_plan(
     })
 }
 
-fn apply_yarn_updates(upgradable: Vec<(String, String, String)>) {
-    for (name, current, version) in upgradable {
+fn apply_yarn_updates(upgradable: Vec<crate::managers::common::PlannedUpdate>) {
+    for item in upgradable {
+        let name = item.name;
+        let current = item.current;
+        let version = item.target;
         let spec = format!("{name}@{version}");
         if let Err(err) = run_cmd("yarn", ["global", "add", &spec], CmdStatus::Success)
             .mutating()

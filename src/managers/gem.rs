@@ -1,7 +1,9 @@
 use crate::config::ManagerMode;
 use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
-    DelayedLatest, emit_manager_level_error, emit_scan_current, verbose_now_unix_secs,
+    DelayedLatest, PlanDecision, PlanMeta, emit_manager_level_error,
+    emit_plan_and_collect_upgradable, emit_scan_current, run_per_item_apply_flow,
+    verbose_now_unix_secs,
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
@@ -9,7 +11,7 @@ use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::time::now_unix_secs;
 use crate::util::timefmt::human_age;
 use crate::util::timeparse::parse_rfc3339_unix;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use reqwest::blocking::Client;
 use semver::Version;
 use std::collections::BTreeMap;
@@ -176,111 +178,50 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             }
         })?;
 
-    let mut upgradable: Vec<(String, String, String)> = Vec::new();
-    let mut plan_iter = plan.into_iter();
+    let upgradable = emit_plan_and_collect_upgradable(
+        plan,
+        |item| PlanMeta {
+            manager: PLUGIN.id(),
+            source: "rubygems",
+            name: item.name.clone(),
+            current: item.current.clone(),
+        },
+        |item| {
+            let target = match &item.resolved {
+                Ok(target) => target,
+                Err(err) => return PlanDecision::Error(err.clone()),
+            };
 
-    for _item in discovered {
-        let planned = plan_iter
-            .next()
-            .context("internal error: missing gem plan entry")?;
-
-        match planned.resolved {
-            Err(err) => {
-                let outcome = ItemOutcome::error(
-                    PLUGIN.id(),
-                    planned.name,
-                    planned.current.clone(),
-                    planned.current,
-                    "rubygems",
-                    REASON_COMMAND_FAILED,
-                    err,
-                );
-                emit_text_outcome(&outcome);
-            }
-            Ok(target) => {
-                let delayed_latest = target.delayed_latest(min_age);
-
-                if let Some(selected) = target.selected_version {
-                    if selected == planned.current {
-                        let outcome = ItemOutcome::skipped_no_change(
-                            PLUGIN.id(),
-                            planned.name,
-                            planned.current,
-                            "rubygems",
-                        );
-                        emit_text_outcome(&outcome);
-                        continue;
-                    }
-
-                    let outcome = if let Some(DelayedLatest {
-                        latest_version,
-                        latest_age,
-                        required_age,
-                    }) = delayed_latest
-                    {
-                        ItemOutcome::update_with_delayed_latest(
-                            PLUGIN.id(),
-                            planned.name.clone(),
-                            planned.current.clone(),
-                            selected.clone(),
-                            "rubygems",
-                            latest_version,
-                            latest_age,
-                            required_age,
-                        )
-                    } else {
-                        ItemOutcome::update(
-                            PLUGIN.id(),
-                            planned.name.clone(),
-                            planned.current.clone(),
-                            selected.clone(),
-                            "rubygems",
-                        )
-                    };
-
-                    emit_text_outcome(&outcome);
-                    upgradable.push((planned.name, planned.current, selected));
-                } else {
-                    let outcome = if let Some(DelayedLatest {
-                        latest_version,
-                        latest_age,
-                        required_age,
-                    }) = delayed_latest
-                    {
-                        ItemOutcome::delayed_no_eligible_with_latest(
-                            PLUGIN.id(),
-                            planned.name,
-                            planned.current,
-                            "rubygems",
-                            latest_version,
-                            latest_age,
-                            required_age,
-                        )
-                    } else {
-                        ItemOutcome::delayed_no_eligible(
-                            PLUGIN.id(),
-                            planned.name,
-                            planned.current,
-                            "rubygems",
-                            human_age(min_age.as_secs()),
-                        )
-                    };
-
-                    emit_text_outcome(&outcome);
+            if let Some(selected) = target.selected_version.as_deref() {
+                if selected == item.current {
+                    return PlanDecision::NoChange;
                 }
+
+                return PlanDecision::Update {
+                    target: selected.to_string(),
+                    delayed_latest: target.delayed_latest(min_age),
+                };
             }
-        }
-    }
 
-    if plan_iter.next().is_some() {
-        bail!("internal error: unexpected extra gem plan entries");
-    }
+            PlanDecision::DelayedNoEligible {
+                required_age: human_age(min_age.as_secs()),
+                delayed_latest: target.delayed_latest(min_age),
+            }
+        },
+        ctx.is_interactive_apply(),
+        Some(&ctx.policy.pinned),
+    );
 
-    if ctx.is_dry_run() {
-        return Ok(());
-    }
+    run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, apply_gem_updates)?;
 
-    for (name, current, target) in upgradable {
+    Ok(())
+}
+
+fn apply_gem_updates(upgradable: Vec<crate::managers::common::PlannedUpdate>) {
+    for item in upgradable {
+        let name = item.name;
+        let current = item.current;
+        let target = item.target;
         if let Err(err) = run_cmd("gem", ["install", &name, "-v", &target], CmdStatus::Success)
             .mutating()
             .output()
@@ -297,8 +238,6 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             emit_text_outcome(&outcome);
         }
     }
-
-    Ok(())
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {

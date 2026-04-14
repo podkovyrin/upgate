@@ -3,9 +3,8 @@ use crate::managers::common::{
     DelayedLatest, PlanDecision, PlanMeta, SemverAgeResolution, SemverTimestamp,
     emit_manager_level_error, emit_plan_and_collect_upgradable, emit_scan_current,
     parse_semver_time_releases, release_age_secs_for_version, resolve_semver_with_min_age,
-    verbose_now_unix_secs,
+    run_global_apply_flow, verbose_now_unix_secs,
 };
-use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::time::now_unix_secs;
@@ -100,7 +99,9 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         ctx.max_parallel_checks,
     )?;
 
-    let _upgradable = emit_plan_and_collect_upgradable(
+    let pinned_for_global = Some(&ctx.policy.pinned);
+
+    let upgradable = emit_plan_and_collect_upgradable(
         plan,
         |item| PlanMeta {
             manager: PLUGIN.id(),
@@ -130,13 +131,13 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                 delayed_latest: target.delayed_latest(min_age),
             }
         },
+        ctx.is_interactive_apply(),
+        pinned_for_global,
     );
 
-    if ctx.is_dry_run() {
-        return Ok(());
-    }
-
-    apply_bun_updates(&bun, min_age);
+    run_global_apply_flow(ctx, PLUGIN.id(), PLUGIN.id(), upgradable, || {
+        apply_bun_updates(&bun, min_age)
+    })?;
 
     Ok(())
 }
@@ -210,8 +211,8 @@ fn resolve_bun_plan(
     })
 }
 
-fn apply_bun_updates(bun: &str, min_age: Duration) {
-    if let Err(err) = run_cmd(
+fn apply_bun_updates(bun: &str, min_age: Duration) -> Result<()> {
+    run_cmd(
         bun,
         [
             "update",
@@ -222,19 +223,9 @@ fn apply_bun_updates(bun: &str, min_age: Duration) {
         CmdStatus::Success,
     )
     .mutating()
-    .output()
-    {
-        let outcome = ItemOutcome::error(
-            PLUGIN.id(),
-            "*",
-            "*",
-            "*",
-            PLUGIN.id(),
-            REASON_COMMAND_FAILED,
-            err.to_string(),
-        );
-        emit_text_outcome(&outcome);
-    }
+    .output()?;
+
+    Ok(())
 }
 
 fn emit_bun_scan_outcomes(

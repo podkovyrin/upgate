@@ -1,5 +1,8 @@
+use crate::config::PIN_ALL;
 use crate::manager::{ManagerCtx, ManagerPlugin};
-use crate::managers::common::{emit_manager_level_error, emit_scan_current};
+use crate::managers::common::{
+    PlannedUpdate, emit_manager_level_error, emit_scan_current, run_per_item_apply_flow,
+};
 use crate::outcome::{
     ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, REASON_PINNED, emit_text_outcome,
 };
@@ -12,7 +15,7 @@ use rayon::prelude::*;
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 const BREW_MAX_PARALLEL_CHECKS_MIN: usize = 1;
@@ -52,7 +55,7 @@ struct OutdatedFormula {
     installed_versions: Vec<String>,
     current_version: String,
     pinned: bool,
-    pinned_version: Option<String>,
+    _pinned_version: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -272,16 +275,74 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     )?;
 
     for item in &plan {
-        let outcome = item_to_outcome(item);
+        if ctx.is_interactive_apply() && matches!(item.action, PlanAction::Upgrade { .. }) {
+            continue;
+        }
+
+        let outcome = if matches!(item.action, PlanAction::Upgrade { .. })
+            && (ctx.policy.pinned.contains(&item.name) || ctx.policy.pinned.contains(PIN_ALL))
+        {
+            ItemOutcome::skipped(
+                PLUGIN.id(),
+                item.name.clone(),
+                item.installed.clone(),
+                item.target.clone(),
+                PLUGIN.id(),
+                REASON_PINNED,
+                "pinned",
+            )
+        } else {
+            item_to_outcome(item)
+        };
         emit_text_outcome(&outcome);
     }
 
-    if ctx.is_dry_run() {
-        return Ok(());
-    }
+    let upgradable: Vec<PlannedUpdate> = plan
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, item)| match item.action {
+            PlanAction::Upgrade { .. } => Some(PlannedUpdate {
+                manager: PLUGIN.id(),
+                source: PLUGIN.id(),
+                name: item.name.clone(),
+                current: item.installed.clone(),
+                target: item.target.clone(),
+                delayed_latest: None,
+                apply_spec_base: Some(idx.to_string()),
+            }),
+            PlanAction::Delayed { .. } | PlanAction::Skipped { .. } => None,
+        })
+        .collect();
 
-    apply_brew_plan(&plan);
+    run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, move |selected| {
+        apply_brew_selected_plan(plan, selected);
+    })?;
     Ok(())
+}
+
+fn apply_brew_selected_plan(plan: Vec<PlanItem>, selected: Vec<PlannedUpdate>) {
+    let selected_indices: BTreeSet<usize> = selected
+        .into_iter()
+        .filter_map(|item| item.apply_spec_base)
+        .filter_map(|raw| raw.parse::<usize>().ok())
+        .collect();
+
+    let filtered_plan: Vec<PlanItem> = plan
+        .into_iter()
+        .enumerate()
+        .map(|(idx, mut item)| {
+            if matches!(item.action, PlanAction::Upgrade { .. }) && !selected_indices.contains(&idx)
+            {
+                item.action = PlanAction::Skipped {
+                    reason: "pinned".to_string(),
+                    source: DataSource::None,
+                };
+            }
+            item
+        })
+        .collect();
+
+    apply_brew_plan(&filtered_plan);
 }
 
 fn maybe_refresh_brew_metadata(no_update: bool) {
@@ -328,10 +389,7 @@ fn build_brew_plan_jobs(outdated: OutdatedRoot) -> Vec<PackageJob> {
             .cloned()
             .unwrap_or_else(|| "unknown".to_string());
         let initial_skip_reason = if item.pinned {
-            Some(match item.pinned_version {
-                Some(v) => format!("pinned at {v}"),
-                None => "pinned".to_string(),
-            })
+            Some("pinned".to_string())
         } else {
             None
         };

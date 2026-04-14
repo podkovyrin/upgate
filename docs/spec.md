@@ -47,6 +47,7 @@ Global options:
 - `--verbose` (show additional metadata segments such as source and delayed-latest note)
 - `--debug-commands` (persist full per-command debug logs: status, timing, stdout, stderr)
 - `--show-commands` / `--print-commands` (print each command before execution)
+- `--interactive` (apply-mode only; prompt per manager to select updates)
 
 Configuration file:
 - `$XDG_CONFIG_HOME/upnow/config.toml` (fallback `~/.config/upnow/config.toml`)
@@ -54,6 +55,7 @@ Configuration file:
 - Per-manager `mode` values are configured in TOML (`off`, `plan`, `apply`).
 - Per-manager `min_release_age` values are configured in TOML.
 - Brew-only `no_update` is configured under `[brew].no_update` (default `false`).
+- Per-manager `pinned` list can be stored under `[<manager>].pinned`.
 - CLI `--set`/`-S` overrides have higher precedence than file config.
 
 Default manager set: all registered managers (`brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`, `gem`, `dotnet`) with default modes:
@@ -64,6 +66,9 @@ Behavior notes:
 - `plan` is non-mutating.
 - `scan` is non-mutating and lists installed package/tool versions across managers.
 - `apply` performs updates.
+- `--interactive` is valid only with `apply` and requires interactive `stdin` + `stdout` TTY; otherwise execution fails.
+- Interactive flow is per manager, with all upgradable items selected by default and optional deselection.
+- Deselected items are persisted as manager-local pins in config.
 - Selected managers run in a fixed internal order:
   `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`, `gem`, `dotnet`.
 - Manager execution is gated by per-manager `mode`:
@@ -75,6 +80,8 @@ Behavior notes:
 ## Architecture (current)
 
 - Manager-native parsing/selection/apply logic remains in manager modules.
+- Shared interactive selection helper applies pinned filtering and per-manager selection.
+- Interactive pin persistence updates only the manager `pinned` key while preserving existing config structure/comments.
 - Shared utility modules are used for narrow cross-cutting concerns:
   - subprocess execution/formatting (`util/process`)
   - command/session logging (`util/logging`)
@@ -239,6 +246,8 @@ Apply flow:
 - Batch command: `npm -g update --min-release-age <days>`.
 - `<days>` is derived from `[npm].min_release_age` and must be whole days (validated during npm manager setup).
 - Batch apply failure emits one synthetic `*` error outcome.
+- Interactive behavior: manager-level all-or-nothing confirmation (no per-item deselection).
+- If `[npm].pinned` is non-empty, apply is skipped (global command cannot enforce per-item pins).
 
 Concurrency:
 - Planning per-package resolution is parallelized.
@@ -305,6 +314,8 @@ Apply flow:
 - Batch command: `bun update -g --minimum-release-age <seconds>`.
 - `<seconds>` is derived from `[bun].min_release_age`.
 - Batch apply failure emits one synthetic `*` error outcome.
+- Interactive behavior: manager-level all-or-nothing confirmation (no per-item deselection).
+- If `[bun].pinned` is non-empty, apply is skipped (global command cannot enforce per-item pins).
 
 Concurrency:
 - Planning per-package resolution is parallelized.
@@ -339,6 +350,8 @@ Concurrency:
 Apply flow:
 - Batch command: `mise upgrade --before <duration-from-config>`.
 - Batch apply failure emits one synthetic `*` error outcome.
+- Interactive behavior: manager-level all-or-nothing confirmation (no per-item deselection).
+- If `[mise].pinned` is non-empty, apply is skipped (global command cannot enforce per-item pins).
 
 ### pipx (`src/managers/pipx.rs`)
 

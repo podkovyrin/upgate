@@ -2,7 +2,8 @@ use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
     DelayedLatest, PlanDecision, PlanMeta, SemverAgeResolution, SemverTimestamp,
     emit_manager_level_error, emit_plan_and_collect_upgradable, emit_scan_current,
-    release_age_secs_for_version, resolve_semver_with_min_age, verbose_now_unix_secs,
+    release_age_secs_for_version, resolve_semver_with_min_age, run_per_item_apply_flow,
+    verbose_now_unix_secs,
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
@@ -130,13 +131,13 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                 delayed_latest: target.delayed_latest(min_age),
             }
         },
+        ctx.is_interactive_apply(),
+        Some(&ctx.policy.pinned),
     );
 
-    if ctx.is_dry_run() {
-        return Ok(());
-    }
-
-    apply_cargo_updates(&installed, upgradable);
+    run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, |selected| {
+        apply_cargo_updates(&installed, selected);
+    })?;
 
     Ok(())
 }
@@ -212,9 +213,12 @@ fn resolve_cargo_plan(
 
 fn apply_cargo_updates(
     installed: &BTreeMap<String, InstalledCrate>,
-    upgradable: Vec<(String, String, String)>,
+    upgradable: Vec<crate::managers::common::PlannedUpdate>,
 ) {
-    for (name, current, version) in upgradable {
+    for item in upgradable {
+        let name = item.name;
+        let current = item.current;
+        let version = item.target;
         let install_meta = installed
             .get(&name)
             .and_then(|entry| entry.install_meta.clone());

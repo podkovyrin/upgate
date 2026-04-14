@@ -122,16 +122,19 @@ pub(crate) fn start_manager_spinner(manager: &str, run_mode: RunMode) -> Manager
     ManagerSpinner(Some(pb))
 }
 
-pub(crate) fn with_spinner_suspended<F: FnOnce()>(f: F) {
+pub(crate) fn with_spinner_suspended<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
     let spinner = active_spinner_slot()
         .lock()
         .expect("active spinner mutex poisoned")
         .clone();
 
     if let Some(pb) = spinner {
-        pb.suspend(f);
+        pb.suspend(f)
     } else {
-        f();
+        f()
     }
 }
 

@@ -1,4 +1,5 @@
 mod config;
+mod interactive;
 mod manager;
 mod managers;
 mod outcome;
@@ -62,6 +63,10 @@ struct Cli {
     /// Print each command to stderr before execution.
     #[arg(long, visible_alias = "print-commands", global = true)]
     show_commands: bool,
+
+    /// Prompt per manager to select which updates to apply.
+    #[arg(long, global = true)]
+    interactive: bool,
 }
 
 fn main() {
@@ -86,6 +91,18 @@ fn main() {
         Command::Apply => RunMode::Apply,
         Command::Scan => RunMode::Scan,
     };
+
+    if cli.interactive {
+        if !matches!(run_mode, RunMode::Apply) {
+            eprintln!("error: --interactive is only supported with 'apply'");
+            std::process::exit(1);
+        }
+
+        if let Err(err) = interactive::ensure_tty_available() {
+            eprintln!("error: {err}");
+            std::process::exit(1);
+        }
+    }
 
     let mut config = match UpnowConfig::load() {
         Ok(config) => config,
@@ -116,15 +133,20 @@ fn main() {
     for plugin in selected_plugins {
         set_current_manager(Some(plugin.id()));
 
-        let manager_ctx =
-            match build_ctx_for_plugin(plugin, run_mode, cli.max_parallel_checks, &config) {
-                Ok(ctx) => ctx,
-                Err(err) => {
-                    eprintln!("error: manager '{}' setup failed: {err}", plugin.id());
-                    had_manager_failure = true;
-                    continue;
-                }
-            };
+        let manager_ctx = match build_ctx_for_plugin(
+            plugin,
+            run_mode,
+            cli.max_parallel_checks,
+            &config,
+            cli.interactive,
+        ) {
+            Ok(ctx) => ctx,
+            Err(err) => {
+                eprintln!("error: manager '{}' setup failed: {err}", plugin.id());
+                had_manager_failure = true;
+                continue;
+            }
+        };
 
         if !manager_ctx
             .policy
@@ -137,6 +159,20 @@ fn main() {
         let spinner = start_manager_spinner(plugin.id(), run_mode);
         let run_result = plugin.run(&manager_ctx);
         finish_manager_spinner(spinner);
+
+        if cli.interactive
+            && matches!(run_mode, RunMode::Apply)
+            && let Some(new_pins) = manager_ctx.take_pending_pins()
+        {
+            config.set_manager_pins(plugin.id(), new_pins);
+            if let Err(err) = config.persist_manager_pins(plugin.id()) {
+                eprintln!(
+                    "error: failed to persist interactive pin updates after manager '{}': {err}",
+                    plugin.id()
+                );
+                had_manager_failure = true;
+            }
+        }
 
         if let Err(err) = run_result {
             eprintln!("error: manager '{}' failed: {err}", plugin.id());
@@ -159,5 +195,8 @@ fn is_signal_termination(err: &Error) -> bool {
         cause
             .downcast_ref::<util::process::CommandFailedError>()
             .is_some_and(util::process::CommandFailedError::was_signaled)
+            || cause
+                .downcast_ref::<interactive::InteractiveCancelled>()
+                .is_some()
     })
 }

@@ -33,6 +33,7 @@ Config supports a global `[upnow]` section and manager sections keyed by manager
 [npm]
 # mode = "apply"
 # min_release_age = "7d"
+# pinned = ["typescript", "eslint"]
 
 [yarn]
 # mode = "apply"
@@ -94,6 +95,8 @@ Supported keys:
 - `no_update` for `brew` only
 - `upnow.scan_old_age_threshold` (global scan threshold)
 
+Note: `pinned` is config-backed but not currently writable via `--set`; it is updated by interactive apply in this iteration.
+
 Unknown managers, unknown keys, or malformed values fail fast with an error.
 
 `mode` semantics:
@@ -103,6 +106,20 @@ Unknown managers, unknown keys, or malformed values fail fast with an error.
 
 Safety behavior:
 - `--managers` does not bypass `mode`; use `--set <manager>.mode=...` to override.
+
+## Interactive apply and pins
+
+`upnow apply --interactive` prompts per manager with all upgradable items selected by default.
+You can deselect items; deselected items are persisted into that manager's `pinned` list in config.
+
+Pinned items are skipped in subsequent runs.
+
+Managers that only support global apply (`npm`, `bun`, `mise`) cannot honor per-item deselection.
+In interactive mode they show an all-or-nothing prompt.
+For these managers, any non-empty `pinned` list means "skip manager on apply" (including named pins or `"*"`).
+Choosing `none` in interactive global prompt persists `pinned = ["*"]`; choosing `all` clears all pins for that manager.
+
+`--interactive` requires interactive `stdin` and `stdout` TTY; otherwise the command fails.
 
 ## Output flags (not config-backed)
 

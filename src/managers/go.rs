@@ -1,9 +1,11 @@
+use crate::config::PIN_ALL;
 use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
-    DelayedLatest, emit_manager_level_error, emit_scan_current, verbose_now_unix_secs,
+    DelayedLatest, PlannedUpdate, emit_manager_level_error, emit_scan_current,
+    run_per_item_apply_flow, verbose_now_unix_secs,
 };
 use crate::outcome::{
-    ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, emit_text_outcome,
+    ItemOutcome, REASON_COMMAND_FAILED, REASON_MISSING_METADATA, REASON_PINNED, emit_text_outcome,
 };
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{CmdStatus, run_cmd};
@@ -92,13 +94,14 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
 
     let now = now_unix_secs()?;
     let plan = resolve_go_plan(&discovered, now, min_age, ctx.max_parallel_checks)?;
-    let upgradable = emit_go_plan_and_collect_upgradable(discovered, plan, min_age)?;
-
-    if ctx.is_dry_run() {
-        return Ok(());
-    }
-
-    apply_go_updates(upgradable);
+    let upgradable = emit_go_plan_and_collect_upgradable(
+        discovered,
+        plan,
+        min_age,
+        ctx.is_interactive_apply(),
+        &ctx.policy.pinned,
+    )?;
+    run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, apply_go_updates)?;
     Ok(())
 }
 
@@ -154,7 +157,9 @@ fn emit_go_plan_and_collect_upgradable(
     discovered: Vec<GoDiscoveredTool>,
     plan: Vec<GoPlanItem>,
     min_age: Duration,
-) -> Result<Vec<(String, String, String, String)>> {
+    suppress_update_outcomes: bool,
+    pinned: &std::collections::BTreeSet<String>,
+) -> Result<Vec<PlannedUpdate>> {
     let mut upgradable = Vec::new();
     let mut plan_iter = plan.into_iter();
 
@@ -206,39 +211,46 @@ fn emit_go_plan_and_collect_upgradable(
                                 continue;
                             }
 
-                            let outcome = if let Some(DelayedLatest {
-                                latest_version,
-                                latest_age,
-                                required_age,
-                            }) = delayed_latest
-                            {
-                                ItemOutcome::update_with_delayed_latest(
-                                    PLUGIN.id(),
-                                    tool.binary_name.clone(),
-                                    tool.current_version.clone(),
-                                    selected.clone(),
-                                    PLUGIN.id(),
-                                    latest_version,
-                                    latest_age,
-                                    required_age,
-                                )
-                            } else {
-                                ItemOutcome::update(
-                                    PLUGIN.id(),
-                                    tool.binary_name.clone(),
-                                    tool.current_version.clone(),
-                                    selected.clone(),
-                                    PLUGIN.id(),
-                                )
+                            if pinned.contains(&tool.binary_name) || pinned.contains(PIN_ALL) {
+                                if suppress_update_outcomes {
+                                    upgradable.push(PlannedUpdate {
+                                        manager: PLUGIN.id(),
+                                        source: PLUGIN.id(),
+                                        name: tool.binary_name,
+                                        current: tool.current_version,
+                                        target: selected,
+                                        delayed_latest: None,
+                                        apply_spec_base: Some(tool.install_path),
+                                    });
+                                } else {
+                                    let outcome = ItemOutcome::skipped(
+                                        PLUGIN.id(),
+                                        tool.binary_name,
+                                        tool.current_version,
+                                        selected,
+                                        PLUGIN.id(),
+                                        REASON_PINNED,
+                                        "pinned",
+                                    );
+                                    emit_text_outcome(&outcome);
+                                }
+                                continue;
+                            }
+
+                            let planned = PlannedUpdate {
+                                manager: PLUGIN.id(),
+                                source: PLUGIN.id(),
+                                name: tool.binary_name,
+                                current: tool.current_version,
+                                target: selected,
+                                delayed_latest,
+                                apply_spec_base: Some(tool.install_path),
                             };
 
-                            emit_text_outcome(&outcome);
-                            upgradable.push((
-                                tool.binary_name,
-                                tool.current_version,
-                                selected,
-                                tool.install_path,
-                            ));
+                            if !suppress_update_outcomes {
+                                emit_text_outcome(&planned.to_update_outcome());
+                            }
+                            upgradable.push(planned);
                         } else {
                             let outcome = if let Some(DelayedLatest {
                                 latest_version,
@@ -280,8 +292,12 @@ fn emit_go_plan_and_collect_upgradable(
     Ok(upgradable)
 }
 
-fn apply_go_updates(upgradable: Vec<(String, String, String, String)>) {
-    for (binary_name, current, target, install_path) in upgradable {
+fn apply_go_updates(upgradable: Vec<PlannedUpdate>) {
+    for item in upgradable {
+        let binary_name = item.name;
+        let current = item.current;
+        let target = item.target;
+        let install_path = item.apply_spec_base.unwrap_or_else(|| binary_name.clone());
         let spec = format!("{install_path}@{target}");
         if let Err(err) = run_cmd("go", ["install", &spec], CmdStatus::Success)
             .mutating()

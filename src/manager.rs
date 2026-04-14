@@ -2,6 +2,7 @@ use crate::config::{ManagerMode, UpnowConfig};
 use crate::managers;
 use anyhow::{Result, bail};
 use std::collections::BTreeSet;
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunMode {
@@ -25,6 +26,8 @@ pub(crate) struct ManagerCtx {
     pub(crate) max_parallel_checks: usize,
     pub(crate) policy: crate::config::ManagerPolicy,
     pub(crate) scan_old_age_threshold: std::time::Duration,
+    interactive: bool,
+    pending_pins: Mutex<Option<BTreeSet<String>>>,
 }
 
 impl ManagerCtx {
@@ -34,6 +37,29 @@ impl ManagerCtx {
 
     pub(crate) fn is_scan(&self) -> bool {
         self.run_mode.is_scan()
+    }
+
+    pub(crate) fn is_interactive_apply(&self) -> bool {
+        self.interactive && matches!(self.run_mode, RunMode::Apply)
+    }
+
+    pub(crate) fn record_pending_pins_if_changed(&self, pins: BTreeSet<String>) {
+        if pins == self.policy.pinned {
+            return;
+        }
+
+        let mut slot = self
+            .pending_pins
+            .lock()
+            .expect("pending_pins mutex poisoned");
+        *slot = Some(pins);
+    }
+
+    pub(crate) fn take_pending_pins(&self) -> Option<BTreeSet<String>> {
+        self.pending_pins
+            .lock()
+            .expect("pending_pins mutex poisoned")
+            .take()
     }
 }
 
@@ -73,6 +99,7 @@ pub(crate) fn build_ctx_for_plugin(
     run_mode: RunMode,
     max_parallel_checks: usize,
     config: &UpnowConfig,
+    interactive: bool,
 ) -> Result<ManagerCtx> {
     let policy = config.resolve_manager_policy(
         plugin.id(),
@@ -86,6 +113,8 @@ pub(crate) fn build_ctx_for_plugin(
         max_parallel_checks,
         policy,
         scan_old_age_threshold: config.scan_old_age_threshold()?,
+        interactive,
+        pending_pins: Mutex::new(None),
     })
 }
 

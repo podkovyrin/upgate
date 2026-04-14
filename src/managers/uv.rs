@@ -2,7 +2,7 @@ use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
     DelayedLatest, Pep440Timestamp, PlanDecision, PlanMeta, emit_manager_level_error,
     emit_plan_and_collect_upgradable, emit_scan_current, parse_pep440_release_timestamps,
-    release_age_secs_for_pep440_version, verbose_now_unix_secs,
+    release_age_secs_for_pep440_version, run_per_item_apply_flow, verbose_now_unix_secs,
 };
 use crate::outcome::{ItemOutcome, REASON_COMMAND_FAILED, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
@@ -211,17 +211,22 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
                 delayed_latest,
             }
         },
+        ctx.is_interactive_apply(),
+        Some(&ctx.policy.pinned),
     );
 
-    if ctx.is_dry_run() {
-        return Ok(());
-    }
+    run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable_tools, |selected| {
+        apply_uv_updates(min_age_raw, selected);
+    })?;
 
-    if upgradable_tools.is_empty() {
-        return Ok(());
-    }
+    Ok(())
+}
 
-    for (tool, current, target) in upgradable_tools {
+fn apply_uv_updates(min_age_raw: &str, upgradable: Vec<crate::managers::common::PlannedUpdate>) {
+    for item in upgradable {
+        let tool = item.name;
+        let current = item.current;
+        let target = item.target;
         let args = vec![
             "tool".to_string(),
             "install".to_string(),
@@ -244,8 +249,6 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             emit_text_outcome(&outcome);
         }
     }
-
-    Ok(())
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {
