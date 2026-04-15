@@ -38,17 +38,6 @@ struct MultiSelectState {
     cursor_idx: usize,
 }
 
-struct DialogLayout<'a> {
-    title: &'a Line,
-    footer: &'a Line,
-    desired_inner_width: usize,
-}
-
-enum DialogProgress<T> {
-    Continue,
-    Submit(T),
-}
-
 #[derive(Clone, Copy)]
 enum SelectionAction {
     Toggle,
@@ -113,66 +102,16 @@ fn run_multi_select_dialog(
             cursor_idx: 0,
         };
 
-        let layout = DialogLayout {
-            title: &title,
-            footer: &footer,
-            desired_inner_width,
-        };
         run_dialog_loop(
             out,
-            &layout,
+            &title,
+            &footer,
+            desired_inner_width,
             last_height,
             &mut state,
-            |state| {
-                let mut body = Vec::with_capacity(items.len());
-
-                for (idx, item) in items.iter().enumerate() {
-                    let marker = selection_marker(state.selected[idx]);
-                    let pointer = if idx == state.cursor_idx { ">" } else { " " };
-                    let prefix = format!("{pointer} {marker}");
-                    let mut line =
-                        update_row_line(item, &prefix, state.selected[idx], color, arrow);
-                    if color && idx == state.cursor_idx {
-                        line.styled = line.plain.clone().black().on_cyan().bold().to_string();
-                    }
-
-                    body.push(line);
-                }
-
-                body
-            },
-            |state, key_code| {
-                match key_code {
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        state.cursor_idx = if state.cursor_idx == 0 {
-                            items.len() - 1
-                        } else {
-                            state.cursor_idx - 1
-                        };
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        state.cursor_idx = if state.cursor_idx + 1 >= items.len() {
-                            0
-                        } else {
-                            state.cursor_idx + 1
-                        };
-                    }
-                    KeyCode::Enter => {
-                        return DialogProgress::Submit(std::mem::take(&mut state.selected));
-                    }
-                    _ => {
-                        if let Some(action) = selection_action_for_key(key_code) {
-                            apply_selection_action_to_list(
-                                &mut state.selected,
-                                state.cursor_idx,
-                                action,
-                            );
-                        }
-                    }
-                }
-
-                DialogProgress::Continue
-            },
+            items,
+            color,
+            arrow,
         )
     })
 }
@@ -204,36 +143,62 @@ where
     }
 }
 
-fn run_dialog_loop<S, T, FBody, FKey>(
+fn run_dialog_loop(
     out: &mut io::Stdout,
-    layout: &DialogLayout<'_>,
+    title: &Line,
+    footer: &Line,
+    desired_inner_width: usize,
     last_height: &mut usize,
-    state: &mut S,
-    mut body_builder: FBody,
-    mut key_handler: FKey,
-) -> Result<T>
-where
-    FBody: FnMut(&S) -> Vec<Line>,
-    FKey: FnMut(&mut S, KeyCode) -> DialogProgress<T>,
-{
+    state: &mut MultiSelectState,
+    items: &[PlannedUpdate],
+    color: bool,
+    arrow: &str,
+) -> Result<Vec<bool>> {
     loop {
-        let body = body_builder(state);
-        *last_height = draw_dialog_box(
-            out,
-            layout.title,
-            &body,
-            layout.footer,
-            layout.desired_inner_width,
-            *last_height,
-        )?;
+        let mut body = Vec::with_capacity(items.len());
+
+        for (idx, item) in items.iter().enumerate() {
+            let marker = selection_marker(state.selected[idx]);
+            let pointer = if idx == state.cursor_idx { ">" } else { " " };
+            let prefix = format!("{pointer} {marker}");
+            let mut line = update_row_line(item, &prefix, state.selected[idx], color, arrow);
+            if color && idx == state.cursor_idx {
+                line.styled = line.plain.clone().black().on_cyan().bold().to_string();
+            }
+
+            body.push(line);
+        }
+
+        *last_height =
+            draw_dialog_box(out, title, &body, footer, desired_inner_width, *last_height)?;
 
         let Some(key_code) = read_dialog_key_code()? else {
             continue;
         };
 
-        match key_handler(state, key_code) {
-            DialogProgress::Continue => {}
-            DialogProgress::Submit(value) => return Ok(value),
+        match key_code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                state.cursor_idx = if state.cursor_idx == 0 {
+                    items.len() - 1
+                } else {
+                    state.cursor_idx - 1
+                };
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                state.cursor_idx = if state.cursor_idx + 1 >= items.len() {
+                    0
+                } else {
+                    state.cursor_idx + 1
+                };
+            }
+            KeyCode::Enter => {
+                return Ok(std::mem::take(&mut state.selected));
+            }
+            _ => {
+                if let Some(action) = selection_action_for_key(key_code) {
+                    apply_selection_action_to_list(&mut state.selected, state.cursor_idx, action);
+                }
+            }
         }
     }
 }
@@ -388,26 +353,12 @@ fn multi_select_desired_inner_width(
     items: &[PlannedUpdate],
     arrow: &str,
 ) -> usize {
-    desired_inner_width(title, footer, items, arrow, "> [x]", None)
-}
-
-fn desired_inner_width(
-    title: &str,
-    footer: &str,
-    items: &[PlannedUpdate],
-    arrow: &str,
-    prefix: &str,
-    extra_line: Option<&str>,
-) -> usize {
     let mut desired_width = width(title).max(width(footer));
-    if let Some(extra_line) = extra_line {
-        desired_width = desired_width.max(width(extra_line));
-    }
 
     for item in items {
         let from_label = version_label(&item.current);
         let to_label = version_label(&item.target);
-        let row = update_row_text(prefix, &item.name, &from_label, &to_label, arrow, true);
+        let row = update_row_text("> [x]", &item.name, &from_label, &to_label, arrow, true);
         desired_width = desired_width.max(width(&row));
     }
 
