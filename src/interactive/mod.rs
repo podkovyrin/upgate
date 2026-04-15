@@ -49,6 +49,12 @@ struct GlobalChoiceState {
     apply_all: bool,
 }
 
+struct DialogLayout<'a> {
+    title: &'a Line,
+    footer: &'a Line,
+    desired_inner_width: usize,
+}
+
 enum DialogProgress<T> {
     Continue,
     Submit(T),
@@ -126,11 +132,14 @@ fn run_multi_select_dialog(
             cursor_idx: 0,
         };
 
+        let layout = DialogLayout {
+            title: &title,
+            footer: &footer,
+            desired_inner_width,
+        };
         run_dialog_loop(
             out,
-            &title,
-            &footer,
-            desired_inner_width,
+            &layout,
             last_height,
             &mut state,
             |state| {
@@ -205,11 +214,14 @@ fn run_global_choice_dialog(
             apply_all: default_apply_all,
         };
 
+        let layout = DialogLayout {
+            title: &title,
+            footer: &footer,
+            desired_inner_width,
+        };
         run_dialog_loop(
             out,
-            &title,
-            &footer,
-            desired_inner_width,
+            &layout,
             last_height,
             &mut state,
             |state| {
@@ -268,9 +280,7 @@ where
 
 fn run_dialog_loop<S, T, FBody, FKey>(
     out: &mut io::Stdout,
-    title: &Line,
-    body_footer: &Line,
-    desired_inner_width: usize,
+    layout: &DialogLayout<'_>,
     last_height: &mut usize,
     state: &mut S,
     mut body_builder: FBody,
@@ -284,10 +294,10 @@ where
         let body = body_builder(state);
         *last_height = draw_dialog_box(
             out,
-            title,
+            layout.title,
             &body,
-            body_footer,
-            desired_inner_width,
+            layout.footer,
+            layout.desired_inner_width,
             *last_height,
         )?;
 
@@ -323,7 +333,7 @@ fn read_dialog_key_code() -> Result<Option<KeyCode>> {
     Ok(Some(key.code))
 }
 
-fn selection_action_for_key(code: KeyCode) -> Option<SelectionAction> {
+const fn selection_action_for_key(code: KeyCode) -> Option<SelectionAction> {
     match code {
         KeyCode::Char(' ' | 'x') => Some(SelectionAction::Toggle),
         KeyCode::Char('a') => Some(SelectionAction::SelectAll),
@@ -332,7 +342,7 @@ fn selection_action_for_key(code: KeyCode) -> Option<SelectionAction> {
     }
 }
 
-fn apply_selection_action(selected: &mut bool, action: SelectionAction) {
+const fn apply_selection_action(selected: &mut bool, action: SelectionAction) {
     match action {
         SelectionAction::Toggle => *selected = !*selected,
         SelectionAction::SelectAll => *selected = true,
@@ -502,15 +512,15 @@ fn desired_inner_width(
     desired_width
 }
 
-fn selection_marker(selected: bool) -> &'static str {
+const fn selection_marker(selected: bool) -> &'static str {
     if selected { "[x]" } else { "[ ]" }
 }
 
-fn version_arrow(unicode: bool) -> &'static str {
+const fn version_arrow(unicode: bool) -> &'static str {
     if unicode { "→" } else { "->" }
 }
 
-fn blank_line() -> Line {
+const fn blank_line() -> Line {
     Line {
         plain: String::new(),
         styled: String::new(),
@@ -616,7 +626,8 @@ fn clear_dialog(out: &mut io::Stdout, lines: usize) -> Result<()> {
 
 fn move_up_lines(out: &mut io::Stdout, mut lines: usize) -> Result<()> {
     while lines > 0 {
-        let step = lines.min(usize::from(u16::MAX)) as u16;
+        let capped = lines.min(usize::from(u16::MAX));
+        let step = u16::try_from(capped).unwrap_or(u16::MAX);
         queue!(out, cursor::MoveUp(step))?;
         lines -= usize::from(step);
     }
@@ -626,7 +637,7 @@ fn move_up_lines(out: &mut io::Stdout, mut lines: usize) -> Result<()> {
 
 fn cleanup_terminal(out: &mut io::Stdout, last_height: usize) -> Result<()> {
     let mut cleanup_error: Option<anyhow::Error> = clear_dialog(out, last_height)
-        .and_then(|_| out.flush().map_err(anyhow::Error::from))
+        .and_then(|()| out.flush().map_err(anyhow::Error::from))
         .err();
 
     if let Err(err) = execute!(out, cursor::Show)

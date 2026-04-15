@@ -1,7 +1,8 @@
 use crate::util::time::parse_rfc3339_unix;
 use anyhow::{Context, Result};
-use pep440::Version as Pep440Version;
+use pep440_rs::Version as Pep440Version;
 use std::collections::BTreeMap;
+use std::str::FromStr;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -23,14 +24,14 @@ pub fn resolve_pep440_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
 ) -> Result<Pep440AgeResolution> {
-    let current_ver = Pep440Version::parse(current)
+    let current_ver = Pep440Version::from_str(current)
         .with_context(|| format!("failed to parse current PEP440 version: {current}"))?;
 
     let mut eligible: Option<(Pep440Version, String, u64)> = None;
     let mut newest_any: Option<(Pep440Version, String, u64)> = None;
 
     for item in releases {
-        let Some(version) = Pep440Version::parse(&item.version) else {
+        let Ok(version) = Pep440Version::from_str(&item.version) else {
             continue;
         };
 

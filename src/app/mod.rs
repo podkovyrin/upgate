@@ -11,7 +11,7 @@ use crate::manager::{
 use crate::ui::{finish_manager_spinner, init_output_theme, start_manager_spinner};
 use crate::util::logging::{LoggingOptions, init_logging, session_dir, set_current_manager};
 
-pub(crate) fn run() -> i32 {
+pub fn run() -> i32 {
     let cli = cli::Cli::parse();
     init_output_theme(cli.plain, cli.no_color, cli.verbose);
 

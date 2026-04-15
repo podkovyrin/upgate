@@ -10,10 +10,11 @@ use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::time::human_age;
 use crate::util::time::now_unix_secs;
 use anyhow::{Context, Result, bail};
-use pep440::Version;
+use pep440_rs::Version;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 const UV_MAX_PARALLEL_CHECKS: usize = 2;
 
@@ -470,7 +471,7 @@ fn bracket_value(line: &str, marker: &str) -> Option<String> {
 }
 
 fn uv_resolve_target_with_exclude_newer(tool: &UvTool, min_age_raw: &str) -> Result<String> {
-    let requirement = if Version::parse(&tool.current).is_some() {
+    let requirement = if Version::from_str(&tool.current).is_ok() {
         format!("{}>={}", tool.name, tool.current)
     } else {
         tool.name.clone()
@@ -540,8 +541,8 @@ fn normalize_package_name(name: &str) -> String {
 }
 
 fn pep440_compare(lhs: &str, rhs: &str) -> Option<Ordering> {
-    let lhs = Version::parse(lhs)?;
-    let rhs = Version::parse(rhs)?;
+    let lhs = Version::from_str(lhs).ok()?;
+    let rhs = Version::from_str(rhs).ok()?;
     Some(lhs.cmp(&rhs))
 }
 
