@@ -69,7 +69,7 @@ pub fn should_apply_global_manager(
         return Ok(false);
     }
 
-    let apply = confirm_global_manager_apply(manager_id, ctx.policy.pinned.is_empty())?;
+    let apply = confirm_global_manager_apply(manager_id, upgradable, ctx.policy.pinned.is_empty())?;
     if !apply {
         emit_global_skipped_items(upgradable);
         let next_pins = std::iter::once(PIN_ALL.to_string()).collect();

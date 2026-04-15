@@ -40,13 +40,16 @@ impl ItemOutcome {
         } else {
             let arrow = if theme.unicode() { "→" } else { "->" };
             let to = version_label(&self.to_version);
-            let to_rendered = render_to_version(&from, &to, theme.color());
+            let pinned_skip = self.status == OutcomeStatus::Skipped
+                && self.reason_code == Some(ReasonCode::Pinned);
+            let from_rendered = render_from_version(&from, theme.color(), pinned_skip);
+            let to_rendered = render_to_version(&from, &to, theme.color(), !pinned_skip);
             format!(
                 "{} {} {} {} {arrow} {}",
                 status_prefix(self.status, theme.color()),
                 manager_rendered,
                 name_rendered,
-                from,
+                from_rendered,
                 to_rendered
             )
         };
@@ -124,7 +127,15 @@ fn delayed_note(item: &ItemOutcome) -> String {
     "(delayed)".to_string()
 }
 
-fn render_to_version(from: &str, to: &str, color: bool) -> String {
+fn render_from_version(version: &str, color: bool, emphasize: bool) -> String {
+    if color && emphasize {
+        return version.bold().to_string();
+    }
+
+    version.to_string()
+}
+
+pub fn render_to_version(from: &str, to: &str, color: bool, emphasize: bool) -> String {
     if !color {
         return to.to_string();
     }
@@ -135,15 +146,11 @@ fn render_to_version(from: &str, to: &str, color: bool) -> String {
     let from_parts: Vec<&str> = from_core.split('.').collect();
     let to_parts: Vec<&str> = to_core.split('.').collect();
 
-    if to_parts.is_empty() {
-        return to.bold().to_string();
-    }
-
     let changed_from = first_changed_part_index(&from_parts, &to_parts);
 
     let mut out = String::new();
     if to.starts_with('v') {
-        out.push_str(&"v".bold().to_string());
+        out.push_str(&style_version_part("v", false, emphasize));
     }
 
     for (idx, part) in to_parts.iter().enumerate() {
@@ -151,18 +158,26 @@ fn render_to_version(from: &str, to: &str, color: bool) -> String {
             out.push('.');
         }
 
-        if let Some(changed_from) = changed_from {
-            if idx >= changed_from {
-                out.push_str(&part.blue().bold().to_string());
-            } else {
-                out.push_str(&part.bold().to_string());
-            }
-        } else {
-            out.push_str(&part.bold().to_string());
-        }
+        let changed = changed_from.is_some_and(|first| idx >= first);
+        out.push_str(&style_version_part(part, changed, emphasize));
     }
 
     out
+}
+
+fn style_version_part(part: &str, changed: bool, emphasize: bool) -> String {
+    if changed {
+        if emphasize {
+            return part.blue().bold().to_string();
+        }
+        return part.blue().to_string();
+    }
+
+    if emphasize {
+        return part.bold().to_string();
+    }
+
+    part.to_string()
 }
 
 fn first_changed_part_index(from_parts: &[&str], to_parts: &[&str]) -> Option<usize> {
@@ -267,7 +282,7 @@ pub fn version_label(version: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{first_changed_part_index, render_to_version};
+    use super::{first_changed_part_index, render_from_version, render_to_version};
 
     #[test]
     fn changed_part_index_none_when_equal() {
@@ -299,15 +314,28 @@ mod tests {
 
     #[test]
     fn render_to_version_plain_mode_is_identity() {
-        let rendered = render_to_version("v1.2.3", "v1.3.0", false);
+        let rendered = render_to_version("v1.2.3", "v1.3.0", false, false);
         assert_eq!(rendered, "v1.3.0");
     }
 
     #[test]
     fn render_to_version_color_mode_contains_all_digits_when_equal() {
-        let rendered = render_to_version("v1.2.3", "v1.2.3", true);
+        let rendered = render_to_version("v1.2.3", "v1.2.3", true, false);
         assert!(rendered.contains('1'));
         assert!(rendered.contains('2'));
         assert!(rendered.contains('3'));
+    }
+
+    #[test]
+    fn render_from_version_emphasizes_when_requested() {
+        let rendered = render_from_version("v1.2.3", true, true);
+        assert!(rendered.contains("\u{1b}[1m"));
+    }
+
+    #[test]
+    fn render_to_version_non_bold_highlights_changed_segments() {
+        let rendered = render_to_version("v1.2.3", "v1.3.0", true, false);
+        assert!(rendered.contains("\u{1b}[34m"));
+        assert!(!rendered.contains("\u{1b}[1m"));
     }
 }

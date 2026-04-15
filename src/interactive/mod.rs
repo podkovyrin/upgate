@@ -2,7 +2,7 @@ pub mod apply;
 
 use crate::config::PIN_ALL;
 use crate::managers::common::PlannedUpdate;
-use crate::outcome::version_label;
+use crate::outcome::{render_to_version, version_label};
 use crate::ui::{output_theme, with_spinner_suspended};
 use anyhow::{Result, bail};
 use crossterm::cursor;
@@ -16,6 +16,22 @@ use std::fmt;
 use std::io::{self, IsTerminal, Write};
 
 type Line = (String, String);
+const DIALOG_TITLE_PREFIX: &str = "Select updates for";
+const GLOBAL_APPLY_ONLY_NOTE: &str = "This manager supports global apply only (all-or-none).";
+const PINNED_LABEL: &str = " (pinned)";
+const MULTI_SELECT_KEYBINDS: &[(&str, &str)] = &[
+    ("↑/↓/j/k", "move"),
+    ("space/x", "toggle"),
+    ("a", "all"),
+    ("n", "none"),
+    ("enter", "confirm"),
+];
+const GLOBAL_SELECT_KEYBINDS: &[(&str, &str)] = &[
+    ("space/x", "toggle"),
+    ("a", "all"),
+    ("n", "none"),
+    ("enter", "confirm"),
+];
 
 #[derive(Debug)]
 pub struct InteractiveCancelled;
@@ -52,8 +68,12 @@ pub fn choose_items_for_manager(
     with_spinner_suspended(|| run_multi_select_dialog(manager, items, pinned))
 }
 
-pub fn confirm_global_manager_apply(manager: &str, default_apply_all: bool) -> Result<bool> {
-    with_spinner_suspended(|| run_global_choice_dialog(manager, default_apply_all))
+pub fn confirm_global_manager_apply(
+    manager: &str,
+    items: &[PlannedUpdate],
+    default_apply_all: bool,
+) -> Result<bool> {
+    with_spinner_suspended(|| run_global_choice_dialog(manager, items, default_apply_all))
 }
 
 fn run_multi_select_dialog(
@@ -61,7 +81,9 @@ fn run_multi_select_dialog(
     items: &[PlannedUpdate],
     pinned: &BTreeSet<String>,
 ) -> Result<Vec<bool>> {
-    let color = output_theme().color();
+    let theme = output_theme();
+    let color = theme.color();
+    let arrow = version_arrow(theme.unicode());
     let mut out = io::stdout();
     terminal::enable_raw_mode()?;
     if let Err(err) = execute!(out, cursor::Hide) {
@@ -82,38 +104,18 @@ fn run_multi_select_dialog(
             let mut body = Vec::with_capacity(items.len());
 
             for (idx, item) in items.iter().enumerate() {
-                let name = &item.name;
-                let marker = if selected[idx] { "[x]" } else { "[ ]" };
+                let marker = selection_marker(selected[idx]);
                 let pointer = if idx == cursor_idx { ">" } else { " " };
-                let item_is_pinned = !selected[idx];
-                let from_label = version_label(&item.current);
-                let to_label = version_label(&item.target);
-                let mut plain = format!("{pointer} {marker} {name} {from_label} -> {to_label}");
-                if item_is_pinned {
-                    plain.push_str(" (pinned)");
-                }
-
-                let mut styled = plain.clone();
-                if color && item_is_pinned {
-                    styled = styled.dark_grey().to_string();
-                }
+                let prefix = format!("{pointer} {marker}");
+                let mut line = update_row_line(item, &prefix, selected[idx], color, arrow);
                 if color && idx == cursor_idx {
-                    styled = styled.black().on_cyan().bold().to_string();
+                    line.1 = line.0.clone().black().on_cyan().bold().to_string();
                 }
 
-                body.push((plain, styled));
+                body.push(line);
             }
 
-            let footer = key_footer_line(
-                color,
-                &[
-                    ("↑/↓/j/k", "move"),
-                    ("space", "toggle"),
-                    ("a", "all"),
-                    ("n", "none"),
-                    ("enter", "confirm"),
-                ],
-            );
+            let footer = key_footer_line(color, MULTI_SELECT_KEYBINDS);
 
             last_height = draw_dialog_box(&mut out, &title, &body, &footer, last_height)?;
 
@@ -127,14 +129,20 @@ fn run_multi_select_dialog(
 
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
-                    cursor_idx = cursor_idx.saturating_sub(1);
+                    cursor_idx = if cursor_idx == 0 {
+                        items.len() - 1
+                    } else {
+                        cursor_idx - 1
+                    };
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    if cursor_idx + 1 < items.len() {
-                        cursor_idx += 1;
-                    }
+                    cursor_idx = if cursor_idx + 1 >= items.len() {
+                        0
+                    } else {
+                        cursor_idx + 1
+                    };
                 }
-                KeyCode::Char(' ') => {
+                KeyCode::Char(' ' | 'x') => {
                     selected[cursor_idx] = !selected[cursor_idx];
                 }
                 KeyCode::Char('a') => {
@@ -161,8 +169,14 @@ fn run_multi_select_dialog(
     Ok(selected)
 }
 
-fn run_global_choice_dialog(manager: &str, default_apply_all: bool) -> Result<bool> {
-    let color = output_theme().color();
+fn run_global_choice_dialog(
+    manager: &str,
+    items: &[PlannedUpdate],
+    default_apply_all: bool,
+) -> Result<bool> {
+    let theme = output_theme();
+    let color = theme.color();
+    let arrow = version_arrow(theme.unicode());
     let mut out = io::stdout();
     terminal::enable_raw_mode()?;
     if let Err(err) = execute!(out, cursor::Hide) {
@@ -177,43 +191,16 @@ fn run_global_choice_dialog(manager: &str, default_apply_all: bool) -> Result<bo
         loop {
             let title = title_line(manager, color);
 
-            let mut body = Vec::new();
-            body.push((
-                "This manager supports global apply only (all-or-none).".to_string(),
-                if color {
-                    "This manager supports global apply only (all-or-none)."
-                        .dark_grey()
-                        .to_string()
-                } else {
-                    "This manager supports global apply only (all-or-none).".to_string()
-                },
-            ));
+            let mut body = Vec::with_capacity(items.len() + 2);
+            body.push(dimmed_line(GLOBAL_APPLY_ONLY_NOTE, color));
+            body.push(blank_line());
 
-            let items = [
-                ("apply all updates", apply_all),
-                ("apply no updates (skip manager)", !apply_all),
-            ];
-            for (item, enabled) in items {
-                let marker = if enabled { "(x)" } else { "( )" };
-                let pointer = if enabled { ">" } else { " " };
-                let plain = format!("{pointer} {marker} {item}");
-                let styled = if color && enabled {
-                    plain.clone().black().on_cyan().bold().to_string()
-                } else {
-                    plain.clone()
-                };
-                body.push((plain, styled));
+            let marker = selection_marker(apply_all);
+            for item in items {
+                body.push(update_row_line(item, marker, apply_all, color, arrow));
             }
 
-            let footer = key_footer_line(
-                color,
-                &[
-                    ("↑/↓/j/k", "move"),
-                    ("a", "all"),
-                    ("n", "none"),
-                    ("enter", "confirm"),
-                ],
-            );
+            let footer = key_footer_line(color, GLOBAL_SELECT_KEYBINDS);
 
             last_height = draw_dialog_box(&mut out, &title, &body, &footer, last_height)?;
 
@@ -226,7 +213,7 @@ fn run_global_choice_dialog(manager: &str, default_apply_all: bool) -> Result<bo
             }
 
             match key.code {
-                KeyCode::Up | KeyCode::Down | KeyCode::Char('k' | 'j') => {
+                KeyCode::Char(' ' | 'x') => {
                     apply_all = !apply_all;
                 }
                 KeyCode::Char('a') => {
@@ -288,10 +275,72 @@ fn write_box_content_line(out: &mut io::Stdout, inner_width: usize, line: &Line)
     Ok(())
 }
 
-fn title_line(manager: &str, color: bool) -> Line {
-    let plain = format!("Select packages for {manager}");
+fn selection_marker(selected: bool) -> &'static str {
+    if selected { "[x]" } else { "[ ]" }
+}
+
+fn version_arrow(unicode: bool) -> &'static str {
+    if unicode { "→" } else { "->" }
+}
+
+fn blank_line() -> Line {
+    (String::new(), String::new())
+}
+
+fn dimmed_line(text: &str, color: bool) -> Line {
+    let plain = text.to_string();
     let styled = if color {
-        format!("Select packages for {}", manager.cyan().bold())
+        text.dark_grey().to_string()
+    } else {
+        plain.clone()
+    };
+
+    (plain, styled)
+}
+
+fn update_row_line(
+    item: &PlannedUpdate,
+    prefix: &str,
+    selected: bool,
+    color: bool,
+    arrow: &str,
+) -> Line {
+    let from_label = version_label(&item.current);
+    let to_label = version_label(&item.target);
+    let pinned = !selected;
+
+    let plain = update_row_text(prefix, &item.name, &from_label, &to_label, arrow, pinned);
+
+    let styled = if color && pinned {
+        plain.clone().dark_grey().to_string()
+    } else {
+        let to_rendered = render_to_version(&from_label, &to_label, color, false);
+        update_row_text(prefix, &item.name, &from_label, &to_rendered, arrow, pinned)
+    };
+
+    (plain, styled)
+}
+
+fn update_row_text(
+    prefix: &str,
+    name: &str,
+    from: &str,
+    to: &str,
+    arrow: &str,
+    pinned: bool,
+) -> String {
+    let mut line = format!("{prefix} {name} {from} {arrow} {to}");
+    if pinned {
+        line.push_str(PINNED_LABEL);
+    }
+
+    line
+}
+
+fn title_line(manager: &str, color: bool) -> Line {
+    let plain = format!("{DIALOG_TITLE_PREFIX} {manager}");
+    let styled = if color {
+        format!("{DIALOG_TITLE_PREFIX} {}", manager.cyan().bold())
     } else {
         plain.clone()
     };
