@@ -42,8 +42,7 @@ fn init_command_logging(cli: &cli::Cli) -> Result<()> {
 }
 
 fn run_with_cli(cli: &cli::Cli) -> Result<i32> {
-    #[cfg(debug_assertions)]
-    crate::util::process::set_debug_force_skip_mutating_commands(cli.debug_no_mutate);
+    crate::util::process::set_debug_force_skip_mutating_commands(cli.debug_no_mutate());
 
     let run_mode = cli.run_mode();
     validate_interactive_mode(cli.interactive, run_mode)?;

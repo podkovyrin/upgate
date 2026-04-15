@@ -79,4 +79,16 @@ impl Cli {
     pub(super) fn run_mode(&self) -> RunMode {
         self.command.unwrap_or(Command::Plan).run_mode()
     }
+
+    pub(super) const fn debug_no_mutate(&self) -> bool {
+        #[cfg(debug_assertions)]
+        {
+            self.debug_no_mutate
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            false
+        }
+    }
 }
