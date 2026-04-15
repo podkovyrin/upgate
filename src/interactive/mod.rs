@@ -8,17 +8,21 @@ use anyhow::{Result, bail};
 use crossterm::cursor;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::style::Stylize;
-use crossterm::terminal::{self, ClearType};
+use crossterm::terminal::{self, BeginSynchronizedUpdate, ClearType, EndSynchronizedUpdate};
 use crossterm::{execute, queue};
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 use std::io::{self, IsTerminal, Write};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 type Line = (String, String);
 const DIALOG_TITLE_PREFIX: &str = "Select updates for";
 const GLOBAL_APPLY_ONLY_NOTE: &str = "This manager supports global apply only (all-or-none).";
 const PINNED_LABEL: &str = " (pinned)";
+const DIALOG_BOX_OVERHEAD: usize = 4;
+const ELLIPSIS: char = '…';
+
 const MULTI_SELECT_KEYBINDS: &[(&str, &str)] = &[
     ("↑/↓/j/k", "move"),
     ("space/x", "toggle"),
@@ -91,7 +95,12 @@ fn run_multi_select_dialog(
         return Err(err.into());
     }
 
+    let title = title_line(manager, color);
+    let footer = key_footer_line(color, MULTI_SELECT_KEYBINDS);
+    let desired_inner_width = multi_select_desired_inner_width(&title.0, &footer.0, items, arrow);
+
     let mut last_height = 0usize;
+    let force_full_clear = false;
     let result = (|| -> Result<Vec<bool>> {
         let mut selected: Vec<bool> = items
             .iter()
@@ -100,7 +109,6 @@ fn run_multi_select_dialog(
         let mut cursor_idx = 0usize;
 
         loop {
-            let title = title_line(manager, color);
             let mut body = Vec::with_capacity(items.len());
 
             for (idx, item) in items.iter().enumerate() {
@@ -115,11 +123,22 @@ fn run_multi_select_dialog(
                 body.push(line);
             }
 
-            let footer = key_footer_line(color, MULTI_SELECT_KEYBINDS);
+            last_height = draw_dialog_box(
+                &mut out,
+                &title,
+                &body,
+                &footer,
+                desired_inner_width,
+                last_height,
+                force_full_clear,
+            )?;
 
-            last_height = draw_dialog_box(&mut out, &title, &body, &footer, last_height)?;
+            let event = event::read()?;
+            if let Event::Resize(_, _) = event {
+                continue;
+            }
 
-            let Event::Key(key) = event::read()? else {
+            let Event::Key(key) = event else {
                 continue;
             };
 
@@ -184,13 +203,16 @@ fn run_global_choice_dialog(
         return Err(err.into());
     }
 
+    let title = title_line(manager, color);
+    let footer = key_footer_line(color, GLOBAL_SELECT_KEYBINDS);
+    let desired_inner_width = global_choice_desired_inner_width(&title.0, &footer.0, items, arrow);
+
     let mut last_height = 0usize;
+    let force_full_clear = false;
     let result = (|| -> Result<bool> {
         let mut apply_all = default_apply_all;
 
         loop {
-            let title = title_line(manager, color);
-
             let mut body = Vec::with_capacity(items.len() + 2);
             body.push(dimmed_line(GLOBAL_APPLY_ONLY_NOTE, color));
             body.push(blank_line());
@@ -200,11 +222,22 @@ fn run_global_choice_dialog(
                 body.push(update_row_line(item, marker, apply_all, color, arrow));
             }
 
-            let footer = key_footer_line(color, GLOBAL_SELECT_KEYBINDS);
+            last_height = draw_dialog_box(
+                &mut out,
+                &title,
+                &body,
+                &footer,
+                desired_inner_width,
+                last_height,
+                force_full_clear,
+            )?;
 
-            last_height = draw_dialog_box(&mut out, &title, &body, &footer, last_height)?;
+            let event = event::read()?;
+            if let Event::Resize(_, _) = event {
+                continue;
+            }
 
-            let Event::Key(key) = event::read()? else {
+            let Event::Key(key) = event else {
                 continue;
             };
 
@@ -242,37 +275,144 @@ fn draw_dialog_box(
     title: &Line,
     body: &[Line],
     footer: &Line,
+    desired_inner_width: usize,
     last_height: usize,
+    force_full_clear: bool,
 ) -> Result<usize> {
-    clear_dialog(out, last_height)?;
+    clear_dialog(out, last_height, force_full_clear)?;
+    queue!(out, BeginSynchronizedUpdate)?;
 
-    let mut inner_width = width(&title.0).max(width(&footer.0));
-    for (plain, _) in body {
-        inner_width = inner_width.max(width(plain));
-    }
+    let render_result = (|| -> Result<usize> {
+        let term_columns = terminal_columns()?;
+        if term_columns < DIALOG_BOX_OVERHEAD {
+            let fallback = truncate_with_ellipsis("Terminal too narrow", term_columns);
+            write!(out, "{fallback}\r\n")?;
+            return Ok(1);
+        }
 
-    let hline = "─".repeat(inner_width + 2);
-    write!(out, "┌{hline}┐\r\n")?;
-    write_box_content_line(out, inner_width, title)?;
-    write!(out, "├{hline}┤\r\n")?;
+        let max_inner_width = term_columns.saturating_sub(DIALOG_BOX_OVERHEAD);
+        let inner_width = desired_inner_width.min(max_inner_width);
 
-    for line in body {
-        write_box_content_line(out, inner_width, line)?;
-    }
+        let hline = "─".repeat(inner_width + 2);
+        write!(out, "┌{hline}┐\r\n")?;
+        write_box_content_line(out, inner_width, title)?;
+        write!(out, "├{hline}┤\r\n")?;
 
-    write!(out, "├{hline}┤\r\n")?;
-    write_box_content_line(out, inner_width, footer)?;
-    write!(out, "└{hline}┘\r\n")?;
+        for line in body {
+            write_box_content_line(out, inner_width, line)?;
+        }
 
-    out.flush()?;
+        write!(out, "├{hline}┤\r\n")?;
+        write_box_content_line(out, inner_width, footer)?;
+        write!(out, "└{hline}┘\r\n")?;
 
-    Ok(body.len() + 6)
+        Ok(body.len() + 6)
+    })();
+
+    let end_sync_result = queue!(out, EndSynchronizedUpdate).map_err(anyhow::Error::from);
+    let flush_result = out.flush().map_err(anyhow::Error::from);
+
+    let rendered_height = render_result?;
+    end_sync_result?;
+    flush_result?;
+
+    Ok(rendered_height)
+}
+
+fn terminal_columns() -> Result<usize> {
+    Ok(usize::from(terminal::size()?.0))
 }
 
 fn write_box_content_line(out: &mut io::Stdout, inner_width: usize, line: &Line) -> Result<()> {
-    let pad = inner_width.saturating_sub(width(&line.0));
-    write!(out, "│ {}{} │\r\n", line.1, " ".repeat(pad))?;
+    if width(&line.0) <= inner_width {
+        let pad = inner_width.saturating_sub(width(&line.0));
+        write!(out, "│ {}{} │\r\n", line.1, " ".repeat(pad))?;
+        return Ok(());
+    }
+
+    let clipped = truncate_with_ellipsis(&line.0, inner_width);
+    let pad = inner_width.saturating_sub(width(&clipped));
+    write!(out, "│ {}{} │\r\n", clipped, " ".repeat(pad))?;
     Ok(())
+}
+
+fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+
+    if width(text) <= max_width {
+        return text.to_string();
+    }
+
+    if max_width == 1 {
+        return ELLIPSIS.to_string();
+    }
+
+    let mut clipped = String::new();
+    let mut used = 0usize;
+    let keep_width = max_width - 1;
+
+    for ch in text.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + ch_width > keep_width {
+            break;
+        }
+
+        clipped.push(ch);
+        used += ch_width;
+    }
+
+    if clipped.is_empty() {
+        ELLIPSIS.to_string()
+    } else {
+        clipped.push(ELLIPSIS);
+        clipped
+    }
+}
+
+fn multi_select_desired_inner_width(
+    title: &str,
+    footer: &str,
+    items: &[PlannedUpdate],
+    arrow: &str,
+) -> usize {
+    let mut desired_width = width(title).max(width(footer));
+    for item in items {
+        let from_label = version_label(&item.current);
+        let to_label = version_label(&item.target);
+        let row = update_row_text("> [x]", &item.name, &from_label, &to_label, arrow, true);
+        desired_width = desired_width.max(width(&row));
+    }
+
+    desired_width
+}
+
+fn global_choice_desired_inner_width(
+    title: &str,
+    footer: &str,
+    items: &[PlannedUpdate],
+    arrow: &str,
+) -> usize {
+    let mut desired_width = width(title)
+        .max(width(footer))
+        .max(width(GLOBAL_APPLY_ONLY_NOTE));
+
+    for item in items {
+        let from_label = version_label(&item.current);
+        let to_label = version_label(&item.target);
+        let row = update_row_text(
+            selection_marker(true),
+            &item.name,
+            &from_label,
+            &to_label,
+            arrow,
+            true,
+        );
+        desired_width = desired_width.max(width(&row));
+    }
+
+    desired_width
 }
 
 fn selection_marker(selected: bool) -> &'static str {
@@ -367,28 +507,49 @@ fn key_footer_line(color: bool, labels: &[(&str, &str)]) -> Line {
     (plain, styled_parts.join(&format!(" {} ", "|".dim())))
 }
 
-fn clear_dialog(out: &mut io::Stdout, lines: usize) -> Result<()> {
-    for _ in 0..lines {
+fn clear_dialog(out: &mut io::Stdout, lines: usize, force_full_clear: bool) -> Result<()> {
+    if force_full_clear {
         queue!(
             out,
-            cursor::MoveUp(1),
-            cursor::MoveToColumn(0),
-            terminal::Clear(ClearType::CurrentLine)
+            cursor::MoveTo(0, 0),
+            terminal::Clear(ClearType::All),
+            cursor::MoveTo(0, 0)
         )?;
+        return Ok(());
     }
 
     out.flush()?;
+    move_up_lines(out, lines)?;
+    queue!(
+        out,
+        cursor::MoveToColumn(0),
+        terminal::Clear(ClearType::FromCursorDown)
+    )?;
+    Ok(())
+}
+
+fn move_up_lines(out: &mut io::Stdout, mut lines: usize) -> Result<()> {
+    while lines > 0 {
+        let step = lines.min(usize::from(u16::MAX)) as u16;
+        queue!(out, cursor::MoveUp(step))?;
+        lines -= usize::from(step);
+    }
+
     Ok(())
 }
 
 fn cleanup_terminal(out: &mut io::Stdout, last_height: usize) -> Result<()> {
-    let mut cleanup_error: Option<anyhow::Error> = clear_dialog(out, last_height).err();
-    if let Err(err) = terminal::disable_raw_mode()
+    let mut cleanup_error: Option<anyhow::Error> = clear_dialog(out, last_height, false)
+        .and_then(|_| out.flush().map_err(anyhow::Error::from))
+        .err();
+
+    if let Err(err) = execute!(out, cursor::Show)
         && cleanup_error.is_none()
     {
         cleanup_error = Some(err.into());
     }
-    if let Err(err) = execute!(out, cursor::Show)
+
+    if let Err(err) = terminal::disable_raw_mode()
         && cleanup_error.is_none()
     {
         cleanup_error = Some(err.into());
@@ -402,5 +563,5 @@ fn cleanup_terminal(out: &mut io::Stdout, last_height: usize) -> Result<()> {
 }
 
 fn width(s: &str) -> usize {
-    s.chars().count()
+    UnicodeWidthStr::width(s)
 }

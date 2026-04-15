@@ -26,4 +26,5 @@ toml_edit = "0.22"
 indicatif = "0.18"
 owo-colors = "4.1"
 crossterm = "0.28"
+unicode-width = "0.2"
 flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }
