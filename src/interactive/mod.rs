@@ -21,7 +21,6 @@ struct Line {
     styled: String,
 }
 const DIALOG_TITLE_PREFIX: &str = "Select updates for";
-const GLOBAL_APPLY_ONLY_NOTE: &str = "This manager supports global apply only (all-or-none).";
 const PINNED_LABEL: &str = " (pinned)";
 const DIALOG_BOX_OVERHEAD: usize = 4;
 const ELLIPSIS: char = '…';
@@ -33,20 +32,10 @@ const MULTI_SELECT_KEYBINDS: &[(&str, &str)] = &[
     ("n", "none"),
     ("enter", "confirm"),
 ];
-const GLOBAL_SELECT_KEYBINDS: &[(&str, &str)] = &[
-    ("space/x", "toggle"),
-    ("a", "all"),
-    ("n", "none"),
-    ("enter", "confirm"),
-];
 
 struct MultiSelectState {
     selected: Vec<bool>,
     cursor_idx: usize,
-}
-
-struct GlobalChoiceState {
-    apply_all: bool,
 }
 
 struct DialogLayout<'a> {
@@ -100,14 +89,6 @@ pub fn choose_items_for_manager(
     }
 
     with_spinner_suspended(|| run_multi_select_dialog(manager, items, pinned))
-}
-
-pub fn confirm_global_manager_apply(
-    manager: &str,
-    items: &[PlannedUpdate],
-    default_apply_all: bool,
-) -> Result<bool> {
-    with_spinner_suspended(|| run_global_choice_dialog(manager, items, default_apply_all))
 }
 
 fn run_multi_select_dialog(
@@ -188,61 +169,6 @@ fn run_multi_select_dialog(
                             );
                         }
                     }
-                }
-
-                DialogProgress::Continue
-            },
-        )
-    })
-}
-
-fn run_global_choice_dialog(
-    manager: &str,
-    items: &[PlannedUpdate],
-    default_apply_all: bool,
-) -> Result<bool> {
-    let theme = output_theme();
-    let color = theme.color();
-    let arrow = version_arrow(theme.unicode());
-    let title = title_line(manager, color);
-    let footer = key_footer_line(color, GLOBAL_SELECT_KEYBINDS);
-    let desired_inner_width =
-        global_choice_desired_inner_width(&title.plain, &footer.plain, items, arrow);
-
-    with_dialog_terminal(|out, last_height| {
-        let mut state = GlobalChoiceState {
-            apply_all: default_apply_all,
-        };
-
-        let layout = DialogLayout {
-            title: &title,
-            footer: &footer,
-            desired_inner_width,
-        };
-        run_dialog_loop(
-            out,
-            &layout,
-            last_height,
-            &mut state,
-            |state| {
-                let mut body = Vec::with_capacity(items.len() + 2);
-                body.push(dimmed_line(GLOBAL_APPLY_ONLY_NOTE, color));
-                body.push(blank_line());
-
-                let marker = selection_marker(state.apply_all);
-                for item in items {
-                    body.push(update_row_line(item, marker, state.apply_all, color, arrow));
-                }
-
-                body
-            },
-            |state, key_code| {
-                if key_code == KeyCode::Enter {
-                    return DialogProgress::Submit(state.apply_all);
-                }
-
-                if let Some(action) = selection_action_for_key(key_code) {
-                    apply_selection_action(&mut state.apply_all, action);
                 }
 
                 DialogProgress::Continue
@@ -339,14 +265,6 @@ const fn selection_action_for_key(code: KeyCode) -> Option<SelectionAction> {
         KeyCode::Char('a') => Some(SelectionAction::SelectAll),
         KeyCode::Char('n') => Some(SelectionAction::SelectNone),
         _ => None,
-    }
-}
-
-const fn apply_selection_action(selected: &mut bool, action: SelectionAction) {
-    match action {
-        SelectionAction::Toggle => *selected = !*selected,
-        SelectionAction::SelectAll => *selected = true,
-        SelectionAction::SelectNone => *selected = false,
     }
 }
 
@@ -473,22 +391,6 @@ fn multi_select_desired_inner_width(
     desired_inner_width(title, footer, items, arrow, "> [x]", None)
 }
 
-fn global_choice_desired_inner_width(
-    title: &str,
-    footer: &str,
-    items: &[PlannedUpdate],
-    arrow: &str,
-) -> usize {
-    desired_inner_width(
-        title,
-        footer,
-        items,
-        arrow,
-        selection_marker(true),
-        Some(GLOBAL_APPLY_ONLY_NOTE),
-    )
-}
-
 fn desired_inner_width(
     title: &str,
     footer: &str,
@@ -518,24 +420,6 @@ const fn selection_marker(selected: bool) -> &'static str {
 
 const fn version_arrow(unicode: bool) -> &'static str {
     if unicode { "→" } else { "->" }
-}
-
-const fn blank_line() -> Line {
-    Line {
-        plain: String::new(),
-        styled: String::new(),
-    }
-}
-
-fn dimmed_line(text: &str, color: bool) -> Line {
-    let plain = text.to_string();
-    let styled = if color {
-        text.dark_grey().to_string()
-    } else {
-        plain.clone()
-    };
-
-    Line { plain, styled }
 }
 
 fn update_row_line(

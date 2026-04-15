@@ -52,12 +52,8 @@ where
     upgradable
 }
 
-fn is_pinned(manager: &'static str, name: &str, pinned: Option<&BTreeSet<String>>) -> bool {
-    pinned.is_some_and(|set| {
-        (matches!(manager, "npm" | "bun" | "mise") && !set.is_empty())
-            || set.contains(name)
-            || set.contains(PIN_ALL)
-    })
+fn is_pinned(_manager: &'static str, name: &str, pinned: Option<&BTreeSet<String>>) -> bool {
+    pinned.is_some_and(|set| set.contains(name) || set.contains(PIN_ALL))
 }
 
 fn handle_pinned_decision(

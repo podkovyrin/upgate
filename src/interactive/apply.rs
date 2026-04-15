@@ -1,30 +1,49 @@
-use super::{choose_items_for_manager, confirm_global_manager_apply};
+use super::choose_items_for_manager;
 use crate::config::PIN_ALL;
 use crate::manager::ManagerCtx;
 use crate::managers::common::PlannedUpdate;
 use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 
-pub fn select_upgradable_items(
+pub struct ApplySelection {
+    pub selected: Vec<PlannedUpdate>,
+    pub all_selected: bool,
+    pub pinned_after_selection: std::collections::BTreeSet<String>,
+}
+
+pub fn select_upgradable_items_with_meta(
     ctx: &ManagerCtx,
     manager_id: &'static str,
     upgradable: Vec<PlannedUpdate>,
-) -> anyhow::Result<Vec<PlannedUpdate>> {
+) -> anyhow::Result<ApplySelection> {
     if upgradable.is_empty() {
-        return Ok(upgradable);
+        return Ok(ApplySelection {
+            selected: upgradable,
+            all_selected: true,
+            pinned_after_selection: ctx.policy.pinned.clone(),
+        });
     }
 
     let mut pinned = ctx.policy.pinned.clone();
 
     if !ctx.is_interactive_apply() {
-        let selected = upgradable
+        let total = upgradable.len();
+        let selected: Vec<PlannedUpdate> = upgradable
             .into_iter()
             .filter(|item| !is_item_pinned(&item.name, &pinned))
             .collect();
-        return Ok(selected);
+        return Ok(ApplySelection {
+            all_selected: selected.len() == total,
+            selected,
+            pinned_after_selection: pinned,
+        });
     }
 
     let chosen_items = choose_items_for_manager(manager_id, &upgradable, &pinned)?;
     assert_eq!(chosen_items.len(), upgradable.len());
+    let all_selected = chosen_items.iter().all(|chosen| *chosen);
+    if chosen_items.iter().any(|chosen| *chosen) {
+        pinned.remove(PIN_ALL);
+    }
 
     let mut selected_items = Vec::new();
     let mut pinned_items = Vec::new();
@@ -55,47 +74,14 @@ pub fn select_upgradable_items(
         ));
     }
 
-    ctx.record_pending_pins_if_changed(pinned);
+    ctx.record_pending_pins_if_changed(pinned.clone());
 
-    Ok(selected_items)
+    Ok(ApplySelection {
+        selected: selected_items,
+        all_selected,
+        pinned_after_selection: pinned,
+    })
 }
-
-pub fn should_apply_global_manager(
-    ctx: &ManagerCtx,
-    manager_id: &'static str,
-    upgradable: &[PlannedUpdate],
-) -> anyhow::Result<bool> {
-    if upgradable.is_empty() {
-        return Ok(false);
-    }
-
-    let apply = confirm_global_manager_apply(manager_id, upgradable, ctx.policy.pinned.is_empty())?;
-    if !apply {
-        emit_global_skipped_items(upgradable);
-        let next_pins = std::iter::once(PIN_ALL.to_string()).collect();
-        ctx.record_pending_pins_if_changed(next_pins);
-        return Ok(false);
-    }
-
-    ctx.record_pending_pins_if_changed(std::collections::BTreeSet::new());
-
-    Ok(true)
-}
-
-fn emit_global_skipped_items(upgradable: &[PlannedUpdate]) {
-    for item in upgradable {
-        emit_text_outcome(&ItemOutcome::skipped(
-            item.manager,
-            item.name.clone(),
-            item.current.clone(),
-            item.target.clone(),
-            item.source,
-            ReasonCode::Pinned,
-            "pinned",
-        ));
-    }
-}
-
 fn is_item_pinned(name: &str, pinned: &std::collections::BTreeSet<String>) -> bool {
     pinned.contains(name) || pinned.contains(PIN_ALL)
 }

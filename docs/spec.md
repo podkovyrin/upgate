@@ -98,8 +98,7 @@ Behavior notes:
 - `apply` performs updates.
 - `--interactive` is valid only with `apply` and requires interactive `stdin` + `stdout` TTY; otherwise execution fails.
 - Interactive flow:
-  - per-item managers prompt with all upgradable items selected by default and allow deselection
-  - global-apply managers (`npm`, `bun`, `mise`) use all-or-nothing confirmation
+  - all managers prompt with all upgradable items selected by default and allow deselection
 - Deselected/skipped choices are persisted as manager-local pins in config.
 - Selected managers run in a fixed internal order:
   `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`, `gem`, `dotnet`.
@@ -288,11 +287,11 @@ Planning flow:
 3. Parse version timestamps and choose semver-max eligible target.
 
 Apply flow:
-- Batch command: `npm -g update --min-release-age <days>`.
+- Selective command: `npm -g update <name> --min-release-age <days>` (per selected package).
+- Global command: `npm -g update --min-release-age <days>`.
 - `<days>` is derived from `[npm].min_release_age` and must be whole days (validated during npm manager setup).
-- Batch apply failure emits one synthetic `*` error outcome.
-- Interactive behavior: manager-level all-or-nothing confirmation (no per-item deselection).
-- If `[npm].pinned` is non-empty, apply is skipped (global command cannot enforce per-item pins).
+- Global apply failure emits one synthetic `*` error outcome.
+- Global command is used only when every upgradable package is selected and `[npm].pinned` is empty; otherwise selective per-package apply is used.
 
 Concurrency:
 - Planning per-package resolution is parallelized.
@@ -360,11 +359,11 @@ Notes:
 - Missing global manifest/lockfile states are treated as empty/no-op.
 
 Apply flow:
-- Batch command: `bun update -g --minimum-release-age <seconds>`.
+- Selective command: `bun update -g <name>@<target> --minimum-release-age <seconds>` (per selected package).
+- Global command: `bun update -g --minimum-release-age <seconds>`.
 - `<seconds>` is derived from `[bun].min_release_age`.
-- Batch apply failure emits one synthetic `*` error outcome.
-- Interactive behavior: manager-level all-or-nothing confirmation (no per-item deselection).
-- If `[bun].pinned` is non-empty, apply is skipped (global command cannot enforce per-item pins).
+- Global apply failure emits one synthetic `*` error outcome.
+- Global command is used only when every upgradable package is selected and `[bun].pinned` is empty; otherwise selective per-package apply is used.
 
 Concurrency:
 - Planning per-package resolution is parallelized.
@@ -398,10 +397,10 @@ Concurrency:
 - Pool size for that lookup path: `clamp(1, --max-parallel-checks, 4)`.
 
 Apply flow:
-- Batch command: `mise upgrade --before <duration-from-config>`.
-- Batch apply failure emits one synthetic `*` error outcome.
-- Interactive behavior: manager-level all-or-nothing confirmation (no per-item deselection).
-- If `[mise].pinned` is non-empty, apply is skipped (global command cannot enforce per-item pins).
+- Selective command: `mise upgrade --before <duration-from-config> <tool>` (per selected tool).
+- Global command: `mise upgrade --before <duration-from-config>`.
+- Global apply failure emits one synthetic `*` error outcome.
+- Global command is used only when every upgradable tool is selected and `[mise].pinned` is empty; otherwise selective per-tool apply is used.
 
 ### pipx (`src/managers/pipx.rs`)
 

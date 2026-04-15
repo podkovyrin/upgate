@@ -3,8 +3,9 @@ use crate::managers::common::{
     DelayedLatest, PlanMeta, ResolvedPlanTarget, SemverAgeResolution, SemverTimestamp,
     emit_manager_level_error, emit_plan_and_collect_upgradable, emit_scan_current,
     parse_semver_time_releases, plan_decision_from_resolution, release_age_secs_for_version,
-    resolve_semver_with_min_age, run_global_apply_flow, verbose_now_unix_secs,
+    resolve_semver_with_min_age, run_selective_or_global_apply_flow, verbose_now_unix_secs,
 };
+use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::time::now_unix_secs;
@@ -98,8 +99,6 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         ctx.max_parallel_checks,
     )?;
 
-    let pinned_for_global = Some(&ctx.policy.pinned);
-
     let upgradable = emit_plan_and_collect_upgradable(
         plan,
         |item| {
@@ -122,12 +121,17 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             )
         },
         ctx.is_interactive_apply(),
-        pinned_for_global,
+        Some(&ctx.policy.pinned),
     );
 
-    run_global_apply_flow(ctx, PLUGIN.id(), PLUGIN.id(), upgradable, || {
-        apply_bun_updates(&bun, min_age)
-    })?;
+    run_selective_or_global_apply_flow(
+        ctx,
+        PLUGIN.id(),
+        PLUGIN.id(),
+        upgradable,
+        |selected| apply_bun_selected_updates(&bun, min_age, selected),
+        || apply_bun_updates(&bun, min_age),
+    )?;
 
     Ok(())
 }
@@ -202,20 +206,53 @@ fn resolve_bun_plan(
 }
 
 fn apply_bun_updates(bun: &str, min_age: Duration) -> Result<()> {
+    let min_age_secs = min_age.as_secs().to_string();
     run_cmd(
         bun,
-        [
-            "update",
-            "-g",
-            "--minimum-release-age",
-            &min_age.as_secs().to_string(),
-        ],
+        ["update", "-g", "--minimum-release-age", &min_age_secs],
         CmdStatus::Success,
     )
     .mutating()
     .output()?;
 
     Ok(())
+}
+
+fn apply_bun_selected_updates(
+    bun: &str,
+    min_age: Duration,
+    upgradable: Vec<crate::managers::common::PlannedUpdate>,
+) {
+    let min_age_secs = min_age.as_secs().to_string();
+
+    for item in upgradable {
+        let name = item.name;
+        let current = item.current;
+        let target = item.target;
+        let source = item.source;
+
+        let package_spec = format!("{name}@{target}");
+        let args = [
+            "update".to_string(),
+            "-g".to_string(),
+            package_spec,
+            "--minimum-release-age".to_string(),
+            min_age_secs.clone(),
+        ];
+
+        if let Err(err) = run_cmd(bun, &args, CmdStatus::Success).mutating().output() {
+            let outcome = ItemOutcome::error(
+                PLUGIN.id(),
+                name,
+                current,
+                target,
+                source,
+                ReasonCode::CommandFailed,
+                err.to_string(),
+            );
+            emit_text_outcome(&outcome);
+        }
+    }
 }
 
 fn emit_bun_scan_outcomes(

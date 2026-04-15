@@ -3,8 +3,9 @@ use crate::managers::common::{
     DelayedLatest, PlanMeta, ResolvedPlanTarget, SemverAgeResolution, SemverTimestamp,
     emit_manager_level_error, emit_plan_and_collect_upgradable, emit_version_scan_outcomes,
     parse_semver_time_releases, plan_decision_from_resolution, release_age_secs_for_version,
-    resolve_semver_with_min_age, run_global_apply_flow, verbose_now_unix_secs,
+    resolve_semver_with_min_age, run_selective_or_global_apply_flow, verbose_now_unix_secs,
 };
+use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::time::now_unix_secs;
@@ -80,8 +81,6 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
 
     let plan = resolve_npm_plan(&outdated, now, min_age, ctx.max_parallel_checks)?;
 
-    let pinned_for_global = Some(&ctx.policy.pinned);
-
     let upgradable = emit_plan_and_collect_upgradable(
         plan,
         |item| {
@@ -104,12 +103,18 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             )
         },
         ctx.is_interactive_apply(),
-        pinned_for_global,
+        Some(&ctx.policy.pinned),
     );
 
-    run_global_apply_flow(ctx, PLUGIN.id(), PLUGIN.id(), upgradable, || {
-        apply_npm_updates(ctx.policy.min_release_age.whole_days())
-    })?;
+    let min_age_days = ctx.policy.min_release_age.whole_days();
+    run_selective_or_global_apply_flow(
+        ctx,
+        PLUGIN.id(),
+        PLUGIN.id(),
+        upgradable,
+        |selected| apply_npm_selected_updates(min_age_days, selected),
+        || apply_npm_updates(min_age_days),
+    )?;
 
     Ok(())
 }
@@ -166,20 +171,54 @@ fn resolve_npm_plan(
 }
 
 fn apply_npm_updates(min_age_days: u64) -> Result<()> {
+    let min_age_days = min_age_days.to_string();
     run_cmd(
         "npm",
-        [
-            "-g",
-            "update",
-            "--min-release-age",
-            &min_age_days.to_string(),
-        ],
+        ["-g", "update", "--min-release-age", &min_age_days],
         CmdStatus::Success,
     )
     .mutating()
     .output()?;
 
     Ok(())
+}
+
+fn apply_npm_selected_updates(
+    min_age_days: u64,
+    upgradable: Vec<crate::managers::common::PlannedUpdate>,
+) {
+    let min_age_days = min_age_days.to_string();
+
+    for item in upgradable {
+        let name = item.name;
+        let current = item.current;
+        let target = item.target;
+        let source = item.source;
+
+        let args = [
+            "-g".to_string(),
+            "update".to_string(),
+            name.clone(),
+            "--min-release-age".to_string(),
+            min_age_days.clone(),
+        ];
+
+        if let Err(err) = run_cmd("npm", &args, CmdStatus::Success)
+            .mutating()
+            .output()
+        {
+            let outcome = ItemOutcome::error(
+                PLUGIN.id(),
+                name,
+                current,
+                target,
+                source,
+                ReasonCode::CommandFailed,
+                err.to_string(),
+            );
+            emit_text_outcome(&outcome);
+        }
+    }
 }
 
 fn npm_installed_global() -> Result<BTreeMap<String, String>> {

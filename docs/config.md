@@ -123,10 +123,9 @@ You can deselect items; deselected items are persisted into that manager's `pinn
 Pinned items are skipped in subsequent runs.
 Interactive pin persistence updates only the manager `pinned` key and keeps unrelated config keys as-is.
 
-Managers that only support global apply (`npm`, `bun`, `mise`) cannot honor per-item deselection.
-In interactive mode they show an all-or-nothing prompt.
-For these managers, any non-empty `pinned` list means "skip manager on apply" (including named pins or `"*"`).
-Choosing `none` in interactive global prompt persists `pinned = ["*"]`; choosing `all` clears all pins for that manager.
+For `npm`, `bun`, and `mise`, apply uses a hybrid strategy:
+- Global command is used only when all upgradable items are selected and the manager `pinned` list is empty.
+- Otherwise, selective per-item updates are used so manager-local pins are honored.
 
 `--interactive` requires interactive `stdin` and `stdout` TTY; otherwise the command fails.
 

@@ -1,8 +1,9 @@
 use crate::manager::{ManagerCtx, ManagerPlugin};
 use crate::managers::common::{
     DelayedLatest, PlanDecision, PlanMeta, emit_manager_level_error,
-    emit_plan_and_collect_upgradable, emit_scan_current, run_global_apply_flow,
+    emit_plan_and_collect_upgradable, emit_scan_current, run_selective_or_global_apply_flow,
 };
+use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::time::human_age;
@@ -51,10 +52,10 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         return scan(ctx);
     }
 
-    let min_age_raw = ctx.policy.min_release_age.cli_arg();
+    let min_age_raw = ctx.policy.min_release_age.cli_arg().to_string();
     let min_age = ctx.policy.min_release_age.duration();
 
-    let (plan_pairs, latest_map) = match collect_mise_plan_inputs(min_age_raw) {
+    let (plan_pairs, latest_map) = match collect_mise_plan_inputs(&min_age_raw) {
         Ok(values) => values,
         Err(err) => {
             emit_mise_manager_error(err.to_string());
@@ -65,8 +66,6 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
     let now = now_unix_secs()?;
     let (mut age_by_index, npm_age_annotations_enabled) =
         resolve_mise_age_annotations(&plan_pairs, &latest_map, now, ctx.max_parallel_checks);
-
-    let pinned_for_global = Some(&ctx.policy.pinned);
 
     let upgradable = emit_plan_and_collect_upgradable(
         plan_pairs.into_iter().enumerate().collect(),
@@ -92,21 +91,66 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             )
         },
         ctx.is_interactive_apply(),
-        pinned_for_global,
+        Some(&ctx.policy.pinned),
     );
 
-    run_global_apply_flow(ctx, PLUGIN.id(), PLUGIN.id(), upgradable, || {
-        run_cmd(
-            "mise",
-            ["upgrade", "--before", min_age_raw],
-            CmdStatus::Success,
-        )
-        .mutating()
-        .output()
-        .map(|_| ())
-    })?;
+    run_selective_or_global_apply_flow(
+        ctx,
+        PLUGIN.id(),
+        PLUGIN.id(),
+        upgradable,
+        |selected| apply_mise_selected_updates(&min_age_raw, selected),
+        || apply_mise_updates(&min_age_raw),
+    )?;
 
     Ok(())
+}
+
+fn apply_mise_updates(min_age_raw: &str) -> Result<()> {
+    run_cmd(
+        "mise",
+        ["upgrade", "--before", min_age_raw],
+        CmdStatus::Success,
+    )
+    .mutating()
+    .output()?;
+
+    Ok(())
+}
+
+fn apply_mise_selected_updates(
+    min_age_raw: &str,
+    upgradable: Vec<crate::managers::common::PlannedUpdate>,
+) {
+    for item in upgradable {
+        let name = item.name;
+        let current = item.current;
+        let target = item.target;
+        let source = item.source;
+
+        let args = [
+            "upgrade".to_string(),
+            "--before".to_string(),
+            min_age_raw.to_string(),
+            name.clone(),
+        ];
+
+        if let Err(err) = run_cmd("mise", &args, CmdStatus::Success)
+            .mutating()
+            .output()
+        {
+            let outcome = ItemOutcome::error(
+                PLUGIN.id(),
+                name,
+                current,
+                target,
+                source,
+                ReasonCode::CommandFailed,
+                err.to_string(),
+            );
+            emit_text_outcome(&outcome);
+        }
+    }
 }
 
 fn collect_mise_plan_inputs(before: &str) -> Result<(Vec<MisePlanItem>, BTreeMap<String, String>)> {
