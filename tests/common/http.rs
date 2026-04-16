@@ -7,14 +7,14 @@ use std::time::Duration;
 
 const SERVER_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-pub(crate) struct BackgroundTcpServer {
+pub struct BackgroundTcpServer {
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl BackgroundTcpServer {
-    pub(crate) fn start<F>(label: &str, run: F) -> Self
+    pub fn start<F>(label: &str, run: F) -> Self
     where
         F: FnOnce(TcpListener, Arc<AtomicBool>) + Send + 'static,
     {
@@ -38,11 +38,11 @@ impl BackgroundTcpServer {
         }
     }
 
-    pub(crate) fn base_url(&self) -> String {
+    pub fn base_url(&self) -> String {
         format!("http://{}", self.addr)
     }
 
-    pub(crate) fn shutdown(&mut self) {
+    pub fn shutdown(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         let _ = TcpStream::connect(self.addr);
         if let Some(handle) = self.handle.take() {
@@ -57,7 +57,7 @@ impl Drop for BackgroundTcpServer {
     }
 }
 
-pub(crate) fn run_fake_http_server<F>(
+pub fn run_fake_http_server<F>(
     listener: &TcpListener,
     stop: &AtomicBool,
     mut handle_connection: F,
@@ -86,7 +86,7 @@ pub(crate) fn run_fake_http_server<F>(
     }
 }
 
-pub(crate) fn read_http_request_head(stream: &mut TcpStream) -> Option<String> {
+pub fn read_http_request_head(stream: &mut TcpStream) -> Option<String> {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
 
@@ -117,7 +117,7 @@ pub(crate) fn read_http_request_head(stream: &mut TcpStream) -> Option<String> {
     Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
-pub(crate) fn write_http_response_text(
+pub fn write_http_response_text(
     stream: &mut TcpStream,
     status: &str,
     content_type: &str,
@@ -132,7 +132,7 @@ pub(crate) fn write_http_response_text(
     let _ = stream.flush();
 }
 
-pub(crate) fn write_http_response_bytes(
+pub fn write_http_response_bytes(
     stream: &mut TcpStream,
     status: &str,
     content_type: &str,

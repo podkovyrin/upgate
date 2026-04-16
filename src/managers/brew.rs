@@ -1065,10 +1065,10 @@ fn resolve_api_fallback_remote_branch(
     tap: &str,
     tap_meta: Option<&TapMeta>,
 ) -> Option<(String, Option<String>)> {
-    if let Some(meta) = tap_meta {
-        if let Some(remote) = meta.remote.clone() {
-            return Some((remote, meta.branch.clone()));
-        }
+    if let Some(meta) = tap_meta
+        && let Some(remote) = meta.remote.clone()
+    {
+        return Some((remote, meta.branch.clone()));
     }
 
     match tap {

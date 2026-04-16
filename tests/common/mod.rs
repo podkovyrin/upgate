@@ -1,37 +1,44 @@
 #![allow(dead_code)]
 
-pub(crate) mod http;
+pub mod http;
 
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-pub(crate) fn unique_temp_dir(prefix: &str) -> PathBuf {
+pub fn unique_temp_dir(prefix: &str) -> PathBuf {
+    static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock before epoch")
         .as_nanos();
-    let dir = env::temp_dir().join(format!("upnow-{prefix}-{}-{stamp}", std::process::id()));
+    let seq = UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = env::temp_dir().join(format!(
+        "upnow-{prefix}-{}-{stamp}-{seq}",
+        std::process::id()
+    ));
     fs::create_dir_all(&dir).expect("create temp dir");
     dir
 }
 
-pub(crate) struct SandboxEnv {
-    pub(crate) root: PathBuf,
-    pub(crate) home_dir: PathBuf,
-    pub(crate) xdg_config_home: PathBuf,
-    pub(crate) fake_bin_dir: PathBuf,
-    pub(crate) path_env: String,
-    pub(crate) original_path: String,
+pub struct SandboxEnv {
+    pub root: PathBuf,
+    pub home_dir: PathBuf,
+    pub xdg_config_home: PathBuf,
+    pub fake_bin_dir: PathBuf,
+    pub path_env: String,
+    pub original_path: String,
 }
 
 impl SandboxEnv {
-    pub(crate) fn new(prefix: &str) -> Self {
+    pub fn new(prefix: &str) -> Self {
         let root = unique_temp_dir(prefix);
         let home_dir = root.join("home");
         let xdg_config_home = root.join("xdg-config");
@@ -58,18 +65,18 @@ impl SandboxEnv {
         }
     }
 
-    pub(crate) fn write_config(&self, config_toml: &str) {
+    pub fn write_config(&self, config_toml: &str) {
         fs::write(self.xdg_config_home.join("upnow/config.toml"), config_toml)
             .expect("write test config.toml");
     }
 
-    pub(crate) fn apply_base_env(&self, cmd: &mut Command) {
+    pub fn apply_base_env(&self, cmd: &mut Command) {
         cmd.env("PATH", &self.path_env);
         cmd.env("HOME", &self.home_dir);
         cmd.env("XDG_CONFIG_HOME", &self.xdg_config_home);
     }
 
-    pub(crate) fn find_real_executable(&self, name: &str) -> Option<PathBuf> {
+    pub fn find_real_executable(&self, name: &str) -> Option<PathBuf> {
         find_executable_in_path(name, &self.original_path)
     }
 }
@@ -80,7 +87,7 @@ impl Drop for SandboxEnv {
     }
 }
 
-pub(crate) fn scenario_path(rel: &str, label: &str) -> PathBuf {
+pub fn scenario_path(rel: &str, label: &str) -> PathBuf {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
     assert!(
         path.is_dir(),
@@ -90,7 +97,7 @@ pub(crate) fn scenario_path(rel: &str, label: &str) -> PathBuf {
     path
 }
 
-pub(crate) fn fixture_path(parent: &Path, child: &str, label: &str) -> PathBuf {
+pub fn fixture_path(parent: &Path, child: &str, label: &str) -> PathBuf {
     let path = parent.join(child);
     assert!(
         path.is_dir(),
@@ -100,7 +107,7 @@ pub(crate) fn fixture_path(parent: &Path, child: &str, label: &str) -> PathBuf {
     path
 }
 
-pub(crate) fn write_executable(path: &Path, content: &str, label: &str) {
+pub fn write_executable(path: &Path, content: &str, label: &str) {
     fs::write(path, content).unwrap_or_else(|err| panic!("write {label}: {err}"));
 
     #[cfg(unix)]
@@ -113,21 +120,18 @@ pub(crate) fn write_executable(path: &Path, content: &str, label: &str) {
     }
 }
 
-pub(crate) fn find_executable_in_path(name: &str, path_env: &str) -> Option<PathBuf> {
+pub fn find_executable_in_path(name: &str, path_env: &str) -> Option<PathBuf> {
     env::split_paths(path_env)
         .map(|dir| dir.join(name))
         .find(|candidate| is_executable_file(candidate))
 }
 
 #[cfg(unix)]
-pub(crate) fn is_executable_file(path: &Path) -> bool {
-    match fs::metadata(path) {
-        Ok(meta) => meta.is_file() && (meta.permissions().mode() & 0o111 != 0),
-        Err(_) => false,
-    }
+pub fn is_executable_file(path: &Path) -> bool {
+    fs::metadata(path).is_ok_and(|meta| meta.is_file() && (meta.permissions().mode() & 0o111 != 0))
 }
 
-pub(crate) fn spawn_upnow<F>(args: &[&str], extra_env: &[(&str, &str)], configure: F) -> Output
+pub fn spawn_upnow<F>(args: &[&str], extra_env: &[(&str, &str)], configure: F) -> Output
 where
     F: FnOnce(&mut Command),
 {
@@ -145,15 +149,15 @@ where
     cmd.output().expect("failed to run upnow")
 }
 
-pub(crate) fn stdout(output: &Output) -> String {
+pub fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-pub(crate) fn stderr(output: &Output) -> String {
+pub fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
-pub(crate) fn assert_success(output: &Output, label: &str) {
+pub fn assert_success(output: &Output, label: &str) {
     if output.status.success() {
         return;
     }

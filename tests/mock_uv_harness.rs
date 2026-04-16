@@ -11,6 +11,11 @@ use common::{
 
 const DETERMINISTIC_UV_SCENARIO_DIR: &str = "tests/scenarios/uv/deterministic";
 const HYBRID_UV_SCENARIO_DIR: &str = "tests/scenarios/uv/hybrid";
+const UV_PYTHON_WRAPPER_SCRIPT: &str = concat!(
+    "#!/usr/bin/env bash\nexec \"${",
+    "UPNOW_REAL_PYTHON_BIN:-python3",
+    "}\" \"$@\"\n"
+);
 
 const DETERMINISTIC_CONFIG: &str = r#"
 [uv]
@@ -67,7 +72,7 @@ impl Sandbox {
             let tool_python = tool_python_dir.join("python");
             write_executable(
                 &tool_python,
-                "#!/usr/bin/env bash\nexec \"${UPNOW_REAL_PYTHON_BIN:-python3}\" \"$@\"\n",
+                UV_PYTHON_WRAPPER_SCRIPT,
                 "fake uv tool python wrapper",
             );
         }
@@ -112,6 +117,9 @@ impl Sandbox {
 
     fn apply_base_env(&self, cmd: &mut Command) {
         self.env.apply_base_env(cmd);
+        cmd.env_remove("UPNOW_FAKE_UV_REAL_PIP_DRY_RUN");
+        cmd.env_remove("UPNOW_REAL_UV_BIN");
+        cmd.env_remove("UPNOW_FAKE_UV_KEEP_FAKE_TOOLS");
         cmd.env("UPNOW_FAKE_UV_SCENARIO_DIR", &self.uv_scenario_dir);
         cmd.env("UPNOW_FAKE_UV_TOOL_DIR", &self.uv_tool_dir);
     }
