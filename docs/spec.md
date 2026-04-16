@@ -386,8 +386,8 @@ Planning flow:
 
 Latest-age annotation source:
 - `npm:` tools use `npm view <pkg>@<latest> time --json`.
-- Non-`npm:` tools are currently annotated as `0s` (placeholder).
-- For `npm:` tools, if age enrichment is unavailable or per-item age lookup is missing, delayed-latest age currently falls back to `0s`.
+- Non-`npm:` tools do not emit delayed-latest age annotations.
+- For `npm:` tools, delayed-latest age is emitted only when the age lookup succeeds.
 
 Error handling:
 - `mise outdated --json` failure emits one synthetic `*` error outcome and planning continues without latest-map annotations.
@@ -444,6 +444,7 @@ Planning flow:
 4. Parse `+ <tool>==<target>` lines from dry-run plan.
 5. `uv tool list --outdated` for latest context.
 6. Latest-age annotation: PyPI JSON (`https://pypi.org/pypi/<name>/json`).
+7. If latest-age lookup is unavailable for delayed-no-eligible metadata, delayed-latest annotation is omitted (no `0s` placeholder).
 
 Apply flow:
 - Per eligible tool:

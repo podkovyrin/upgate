@@ -6,7 +6,6 @@ use crate::managers::common::{
 use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{CmdStatus, run_cmd};
-use crate::util::time::human_age;
 use crate::util::time::now_unix_secs;
 use crate::util::time::parse_rfc3339_unix;
 use anyhow::{Context, Result};
@@ -232,29 +231,21 @@ fn mise_plan_decision(
         };
     }
 
-    let age_secs = if tool.starts_with("npm:") {
-        if npm_age_annotations_enabled {
-            match age_by_index.remove(&idx) {
-                Some(age_result) => match age_result.age_secs {
-                    Ok(age_secs) => age_secs,
-                    Err(err) => return PlanDecision::Error(err),
-                },
-                None => 0,
-            }
-        } else {
-            0
+    let delayed_latest = if tool.starts_with("npm:") && npm_age_annotations_enabled {
+        match age_by_index.remove(&idx) {
+            Some(age_result) => match age_result.age_secs {
+                Ok(age_secs) => Some(DelayedLatest::new(latest.clone(), age_secs, min_age)),
+                Err(err) => return PlanDecision::Error(err),
+            },
+            None => None,
         }
     } else {
-        0
+        None
     };
 
     PlanDecision::Update {
         target: to_version,
-        delayed_latest: Some(DelayedLatest {
-            latest_version: latest.clone(),
-            latest_age: human_age(age_secs),
-            required_age: human_age(min_age.as_secs()),
-        }),
+        delayed_latest,
     }
 }
 
@@ -414,4 +405,95 @@ fn mise_installed_versions() -> Result<BTreeMap<String, String>> {
 
 fn emit_mise_manager_error(detail: impl AsRef<str>) {
     emit_manager_level_error(PLUGIN.id(), PLUGIN.id(), detail);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
+    #[test]
+    fn non_npm_delayed_latest_annotation_is_omitted() {
+        let mut age_by_index = BTreeMap::new();
+        let mut latest_map = BTreeMap::new();
+        latest_map.insert("node".to_string(), "22.0.0".to_string());
+
+        let decision = mise_plan_decision(
+            0,
+            "node",
+            "21.0.0".to_string(),
+            &latest_map,
+            &mut age_by_index,
+            true,
+            Duration::from_secs(7 * 24 * 60 * 60),
+        );
+
+        match decision {
+            PlanDecision::Update {
+                target,
+                delayed_latest,
+            } => {
+                assert_eq!(target, "21.0.0");
+                assert!(delayed_latest.is_none());
+            }
+            _ => panic!("expected update decision"),
+        }
+    }
+
+    #[test]
+    fn npm_delayed_latest_annotation_is_omitted_when_age_lookup_missing() {
+        let mut age_by_index = BTreeMap::new();
+        let mut latest_map = BTreeMap::new();
+        latest_map.insert("npm:eslint".to_string(), "9.0.0".to_string());
+
+        let decision = mise_plan_decision(
+            0,
+            "npm:eslint",
+            "8.0.0".to_string(),
+            &latest_map,
+            &mut age_by_index,
+            true,
+            Duration::from_secs(7 * 24 * 60 * 60),
+        );
+
+        match decision {
+            PlanDecision::Update {
+                target,
+                delayed_latest,
+            } => {
+                assert_eq!(target, "8.0.0");
+                assert!(delayed_latest.is_none());
+            }
+            _ => panic!("expected update decision"),
+        }
+    }
+
+    #[test]
+    fn npm_delayed_latest_annotation_emits_error_on_age_lookup_failure() {
+        let mut age_by_index = BTreeMap::new();
+        age_by_index.insert(
+            0,
+            MiseLatestAgeResult {
+                age_secs: Err("lookup failed".to_string()),
+            },
+        );
+        let mut latest_map = BTreeMap::new();
+        latest_map.insert("npm:eslint".to_string(), "9.0.0".to_string());
+
+        let decision = mise_plan_decision(
+            0,
+            "npm:eslint",
+            "8.0.0".to_string(),
+            &latest_map,
+            &mut age_by_index,
+            true,
+            Duration::from_secs(7 * 24 * 60 * 60),
+        );
+
+        match decision {
+            PlanDecision::Error(err) => assert_eq!(err, "lookup failed"),
+            _ => panic!("expected error decision"),
+        }
+    }
 }

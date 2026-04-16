@@ -120,21 +120,21 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             let decision = match target {
                 Ok(target) => {
                     if pep440_compare(&target, &tool.current) == Some(Ordering::Less) {
-                        let delayed_latest = outdated_latest.get(&tool.name).map(|latest| {
+                        let delayed_latest = outdated_latest.get(&tool.name).and_then(|latest| {
                             let latest_age = resolve_pypi_age_secs(
                                 pypi_client.as_ref(),
                                 &mut pypi_cache,
                                 &tool.name,
                                 latest,
                                 now,
-                            )
-                            .unwrap_or(0);
+                            );
 
-                            DelayedLatest {
-                                latest_version: latest.clone(),
-                                latest_age: human_age(latest_age),
-                                required_age: human_age(min_age.as_secs()),
-                            }
+                            DelayedLatest::from_too_fresh_latest(
+                                None,
+                                Some(latest.as_str()),
+                                latest_age,
+                                min_age,
+                            )
                         });
 
                         PlanDecision::DelayedNoEligible {
