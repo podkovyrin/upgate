@@ -1,0 +1,8 @@
+Would uninstall npm:alpha-ready@1.0.0
+Would install npm:alpha-ready@1.2.0
+Would uninstall npm:beta-fresh-latest@1.0.0
+Would install npm:beta-fresh-latest@1.0.5
+Would uninstall npm:gamma-error@2.0.0
+Would install npm:gamma-error@2.0.1
+Would uninstall node@20.0.0
+Would install node@20.1.0

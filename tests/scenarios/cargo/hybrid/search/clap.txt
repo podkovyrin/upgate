@@ -1,0 +1,2 @@
+clap = "4.5.50"    # fake search latest
+... and 1 crate more

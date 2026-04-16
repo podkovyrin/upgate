@@ -308,7 +308,8 @@ fn pypi_pep440_releases(pkg: &str, root: &PypiRoot) -> Result<Vec<Pep440Timestam
 }
 
 fn pypi_root(pypi_client: &Client, pkg: &str) -> Result<PypiRoot> {
-    let url = format!("https://pypi.org/pypi/{pkg}/json");
+    let base_url = pypi_base_url();
+    let url = format!("{base_url}/pypi/{pkg}/json");
     let body = pypi_client
         .get(&url)
         .send()
@@ -319,6 +320,14 @@ fn pypi_root(pypi_client: &Client, pkg: &str) -> Result<PypiRoot> {
         .with_context(|| format!("failed to read PyPI response body for {pkg}"))?;
 
     serde_json::from_str(&body).with_context(|| format!("failed to parse PyPI JSON for {pkg}"))
+}
+
+fn pypi_base_url() -> String {
+    std::env::var("UPNOW_PIPX_PYPI_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "https://pypi.org".to_string())
 }
 
 fn emit_pipx_manager_error(detail: impl AsRef<str>) {

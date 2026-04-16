@@ -3,10 +3,18 @@ use serde::de::DeserializeOwned;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::process::{Command, ExitStatus, Output};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-static SKIP_MUTATING_COMMANDS: AtomicBool = AtomicBool::new(false);
+const SKIP_MUTATING_COMMANDS_ENV: &str = "UPNOW_SKIP_MUTATING_COMMANDS";
+const REQUIRE_MUTATION_MODE_ENV: &str = "UPNOW_REQUIRE_MUTATION_MODE";
+pub const MUTATION_SKIP_NOTICE: &str = "mutating commands are skipped (safe mode)";
+pub const MUTATION_ENABLE_NOTICE: &str = "real mutating commands are ENABLED";
+
+static SKIP_MUTATING_COMMANDS: OnceLock<bool> = OnceLock::new();
+static FORCE_SKIP_MUTATING_COMMANDS: AtomicBool = AtomicBool::new(false);
+static MUTATION_MODE_NOTICE_EMITTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug)]
 pub enum CmdStatus<'a> {
@@ -100,13 +108,18 @@ fn execute_cmd(
 
     let started_at = Instant::now();
 
-    let output = if is_mutation && SKIP_MUTATING_COMMANDS.load(Ordering::Relaxed) {
+    let output = if is_mutation && skip_mutating_commands() {
+        maybe_emit_mutation_mode_notice(true);
         Output {
             status: success_exit_status(),
             stdout: Vec::new(),
             stderr: Vec::new(),
         }
     } else {
+        if is_mutation {
+            maybe_emit_mutation_mode_notice(false);
+        }
+
         match command.output() {
             Ok(output) => output,
             Err(err) => {
@@ -126,6 +139,89 @@ fn execute_cmd(
 
     let output = ensure_status(output, &display, check)?;
     Ok(CmdOutput { output, display })
+}
+
+fn skip_mutating_commands() -> bool {
+    FORCE_SKIP_MUTATING_COMMANDS.load(Ordering::Relaxed)
+        || *SKIP_MUTATING_COMMANDS.get_or_init(|| env_truthy(SKIP_MUTATING_COMMANDS_ENV))
+}
+
+pub fn mutating_commands_are_skipped() -> bool {
+    skip_mutating_commands()
+}
+
+#[cfg(debug_assertions)]
+pub fn set_debug_force_skip_mutating_commands(force: bool) {
+    FORCE_SKIP_MUTATING_COMMANDS.store(force, Ordering::Relaxed);
+}
+
+#[cfg(not(debug_assertions))]
+pub fn set_debug_force_skip_mutating_commands(_force: bool) {}
+
+pub fn mutation_mode_notice_enabled() -> bool {
+    if cfg!(debug_assertions) {
+        return true;
+    }
+
+    std::env::var(REQUIRE_MUTATION_MODE_ENV)
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+pub fn validate_required_mutation_mode() -> Result<()> {
+    let Ok(raw) = std::env::var(REQUIRE_MUTATION_MODE_ENV) else {
+        return Ok(());
+    };
+
+    let required = raw.trim().to_ascii_lowercase();
+    if required.is_empty() {
+        return Ok(());
+    }
+
+    let skipping = skip_mutating_commands();
+
+    match required.as_str() {
+        "skip" if skipping => Ok(()),
+        "real" if !skipping => Ok(()),
+        "skip" => anyhow::bail!(
+            "{REQUIRE_MUTATION_MODE_ENV}=skip requires effective skip mode (set {SKIP_MUTATING_COMMANDS_ENV}=1 or --debug-no-mutate in debug builds)"
+        ),
+        "real" => anyhow::bail!(
+            "{REQUIRE_MUTATION_MODE_ENV}=real requires effective real mode (set {SKIP_MUTATING_COMMANDS_ENV}=0 and disable --debug-no-mutate)"
+        ),
+        _ => anyhow::bail!("{REQUIRE_MUTATION_MODE_ENV} must be one of: skip, real (got '{raw}')"),
+    }
+}
+
+fn maybe_emit_mutation_mode_notice(skipping: bool) {
+    if !mutation_mode_notice_enabled() {
+        return;
+    }
+
+    if MUTATION_MODE_NOTICE_EMITTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+
+    crate::ui::with_spinner_suspended(|| {
+        if skipping {
+            eprintln!(
+                "note: {MUTATION_SKIP_NOTICE}. set {SKIP_MUTATING_COMMANDS_ENV}=0 to execute real mutations (DANGEROUS)"
+            );
+        } else {
+            eprintln!(
+                "warning: {MUTATION_ENABLE_NOTICE} (set {SKIP_MUTATING_COMMANDS_ENV}=1 for safe mode)"
+            );
+        }
+    });
+}
+
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name).ok().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 #[cfg(unix)]

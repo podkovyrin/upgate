@@ -1,0 +1,17 @@
+{
+  "items": [
+    {
+      "catalogEntry": {
+        "version": "5.0.0",
+        "listed": true
+      }
+    },
+    {
+      "catalogEntry": {
+        "version": "5.1.0",
+        "published": "2099-01-01T00:00:00Z",
+        "listed": true
+      }
+    }
+  ]
+}

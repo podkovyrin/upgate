@@ -1,0 +1,17 @@
+{
+  "formulae": [
+    {
+      "full_name": "wget",
+      "tap": "homebrew/core",
+      "ruby_source_path": "Formula/wget.rb",
+      "installed": [{"version": "1.0.0", "installed_on_request": true, "installed_as_dependency": false}]
+    },
+    {
+      "full_name": "grep",
+      "tap": "homebrew/core",
+      "ruby_source_path": "Formula/grep.rb",
+      "installed": [{"version": "1.0.0", "installed_on_request": true, "installed_as_dependency": false}]
+    }
+  ],
+  "casks": []
+}

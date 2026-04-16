@@ -41,8 +41,12 @@ fn init_command_logging(cli: &cli::Cli) -> Result<()> {
 }
 
 fn run_with_cli(cli: &cli::Cli) -> Result<i32> {
+    #[cfg(debug_assertions)]
+    crate::util::process::set_debug_force_skip_mutating_commands(cli.debug_no_mutate);
+
     let run_mode = cli.run_mode();
     validate_interactive_mode(cli.interactive, run_mode)?;
+    maybe_emit_apply_mutation_mode_notice(run_mode)?;
 
     let mut config = load_config_with_overrides(&cli.set)?;
     let selected_plugins = resolve_selected_plugins(&cli.managers)?;
@@ -53,6 +57,34 @@ fn run_with_cli(cli: &cli::Cli) -> Result<i32> {
         &mut config,
         selected_plugins,
     ))
+}
+
+fn maybe_emit_apply_mutation_mode_notice(run_mode: RunMode) -> Result<()> {
+    if !matches!(run_mode, RunMode::Apply) {
+        return Ok(());
+    }
+
+    crate::util::process::validate_required_mutation_mode()?;
+
+    if !crate::util::process::mutation_mode_notice_enabled() {
+        return Ok(());
+    }
+
+    crate::ui::with_spinner_suspended(|| {
+        if crate::util::process::mutating_commands_are_skipped() {
+            eprintln!(
+                "note: apply runs in safe mode: {}",
+                crate::util::process::MUTATION_SKIP_NOTICE
+            );
+        } else {
+            eprintln!(
+                "warning: apply runs with {}",
+                crate::util::process::MUTATION_ENABLE_NOTICE
+            );
+        }
+    });
+
+    Ok(())
 }
 
 fn validate_interactive_mode(interactive: bool, run_mode: RunMode) -> Result<()> {

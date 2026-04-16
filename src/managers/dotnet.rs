@@ -389,11 +389,12 @@ fn nuget_versions_with_publish_times(
     package_id: &str,
 ) -> Result<Vec<SemverTimestamp>> {
     let id_lower = package_id.to_ascii_lowercase();
+    let base_url = nuget_base_url();
 
     let mut out = nuget_versions_with_publish_times_from_registration(
         client,
         package_id,
-        &format!("https://api.nuget.org/v3/registration5-gz-semver2/{id_lower}/index.json"),
+        &format!("{base_url}/v3/registration5-gz-semver2/{id_lower}/index.json"),
         true,
     )?;
 
@@ -401,7 +402,7 @@ fn nuget_versions_with_publish_times(
         out = nuget_versions_with_publish_times_from_registration(
             client,
             package_id,
-            &format!("https://api.nuget.org/v3/registration5-semver1/{id_lower}/index.json"),
+            &format!("{base_url}/v3/registration5-semver1/{id_lower}/index.json"),
             false,
         )?;
     }
@@ -411,6 +412,14 @@ fn nuget_versions_with_publish_times(
     }
 
     Ok(out)
+}
+
+fn nuget_base_url() -> String {
+    std::env::var("UPNOW_DOTNET_NUGET_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "https://api.nuget.org".to_string())
 }
 
 fn nuget_versions_with_publish_times_from_registration(

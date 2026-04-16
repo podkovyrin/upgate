@@ -502,7 +502,8 @@ fn cargo_release_age_secs(
 }
 
 fn crates_io_versions(client: &Client, crate_name: &str) -> Result<Vec<SemverTimestamp>> {
-    let url = format!("https://crates.io/api/v1/crates/{crate_name}");
+    let base_url = crates_io_base_url();
+    let url = format!("{base_url}/api/v1/crates/{crate_name}");
 
     let body = client
         .get(&url)
@@ -542,6 +543,14 @@ fn crates_io_versions(client: &Client, crate_name: &str) -> Result<Vec<SemverTim
     }
 
     Ok(out)
+}
+
+fn crates_io_base_url() -> String {
+    std::env::var("UPNOW_CARGO_CRATES_IO_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "https://crates.io".to_string())
 }
 
 fn emit_cargo_manager_error(detail: impl AsRef<str>) {

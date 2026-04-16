@@ -482,7 +482,8 @@ fn rubygems_release_age_secs(
 }
 
 fn rubygems_versions(client: &Client, gem_name: &str) -> Result<Vec<RubyGemsVersionItem>> {
-    let url = format!("https://rubygems.org/api/v1/versions/{gem_name}.json");
+    let base_url = rubygems_base_url();
+    let url = format!("{base_url}/api/v1/versions/{gem_name}.json");
 
     let body = client
         .get(&url)
@@ -495,6 +496,14 @@ fn rubygems_versions(client: &Client, gem_name: &str) -> Result<Vec<RubyGemsVers
 
     serde_json::from_str(&body)
         .with_context(|| format!("failed to parse RubyGems JSON for {gem_name}"))
+}
+
+fn rubygems_base_url() -> String {
+    std::env::var("UPNOW_GEM_RUBYGEMS_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "https://rubygems.org".to_string())
 }
 
 fn ruby_requirement_allows(runtime: &Version, requirement_raw: Option<&str>) -> bool {

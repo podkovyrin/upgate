@@ -1,0 +1,9 @@
+[
+  {
+    "dependencies": {
+      "alpha-ready": {"version": "1.0.0"},
+      "pinned-pkg": {"version": "3.0.0"},
+      "scan-noage": {"version": "5.0.0"}
+    }
+  }
+]

@@ -1,0 +1,33 @@
+{
+  "formulae": [
+    {
+      "name": "wget",
+      "installed_versions": ["1.0.0"],
+      "current_version": "1.2.0",
+      "pinned": false,
+      "pinned_version": null
+    },
+    {
+      "name": "jq",
+      "installed_versions": ["1.0.0"],
+      "current_version": "1.1.0",
+      "pinned": false,
+      "pinned_version": null
+    },
+    {
+      "name": "grep",
+      "installed_versions": ["1.0.0"],
+      "current_version": "1.1.0",
+      "pinned": false,
+      "pinned_version": null
+    },
+    {
+      "name": "curl",
+      "installed_versions": ["1.0.0"],
+      "current_version": "1.1.0",
+      "pinned": false,
+      "pinned_version": null
+    }
+  ],
+  "casks": []
+}

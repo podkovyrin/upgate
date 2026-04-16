@@ -1,0 +1,2 @@
+omega-error = "0.2.0"    # fake latest
+... and 1 crate more

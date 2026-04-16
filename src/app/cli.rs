@@ -7,6 +7,8 @@ pub(super) enum Command {
     /// Compute and print intended updates (non-mutating).
     Plan,
     /// Apply updates using manager-native upgrade commands.
+    ///
+    /// Note: Set `UPNOW_SKIP_MUTATING_COMMANDS=1` to force safe non-mutating mode.
     Apply,
     /// List installed package/tool versions across managers.
     Scan,
@@ -40,7 +42,7 @@ pub(super) struct Cli {
     pub(super) managers: Vec<String>,
 
     /// Override config values (repeatable), format: <manager>.<key>=<value>
-    #[arg(long = "set", short = 'S', global = true)]
+    #[arg(long, short = 'S', global = true)]
     pub(super) set: Vec<String>,
 
     /// Disable ANSI color output.
@@ -66,6 +68,11 @@ pub(super) struct Cli {
     /// Prompt per manager to select which updates to apply.
     #[arg(long, global = true)]
     pub(super) interactive: bool,
+
+    /// Debug-only: force non-mutating behavior for mutating commands.
+    #[cfg(debug_assertions)]
+    #[arg(long, global = true)]
+    pub(super) debug_no_mutate: bool,
 }
 
 impl Cli {

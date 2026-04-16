@@ -1,0 +1,2 @@
+zzzz-upnow-no-such-crate-000000000000 = "1.0.0"    # fake search latest
+... and 1 crate more

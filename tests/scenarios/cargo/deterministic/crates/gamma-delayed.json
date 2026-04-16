@@ -1,0 +1,14 @@
+{
+  "versions": [
+    {
+      "num": "2.1.0",
+      "created_at": "2099-01-01T00:00:00Z",
+      "yanked": false
+    },
+    {
+      "num": "1.9.0",
+      "created_at": "2020-01-01T00:00:00Z",
+      "yanked": false
+    }
+  ]
+}

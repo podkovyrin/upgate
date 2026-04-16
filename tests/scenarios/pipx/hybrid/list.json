@@ -1,0 +1,36 @@
+{
+  "venvs": {
+    "requests": {
+      "metadata": {
+        "main_package": {
+          "package": "requests",
+          "package_version": "2.0.0"
+        }
+      }
+    },
+    "black": {
+      "metadata": {
+        "main_package": {
+          "package": "black",
+          "package_version": "1.0.0"
+        }
+      }
+    },
+    "packaging": {
+      "metadata": {
+        "main_package": {
+          "package": "packaging",
+          "package_version": "9999.0.0"
+        }
+      }
+    },
+    "zzzz-upnow-no-such-package-000000000000": {
+      "metadata": {
+        "main_package": {
+          "package": "zzzz-upnow-no-such-package-000000000000",
+          "package_version": "1.0.0"
+        }
+      }
+    }
+  }
+}
