@@ -38,6 +38,14 @@ struct MultiSelectState {
     cursor_idx: usize,
 }
 
+struct DialogStyle<'a> {
+    title: &'a Line,
+    footer: &'a Line,
+    desired_inner_width: usize,
+    color: bool,
+    arrow: &'a str,
+}
+
 #[derive(Clone, Copy)]
 enum SelectionAction {
     Toggle,
@@ -102,17 +110,15 @@ fn run_multi_select_dialog(
             cursor_idx: 0,
         };
 
-        run_dialog_loop(
-            out,
-            &title,
-            &footer,
+        let style = DialogStyle {
+            title: &title,
+            footer: &footer,
             desired_inner_width,
-            last_height,
-            &mut state,
-            items,
             color,
             arrow,
-        )
+        };
+
+        run_dialog_loop(out, last_height, &mut state, items, &style)
     })
 }
 
@@ -145,14 +151,10 @@ where
 
 fn run_dialog_loop(
     out: &mut io::Stdout,
-    title: &Line,
-    footer: &Line,
-    desired_inner_width: usize,
     last_height: &mut usize,
     state: &mut MultiSelectState,
     items: &[PlannedUpdate],
-    color: bool,
-    arrow: &str,
+    style: &DialogStyle<'_>,
 ) -> Result<Vec<bool>> {
     loop {
         let mut body = Vec::with_capacity(items.len());
@@ -161,16 +163,23 @@ fn run_dialog_loop(
             let marker = selection_marker(state.selected[idx]);
             let pointer = if idx == state.cursor_idx { ">" } else { " " };
             let prefix = format!("{pointer} {marker}");
-            let mut line = update_row_line(item, &prefix, state.selected[idx], color, arrow);
-            if color && idx == state.cursor_idx {
+            let mut line =
+                update_row_line(item, &prefix, state.selected[idx], style.color, style.arrow);
+            if style.color && idx == state.cursor_idx {
                 line.styled = line.plain.clone().black().on_cyan().bold().to_string();
             }
 
             body.push(line);
         }
 
-        *last_height =
-            draw_dialog_box(out, title, &body, footer, desired_inner_width, *last_height)?;
+        *last_height = draw_dialog_box(
+            out,
+            style.title,
+            &body,
+            style.footer,
+            style.desired_inner_width,
+            *last_height,
+        )?;
 
         let Some(key_code) = read_dialog_key_code()? else {
             continue;
