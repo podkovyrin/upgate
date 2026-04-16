@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::path::Path;
 use std::process::{Command, ExitStatus, Output};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -91,6 +92,43 @@ where
             .collect(),
         check,
         is_mutation: false,
+    }
+}
+
+pub fn command_exists(command: &str) -> bool {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let command_path = Path::new(trimmed);
+    if command_path.components().count() > 1 {
+        return is_executable_file(command_path);
+    }
+
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|path_dir| is_executable_file(&path_dir.join(trimmed)))
+    })
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+
+    if !metadata.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
     }
 }
 

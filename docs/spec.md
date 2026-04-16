@@ -96,6 +96,8 @@ Behavior notes:
 - `plan` does not apply package/tool upgrades. (Note: manager-specific metadata refresh commands can still run; e.g. Homebrew may run `brew update --quiet` unless disabled.)
 - `scan` is non-mutating and lists installed package/tool versions across managers.
 - `apply` performs updates.
+- Manager execution is Unix-only (`cfg(unix)` target family); on non-Unix platforms each selected manager emits a manager-level `skipped` outcome with reason `unsupported platform: requires unix`.
+- Before each manager run, command availability is preflight-checked (`probe_command`); missing manager commands emit manager-level `skipped` outcomes and do not fail the process.
 - `--interactive` is valid only with `apply` and requires interactive `stdin` + `stdout` TTY; otherwise execution fails.
 - Interactive flow:
   - all managers prompt with all upgradable items selected by default and allow deselection

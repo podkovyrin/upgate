@@ -114,14 +114,8 @@ pub(crate) fn write_executable(path: &Path, content: &str, label: &str) {
 }
 
 pub(crate) fn find_executable_in_path(name: &str, path_env: &str) -> Option<PathBuf> {
-    let exec_name = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    };
-
     env::split_paths(path_env)
-        .map(|dir| dir.join(&exec_name))
+        .map(|dir| dir.join(name))
         .find(|candidate| is_executable_file(candidate))
 }
 
@@ -131,11 +125,6 @@ pub(crate) fn is_executable_file(path: &Path) -> bool {
         Ok(meta) => meta.is_file() && (meta.permissions().mode() & 0o111 != 0),
         Err(_) => false,
     }
-}
-
-#[cfg(not(unix))]
-pub(crate) fn is_executable_file(path: &Path) -> bool {
-    fs::metadata(path).is_ok_and(|meta| meta.is_file())
 }
 
 pub(crate) fn spawn_upnow<F>(args: &[&str], extra_env: &[(&str, &str)], configure: F) -> Output

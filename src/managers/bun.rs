@@ -27,6 +27,10 @@ impl ManagerPlugin for BunPlugin {
         "7d"
     }
 
+    fn probe_command(&self) -> Option<String> {
+        Some(bun_executable())
+    }
+
     fn run(&self, ctx: &ManagerCtx) -> Result<()> {
         run(ctx)
     }

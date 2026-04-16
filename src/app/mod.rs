@@ -8,6 +8,7 @@ use crate::interactive;
 use crate::manager::{
     ManagerPlugin, RunMode, all_plugins, build_ctx_for_plugin, resolve_selected_plugins,
 };
+use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 use crate::ui::{finish_manager_spinner, init_output_theme, start_manager_spinner};
 use crate::util::logging::{LoggingOptions, init_logging, session_dir, set_current_manager};
 
@@ -143,6 +144,26 @@ fn run_selected_plugins(
             continue;
         }
 
+        if !plugin.supports_current_platform() {
+            emit_manager_preflight_skip(
+                plugin.id(),
+                ReasonCode::UnsupportedPlatform,
+                plugin.unsupported_platform_reason(),
+            );
+            continue;
+        }
+
+        if let Some(command) = plugin.probe_command()
+            && !crate::util::process::command_exists(&command)
+        {
+            emit_manager_preflight_skip(
+                plugin.id(),
+                ReasonCode::MissingCommand,
+                format!("required command '{command}' is not available"),
+            );
+            continue;
+        }
+
         let spinner = start_manager_spinner(plugin.id(), run_mode);
         let run_result = plugin.run(&manager_ctx);
         finish_manager_spinner(spinner);
@@ -189,4 +210,21 @@ fn is_signal_termination(err: &Error) -> bool {
 fn exit_with_error(msg: impl std::fmt::Display) -> i32 {
     eprintln!("error: {msg}");
     1
+}
+
+fn emit_manager_preflight_skip(
+    manager: &'static str,
+    reason_code: ReasonCode,
+    reason_detail: impl Into<String>,
+) {
+    let outcome = ItemOutcome::skipped(
+        manager,
+        "*",
+        "*",
+        "*",
+        manager,
+        reason_code,
+        reason_detail,
+    );
+    emit_text_outcome(&outcome);
 }

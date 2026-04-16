@@ -14,5 +14,7 @@ pub enum ReasonCode {
     NoChange,
     Pinned,
     MissingMetadata,
+    UnsupportedPlatform,
+    MissingCommand,
     CommandFailed,
 }

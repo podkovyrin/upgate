@@ -9,6 +9,8 @@ If the config file does not exist, built-in defaults are used.
 
 If the config file exists but contains invalid TOML, `upnow` fails with an error.
 
+Manager execution currently targets Unix platforms. On non-Unix platforms, selected managers are skipped with an unsupported-platform outcome.
+
 ## Source of truth in code
 
 - `src/app/cli.rs`, `src/app/mod.rs` (CLI flags, validation, orchestration, exit behavior)

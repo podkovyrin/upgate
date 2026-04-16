@@ -616,14 +616,6 @@ fn uv_tool_python_path(tool_dir: &str, tool_name: &str) -> String {
         return unix.to_string_lossy().to_string();
     }
 
-    let windows = PathBuf::from(tool_dir)
-        .join(tool_name)
-        .join("Scripts")
-        .join("python.exe");
-    if windows.exists() {
-        return windows.to_string_lossy().to_string();
-    }
-
     // Default to unix path when not found so command errors remain actionable.
     Path::new(tool_dir)
         .join(tool_name)

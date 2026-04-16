@@ -8,6 +8,15 @@ pub trait ManagerPlugin: Sync {
     fn default_mode(&self) -> ManagerMode {
         ManagerMode::Apply
     }
+    fn supports_current_platform(&self) -> bool {
+        cfg!(unix)
+    }
+    fn unsupported_platform_reason(&self) -> &'static str {
+        "unsupported platform: requires unix"
+    }
+    fn probe_command(&self) -> Option<String> {
+        Some(self.id().to_string())
+    }
     fn supports_no_update(&self) -> bool {
         false
     }
