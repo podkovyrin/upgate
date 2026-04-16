@@ -224,7 +224,7 @@ fn hybrid_apply_uses_real_module_data_with_fake_installed_state() {
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("~ Delayed [go] gamma-delayed v9999.0.0 -> v"),
+        !out.contains(" gamma-delayed v9999.0.0 -> v"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(

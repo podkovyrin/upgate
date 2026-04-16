@@ -219,7 +219,7 @@ fn hybrid_apply_uses_real_pypi_data_with_fake_installed_state() {
     let out = stdout(&output);
     assert!(out.contains("+ Update [pipx] requests v2.0.0 -> v"));
     assert!(out.contains("- Skipped [pipx] black v1.0.0 -> v1.0.0 (pinned)"));
-    assert!(out.contains("~ Delayed [pipx] packaging v9999.0.0 -> v"));
+    assert!(!out.contains(" packaging v9999.0.0 -> v"));
     assert!(
         out.contains("! Error [pipx] zzzz-upnow-no-such-package-000000000000 v1.0.0 -> v1.0.0")
     );

@@ -206,7 +206,7 @@ fn hybrid_apply_uses_real_registry_time_data_with_fake_installed_state() {
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("~ Delayed [pnpm] react v9999.0.0 -> v"),
+        !out.contains(" react v9999.0.0 -> v"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(

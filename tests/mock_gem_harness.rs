@@ -245,7 +245,7 @@ fn hybrid_apply_uses_real_rubygems_data_with_fake_installed_state() {
     let out = stdout(&output);
     assert!(out.contains("+ Update [gem] rake v1.0.0 -> v"));
     assert!(out.contains("- Skipped [gem] bundler v1.0.0 -> v1.0.0 (pinned)"));
-    assert!(out.contains("~ Delayed [gem] json v9999.0.0 -> v9999.0.0"));
+    assert!(!out.contains(" json v9999.0.0 -> v"));
     assert!(out.contains("! Error [gem] zzzz-upnow-no-such-gem-000000000000 v1.0.0 -> v1.0.0"));
 
     let err = stderr(&output);

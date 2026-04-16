@@ -52,7 +52,12 @@ pub fn resolve_pep440_with_min_age(
         }
     }
 
-    let selected_version = eligible.map(|(_, version, _)| version);
+    let selected_version = eligible.map(|(_, version, _)| version).or_else(|| {
+        newest_any.as_ref().and_then(|(latest_ver, _, _)| {
+            (current_ver >= *latest_ver).then(|| current.to_string())
+        })
+    });
+
     let (latest_version, latest_age_secs) =
         if let Some((_latest_ver, latest_str, latest_ts)) = newest_any {
             (
@@ -117,4 +122,49 @@ where
     }
 
     Ok(releases)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_current_when_installed_version_is_newer_than_registry_latest() {
+        let now = 1_800_000_000;
+        let releases = vec![Pep440Timestamp {
+            version: "1.9.9".to_string(),
+            published_unix: now - 3600,
+        }];
+
+        let resolved = resolve_pep440_with_min_age(
+            "2.0.0",
+            &releases,
+            now,
+            Duration::from_secs(7 * 24 * 60 * 60),
+        )
+        .expect("resolution should succeed");
+
+        assert_eq!(resolved.selected_version.as_deref(), Some("2.0.0"));
+        assert_eq!(resolved.latest_version.as_deref(), Some("1.9.9"));
+    }
+
+    #[test]
+    fn keeps_current_when_current_equals_latest_but_release_is_too_fresh() {
+        let now = 1_800_000_000;
+        let releases = vec![Pep440Timestamp {
+            version: "1.0.0".to_string(),
+            published_unix: now - 60,
+        }];
+
+        let resolved = resolve_pep440_with_min_age(
+            "1.0.0",
+            &releases,
+            now,
+            Duration::from_secs(7 * 24 * 60 * 60),
+        )
+        .expect("resolution should succeed");
+
+        assert_eq!(resolved.selected_version.as_deref(), Some("1.0.0"));
+        assert_eq!(resolved.latest_version.as_deref(), Some("1.0.0"));
+    }
 }

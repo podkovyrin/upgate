@@ -445,7 +445,12 @@ fn rubygems_resolve_target_with_min_age(
         }
     }
 
-    let selected_version = eligible.map(|(_, raw, _)| raw);
+    let selected_version = eligible.map(|(_, raw, _)| raw).or_else(|| {
+        newest_any
+            .as_ref()
+            .and_then(|(latest, _, _)| (current_ver >= *latest).then(|| current.to_string()))
+    });
+
     let (latest_version, latest_age_secs) =
         if let Some((_latest, latest_raw, latest_released_at)) = newest_any {
             (

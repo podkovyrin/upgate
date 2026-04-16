@@ -253,7 +253,7 @@ fn hybrid_apply_uses_real_nuget_data_with_fake_installed_state() {
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("~ Delayed [dotnet] nuget.frameworks v9999.0.0 -> v"),
+        !out.contains(" nuget.frameworks v9999.0.0 -> v"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
