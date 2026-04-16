@@ -5,6 +5,7 @@ use crate::managers::common::{
 };
 use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 use crate::ui::output_theme;
+use crate::util::http::{HTTP_TIMEOUT_SECS, HTTP_USER_AGENT};
 use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::time::human_age;
 use crate::util::time::now_unix_secs;
@@ -1137,7 +1138,7 @@ fn brew_info_installed() -> Result<InfoRoot> {
 
 fn github_client() -> Result<Client> {
     let mut headers = HeaderMap::new();
-    headers.insert(USER_AGENT, HeaderValue::from_static("upnow/0.1"));
+    headers.insert(USER_AGENT, HeaderValue::from_static(HTTP_USER_AGENT));
     headers.insert(
         ACCEPT,
         HeaderValue::from_static("application/vnd.github+json"),
@@ -1158,7 +1159,7 @@ fn github_client() -> Result<Client> {
 
     Client::builder()
         .default_headers(headers)
-        .timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
         .build()
         .context("failed to build HTTP client")
 }

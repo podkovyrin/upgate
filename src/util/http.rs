@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use reqwest::blocking::Client;
 use std::time::Duration;
 
-pub const HTTP_USER_AGENT: &str = "upnow/0.1";
+pub const HTTP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 pub const HTTP_TIMEOUT_SECS: u64 = 8;
 
 pub fn default_blocking_client() -> Result<Client> {
