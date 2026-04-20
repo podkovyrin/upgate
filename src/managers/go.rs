@@ -1,19 +1,17 @@
-use crate::config::PIN_ALL;
-use crate::manager::{ManagerCtx, ManagerPlugin};
-use crate::managers::common::{
-    DelayedLatest, PlannedUpdate, emit_manager_level_error, emit_scan_current,
-    run_per_item_apply_flow, verbose_now_unix_secs,
-};
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use anyhow::{Context, Result, bail};
+use semver::Version;
+
+use crate::config::is_pinned;
+#[allow(clippy::wildcard_imports)]
+use crate::managers::*;
 use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{CmdStatus, run_cmd};
-use crate::util::time::human_age;
-use crate::util::time::now_unix_secs;
 use crate::util::time::parse_rfc3339_unix;
-use anyhow::{Context, Result, bail};
-use semver::Version;
-use std::path::PathBuf;
-use std::time::Duration;
 
 const GO_MAX_PARALLEL_CHECKS: usize = 4;
 
@@ -51,65 +49,51 @@ enum GoDiscoveredTool {
 
 struct GoPlanItem {
     tool: GoManagedTool,
-    resolved: Result<GoResolvedTarget, String>,
-}
-
-struct GoResolvedTarget {
-    selected_version: Option<String>,
-    latest_version: Option<String>,
-    latest_age_secs: Option<u64>,
-}
-
-impl GoResolvedTarget {
-    fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
-        DelayedLatest::from_too_fresh_latest(
-            self.selected_version.as_deref(),
-            self.latest_version.as_deref(),
-            self.latest_age_secs,
-            min_age,
-        )
-    }
+    resolved: Result<AgeResolvedTarget, String>,
 }
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
-    if ctx.is_scan() {
-        return scan(ctx);
-    }
+    run_manager_pipeline(ctx, scan, run_plan_apply)
+}
 
-    let min_age = ctx.policy.min_release_age.duration();
-
-    let discovered = match go_discover_global_tools() {
-        Ok(discovered) => discovered,
-        Err(err) => {
-            emit_go_manager_error(format!("failed to discover global Go tools: {err}"));
-            return Ok(());
-        }
-    };
-
-    if discovered.is_empty() {
-        return Ok(());
-    }
-
-    let now = now_unix_secs()?;
-    let plan = resolve_go_plan(&discovered, now, min_age, ctx.max_parallel_checks)?;
-    let upgradable = emit_go_plan_and_collect_upgradable(
-        discovered,
-        plan,
-        min_age,
-        ctx.is_interactive_apply(),
-        &ctx.policy.pinned,
-    )?;
-    run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, apply_go_updates)?;
-    Ok(())
+fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
+    run_plan_apply_framework(
+        ctx,
+        PLUGIN.id(),
+        PlanApplyFrameworkPolicy::SOFT_FETCH_STRICT_RESOLVE,
+        || go_discover_global_tools().context("failed to discover global Go tools"),
+        Vec::is_empty,
+        |discovered, runtime| {
+            resolve_go_plan(
+                discovered,
+                runtime.now_unix_secs,
+                runtime.min_age,
+                runtime.max_parallel_checks,
+            )
+            .context("planning execution failed")
+        },
+        |discovered, plan, runtime| {
+            collect_go_plan_and_upgradable(
+                discovered,
+                plan,
+                runtime.min_age,
+                runtime.suppress_update_outcomes,
+                runtime.pinned,
+            )
+        },
+        |ctx, _discovered, upgradable| {
+            run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, apply_go_updates)
+        },
+    )
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {
-    let discovered = match go_discover_global_tools() {
-        Ok(discovered) => discovered,
-        Err(err) => {
-            emit_go_manager_error(format!("failed to discover global Go tools: {err}"));
-            return Ok(());
-        }
+    let Some(discovered) = soft_fail(
+        go_discover_global_tools(),
+        PLUGIN.id(),
+        "failed to discover global Go tools",
+    ) else {
+        return Ok(());
     };
 
     if discovered.is_empty() {
@@ -150,144 +134,79 @@ fn resolve_go_plan(
     })
 }
 
-#[allow(clippy::too_many_lines)]
-fn emit_go_plan_and_collect_upgradable(
-    discovered: Vec<GoDiscoveredTool>,
+fn collect_go_plan_and_upgradable(
+    discovered: &[GoDiscoveredTool],
     plan: Vec<GoPlanItem>,
     min_age: Duration,
     suppress_update_outcomes: bool,
-    pinned: &std::collections::BTreeSet<String>,
+    pinned: &BTreeSet<String>,
 ) -> Result<Vec<PlannedUpdate>> {
-    let mut upgradable = Vec::new();
-    let mut plan_iter = plan.into_iter();
+    emit_go_discovery_skip_outcomes(discovered);
 
-    for item in discovered {
-        match item {
-            GoDiscoveredTool::Skipped { name, reason } => {
-                let outcome = ItemOutcome::skipped(
-                    PLUGIN.id(),
-                    name,
-                    "*",
-                    "*",
-                    PLUGIN.id(),
-                    ReasonCode::MissingMetadata,
-                    reason,
-                );
-                emit_text_outcome(&outcome);
-            }
-            GoDiscoveredTool::Managed(_) => {
-                let planned = plan_iter
-                    .next()
-                    .context("internal error: missing go plan entry")?;
-                let tool = planned.tool;
+    let managed_count = discovered
+        .iter()
+        .filter(|item| matches!(item, GoDiscoveredTool::Managed(_)))
+        .count();
+    if managed_count != plan.len() {
+        bail!(
+            "internal error: mismatched go plan items: expected {managed_count}, got {}",
+            plan.len()
+        );
+    }
 
-                match planned.resolved {
-                    Err(err) => {
-                        let outcome = ItemOutcome::error(
-                            PLUGIN.id(),
-                            tool.binary_name,
-                            tool.current_version.clone(),
-                            tool.current_version,
-                            PLUGIN.id(),
-                            ReasonCode::CommandFailed,
-                            err,
-                        );
-                        emit_text_outcome(&outcome);
-                    }
-                    Ok(target) => {
-                        let delayed_latest = target.delayed_latest(min_age);
+    let mut install_path_by_name = std::collections::BTreeMap::new();
+    let mut resolved_plan = Vec::with_capacity(plan.len());
+    for planned in plan {
+        let GoPlanItem { tool, resolved } = planned;
+        if install_path_by_name
+            .insert(tool.binary_name.clone(), tool.install_path)
+            .is_some()
+        {
+            bail!("internal error: duplicate go tool '{}'", tool.binary_name);
+        }
 
-                        if let Some(selected) = target.selected_version {
-                            if selected == tool.current_version {
-                                let outcome = ItemOutcome::skipped_no_change(
-                                    PLUGIN.id(),
-                                    tool.binary_name,
-                                    tool.current_version,
-                                    PLUGIN.id(),
-                                );
-                                emit_text_outcome(&outcome);
-                                continue;
-                            }
+        resolved_plan.push(ResolvedPlanItem::new(
+            tool.binary_name,
+            tool.current_version,
+            resolved,
+        ));
+    }
 
-                            if pinned.contains(&tool.binary_name) || pinned.contains(PIN_ALL) {
-                                if suppress_update_outcomes {
-                                    upgradable.push(PlannedUpdate {
-                                        manager: PLUGIN.id(),
-                                        source: PLUGIN.id(),
-                                        name: tool.binary_name,
-                                        current: tool.current_version,
-                                        target: selected,
-                                        delayed_latest: None,
-                                        apply_spec_base: Some(tool.install_path),
-                                    });
-                                } else {
-                                    let outcome = ItemOutcome::skipped(
-                                        PLUGIN.id(),
-                                        tool.binary_name,
-                                        tool.current_version,
-                                        selected,
-                                        PLUGIN.id(),
-                                        ReasonCode::Pinned,
-                                        "pinned",
-                                    );
-                                    emit_text_outcome(&outcome);
-                                }
-                                continue;
-                            }
+    let mut upgradable = collect_upgradable_from_resolved_plan(
+        PLUGIN.id(),
+        resolved_plan,
+        min_age,
+        suppress_update_outcomes,
+        pinned,
+    );
 
-                            let planned = PlannedUpdate {
-                                manager: PLUGIN.id(),
-                                source: PLUGIN.id(),
-                                name: tool.binary_name,
-                                current: tool.current_version,
-                                target: selected,
-                                delayed_latest,
-                                apply_spec_base: Some(tool.install_path),
-                            };
+    for item in &mut upgradable {
+        item.apply_spec_base = install_path_by_name.get(&item.name).cloned();
 
-                            if !suppress_update_outcomes {
-                                emit_text_outcome(&planned.to_update_outcome());
-                            }
-                            upgradable.push(planned);
-                        } else {
-                            let outcome = if let Some(DelayedLatest {
-                                latest_version,
-                                latest_age,
-                                required_age,
-                            }) = delayed_latest
-                            {
-                                ItemOutcome::delayed_no_eligible_with_latest(
-                                    PLUGIN.id(),
-                                    tool.binary_name,
-                                    tool.current_version,
-                                    PLUGIN.id(),
-                                    latest_version,
-                                    latest_age,
-                                    required_age,
-                                )
-                            } else {
-                                ItemOutcome::delayed_no_eligible(
-                                    PLUGIN.id(),
-                                    tool.binary_name,
-                                    tool.current_version,
-                                    PLUGIN.id(),
-                                    human_age(min_age.as_secs()),
-                                )
-                            };
-
-                            emit_text_outcome(&outcome);
-                        }
-                    }
-                }
-            }
+        if suppress_update_outcomes && is_pinned(&item.name, pinned) {
+            item.delayed_latest = None;
         }
     }
 
-    if plan_iter.next().is_some() {
-        bail!("internal error: unexpected extra go plan entries");
-    }
-
     Ok(upgradable)
+}
+
+fn emit_go_discovery_skip_outcomes(discovered: &[GoDiscoveredTool]) {
+    for item in discovered {
+        let GoDiscoveredTool::Skipped { name, reason } = item else {
+            continue;
+        };
+
+        let outcome = ItemOutcome::skipped(
+            PLUGIN.id(),
+            name.clone(),
+            "*",
+            "*",
+            ReasonCode::MissingMetadata,
+            reason.clone(),
+        );
+        emit_text_outcome(&outcome);
+    }
 }
 
 fn apply_go_updates(upgradable: Vec<PlannedUpdate>) {
@@ -301,16 +220,7 @@ fn apply_go_updates(upgradable: Vec<PlannedUpdate>) {
             .mutating()
             .output()
         {
-            let outcome = ItemOutcome::error(
-                PLUGIN.id(),
-                binary_name,
-                current,
-                target,
-                PLUGIN.id(),
-                ReasonCode::CommandFailed,
-                err.to_string(),
-            );
-            emit_text_outcome(&outcome);
+            emit_apply_error(PLUGIN.id(), binary_name, current, target, err);
         }
     }
 }
@@ -328,7 +238,6 @@ fn emit_go_scan_outcomes(
                     name,
                     "*",
                     "*",
-                    PLUGIN.id(),
                     ReasonCode::MissingMetadata,
                     reason,
                 );
@@ -345,7 +254,6 @@ fn emit_go_scan_outcomes(
                 };
 
                 emit_scan_current(
-                    PLUGIN.id(),
                     PLUGIN.id(),
                     tool.binary_name,
                     tool.current_version,
@@ -548,7 +456,7 @@ fn go_resolve_target_with_min_age(
     current: &str,
     now_unix_secs: u64,
     min_age: Duration,
-) -> Result<GoResolvedTarget> {
+) -> Result<AgeResolvedTarget> {
     let current_ver = parse_go_semver(current).with_context(|| {
         format!("failed to parse current go semver for {module_path}: {current}")
     })?;
@@ -601,11 +509,11 @@ fn go_resolve_target_with_min_age(
             (None, None)
         };
 
-    Ok(GoResolvedTarget {
+    Ok(AgeResolvedTarget::new(
         selected_version,
         latest_version,
         latest_age_secs,
-    })
+    ))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -654,11 +562,7 @@ fn go_module_version_release_unix(module_path: &str, version: &str) -> Result<Op
 }
 
 fn parse_go_semver(raw: &str) -> Option<Version> {
-    Version::parse(raw.strip_prefix('v').unwrap_or(raw)).ok()
-}
-
-fn emit_go_manager_error(detail: impl AsRef<str>) {
-    emit_manager_level_error(PLUGIN.id(), PLUGIN.id(), detail);
+    Version::parse(crate::util::text::strip_v_prefix(raw)).ok()
 }
 
 #[cfg(test)]
@@ -706,11 +610,11 @@ mod tests {
 
     #[test]
     fn delayed_latest_hidden_when_latest_is_old_enough() {
-        let target = GoResolvedTarget {
-            selected_version: Some("v0.1.5".to_string()),
-            latest_version: Some("v0.1.5".to_string()),
-            latest_age_secs: Some(10 * 24 * 60 * 60),
-        };
+        let target = AgeResolvedTarget::new(
+            Some("v0.1.5".to_string()),
+            Some("v0.1.5".to_string()),
+            Some(10 * 24 * 60 * 60),
+        );
 
         assert!(
             target
@@ -721,11 +625,11 @@ mod tests {
 
     #[test]
     fn delayed_latest_present_when_latest_is_too_fresh_and_selected_is_older() {
-        let target = GoResolvedTarget {
-            selected_version: Some("v0.1.4".to_string()),
-            latest_version: Some("v0.1.5".to_string()),
-            latest_age_secs: Some(2 * 24 * 60 * 60),
-        };
+        let target = AgeResolvedTarget::new(
+            Some("v0.1.4".to_string()),
+            Some("v0.1.5".to_string()),
+            Some(2 * 24 * 60 * 60),
+        );
 
         assert!(
             target

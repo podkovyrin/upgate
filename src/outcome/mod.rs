@@ -1,7 +1,7 @@
 mod item;
-pub mod render;
+mod render;
 mod types;
 
 pub use item::ItemOutcome;
-pub use render::*;
-pub use types::{OutcomeStatus, ReasonCode};
+pub use render::{emit_text_outcome, render_to_version, version_label};
+pub use types::ReasonCode;

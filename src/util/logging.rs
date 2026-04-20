@@ -1,12 +1,16 @@
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Output;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
+
+use crate::ui::{output_theme, with_spinner_suspended};
+use crate::util::env::{home_dir, non_empty_path_var};
+use crate::util::text::is_blank;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LoggingOptions {
@@ -72,11 +76,7 @@ pub fn set_current_manager(manager: Option<&'static str>) {
         return;
     };
 
-    let mut slot = logger
-        .current_manager
-        .lock()
-        .expect("logger manager mutex poisoned");
-    *slot = manager.unwrap_or("core");
+    *lock_or_recover(&logger.current_manager) = manager.unwrap_or("core");
 }
 
 pub fn on_command_start(command_display: &str, is_mutation: bool) {
@@ -87,8 +87,8 @@ pub fn on_command_start(command_display: &str, is_mutation: bool) {
     let manager = current_manager(logger);
 
     if logger.options.show_commands {
-        crate::ui::with_spinner_suspended(|| {
-            if crate::ui::output_theme().color() {
+        with_spinner_suspended(|| {
+            if output_theme().color() {
                 if is_mutation {
                     eprintln!("{} {command_display}", "$".bright_red());
                 } else {
@@ -184,41 +184,37 @@ pub fn log_warning(message: impl AsRef<str>) {
 }
 
 fn write_line(logger: &Logger, manager: &str, level: &str, message: &str) {
-    let _guard = logger
-        .write_lock
-        .lock()
-        .expect("logger write mutex poisoned");
-    let path = logger
-        .session_dir
-        .join(format!("{}.log", sanitize_manager(manager)));
-    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) else {
-        return;
-    };
-
-    let _ = writeln!(file, "[{}] [{}] {}", ts(), level, message);
+    with_log_file(logger, manager, |file| {
+        let _ = writeln!(file, "[{}] [{}] {}", ts(), level, message);
+    });
 }
 
 fn write_block(logger: &Logger, manager: &str, stream: &str, content: &str) {
-    let _guard = logger
-        .write_lock
-        .lock()
-        .expect("logger write mutex poisoned");
+    with_log_file(logger, manager, |file| {
+        let _ = writeln!(file, "[{}] [DEBUG] {stream} <<<", ts());
+        if is_blank(content) {
+            let _ = writeln!(file, "(empty)");
+        } else {
+            for line in content.lines() {
+                let _ = writeln!(file, "{line}");
+            }
+        }
+        let _ = writeln!(file, "[{}] [DEBUG] >>>", ts());
+    });
+}
+
+fn with_log_file(logger: &Logger, manager: &str, write: impl FnOnce(&mut File)) {
+    let _guard = lock_or_recover(&logger.write_lock);
+
     let path = logger
         .session_dir
         .join(format!("{}.log", sanitize_manager(manager)));
+
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) else {
         return;
     };
 
-    let _ = writeln!(file, "[{}] [DEBUG] {stream} <<<", ts());
-    if content.trim().is_empty() {
-        let _ = writeln!(file, "(empty)");
-    } else {
-        for line in content.lines() {
-            let _ = writeln!(file, "{line}");
-        }
-    }
-    let _ = writeln!(file, "[{}] [DEBUG] >>>", ts());
+    write(&mut file);
 }
 
 fn sanitize_manager(manager: &str) -> String {
@@ -235,46 +231,24 @@ fn sanitize_manager(manager: &str) -> String {
 }
 
 fn current_manager(logger: &Logger) -> &'static str {
-    *logger
-        .current_manager
-        .lock()
-        .expect("logger manager mutex poisoned")
+    *lock_or_recover(&logger.current_manager)
+}
+
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn log_base_dir() -> Option<PathBuf> {
     if cfg!(target_os = "macos") {
-        let home = std::env::var("HOME").ok()?;
-        let trimmed = home.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-
-        return Some(
-            PathBuf::from(trimmed)
-                .join("Library")
-                .join("Logs")
-                .join("upnow"),
-        );
+        return home_dir().map(|home| home.join("Library").join("Logs").join("upnow"));
     }
 
-    xdg_state_home().map(|p| p.join("upnow").join("logs"))
+    xdg_state_home().map(|state_home| state_home.join("upnow").join("logs"))
 }
 
 fn xdg_state_home() -> Option<PathBuf> {
-    if let Ok(raw) = std::env::var("XDG_STATE_HOME") {
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() {
-            return Some(PathBuf::from(trimmed));
-        }
-    }
-
-    let home = std::env::var("HOME").ok()?;
-    let trimmed = home.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    Some(PathBuf::from(trimmed).join(".local").join("state"))
+    non_empty_path_var("XDG_STATE_HOME")
+        .or_else(|| home_dir().map(|home| home.join(".local").join("state")))
 }
 
 fn session_id() -> String {

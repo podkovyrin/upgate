@@ -1,18 +1,14 @@
-use crate::manager::{ManagerCtx, ManagerPlugin};
-use crate::managers::common::{
-    DelayedLatest, PlanMeta, ResolvedPlanTarget, SemverAgeResolution, SemverTimestamp,
-    emit_manager_level_error, emit_plan_and_collect_upgradable, emit_version_scan_outcomes,
-    parse_semver_time_releases, plan_decision_from_resolution, release_age_secs_for_version,
-    resolve_semver_with_min_age, run_per_item_apply_flow, verbose_now_unix_secs,
-};
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+use anyhow::{Context, Result, bail};
+use serde::Deserialize;
+
+#[allow(clippy::wildcard_imports)]
+use crate::managers::*;
 use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{CmdStatus, run_cmd};
-use crate::util::time::now_unix_secs;
-use anyhow::{Context, Result, bail};
-use serde::Deserialize;
-use std::collections::BTreeMap;
-use std::time::Duration;
 
 const YARN_MAX_PARALLEL_CHECKS: usize = 6;
 
@@ -69,25 +65,19 @@ enum YarnGlobalListJsonLine {
 
 type YarnTimeMap = BTreeMap<String, String>;
 
-struct YarnPlanItem {
-    name: String,
-    current: String,
-    resolved: Result<YarnResolvedTarget, String>,
-}
+type YarnPlanItem = ResolvedPlanItem<AgeResolvedTarget>;
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
-    if ctx.is_scan() {
-        return scan(ctx);
-    }
+    run_manager_pipeline(ctx, scan, run_plan_apply)
+}
 
-    let min_age = ctx.policy.min_release_age.duration();
-
-    let yarn_major = match yarn_major_version() {
-        Ok(v) => v,
-        Err(err) => {
-            emit_yarn_manager_error(format!("failed to detect Yarn major version: {err}"));
-            return Ok(());
-        }
+fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
+    let Some(yarn_major) = soft_fail(
+        yarn_major_version(),
+        PLUGIN.id(),
+        "failed to detect Yarn major version",
+    ) else {
+        return Ok(());
     };
 
     if yarn_major >= 2 {
@@ -96,7 +86,6 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
             "*",
             "*",
             "*",
-            PLUGIN.id(),
             ReasonCode::MissingMetadata,
             "global upgrades are not supported for Yarn 2+; skipping manager",
         );
@@ -104,65 +93,43 @@ fn run(ctx: &ManagerCtx) -> Result<()> {
         return Ok(());
     }
 
-    let installed = match yarn_global_installed() {
-        Ok(installed) => installed,
-        Err(err) => {
-            emit_yarn_manager_error(format!("failed to query global Yarn packages: {err}"));
-            return Ok(());
-        }
-    };
-
-    if installed.is_empty() {
-        return Ok(());
-    }
-
-    let now = now_unix_secs()?;
-
-    let plan = match resolve_yarn_plan(&installed, now, min_age, ctx.max_parallel_checks) {
-        Ok(plan) => plan,
-        Err(err) => {
-            emit_yarn_manager_error(format!("planning execution failed: {err}"));
-            return Ok(());
-        }
-    };
-
-    let upgradable = emit_plan_and_collect_upgradable(
-        plan,
-        |item| {
-            let YarnPlanItem {
-                name,
-                current,
-                resolved,
-            } = item;
-
-            let decision = plan_decision_from_resolution(&current, resolved, min_age);
-
-            (
-                PlanMeta {
-                    manager: PLUGIN.id(),
-                    source: PLUGIN.id(),
-                    name,
-                    current,
-                },
-                decision,
+    run_plan_apply_framework(
+        ctx,
+        PLUGIN.id(),
+        PlanApplyFrameworkPolicy::SOFT_FETCH_SOFT_RESOLVE,
+        || yarn_global_installed().context("failed to query global Yarn packages"),
+        BTreeMap::is_empty,
+        |installed, runtime| {
+            resolve_yarn_plan(
+                installed,
+                runtime.now_unix_secs,
+                runtime.min_age,
+                runtime.max_parallel_checks,
             )
+            .context("planning execution failed")
         },
-        ctx.is_interactive_apply(),
-        Some(&ctx.policy.pinned),
-    );
-
-    run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, apply_yarn_updates)?;
-
-    Ok(())
+        |_installed, plan, runtime| {
+            Ok(collect_upgradable_from_resolved_plan(
+                PLUGIN.id(),
+                plan,
+                runtime.min_age,
+                runtime.suppress_update_outcomes,
+                runtime.pinned,
+            ))
+        },
+        |ctx, _installed, upgradable| {
+            run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, apply_yarn_updates)
+        },
+    )
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {
-    let yarn_major = match yarn_major_version() {
-        Ok(v) => v,
-        Err(err) => {
-            emit_yarn_manager_error(format!("failed to detect Yarn major version: {err}"));
-            return Ok(());
-        }
+    let Some(yarn_major) = soft_fail(
+        yarn_major_version(),
+        PLUGIN.id(),
+        "failed to detect Yarn major version",
+    ) else {
+        return Ok(());
     };
 
     if yarn_major >= 2 {
@@ -171,7 +138,6 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
             "*",
             "*",
             "*",
-            PLUGIN.id(),
             ReasonCode::MissingMetadata,
             "global upgrades are not supported for Yarn 2+; skipping manager",
         );
@@ -179,12 +145,12 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
         return Ok(());
     }
 
-    let installed = match yarn_global_installed() {
-        Ok(installed) => installed,
-        Err(err) => {
-            emit_yarn_manager_error(format!("failed to query global Yarn packages: {err}"));
-            return Ok(());
-        }
+    let Some(installed) = soft_fail(
+        yarn_global_installed(),
+        PLUGIN.id(),
+        "failed to query global Yarn packages",
+    ) else {
+        return Ok(());
     };
 
     if installed.is_empty() {
@@ -197,7 +163,6 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
         .into_iter()
         .map(|(name, entry)| (name, entry.current));
     emit_version_scan_outcomes(
-        PLUGIN.id(),
         PLUGIN.id(),
         items,
         now,
@@ -224,15 +189,11 @@ fn resolve_yarn_plan(
         let resolved = yarn_resolve_target_with_min_age(&name, &current, now_unix_secs, min_age)
             .map_err(|err| err.to_string());
 
-        YarnPlanItem {
-            name,
-            current,
-            resolved,
-        }
+        YarnPlanItem::new(name, current, resolved)
     })
 }
 
-fn apply_yarn_updates(upgradable: Vec<crate::managers::common::PlannedUpdate>) {
+fn apply_yarn_updates(upgradable: Vec<crate::managers::PlannedUpdate>) {
     for item in upgradable {
         let name = item.name;
         let current = item.current;
@@ -242,16 +203,7 @@ fn apply_yarn_updates(upgradable: Vec<crate::managers::common::PlannedUpdate>) {
             .mutating()
             .output()
         {
-            let outcome = ItemOutcome::error(
-                PLUGIN.id(),
-                name,
-                current,
-                version,
-                PLUGIN.id(),
-                ReasonCode::CommandFailed,
-                err.to_string(),
-            );
-            emit_text_outcome(&outcome);
+            emit_apply_error(PLUGIN.id(), name, current, version, err);
         }
     }
 }
@@ -270,7 +222,7 @@ fn parse_yarn_major_version(text: &str) -> Option<u64> {
     }
 
     let first_token = text.split_whitespace().next()?;
-    let trimmed = first_token.strip_prefix('v').unwrap_or(first_token);
+    let trimmed = crate::util::text::strip_v_prefix(first_token);
     let major = trimmed.split('.').next()?;
     major.parse::<u64>().ok()
 }
@@ -331,51 +283,22 @@ fn parse_yarn_package_spec(spec: &str) -> Option<(&str, &str)> {
     Some((name, version))
 }
 
-struct YarnResolvedTarget {
-    selected_version: Option<String>,
-    latest_version: Option<String>,
-    latest_age_secs: Option<u64>,
-}
-
-impl ResolvedPlanTarget for YarnResolvedTarget {
-    fn selected_version(&self) -> Option<&str> {
-        self.selected_version.as_deref()
-    }
-
-    fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
-        DelayedLatest::from_too_fresh_latest(
-            self.selected_version.as_deref(),
-            self.latest_version.as_deref(),
-            self.latest_age_secs,
-            min_age,
-        )
-    }
-}
-
 fn yarn_resolve_target_with_min_age(
     name: &str,
     current: &str,
     now_unix_secs: u64,
     min_age: Duration,
-) -> Result<YarnResolvedTarget> {
+) -> Result<AgeResolvedTarget> {
     let output = run_cmd("yarn", ["info", name, "time", "--json"], CmdStatus::Success).output()?;
     let text = output.stdout()?;
 
     let obj = parse_yarn_inspect_object(text, "time")?;
     let releases = yarn_semver_time_releases(name, &obj)?;
 
-    let SemverAgeResolution {
-        selected_version,
-        latest_version,
-        latest_age_secs,
-    } = resolve_semver_with_min_age(current, &releases, now_unix_secs, min_age)
+    let resolved = resolve_semver_with_min_age(current, &releases, now_unix_secs, min_age)
         .with_context(|| format!("failed to resolve eligible semver target for {name}"))?;
 
-    Ok(YarnResolvedTarget {
-        selected_version,
-        latest_version,
-        latest_age_secs,
-    })
+    Ok(resolved.into())
 }
 
 fn parse_yarn_inspect_object(text: &str, field: &str) -> Result<YarnTimeMap> {
@@ -416,10 +339,6 @@ fn yarn_semver_time_releases(
     timestamps_by_version: &YarnTimeMap,
 ) -> Result<Vec<SemverTimestamp>> {
     parse_semver_time_releases(PLUGIN.id(), name, timestamps_by_version)
-}
-
-fn emit_yarn_manager_error(detail: impl AsRef<str>) {
-    emit_manager_level_error(PLUGIN.id(), PLUGIN.id(), detail);
 }
 
 #[cfg(test)]

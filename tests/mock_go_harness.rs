@@ -1,11 +1,13 @@
-use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
 mod common;
 
-use common::{SandboxEnv, assert_success, spawn_upnow, stderr, stdout, write_executable};
+use common::{
+    SandboxEnv, assert_success, command_output, path_to_string, require_real_executable,
+    skip_hybrid_test_if_disabled, spawn_upnow, stderr, stdout, write_executable,
+};
 
 const DETERMINISTIC_CONFIG: &str = r#"
 [go]
@@ -80,7 +82,7 @@ impl Sandbox {
         cmd.args(args);
         self.apply_base_env(&mut cmd);
 
-        cmd.output().expect("failed to run fake go")
+        command_output(&mut cmd, "fake go")
     }
 
     fn find_real_go(&self) -> Option<PathBuf> {
@@ -98,7 +100,7 @@ fn fake_go_harness_routes_commands_to_expected_fixtures() {
     let sandbox = Sandbox::new(DETERMINISTIC_CONFIG, &DETERMINISTIC_TOOL_BINARIES);
 
     let bin_path = sandbox.gobin_dir.join("alpha-ready");
-    let bin_path_str = bin_path.to_string_lossy().into_owned();
+    let bin_path_str = path_to_string(&bin_path);
     let version = sandbox.run_fake_go(&["version", "-m", &bin_path_str]);
     assert_success(&version, "fake go version -m alpha-ready");
     let metadata_output = stdout(&version);
@@ -110,7 +112,7 @@ fn fake_go_harness_routes_commands_to_expected_fixtures() {
     assert!(listing_output.contains("v1.2.0"));
 
     let skip_path = sandbox.gobin_dir.join("skip-nometa");
-    let skip_path_str = skip_path.to_string_lossy().into_owned();
+    let skip_path_str = path_to_string(&skip_path);
     let skip = sandbox.run_fake_go(&["version", "-m", &skip_path_str]);
     assert_eq!(
         skip.status.code(),
@@ -180,7 +182,7 @@ fn deterministic_scan_reports_current_items_without_forcing_release_age_for_miss
         "scan stdout:\n{out}\nscan stderr:\n{err}"
     );
     assert!(
-        out.contains("= Current [go] scan-noage v5.0.0 (source: go)"),
+        out.contains("= Current [go] scan-noage v5.0.0"),
         "scan stdout:\n{out}\nscan stderr:\n{err}"
     );
     assert!(
@@ -192,17 +194,14 @@ fn deterministic_scan_reports_current_items_without_forcing_release_age_for_miss
 #[test]
 #[ignore = "requires real go + network; run via scripts/test-hybrid.sh"]
 fn hybrid_apply_uses_real_module_data_with_fake_installed_state() {
-    if env::var("UPNOW_RUN_HYBRID_TESTS").as_deref() != Ok("1") {
-        eprintln!("skipping hybrid test; set UPNOW_RUN_HYBRID_TESTS=1 to enable");
+    if skip_hybrid_test_if_disabled() {
         return;
     }
 
     let sandbox = Sandbox::new(HYBRID_CONFIG, &HYBRID_TOOL_BINARIES);
-    let Some(real_go_path) = sandbox.find_real_go() else {
-        panic!("hybrid test requires real go in PATH");
-    };
+    let real_go_path = require_real_executable(sandbox.find_real_go(), "go");
 
-    let real_go_path = real_go_path.to_string_lossy().into_owned();
+    let real_go_path = path_to_string(&real_go_path);
     let output = sandbox.run_upnow_with_env(
         &["apply", "--plain", "--managers", "go", "--show-commands"],
         &[

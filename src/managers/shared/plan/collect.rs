@@ -1,7 +1,8 @@
-use super::types::{DelayedLatest, PlanDecision, PlanMeta, PlannedUpdate};
-use crate::config::PIN_ALL;
-use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 use std::collections::BTreeSet;
+
+use super::types::{DelayedLatest, PlanDecision, PlanMeta, PlannedUpdate};
+use crate::config::is_pinned;
+use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 
 pub fn emit_plan_and_collect_upgradable<T, A>(
     items: Vec<T>,
@@ -18,18 +19,16 @@ where
         let (
             PlanMeta {
                 manager,
-                source,
                 name,
                 current,
             },
             decision,
         ) = analyze_fn(item);
 
-        if is_pinned(manager, &name, pinned) {
+        if pinned.is_some_and(|set| is_pinned(&name, set)) {
             handle_pinned_decision(
                 &mut upgradable,
                 manager,
-                source,
                 name,
                 current,
                 decision,
@@ -41,7 +40,6 @@ where
         handle_regular_decision(
             &mut upgradable,
             manager,
-            source,
             name,
             current,
             decision,
@@ -52,14 +50,9 @@ where
     upgradable
 }
 
-fn is_pinned(_manager: &'static str, name: &str, pinned: Option<&BTreeSet<String>>) -> bool {
-    pinned.is_some_and(|set| set.contains(name) || set.contains(PIN_ALL))
-}
-
 fn handle_pinned_decision(
     upgradable: &mut Vec<PlannedUpdate>,
     manager: &'static str,
-    source: &'static str,
     name: String,
     current: String,
     decision: PlanDecision,
@@ -73,7 +66,6 @@ fn handle_pinned_decision(
         {
             upgradable.push(PlannedUpdate {
                 manager,
-                source,
                 name,
                 current,
                 target,
@@ -84,22 +76,18 @@ fn handle_pinned_decision(
         return;
     }
 
-    let outcome = ItemOutcome::skipped(
-        manager,
-        name,
-        current.clone(),
-        current,
-        source,
-        ReasonCode::Pinned,
-        "pinned",
-    );
+    let target = match decision {
+        PlanDecision::Update { target, .. } => target,
+        _ => current.clone(),
+    };
+    let outcome =
+        ItemOutcome::skipped(manager, name, current, target, ReasonCode::Pinned, "pinned");
     emit_text_outcome(&outcome);
 }
 
 fn handle_regular_decision(
     upgradable: &mut Vec<PlannedUpdate>,
     manager: &'static str,
-    source: &'static str,
     name: String,
     current: String,
     decision: PlanDecision,
@@ -112,7 +100,6 @@ fn handle_regular_decision(
                 name,
                 current.clone(),
                 current,
-                source,
                 ReasonCode::CommandFailed,
                 err,
             );
@@ -122,12 +109,11 @@ fn handle_regular_decision(
             required_age,
             delayed_latest,
         } => {
-            let outcome =
-                delayed_outcome(manager, source, name, current, required_age, delayed_latest);
+            let outcome = delayed_outcome(manager, name, current, required_age, delayed_latest);
             emit_text_outcome(&outcome);
         }
         PlanDecision::NoChange => {
-            let outcome = ItemOutcome::skipped_no_change(manager, name, current, source);
+            let outcome = ItemOutcome::skipped_no_change(manager, name, current);
             emit_text_outcome(&outcome);
         }
         PlanDecision::Update {
@@ -136,7 +122,6 @@ fn handle_regular_decision(
         } => {
             let planned = PlannedUpdate {
                 manager,
-                source,
                 name,
                 current,
                 target,
@@ -153,7 +138,6 @@ fn handle_regular_decision(
 
 fn delayed_outcome(
     manager: &'static str,
-    source: &'static str,
     name: String,
     current: String,
     required_age: String,
@@ -169,12 +153,11 @@ fn delayed_outcome(
             manager,
             name,
             current,
-            source,
             latest_version,
             latest_age,
             required_age,
         );
     }
 
-    ItemOutcome::delayed_no_eligible(manager, name, current, source, required_age)
+    ItemOutcome::delayed_no_eligible(manager, name, current, required_age)
 }

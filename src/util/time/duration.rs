@@ -1,5 +1,6 @@
-use anyhow::{Context, Result, bail};
 use std::time::Duration;
+
+use anyhow::{Context, Result, bail};
 
 pub fn parse_duration(raw: &str) -> Result<Duration> {
     let trimmed = raw.trim();

@@ -1,5 +1,6 @@
-use super::model::{ManagerMode, UpnowConfig};
 use anyhow::{Context, Result, bail};
+
+use super::model::{ManagerMode, UpnowConfig};
 
 impl UpnowConfig {
     pub fn apply_cli_override(&mut self, raw: &str, known_manager_ids: &[&str]) -> Result<()> {

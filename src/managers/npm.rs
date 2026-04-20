@@ -1,18 +1,13 @@
-use crate::manager::{ManagerCtx, ManagerPlugin};
-use crate::managers::common::{
-    DelayedLatest, PlanMeta, ResolvedPlanTarget, SemverAgeResolution, SemverTimestamp,
-    emit_manager_level_error, emit_plan_and_collect_upgradable, emit_version_scan_outcomes,
-    parse_semver_time_releases, plan_decision_from_resolution, release_age_secs_for_version,
-    resolve_semver_with_min_age, run_selective_or_global_apply_flow, verbose_now_unix_secs,
-};
-use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
-use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::{CmdStatus, run_cmd};
-use crate::util::time::now_unix_secs;
-use anyhow::{Context, Result};
-use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::time::Duration;
+
+use anyhow::{Context, Result};
+use serde::Deserialize;
+
+#[allow(clippy::wildcard_imports)]
+use crate::managers::*;
+use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
+use crate::util::process::{CmdStatus, run_cmd};
 
 const NPM_MAX_PARALLEL_CHECKS: usize = 6;
 
@@ -52,80 +47,57 @@ struct NpmLsDependency {
 
 type NpmTimeMap = BTreeMap<String, String>;
 
-struct NpmPlanItem {
-    name: String,
-    current: String,
-    resolved: Result<NpmResolvedTarget, String>,
-}
+type NpmPlanItem = ResolvedPlanItem<AgeResolvedTarget>;
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
-    if ctx.is_scan() {
-        return scan(ctx);
-    }
+    run_manager_pipeline(ctx, scan, run_plan_apply)
+}
 
-    let min_age = ctx.policy.min_release_age.duration();
-
-    let outdated = match npm_outdated_global() {
-        Ok(outdated) => outdated,
-        Err(err) => {
-            emit_npm_manager_error(format!("failed to query outdated npm packages: {err}"));
-            return Ok(());
-        }
-    };
-
-    if outdated.is_empty() {
-        return Ok(());
-    }
-
-    let now = now_unix_secs()?;
-
-    let plan = resolve_npm_plan(&outdated, now, min_age, ctx.max_parallel_checks)?;
-
-    let upgradable = emit_plan_and_collect_upgradable(
-        plan,
-        |item| {
-            let NpmPlanItem {
-                name,
-                current,
-                resolved,
-            } = item;
-
-            let decision = plan_decision_from_resolution(&current, resolved, min_age);
-
-            (
-                PlanMeta {
-                    manager: PLUGIN.id(),
-                    source: PLUGIN.id(),
-                    name,
-                    current,
-                },
-                decision,
-            )
-        },
-        ctx.is_interactive_apply(),
-        Some(&ctx.policy.pinned),
-    );
-
-    let min_age_days = ctx.policy.min_release_age.whole_days();
-    run_selective_or_global_apply_flow(
+fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
+    run_plan_apply_framework(
         ctx,
         PLUGIN.id(),
-        PLUGIN.id(),
-        upgradable,
-        |selected| apply_npm_selected_updates(min_age_days, selected),
-        || apply_npm_updates(min_age_days),
-    )?;
-
-    Ok(())
+        PlanApplyFrameworkPolicy::SOFT_FETCH_STRICT_RESOLVE,
+        || npm_outdated_global().context("failed to query outdated npm packages"),
+        BTreeMap::is_empty,
+        |outdated, runtime| {
+            resolve_npm_plan(
+                outdated,
+                runtime.now_unix_secs,
+                runtime.min_age,
+                runtime.max_parallel_checks,
+            )
+            .context("planning execution failed")
+        },
+        |_outdated, plan, runtime| {
+            Ok(collect_upgradable_from_resolved_plan(
+                PLUGIN.id(),
+                plan,
+                runtime.min_age,
+                runtime.suppress_update_outcomes,
+                runtime.pinned,
+            ))
+        },
+        |ctx, _outdated, upgradable| {
+            let min_age_days = ctx.policy.min_release_age.whole_days();
+            run_selective_or_global_apply_flow(
+                ctx,
+                PLUGIN.id(),
+                upgradable,
+                |selected| apply_npm_selected_updates(min_age_days, selected),
+                || apply_npm_updates(min_age_days),
+            )
+        },
+    )
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {
-    let installed = match npm_installed_global() {
-        Ok(installed) => installed,
-        Err(err) => {
-            emit_npm_manager_error(format!("failed to query installed npm packages: {err}"));
-            return Ok(());
-        }
+    let Some(installed) = soft_fail(
+        npm_installed_global(),
+        PLUGIN.id(),
+        "failed to query installed npm packages",
+    ) else {
+        return Ok(());
     };
 
     if installed.is_empty() {
@@ -135,7 +107,6 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
     let now = verbose_now_unix_secs()?;
 
     emit_version_scan_outcomes(
-        PLUGIN.id(),
         PLUGIN.id(),
         installed,
         now,
@@ -162,11 +133,7 @@ fn resolve_npm_plan(
         let resolved = npm_resolve_target_with_min_age(&name, &current, now_unix_secs, min_age)
             .map_err(|err| err.to_string());
 
-        NpmPlanItem {
-            name,
-            current,
-            resolved,
-        }
+        NpmPlanItem::new(name, current, resolved)
     })
 }
 
@@ -183,17 +150,13 @@ fn apply_npm_updates(min_age_days: u64) -> Result<()> {
     Ok(())
 }
 
-fn apply_npm_selected_updates(
-    min_age_days: u64,
-    upgradable: Vec<crate::managers::common::PlannedUpdate>,
-) {
+fn apply_npm_selected_updates(min_age_days: u64, upgradable: Vec<crate::managers::PlannedUpdate>) {
     let min_age_days = min_age_days.to_string();
 
     for item in upgradable {
         let name = item.name;
         let current = item.current;
         let target = item.target;
-        let source = item.source;
 
         let args = [
             "-g".to_string(),
@@ -207,16 +170,7 @@ fn apply_npm_selected_updates(
             .mutating()
             .output()
         {
-            let outcome = ItemOutcome::error(
-                PLUGIN.id(),
-                name,
-                current,
-                target,
-                source,
-                ReasonCode::CommandFailed,
-                err.to_string(),
-            );
-            emit_text_outcome(&outcome);
+            emit_apply_error(PLUGIN.id(), name, current, target, err);
         }
     }
 }
@@ -246,33 +200,12 @@ fn npm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
         .json()
 }
 
-struct NpmResolvedTarget {
-    selected_version: Option<String>,
-    latest_version: Option<String>,
-    latest_age_secs: Option<u64>,
-}
-
-impl ResolvedPlanTarget for NpmResolvedTarget {
-    fn selected_version(&self) -> Option<&str> {
-        self.selected_version.as_deref()
-    }
-
-    fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
-        DelayedLatest::from_too_fresh_latest(
-            self.selected_version.as_deref(),
-            self.latest_version.as_deref(),
-            self.latest_age_secs,
-            min_age,
-        )
-    }
-}
-
 fn npm_resolve_target_with_min_age(
     name: &str,
     current: &str,
     now_unix_secs: u64,
     min_age: Duration,
-) -> Result<NpmResolvedTarget> {
+) -> Result<AgeResolvedTarget> {
     let timestamps_by_version: NpmTimeMap =
         run_cmd("npm", ["view", name, "time", "--json"], CmdStatus::Success)
             .output()?
@@ -280,18 +213,10 @@ fn npm_resolve_target_with_min_age(
 
     let releases = npm_semver_time_releases(name, &timestamps_by_version)?;
 
-    let SemverAgeResolution {
-        selected_version,
-        latest_version,
-        latest_age_secs,
-    } = resolve_semver_with_min_age(current, &releases, now_unix_secs, min_age)
+    let resolved = resolve_semver_with_min_age(current, &releases, now_unix_secs, min_age)
         .with_context(|| format!("failed to resolve eligible semver target for {name}"))?;
 
-    Ok(NpmResolvedTarget {
-        selected_version,
-        latest_version,
-        latest_age_secs,
-    })
+    Ok(resolved.into())
 }
 
 fn npm_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Result<Option<u64>> {
@@ -317,8 +242,4 @@ fn npm_semver_time_releases(
     }
 
     parse_semver_time_releases(PLUGIN.id(), name, timestamps_by_version)
-}
-
-fn emit_npm_manager_error(detail: impl AsRef<str>) {
-    emit_manager_level_error(PLUGIN.id(), PLUGIN.id(), detail);
 }

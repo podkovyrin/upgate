@@ -1,18 +1,13 @@
-use crate::manager::{ManagerCtx, ManagerPlugin};
-use crate::managers::common::{
-    DelayedLatest, PlanMeta, ResolvedPlanTarget, SemverAgeResolution, SemverTimestamp,
-    emit_manager_level_error, emit_plan_and_collect_upgradable, emit_scan_current,
-    parse_semver_time_releases, plan_decision_from_resolution, release_age_secs_for_version,
-    resolve_semver_with_min_age, run_selective_or_global_apply_flow, verbose_now_unix_secs,
-};
-use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
-use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::{CmdStatus, run_cmd};
-use crate::util::time::now_unix_secs;
-use anyhow::{Context, Result, bail};
-use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::time::Duration;
+
+use anyhow::{Context, Result, bail};
+use serde::Deserialize;
+
+#[allow(clippy::wildcard_imports)]
+use crate::managers::*;
+use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
+use crate::util::process::{CmdStatus, run_cmd};
 
 const BUN_MAX_PARALLEL_CHECKS: usize = 6;
 
@@ -58,97 +53,71 @@ struct BunPmDependency {
 
 type BunTimeMap = BTreeMap<String, String>;
 
-struct BunPlanItem {
-    name: String,
-    current: String,
-    resolved: Result<BunResolvedTarget, String>,
-}
+type BunPlanItem = ResolvedPlanItem<AgeResolvedTarget>;
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
-    if ctx.is_scan() {
-        return scan(ctx);
-    }
+    run_manager_pipeline(ctx, scan, run_plan_apply)
+}
 
+fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
     let min_age = ctx.policy.min_release_age.duration();
     let bun = bun_executable();
 
-    let installed = match bun_installed_global(&bun) {
-        Ok(installed) => installed,
-        Err(err) => {
-            emit_bun_manager_error(format!("failed to query global Bun packages: {err}"));
-            return Ok(());
-        }
-    };
-
-    if installed.is_empty() {
-        return Ok(());
-    }
-
-    let now = now_unix_secs()?;
-
-    let global_cwd = match bun_global_cwd() {
-        Ok(path) => path,
-        Err(err) => {
-            emit_bun_manager_error(format!("failed to resolve Bun global directory: {err}"));
-            return Ok(());
-        }
-    };
-
-    let plan = resolve_bun_plan(
-        &bun,
-        &global_cwd,
-        &installed,
-        now,
-        min_age,
-        ctx.max_parallel_checks,
-    )?;
-
-    let upgradable = emit_plan_and_collect_upgradable(
-        plan,
-        |item| {
-            let BunPlanItem {
-                name,
-                current,
-                resolved,
-            } = item;
-
-            let decision = plan_decision_from_resolution(&current, resolved, min_age);
-
-            (
-                PlanMeta {
-                    manager: PLUGIN.id(),
-                    source: PLUGIN.id(),
-                    name,
-                    current,
-                },
-                decision,
-            )
-        },
-        ctx.is_interactive_apply(),
-        Some(&ctx.policy.pinned),
-    );
-
-    run_selective_or_global_apply_flow(
+    run_plan_apply_framework(
         ctx,
         PLUGIN.id(),
-        PLUGIN.id(),
-        upgradable,
-        |selected| apply_bun_selected_updates(&bun, min_age, selected),
-        || apply_bun_updates(&bun, min_age),
-    )?;
+        PlanApplyFrameworkPolicy::SOFT_FETCH_STRICT_RESOLVE,
+        || bun_installed_global(&bun).context("failed to query global Bun packages"),
+        BTreeMap::is_empty,
+        |installed, runtime| {
+            let Some(global_cwd) = soft_fail(
+                bun_global_cwd(),
+                PLUGIN.id(),
+                "failed to resolve Bun global directory",
+            ) else {
+                return Ok(Vec::new());
+            };
 
-    Ok(())
+            resolve_bun_plan(
+                &bun,
+                global_cwd.as_str(),
+                installed,
+                runtime.now_unix_secs,
+                runtime.min_age,
+                runtime.max_parallel_checks,
+            )
+            .context("planning execution failed")
+        },
+        |_installed, plan, runtime| {
+            Ok(collect_upgradable_from_resolved_plan(
+                PLUGIN.id(),
+                plan,
+                runtime.min_age,
+                runtime.suppress_update_outcomes,
+                runtime.pinned,
+            ))
+        },
+        |ctx, _installed, upgradable| {
+            run_selective_or_global_apply_flow(
+                ctx,
+                PLUGIN.id(),
+                upgradable,
+                |selected| apply_bun_selected_updates(&bun, min_age, selected),
+                || apply_bun_updates(&bun, min_age),
+            )
+        },
+    )
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {
     let bun = bun_executable();
 
-    let installed = match bun_installed_global(&bun) {
-        Ok(installed) => installed,
-        Err(err) => {
-            emit_bun_manager_error(format!("failed to query global Bun packages: {err}"));
-            return Ok(());
-        }
+    let Some(installed) = soft_fail(
+        bun_installed_global(&bun),
+        PLUGIN.id(),
+        "failed to query global Bun packages",
+    ) else {
+        return Ok(());
     };
 
     if installed.is_empty() {
@@ -201,11 +170,7 @@ fn resolve_bun_plan(
         )
         .map_err(|err| err.to_string());
 
-        BunPlanItem {
-            name,
-            current,
-            resolved,
-        }
+        BunPlanItem::new(name, current, resolved)
     })
 }
 
@@ -225,7 +190,7 @@ fn apply_bun_updates(bun: &str, min_age: Duration) -> Result<()> {
 fn apply_bun_selected_updates(
     bun: &str,
     min_age: Duration,
-    upgradable: Vec<crate::managers::common::PlannedUpdate>,
+    upgradable: Vec<crate::managers::PlannedUpdate>,
 ) {
     let min_age_secs = min_age.as_secs().to_string();
 
@@ -233,7 +198,6 @@ fn apply_bun_selected_updates(
         let name = item.name;
         let current = item.current;
         let target = item.target;
-        let source = item.source;
 
         let package_spec = format!("{name}@{target}");
         let args = [
@@ -245,16 +209,7 @@ fn apply_bun_selected_updates(
         ];
 
         if let Err(err) = run_cmd(bun, &args, CmdStatus::Success).mutating().output() {
-            let outcome = ItemOutcome::error(
-                PLUGIN.id(),
-                name,
-                current,
-                target,
-                source,
-                ReasonCode::CommandFailed,
-                err.to_string(),
-            );
-            emit_text_outcome(&outcome);
+            emit_apply_error(PLUGIN.id(), name, current, target, err);
         }
     }
 }
@@ -275,14 +230,7 @@ fn emit_bun_scan_outcomes(
             None
         };
 
-        emit_scan_current(
-            PLUGIN.id(),
-            PLUGIN.id(),
-            name,
-            current,
-            age_secs,
-            old_threshold,
-        );
+        emit_scan_current(PLUGIN.id(), name, current, age_secs, old_threshold);
     }
 }
 
@@ -296,7 +244,7 @@ fn bun_installed_global(bun: &str) -> Result<BTreeMap<String, String>> {
     }
 
     if !output.success() {
-        let err_text = if stderr.is_empty() { stdout } else { stderr };
+        let err_text = crate::util::text::read_non_empty(stderr, stdout);
         bail!("bun pm ls -g --json failed: {err_text}");
     }
 
@@ -304,7 +252,7 @@ fn bun_installed_global(bun: &str) -> Result<BTreeMap<String, String>> {
 }
 
 fn parse_bun_pm_ls_json(stdout: &str) -> Result<BTreeMap<String, String>> {
-    if stdout.trim().is_empty() {
+    if crate::util::text::is_blank(stdout) {
         return Ok(BTreeMap::new());
     }
 
@@ -336,27 +284,6 @@ fn is_missing_global_manifest(text: &str) -> bool {
         || text.contains("Lockfile not found")
 }
 
-struct BunResolvedTarget {
-    selected_version: Option<String>,
-    latest_version: Option<String>,
-    latest_age_secs: Option<u64>,
-}
-
-impl ResolvedPlanTarget for BunResolvedTarget {
-    fn selected_version(&self) -> Option<&str> {
-        self.selected_version.as_deref()
-    }
-
-    fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
-        DelayedLatest::from_too_fresh_latest(
-            self.selected_version.as_deref(),
-            self.latest_version.as_deref(),
-            self.latest_age_secs,
-            min_age,
-        )
-    }
-}
-
 fn bun_resolve_target_with_min_age(
     bun: &str,
     global_cwd: &str,
@@ -364,7 +291,7 @@ fn bun_resolve_target_with_min_age(
     current: &str,
     now_unix_secs: u64,
     min_age: Duration,
-) -> Result<BunResolvedTarget> {
+) -> Result<AgeResolvedTarget> {
     let timestamps_by_version: BunTimeMap = run_cmd(
         bun,
         ["pm", "view", name, "time", "--json", "--cwd", global_cwd],
@@ -375,18 +302,10 @@ fn bun_resolve_target_with_min_age(
 
     let releases = bun_semver_time_releases(name, &timestamps_by_version)?;
 
-    let SemverAgeResolution {
-        selected_version,
-        latest_version,
-        latest_age_secs,
-    } = resolve_semver_with_min_age(current, &releases, now_unix_secs, min_age)
+    let resolved = resolve_semver_with_min_age(current, &releases, now_unix_secs, min_age)
         .with_context(|| format!("failed to resolve eligible semver target for {name}"))?;
 
-    Ok(BunResolvedTarget {
-        selected_version,
-        latest_version,
-        latest_age_secs,
-    })
+    Ok(resolved.into())
 }
 
 fn bun_global_cwd() -> Result<String> {
@@ -468,10 +387,6 @@ fn bun_semver_time_releases(
     }
 
     parse_semver_time_releases(PLUGIN.id(), name, timestamps_by_version)
-}
-
-fn emit_bun_manager_error(detail: impl AsRef<str>) {
-    emit_manager_level_error(PLUGIN.id(), PLUGIN.id(), detail);
 }
 
 #[cfg(test)]

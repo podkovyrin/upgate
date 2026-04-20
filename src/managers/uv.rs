@@ -1,23 +1,20 @@
-use crate::manager::{ManagerCtx, ManagerPlugin};
-use crate::managers::common::{
-    DelayedLatest, Pep440Timestamp, PlanDecision, PlanMeta, emit_manager_level_error,
-    emit_plan_and_collect_upgradable, emit_scan_current, parse_pep440_release_timestamps,
-    release_age_secs_for_pep440_version, run_per_item_apply_flow, verbose_now_unix_secs,
-};
-use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
-use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::{CmdStatus, run_cmd};
-use crate::util::time::human_age;
-use crate::util::time::now_unix_secs;
-use anyhow::{Context, Result, bail};
-use pep440_rs::Version;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::time::Duration;
+
+use anyhow::{Context, Result, bail};
+use pep440_rs::Version;
+
+#[allow(clippy::wildcard_imports)]
+use crate::managers::*;
+use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
+use crate::util::process::{CmdStatus, run_cmd};
 
 const UV_MAX_PARALLEL_CHECKS: usize = 2;
 
+#[derive(Clone)]
 struct UvTool {
     name: String,
     current: String,
@@ -59,175 +56,206 @@ struct UvPlanItem {
     target: Result<String, String>,
 }
 
-#[allow(clippy::too_many_lines)]
-fn run(ctx: &ManagerCtx) -> Result<()> {
-    if ctx.is_scan() {
-        return scan(ctx);
-    }
-
-    let min_age_raw = ctx.policy.min_release_age.cli_arg();
-    let min_age = ctx.policy.min_release_age.duration();
-    let tool_dir = match uv_tool_dir() {
-        Ok(tool_dir) => tool_dir,
-        Err(err) => {
-            emit_uv_manager_error(format!("failed to locate uv tool directory: {err}"));
-            return Ok(());
-        }
-    };
-
-    let installed = match uv_installed_tools(&tool_dir) {
-        Ok(installed) => installed,
-        Err(err) => {
-            emit_uv_manager_error(format!("failed to discover installed uv tools: {err}"));
-            return Ok(());
-        }
-    };
-    if installed.is_empty() {
-        return Ok(());
-    }
-
-    let outdated_latest = match uv_outdated_latest_map() {
-        Ok(map) => map,
-        Err(err) => {
-            emit_uv_manager_error(format!("failed to query latest uv tool versions: {err}"));
-            BTreeMap::new()
-        }
-    };
-
-    let now = now_unix_secs()?;
-
-    let threads = effective_parallelism(ctx.max_parallel_checks, UV_MAX_PARALLEL_CHECKS);
-    let plan: Vec<UvPlanItem> = run_indexed_parallel(installed, threads, PLUGIN.id(), |tool| {
-        let target =
-            uv_resolve_target_with_exclude_newer(&tool, min_age_raw).map_err(|err| err.to_string());
-        UvPlanItem { tool, target }
-    })?;
-
-    let mut pypi_cache: HashMap<String, Vec<Pep440Timestamp>> = HashMap::new();
-    let pypi_client = match crate::util::http::default_blocking_client() {
-        Ok(client) => Some(client),
-        Err(err) => {
-            emit_uv_manager_error(format!("failed to initialize metadata HTTP client: {err}"));
-            None
-        }
-    };
-
-    let upgradable_tools = emit_plan_and_collect_upgradable(
-        plan,
-        |item| {
-            let UvPlanItem { tool, target } = item;
-
-            let decision = match target {
-                Ok(target) => {
-                    if pep440_compare(&target, &tool.current) == Some(Ordering::Less) {
-                        let delayed_latest = outdated_latest.get(&tool.name).and_then(|latest| {
-                            let latest_age = resolve_pypi_age_secs(
-                                pypi_client.as_ref(),
-                                &mut pypi_cache,
-                                &tool.name,
-                                latest,
-                                now,
-                            );
-
-                            DelayedLatest::from_too_fresh_latest(
-                                None,
-                                Some(latest.as_str()),
-                                latest_age,
-                                min_age,
-                            )
-                        });
-
-                        PlanDecision::DelayedNoEligible {
-                            required_age: human_age(min_age.as_secs()),
-                            delayed_latest,
-                        }
-                    } else if target == tool.current {
-                        if let Some(age_secs) = resolve_pypi_age_secs(
-                            pypi_client.as_ref(),
-                            &mut pypi_cache,
-                            &tool.name,
-                            &tool.current,
-                            now,
-                        ) && age_secs < min_age.as_secs()
-                        {
-                            let delayed_latest = outdated_latest.get(&tool.name).map(|latest| {
-                                let latest_age = resolve_pypi_age_secs(
-                                    pypi_client.as_ref(),
-                                    &mut pypi_cache,
-                                    &tool.name,
-                                    latest,
-                                    now,
-                                )
-                                .unwrap_or(age_secs);
-
-                                DelayedLatest {
-                                    latest_version: latest.clone(),
-                                    latest_age: human_age(latest_age),
-                                    required_age: human_age(min_age.as_secs()),
-                                }
-                            });
-
-                            PlanDecision::DelayedNoEligible {
-                                required_age: human_age(min_age.as_secs()),
-                                delayed_latest,
-                            }
-                        } else {
-                            PlanDecision::NoChange
-                        }
-                    } else {
-                        let delayed_latest = if let Some(latest) = outdated_latest.get(&tool.name)
-                            && pep440_compare(latest, &target) == Some(Ordering::Greater)
-                        {
-                            let latest_age = resolve_pypi_age_secs(
-                                pypi_client.as_ref(),
-                                &mut pypi_cache,
-                                &tool.name,
-                                latest,
-                                now,
-                            );
-
-                            latest_age.and_then(|latest_age| {
-                                (latest_age < min_age.as_secs()).then(|| DelayedLatest {
-                                    latest_version: latest.clone(),
-                                    latest_age: human_age(latest_age),
-                                    required_age: human_age(min_age.as_secs()),
-                                })
-                            })
-                        } else {
-                            None
-                        };
-
-                        PlanDecision::Update {
-                            target,
-                            delayed_latest,
-                        }
-                    }
-                }
-                Err(err) => PlanDecision::Error(err),
-            };
-
-            (
-                PlanMeta {
-                    manager: PLUGIN.id(),
-                    source: PLUGIN.id(),
-                    name: tool.name,
-                    current: tool.current,
-                },
-                decision,
-            )
-        },
-        ctx.is_interactive_apply(),
-        Some(&ctx.policy.pinned),
-    );
-
-    run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable_tools, |selected| {
-        apply_uv_updates(min_age_raw, selected);
-    })?;
-
-    Ok(())
+struct UvResolvedTarget {
+    selected_version: Option<String>,
+    delayed_latest: Option<DelayedLatest>,
 }
 
-fn apply_uv_updates(min_age_raw: &str, upgradable: Vec<crate::managers::common::PlannedUpdate>) {
+impl ResolvedPlanTarget for UvResolvedTarget {
+    fn selected_version(&self) -> Option<&str> {
+        self.selected_version.as_deref()
+    }
+
+    fn delayed_latest(&self, _min_age: Duration) -> Option<DelayedLatest> {
+        self.delayed_latest.clone()
+    }
+}
+
+#[derive(Clone)]
+struct UvDiscovered {
+    installed: Vec<UvTool>,
+    outdated_latest: BTreeMap<String, String>,
+}
+
+fn run(ctx: &ManagerCtx) -> Result<()> {
+    run_manager_pipeline(ctx, scan, run_plan_apply)
+}
+
+fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
+    let min_age_raw = ctx.policy.min_release_age.cli_arg();
+
+    run_plan_apply_framework(
+        ctx,
+        PLUGIN.id(),
+        PlanApplyFrameworkPolicy::SOFT_FETCH_STRICT_RESOLVE,
+        || {
+            let tool_dir = uv_tool_dir().context("failed to locate uv tool directory")?;
+
+            let installed =
+                uv_installed_tools(&tool_dir).context("failed to discover installed uv tools")?;
+            if installed.is_empty() {
+                return Ok(UvDiscovered {
+                    installed,
+                    outdated_latest: BTreeMap::new(),
+                });
+            }
+
+            let outdated_latest = soft_fail_or(
+                uv_outdated_latest_map(),
+                BTreeMap::new,
+                PLUGIN.id(),
+                "failed to query latest uv tool versions",
+            );
+
+            Ok(UvDiscovered {
+                installed,
+                outdated_latest,
+            })
+        },
+        |discovered: &UvDiscovered| discovered.installed.is_empty(),
+        |discovered, runtime| {
+            let threads =
+                effective_parallelism(runtime.max_parallel_checks, UV_MAX_PARALLEL_CHECKS);
+            run_indexed_parallel(discovered.installed.clone(), threads, PLUGIN.id(), |tool| {
+                let target = uv_resolve_target_with_exclude_newer(&tool, min_age_raw)
+                    .map_err(|err| err.to_string());
+                UvPlanItem { tool, target }
+            })
+            .context("planning execution failed")
+        },
+        |discovered, plan, runtime| {
+            let mut pypi_cache: HashMap<String, Vec<Pep440Timestamp>> = HashMap::new();
+            let pypi_client = soft_fail(
+                crate::util::http::default_blocking_client(),
+                PLUGIN.id(),
+                "failed to initialize metadata HTTP client",
+            );
+
+            let resolved_plan: Vec<ResolvedPlanItem<UvResolvedTarget>> = plan
+                .into_iter()
+                .map(|item| {
+                    let UvPlanItem { tool, target } = item;
+                    let resolved = target.map(|target| {
+                        resolve_uv_target(
+                            discovered,
+                            pypi_client.as_ref(),
+                            &mut pypi_cache,
+                            &tool,
+                            target,
+                            runtime.now_unix_secs,
+                            runtime.min_age,
+                        )
+                    });
+
+                    ResolvedPlanItem::new(tool.name, tool.current, resolved)
+                })
+                .collect();
+
+            Ok(collect_upgradable_from_resolved_plan(
+                PLUGIN.id(),
+                resolved_plan,
+                runtime.min_age,
+                runtime.suppress_update_outcomes,
+                runtime.pinned,
+            ))
+        },
+        |ctx, _discovered, upgradable_tools| {
+            run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable_tools, |selected| {
+                apply_uv_updates(min_age_raw, selected);
+            })
+        },
+    )
+}
+
+fn resolve_uv_target(
+    discovered: &UvDiscovered,
+    pypi_client: Option<&reqwest::blocking::Client>,
+    pypi_cache: &mut HashMap<String, Vec<Pep440Timestamp>>,
+    tool: &UvTool,
+    target: String,
+    now_unix_secs: u64,
+    min_age: Duration,
+) -> UvResolvedTarget {
+    if pep440_compare(&target, &tool.current) == Some(Ordering::Less) {
+        let delayed_latest = discovered
+            .outdated_latest
+            .get(&tool.name)
+            .and_then(|latest| {
+                let latest_age = resolve_pypi_age_secs(
+                    pypi_client,
+                    pypi_cache,
+                    &tool.name,
+                    latest,
+                    now_unix_secs,
+                );
+
+                DelayedLatest::from_too_fresh_latest(
+                    None,
+                    Some(latest.as_str()),
+                    latest_age,
+                    min_age,
+                )
+            });
+
+        return UvResolvedTarget {
+            selected_version: None,
+            delayed_latest,
+        };
+    }
+
+    if target == tool.current {
+        if let Some(current_age_secs) = resolve_pypi_age_secs(
+            pypi_client,
+            pypi_cache,
+            &tool.name,
+            &tool.current,
+            now_unix_secs,
+        ) && current_age_secs < min_age.as_secs()
+        {
+            let delayed_latest = discovered.outdated_latest.get(&tool.name).map(|latest| {
+                let latest_age_secs = resolve_pypi_age_secs(
+                    pypi_client,
+                    pypi_cache,
+                    &tool.name,
+                    latest,
+                    now_unix_secs,
+                )
+                .unwrap_or(current_age_secs);
+                DelayedLatest::new(latest.clone(), latest_age_secs, min_age)
+            });
+
+            return UvResolvedTarget {
+                selected_version: None,
+                delayed_latest,
+            };
+        }
+
+        return UvResolvedTarget {
+            selected_version: Some(target),
+            delayed_latest: None,
+        };
+    }
+
+    let delayed_latest = discovered
+        .outdated_latest
+        .get(&tool.name)
+        .and_then(|latest| {
+            (pep440_compare(latest, &target) == Some(Ordering::Greater)).then_some(latest)
+        })
+        .and_then(|latest| {
+            let latest_age_secs =
+                resolve_pypi_age_secs(pypi_client, pypi_cache, &tool.name, latest, now_unix_secs)?;
+            (latest_age_secs < min_age.as_secs())
+                .then(|| DelayedLatest::new(latest.clone(), latest_age_secs, min_age))
+        });
+
+    UvResolvedTarget {
+        selected_version: Some(target),
+        delayed_latest,
+    }
+}
+
+fn apply_uv_updates(min_age_raw: &str, upgradable: Vec<crate::managers::PlannedUpdate>) {
     for item in upgradable {
         let tool = item.name;
         let current = item.current;
@@ -242,35 +270,26 @@ fn apply_uv_updates(min_age_raw: &str, upgradable: Vec<crate::managers::common::
         ];
 
         if let Err(err) = run_cmd("uv", &args, CmdStatus::Success).mutating().output() {
-            let outcome = ItemOutcome::error(
-                PLUGIN.id(),
-                tool,
-                current,
-                target,
-                PLUGIN.id(),
-                ReasonCode::CommandFailed,
-                err.to_string(),
-            );
-            emit_text_outcome(&outcome);
+            emit_apply_error(PLUGIN.id(), tool, current, target, err);
         }
     }
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {
-    let tool_dir = match uv_tool_dir() {
-        Ok(tool_dir) => tool_dir,
-        Err(err) => {
-            emit_uv_manager_error(format!("failed to locate uv tool directory: {err}"));
-            return Ok(());
-        }
+    let Some(tool_dir) = soft_fail(
+        uv_tool_dir(),
+        PLUGIN.id(),
+        "failed to locate uv tool directory",
+    ) else {
+        return Ok(());
     };
 
-    let installed = match uv_installed_tools(&tool_dir) {
-        Ok(installed) => installed,
-        Err(err) => {
-            emit_uv_manager_error(format!("failed to discover installed uv tools: {err}"));
-            return Ok(());
-        }
+    let Some(installed) = soft_fail(
+        uv_installed_tools(&tool_dir),
+        PLUGIN.id(),
+        "failed to discover installed uv tools",
+    ) else {
+        return Ok(());
     };
     if installed.is_empty() {
         return Ok(());
@@ -301,7 +320,6 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
         };
 
         emit_scan_current(
-            PLUGIN.id(),
             PLUGIN.id(),
             tool.name,
             tool.current,
@@ -436,10 +454,7 @@ fn parse_installed_tool_line(line: &str) -> Option<(String, String)> {
     let mut parts = trimmed.split_whitespace();
     let name = parts.next()?.to_string();
     let current_token = parts.next()?;
-    let current = current_token
-        .strip_prefix('v')
-        .unwrap_or(current_token)
-        .to_string();
+    let current = crate::util::text::strip_v_prefix(current_token).to_string();
 
     Some((name, current))
 }
@@ -453,10 +468,7 @@ fn parse_outdated_tool_line(line: &str) -> Option<(String, String, Option<String
     let mut parts = trimmed.split_whitespace();
     let name = parts.next()?.to_string();
     let current_token = parts.next()?;
-    let current = current_token
-        .strip_prefix('v')
-        .unwrap_or(current_token)
-        .to_string();
+    let current = crate::util::text::strip_v_prefix(current_token).to_string();
 
     let latest = bracket_value(trimmed, "latest: ");
     Some((name, current, latest))
@@ -625,10 +637,6 @@ fn uv_tool_python_path(tool_dir: &str, tool_name: &str) -> String {
         .to_string()
 }
 
-fn emit_uv_manager_error(detail: impl AsRef<str>) {
-    emit_manager_level_error(PLUGIN.id(), PLUGIN.id(), detail);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -680,8 +688,8 @@ mod tests {
         {
             Some(DelayedLatest {
                 latest_version: latest.clone(),
-                latest_age: human_age(2 * 24 * 60 * 60),
-                required_age: human_age(7 * 24 * 60 * 60),
+                latest_age: crate::util::time::human_age(2 * 24 * 60 * 60),
+                required_age: crate::util::time::human_age(7 * 24 * 60 * 60),
             })
         } else {
             None

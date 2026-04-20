@@ -1,19 +1,14 @@
-use crate::config::ManagerMode;
-use crate::manager::{ManagerCtx, ManagerPlugin};
-use crate::managers::common::{
-    DelayedLatest, PlanMeta, ResolvedPlanTarget, SemverAgeResolution, SemverTimestamp,
-    emit_manager_level_error, emit_plan_and_collect_upgradable, emit_scan_current,
-    plan_decision_from_resolution, release_age_secs_for_version, resolve_semver_with_min_age,
-    run_per_item_apply_flow, verbose_now_unix_secs,
-};
-use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
-use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::{CmdStatus, run_cmd};
-use crate::util::time::now_unix_secs;
-use crate::util::time::parse_rfc3339_unix;
+use std::time::Duration;
+
 use anyhow::{Context, Result, bail};
 use reqwest::blocking::Client;
-use std::time::Duration;
+
+use crate::config::ManagerMode;
+#[allow(clippy::wildcard_imports)]
+use crate::managers::*;
+use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
+use crate::util::process::{CmdStatus, run_cmd};
+use crate::util::time::parse_rfc3339_unix;
 
 const DOTNET_MAX_PARALLEL_CHECKS: usize = 4;
 
@@ -45,39 +40,14 @@ struct DotnetToolListRoot {
     data: Vec<DotnetToolEntry>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DotnetToolEntry {
     package_id: String,
     version: String,
 }
 
-struct DotnetPlanItem {
-    name: String,
-    current: String,
-    resolved: Result<NugetResolvedTarget, String>,
-}
-
-struct NugetResolvedTarget {
-    selected_version: Option<String>,
-    latest_version: Option<String>,
-    latest_age_secs: Option<u64>,
-}
-
-impl ResolvedPlanTarget for NugetResolvedTarget {
-    fn selected_version(&self) -> Option<&str> {
-        self.selected_version.as_deref()
-    }
-
-    fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
-        DelayedLatest::from_too_fresh_latest(
-            self.selected_version.as_deref(),
-            self.latest_version.as_deref(),
-            self.latest_age_secs,
-            min_age,
-        )
-    }
-}
+type DotnetPlanItem = ResolvedPlanItem<AgeResolvedTarget>;
 
 #[derive(Debug, serde::Deserialize)]
 struct NugetRegistrationIndex {
@@ -112,85 +82,47 @@ struct NugetCatalogEntry {
 }
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
-    if ctx.is_scan() {
-        return scan(ctx);
-    }
+    run_manager_pipeline(ctx, scan, run_plan_apply)
+}
 
-    let min_age = ctx.policy.min_release_age.duration();
-
-    let installed = match dotnet_global_tools() {
-        Ok(installed) => installed,
-        Err(err) => {
-            emit_dotnet_manager_error(format!("failed to read installed .NET tools: {err}"));
-            return Ok(());
-        }
-    };
-
-    if installed.is_empty() {
-        return Ok(());
-    }
-
-    let now = now_unix_secs()?;
-
-    let nuget_client = match crate::util::http::default_blocking_client() {
-        Ok(client) => client,
-        Err(err) => {
-            emit_dotnet_manager_error(format!("failed to initialize metadata HTTP client: {err}"));
-            return Ok(());
-        }
-    };
-
-    let plan = match resolve_dotnet_plan(
-        installed,
-        &nuget_client,
-        now,
-        min_age,
-        ctx.max_parallel_checks,
-    ) {
-        Ok(plan) => plan,
-        Err(err) => {
-            emit_dotnet_manager_error(format!("planning execution failed: {err}"));
-            return Ok(());
-        }
-    };
-
-    let upgradable = emit_plan_and_collect_upgradable(
-        plan,
-        |item| {
-            let DotnetPlanItem {
-                name,
-                current,
-                resolved,
-            } = item;
-
-            let decision = plan_decision_from_resolution(&current, resolved, min_age);
-
-            (
-                PlanMeta {
-                    manager: PLUGIN.id(),
-                    source: "nuget",
-                    name,
-                    current,
-                },
-                decision,
+fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
+    run_plan_apply_framework(
+        ctx,
+        PLUGIN.id(),
+        PlanApplyFrameworkPolicy::SOFT_FETCH_SOFT_RESOLVE,
+        || dotnet_global_tools().context("failed to read installed .NET tools"),
+        Vec::is_empty,
+        |installed, runtime| {
+            resolve_dotnet_plan(
+                installed.clone(),
+                runtime.now_unix_secs,
+                runtime.min_age,
+                runtime.max_parallel_checks,
             )
+            .context("planning execution failed")
         },
-        ctx.is_interactive_apply(),
-        Some(&ctx.policy.pinned),
-    );
-
-    run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, apply_dotnet_updates)?;
-
-    Ok(())
+        |_installed, plan, runtime| {
+            Ok(collect_upgradable_from_resolved_plan(
+                PLUGIN.id(),
+                plan,
+                runtime.min_age,
+                runtime.suppress_update_outcomes,
+                runtime.pinned,
+            ))
+        },
+        |ctx, _installed, upgradable| {
+            run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, apply_dotnet_updates)
+        },
+    )
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {
-    let installed = match dotnet_global_tools() {
-        Ok(installed) => installed,
-        Err(err) => {
-            emit_dotnet_manager_error(format!("failed to read installed .NET tools: {err}"));
-            return Ok(());
-        }
+    let Some(installed) = soft_fail(
+        dotnet_global_tools(),
+        PLUGIN.id(),
+        "failed to read installed .NET tools",
+    ) else {
+        return Ok(());
     };
 
     if installed.is_empty() {
@@ -216,11 +148,18 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
 
 fn resolve_dotnet_plan(
     installed: Vec<DotnetToolEntry>,
-    nuget_client: &Client,
     now_unix_secs: u64,
     min_age: Duration,
     max_parallel_checks: usize,
 ) -> Result<Vec<DotnetPlanItem>> {
+    let Some(nuget_client) = soft_fail(
+        crate::util::http::default_blocking_client(),
+        PLUGIN.id(),
+        "failed to initialize metadata HTTP client",
+    ) else {
+        return Ok(Vec::new());
+    };
+
     let jobs: Vec<(String, String)> = installed
         .into_iter()
         .map(|entry| (entry.package_id, entry.version))
@@ -229,7 +168,7 @@ fn resolve_dotnet_plan(
     let threads = effective_parallelism(max_parallel_checks, DOTNET_MAX_PARALLEL_CHECKS);
     run_indexed_parallel(jobs, threads, PLUGIN.id(), |(name, current)| {
         let resolved = nuget_resolve_target_with_min_age(
-            nuget_client,
+            &nuget_client,
             &name,
             &current,
             now_unix_secs,
@@ -237,15 +176,11 @@ fn resolve_dotnet_plan(
         )
         .map_err(|err| err.to_string());
 
-        DotnetPlanItem {
-            name,
-            current,
-            resolved,
-        }
+        DotnetPlanItem::new(name, current, resolved)
     })
 }
 
-fn apply_dotnet_updates(upgradable: Vec<crate::managers::common::PlannedUpdate>) {
+fn apply_dotnet_updates(upgradable: Vec<crate::managers::PlannedUpdate>) {
     for item in upgradable {
         let name = item.name;
         let current = item.current;
@@ -266,16 +201,7 @@ fn apply_dotnet_updates(upgradable: Vec<crate::managers::common::PlannedUpdate>)
         .mutating()
         .output()
         {
-            let outcome = ItemOutcome::error(
-                PLUGIN.id(),
-                name,
-                current,
-                target,
-                "nuget",
-                ReasonCode::CommandFailed,
-                err.to_string(),
-            );
-            emit_text_outcome(&outcome);
+            emit_apply_error(PLUGIN.id(), name, current, target, err);
         }
     }
 }
@@ -297,7 +223,6 @@ fn emit_dotnet_scan_outcomes(
 
         emit_scan_current(
             PLUGIN.id(),
-            "nuget",
             entry.package_id,
             entry.version,
             age_secs,
@@ -322,11 +247,11 @@ fn dotnet_global_tools() -> Result<Vec<DotnetToolEntry>> {
             return Ok(Vec::new());
         }
 
-        let err_text = if stderr.is_empty() { stdout } else { stderr };
+        let err_text = crate::util::text::read_non_empty(stderr, stdout);
         bail!("dotnet tool list --global --format json failed: {err_text}");
     }
 
-    if stdout.trim().is_empty() {
+    if crate::util::text::is_blank(stdout) {
         return Ok(Vec::new());
     }
 
@@ -353,21 +278,13 @@ fn nuget_resolve_target_with_min_age(
     current: &str,
     now_unix_secs: u64,
     min_age: Duration,
-) -> Result<NugetResolvedTarget> {
+) -> Result<AgeResolvedTarget> {
     let versions = nuget_versions_with_publish_times(nuget_client, package_id)?;
 
-    let SemverAgeResolution {
-        selected_version,
-        latest_version,
-        latest_age_secs,
-    } = resolve_semver_with_min_age(current, &versions, now_unix_secs, min_age)
+    let resolved = resolve_semver_with_min_age(current, &versions, now_unix_secs, min_age)
         .with_context(|| format!("failed to resolve eligible semver target for {package_id}"))?;
 
-    Ok(NugetResolvedTarget {
-        selected_version,
-        latest_version,
-        latest_age_secs,
-    })
+    Ok(resolved.into())
 }
 
 fn nuget_release_age_secs(
@@ -415,11 +332,7 @@ fn nuget_versions_with_publish_times(
 }
 
 fn nuget_base_url() -> String {
-    std::env::var("UPNOW_DOTNET_NUGET_BASE_URL")
-        .ok()
-        .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "https://api.nuget.org".to_string())
+    crate::util::http::env_base_url("UPNOW_DOTNET_NUGET_BASE_URL", "https://api.nuget.org")
 }
 
 fn nuget_versions_with_publish_times_from_registration(
@@ -498,10 +411,6 @@ fn fetch_text(client: &Client, url: &str, gzipped: bool) -> Result<String> {
     }
 }
 
-fn emit_dotnet_manager_error(detail: impl AsRef<str>) {
-    emit_manager_level_error(PLUGIN.id(), "nuget", detail);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,11 +431,11 @@ mod tests {
 
     #[test]
     fn delayed_latest_hidden_when_latest_not_delayed() {
-        let target = NugetResolvedTarget {
-            selected_version: Some("10.0.5".to_string()),
-            latest_version: Some("10.0.5".to_string()),
-            latest_age_secs: Some(10 * 24 * 60 * 60),
-        };
+        let target = AgeResolvedTarget::new(
+            Some("10.0.5".to_string()),
+            Some("10.0.5".to_string()),
+            Some(10 * 24 * 60 * 60),
+        );
 
         assert!(
             target
@@ -537,11 +446,11 @@ mod tests {
 
     #[test]
     fn delayed_latest_present_when_latest_too_fresh() {
-        let target = NugetResolvedTarget {
-            selected_version: Some("10.0.4".to_string()),
-            latest_version: Some("10.0.5".to_string()),
-            latest_age_secs: Some(2 * 24 * 60 * 60),
-        };
+        let target = AgeResolvedTarget::new(
+            Some("10.0.4".to_string()),
+            Some("10.0.5".to_string()),
+            Some(2 * 24 * 60 * 60),
+        );
 
         assert!(
             target

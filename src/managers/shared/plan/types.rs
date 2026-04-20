@@ -1,10 +1,11 @@
+use std::time::Duration;
+
+use crate::managers::shared::versioning::{Pep440AgeResolution, SemverAgeResolution};
 use crate::outcome::ItemOutcome;
 use crate::util::time::human_age;
-use std::time::Duration;
 
 pub struct PlanMeta {
     pub manager: &'static str,
-    pub source: &'static str,
     pub name: String,
     pub current: String,
 }
@@ -14,6 +15,56 @@ pub struct DelayedLatest {
     pub latest_version: String,
     pub latest_age: String,
     pub required_age: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgeResolvedTarget {
+    pub selected_version: Option<String>,
+    pub latest_version: Option<String>,
+    pub latest_age_secs: Option<u64>,
+}
+
+impl AgeResolvedTarget {
+    pub const fn new(
+        selected_version: Option<String>,
+        latest_version: Option<String>,
+        latest_age_secs: Option<u64>,
+    ) -> Self {
+        Self {
+            selected_version,
+            latest_version,
+            latest_age_secs,
+        }
+    }
+
+    pub fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
+        DelayedLatest::from_too_fresh_latest(
+            self.selected_version.as_deref(),
+            self.latest_version.as_deref(),
+            self.latest_age_secs,
+            min_age,
+        )
+    }
+}
+
+impl From<SemverAgeResolution> for AgeResolvedTarget {
+    fn from(value: SemverAgeResolution) -> Self {
+        Self::new(
+            value.selected_version,
+            value.latest_version,
+            value.latest_age_secs,
+        )
+    }
+}
+
+impl From<Pep440AgeResolution> for AgeResolvedTarget {
+    fn from(value: Pep440AgeResolution) -> Self {
+        Self::new(
+            value.selected_version,
+            value.latest_version,
+            value.latest_age_secs,
+        )
+    }
 }
 
 impl DelayedLatest {
@@ -58,7 +109,6 @@ pub enum PlanDecision {
 #[derive(Debug, Clone)]
 pub struct PlannedUpdate {
     pub manager: &'static str,
-    pub source: &'static str,
     pub name: String,
     pub current: String,
     pub target: String,
@@ -79,7 +129,6 @@ impl PlannedUpdate {
                 self.name.clone(),
                 self.current.clone(),
                 self.target.clone(),
-                self.source,
                 latest_version.clone(),
                 latest_age.clone(),
                 required_age.clone(),
@@ -91,7 +140,6 @@ impl PlannedUpdate {
             self.name.clone(),
             self.current.clone(),
             self.target.clone(),
-            self.source,
         )
     }
 }

@@ -1,8 +1,10 @@
-use crate::manager::RunMode;
-use indicatif::{ProgressBar, ProgressFinish, ProgressStyle};
 use std::io::IsTerminal;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
+
+use indicatif::{ProgressBar, ProgressFinish, ProgressStyle};
+
+use crate::managers::RunMode;
 
 #[derive(Debug, Clone, Copy)]
 enum OutputMode {
@@ -89,47 +91,48 @@ fn active_spinner_slot() -> &'static Mutex<Option<ProgressBar>> {
     ACTIVE_SPINNER.get_or_init(|| Mutex::new(None))
 }
 
+fn lock_active_spinner() -> MutexGuard<'static, Option<ProgressBar>> {
+    active_spinner_slot()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
 pub fn start_manager_spinner(manager: &str, run_mode: RunMode) -> ManagerSpinner {
-    if output_theme().plain() || !std::io::stderr().is_terminal() {
+    let theme = output_theme();
+    if theme.plain() || !std::io::stderr().is_terminal() {
         return ManagerSpinner(None);
     }
 
-    let action = match run_mode {
-        RunMode::Plan => "Planning",
-        RunMode::Apply => "Applying",
-        RunMode::Scan => "Scanning",
-    };
-
     let pb = ProgressBar::new_spinner().with_finish(ProgressFinish::AndClear);
-    let style = if output_theme().color() {
-        ProgressStyle::with_template("{spinner:.cyan} {msg}")
-            .expect("invalid spinner template")
-            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-    } else {
-        ProgressStyle::with_template("{spinner} {msg}")
-            .expect("invalid spinner template")
-            .tick_strings(&["-", "\\", "|", "/"])
-    };
-
-    pb.set_style(style);
-    pb.set_message(format!("{action} {manager}..."));
+    pb.set_style(spinner_style(theme.color()));
+    pb.set_message(format!("{} {manager}...", run_mode.action_label()));
     pb.enable_steady_tick(Duration::from_millis(90));
 
-    *active_spinner_slot()
-        .lock()
-        .expect("active spinner mutex poisoned") = Some(pb.clone());
+    *lock_active_spinner() = Some(pb.clone());
 
     ManagerSpinner(Some(pb))
+}
+
+fn spinner_style(color: bool) -> ProgressStyle {
+    let (template, ticks): (&str, &[&str]) = if color {
+        (
+            "{spinner:.cyan} {msg}",
+            &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+        )
+    } else {
+        ("{spinner} {msg}", &["-", "\\", "|", "/"])
+    };
+
+    ProgressStyle::with_template(template)
+        .unwrap_or_else(|_| ProgressStyle::default_spinner())
+        .tick_strings(ticks)
 }
 
 pub fn with_spinner_suspended<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
 {
-    let spinner = active_spinner_slot()
-        .lock()
-        .expect("active spinner mutex poisoned")
-        .clone();
+    let spinner = lock_active_spinner().clone();
 
     if let Some(pb) = spinner {
         pb.suspend(f)
@@ -140,9 +143,7 @@ where
 
 pub fn finish_manager_spinner(spinner: ManagerSpinner) {
     if let Some(pb) = spinner.0 {
-        *active_spinner_slot()
-            .lock()
-            .expect("active spinner mutex poisoned") = None;
+        *lock_active_spinner() = None;
         pb.finish_and_clear();
     }
 }

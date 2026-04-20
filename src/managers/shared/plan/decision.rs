@@ -1,10 +1,21 @@
-use super::types::{DelayedLatest, PlanDecision};
-use crate::util::time::human_age;
 use std::time::Duration;
+
+use super::types::{AgeResolvedTarget, DelayedLatest, PlanDecision};
+use crate::util::time::human_age;
 
 pub trait ResolvedPlanTarget {
     fn selected_version(&self) -> Option<&str>;
     fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest>;
+}
+
+impl ResolvedPlanTarget for AgeResolvedTarget {
+    fn selected_version(&self) -> Option<&str> {
+        self.selected_version.as_deref()
+    }
+
+    fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
+        Self::delayed_latest(self, min_age)
+    }
 }
 
 pub fn plan_decision_from_resolution<T>(
@@ -33,9 +44,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{ResolvedPlanTarget, plan_decision_from_resolution};
-    use crate::managers::common::{DelayedLatest, PlanDecision};
-    use std::time::Duration;
+    use super::*;
+    use crate::managers::shared::{DelayedLatest, PlanDecision};
 
     #[derive(Clone)]
     struct MockTarget {

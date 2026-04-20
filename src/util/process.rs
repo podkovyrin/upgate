@@ -1,5 +1,3 @@
-use anyhow::{Context, Result};
-use serde::de::DeserializeOwned;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::Path;
@@ -7,6 +5,13 @@ use std::process::{Command, ExitStatus, Output};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
+
+use anyhow::{Context, Result};
+use serde::de::DeserializeOwned;
+
+use crate::ui::with_spinner_suspended;
+use crate::util::env::non_empty_var;
+use crate::util::logging;
 
 const SKIP_MUTATING_COMMANDS_ENV: &str = "UPNOW_SKIP_MUTATING_COMMANDS";
 const REQUIRE_MUTATION_MODE_ENV: &str = "UPNOW_REQUIRE_MUTATION_MODE";
@@ -142,7 +147,7 @@ fn execute_cmd(
     command.args(args);
 
     let display = command_display(&command);
-    crate::util::logging::on_command_start(&display, is_mutation);
+    logging::on_command_start(&display, is_mutation);
 
     let started_at = Instant::now();
 
@@ -161,13 +166,13 @@ fn execute_cmd(
         match command.output() {
             Ok(output) => output,
             Err(err) => {
-                crate::util::logging::on_command_spawn_error(&display, is_mutation, &err);
+                logging::on_command_spawn_error(&display, is_mutation, &err);
                 return Err(err).with_context(|| format!("failed to run {display}"));
             }
         }
     };
     let status_allowed = status_allowed(output.status, check);
-    crate::util::logging::on_command_finish(
+    logging::on_command_finish(
         &display,
         &output,
         is_mutation,
@@ -197,25 +202,15 @@ pub fn set_debug_force_skip_mutating_commands(force: bool) {
 pub fn set_debug_force_skip_mutating_commands(_force: bool) {}
 
 pub fn mutation_mode_notice_enabled() -> bool {
-    if cfg!(debug_assertions) {
-        return true;
-    }
-
-    std::env::var(REQUIRE_MUTATION_MODE_ENV)
-        .ok()
-        .is_some_and(|value| !value.trim().is_empty())
+    cfg!(debug_assertions) || non_empty_var(REQUIRE_MUTATION_MODE_ENV).is_some()
 }
 
 pub fn validate_required_mutation_mode() -> Result<()> {
-    let Ok(raw) = std::env::var(REQUIRE_MUTATION_MODE_ENV) else {
+    let Some(raw) = non_empty_var(REQUIRE_MUTATION_MODE_ENV) else {
         return Ok(());
     };
 
-    let required = raw.trim().to_ascii_lowercase();
-    if required.is_empty() {
-        return Ok(());
-    }
-
+    let required = raw.to_ascii_lowercase();
     let skipping = skip_mutating_commands();
 
     match required.as_str() {
@@ -240,7 +235,7 @@ fn maybe_emit_mutation_mode_notice(skipping: bool) {
         return;
     }
 
-    crate::ui::with_spinner_suspended(|| {
+    with_spinner_suspended(|| {
         if skipping {
             eprintln!(
                 "note: {MUTATION_SKIP_NOTICE}. set {SKIP_MUTATING_COMMANDS_ENV}=0 to execute real mutations (DANGEROUS)"
@@ -254,9 +249,9 @@ fn maybe_emit_mutation_mode_notice(skipping: bool) {
 }
 
 fn env_truthy(name: &str) -> bool {
-    std::env::var(name).ok().is_some_and(|value| {
+    non_empty_var(name).is_some_and(|value| {
         matches!(
-            value.trim().to_ascii_lowercase().as_str(),
+            value.to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"
         )
     })

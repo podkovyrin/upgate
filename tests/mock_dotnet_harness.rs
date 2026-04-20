@@ -1,6 +1,3 @@
-use flate2::Compression;
-use flate2::write::GzEncoder;
-use std::env;
 use std::fs;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
@@ -8,14 +5,17 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::AtomicBool;
 
+use flate2::Compression;
+use flate2::write::GzEncoder;
+
 mod common;
 
 use common::http::{
     BackgroundTcpServer, read_http_request_head, run_fake_http_server, write_http_response_bytes,
 };
 use common::{
-    SandboxEnv, assert_success, fixture_path, scenario_path, spawn_upnow, stderr, stdout,
-    write_executable,
+    SandboxEnv, assert_success, command_output, fixture_path, scenario_path,
+    skip_hybrid_test_if_disabled, spawn_upnow, stderr, stdout, write_executable,
 };
 
 const DETERMINISTIC_SCENARIO: &str = "tests/scenarios/dotnet/deterministic";
@@ -95,7 +95,7 @@ impl Sandbox {
         cmd.args(args);
         self.apply_base_env(&mut cmd);
 
-        cmd.output().expect("failed to run fake dotnet")
+        command_output(&mut cmd, "fake dotnet")
     }
 
     fn apply_base_env(&self, cmd: &mut Command) {
@@ -159,7 +159,7 @@ fn deterministic_plan_covers_update_delayed_pinned_and_error_states() {
     let out = stdout(&output);
     assert!(out.contains("+ Update [dotnet] alpha-ready v1.0.0 -> v1.2.0"));
     assert!(out.contains("~ Delayed [dotnet] gamma-delayed v2.0.0 -> v2.1.0"));
-    assert!(out.contains("- Skipped [dotnet] pinned-pkg v3.0.0 -> v3.0.0 (pinned)"));
+    assert!(out.contains("- Skipped [dotnet] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
     assert!(out.contains("! Error [dotnet] omega-error v0.1.0 -> v0.1.0"));
 
     let err = stderr(&output);
@@ -183,7 +183,7 @@ fn deterministic_apply_selective_path_runs_updates_only_for_eligible_unpinned_it
     let out = stdout(&output);
     assert!(out.contains("+ Update [dotnet] alpha-ready v1.0.0 -> v1.2.0"));
     assert!(out.contains("~ Delayed [dotnet] gamma-delayed v2.0.0 -> v2.1.0"));
-    assert!(out.contains("- Skipped [dotnet] pinned-pkg v3.0.0 -> v3.0.0 (pinned)"));
+    assert!(out.contains("- Skipped [dotnet] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
 
     let err = stderr(&output);
     assert!(
@@ -218,7 +218,7 @@ fn deterministic_scan_reports_current_state_and_missing_age_fallback() {
         "scan stdout:\n{out}\nscan stderr:\n{err}"
     );
     assert!(
-        out.contains("= Current [dotnet] scan-noage v5.0.0 (source: nuget)"),
+        out.contains("= Current [dotnet] scan-noage v5.0.0"),
         "scan stdout:\n{out}\nscan stderr:\n{err}"
     );
 }
@@ -226,8 +226,7 @@ fn deterministic_scan_reports_current_state_and_missing_age_fallback() {
 #[test]
 #[ignore = "requires network + real NuGet; run via scripts/test-hybrid.sh"]
 fn hybrid_apply_uses_real_nuget_data_with_fake_installed_state() {
-    if env::var("UPNOW_RUN_HYBRID_TESTS").as_deref() != Ok("1") {
-        eprintln!("skipping hybrid test; set UPNOW_RUN_HYBRID_TESTS=1 to enable");
+    if skip_hybrid_test_if_disabled() {
         return;
     }
 
@@ -249,7 +248,7 @@ fn hybrid_apply_uses_real_nuget_data_with_fake_installed_state() {
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("- Skipped [dotnet] serilog v1.0.0 -> v1.0.0 (pinned)"),
+        out.contains("- Skipped [dotnet] serilog v1.0.0 -> v") && out.contains("(pinned)"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(

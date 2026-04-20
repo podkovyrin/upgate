@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -6,7 +5,8 @@ use std::process::{Command, Output};
 mod common;
 
 use common::{
-    SandboxEnv, assert_success, scenario_path, spawn_upnow, stderr, stdout, write_executable,
+    SandboxEnv, assert_success, command_output, path_to_string, require_real_executable,
+    scenario_path, skip_hybrid_test_if_disabled, spawn_upnow, stderr, stdout, write_executable,
 };
 
 const DETERMINISTIC_UV_SCENARIO_DIR: &str = "tests/scenarios/uv/deterministic";
@@ -102,7 +102,7 @@ impl Sandbox {
         cmd.args(args);
         self.apply_base_env(&mut cmd);
 
-        cmd.output().expect("failed to run fake uv")
+        command_output(&mut cmd, "fake uv")
     }
 
     fn find_real_uv(&self) -> Option<PathBuf> {
@@ -198,7 +198,7 @@ fn deterministic_plan_covers_update_delayed_pinned_and_error_states() {
     assert!(out.contains("+ Update [uv] alpha-ready v1.0.0 -> v1.2.0"));
     assert!(out.contains("+ Update [uv] beta-fresh-latest v1.0.0 -> v1.0.5"));
     assert!(out.contains("~ Delayed [uv] gamma-delayed v2.0.0 -> v2.0.0"));
-    assert!(out.contains("- Skipped [uv] pinned-pkg v3.0.0 -> v3.0.0 (pinned)"));
+    assert!(out.contains("- Skipped [uv] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
     assert!(out.contains("! Error [uv] omega-error v0.1.0 -> v0.1.0"));
 
     let err = stderr(&output);
@@ -229,7 +229,7 @@ fn deterministic_apply_selective_path_runs_updates_only_for_eligible_unpinned_it
     assert!(out.contains("+ Update [uv] alpha-ready v1.0.0 -> v1.2.0"));
     assert!(out.contains("+ Update [uv] beta-fresh-latest v1.0.0 -> v1.0.5"));
     assert!(out.contains("~ Delayed [uv] gamma-delayed v2.0.0 -> v2.0.0"));
-    assert!(out.contains("- Skipped [uv] pinned-pkg v3.0.0 -> v3.0.0 (pinned)"));
+    assert!(out.contains("- Skipped [uv] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
 
     let err = stderr(&output);
     assert!(err.contains("$ uv tool install --upgrade --exclude-newer 7d alpha-ready"));
@@ -261,21 +261,16 @@ fn deterministic_scan_reports_current_state_without_network_age_lookup() {
 #[test]
 #[ignore = "requires real uv + python + network; run via scripts/test-hybrid.sh"]
 fn hybrid_apply_uses_real_pypi_resolution_with_fake_installed_state() {
-    if env::var("UPNOW_RUN_HYBRID_TESTS").as_deref() != Ok("1") {
-        eprintln!("skipping hybrid test; set UPNOW_RUN_HYBRID_TESTS=1 to enable");
+    if skip_hybrid_test_if_disabled() {
         return;
     }
 
     let sandbox = Sandbox::new(HYBRID_UV_SCENARIO_DIR, HYBRID_CONFIG, &HYBRID_TOOLS);
-    let Some(real_uv_path) = sandbox.find_real_uv() else {
-        panic!("hybrid test requires real uv in PATH");
-    };
-    let Some(real_python_path) = sandbox.find_real_python() else {
-        panic!("hybrid test requires real python in PATH");
-    };
+    let real_uv_path = require_real_executable(sandbox.find_real_uv(), "uv");
+    let real_python_path = require_real_executable(sandbox.find_real_python(), "python");
 
-    let real_uv_path = real_uv_path.to_string_lossy().into_owned();
-    let real_python_path = real_python_path.to_string_lossy().into_owned();
+    let real_uv_path = path_to_string(&real_uv_path);
+    let real_python_path = path_to_string(&real_python_path);
     let output = sandbox.run_upnow_with_env(
         &[
             "apply",
@@ -301,7 +296,7 @@ fn hybrid_apply_uses_real_pypi_resolution_with_fake_installed_state() {
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("- Skipped [uv] ruff v0.1.0 -> v0.1.0 (pinned)"),
+        out.contains("- Skipped [uv] ruff v0.1.0 -> v") && out.contains("(pinned)"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(

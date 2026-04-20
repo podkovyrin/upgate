@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -11,8 +10,8 @@ use common::http::{
     BackgroundTcpServer, read_http_request_head, run_fake_http_server, write_http_response_text,
 };
 use common::{
-    SandboxEnv, assert_success, fixture_path, scenario_path, spawn_upnow, stderr, stdout,
-    write_executable,
+    SandboxEnv, assert_success, command_output, fixture_path, scenario_path,
+    skip_hybrid_test_if_disabled, spawn_upnow, stderr, stdout, write_executable,
 };
 
 const DETERMINISTIC_SCENARIO: &str = "tests/scenarios/gem/deterministic";
@@ -97,7 +96,7 @@ impl Sandbox {
         cmd.args(args);
         self.apply_base_env(&mut cmd);
 
-        cmd.output().expect("failed to run fake gem")
+        command_output(&mut cmd, "fake gem")
     }
 
     fn run_fake_ruby(&self, args: &[&str]) -> Output {
@@ -105,7 +104,7 @@ impl Sandbox {
         cmd.args(args);
         self.apply_base_env(&mut cmd);
 
-        cmd.output().expect("failed to run fake ruby")
+        command_output(&mut cmd, "fake ruby")
     }
 
     fn apply_base_env(&self, cmd: &mut Command) {
@@ -167,7 +166,7 @@ fn deterministic_plan_covers_update_delayed_pinned_and_error_states() {
     let out = stdout(&output);
     assert!(out.contains("+ Update [gem] alpha-ready v1.0.0 -> v1.2.0"));
     assert!(out.contains("~ Delayed [gem] gamma-delayed v2.0.0 -> v2.1.0"));
-    assert!(out.contains("- Skipped [gem] pinned-pkg v3.0.0 -> v3.0.0 (pinned)"));
+    assert!(out.contains("- Skipped [gem] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
     assert!(out.contains("! Error [gem] omega-error v0.1.0 -> v0.1.0"));
     assert!(!out.contains("default-skip"));
 
@@ -194,7 +193,7 @@ fn deterministic_apply_selective_path_runs_updates_only_for_eligible_unpinned_it
     let out = stdout(&output);
     assert!(out.contains("+ Update [gem] alpha-ready v1.0.0 -> v1.2.0"));
     assert!(out.contains("~ Delayed [gem] gamma-delayed v2.0.0 -> v2.1.0"));
-    assert!(out.contains("- Skipped [gem] pinned-pkg v3.0.0 -> v3.0.0 (pinned)"));
+    assert!(out.contains("- Skipped [gem] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
 
     let err = stderr(&output);
     assert!(err.contains("$ gem install alpha-ready -v 1.2.0"));
@@ -217,7 +216,7 @@ fn deterministic_scan_reports_current_state_and_missing_age_fallback() {
         "scan stdout:\n{out}\nscan stderr:\n{err}"
     );
     assert!(
-        out.contains("= Current [gem] scan-noage v5.0.0 (source: rubygems)"),
+        out.contains("= Current [gem] scan-noage v5.0.0"),
         "scan stdout:\n{out}\nscan stderr:\n{err}"
     );
     assert!(!out.contains("default-skip"));
@@ -226,8 +225,7 @@ fn deterministic_scan_reports_current_state_and_missing_age_fallback() {
 #[test]
 #[ignore = "requires network + real RubyGems; run via scripts/test-hybrid.sh"]
 fn hybrid_apply_uses_real_rubygems_data_with_fake_installed_state() {
-    if env::var("UPNOW_RUN_HYBRID_TESTS").as_deref() != Ok("1") {
-        eprintln!("skipping hybrid test; set UPNOW_RUN_HYBRID_TESTS=1 to enable");
+    if skip_hybrid_test_if_disabled() {
         return;
     }
 
@@ -244,7 +242,11 @@ fn hybrid_apply_uses_real_rubygems_data_with_fake_installed_state() {
 
     let out = stdout(&output);
     assert!(out.contains("+ Update [gem] rake v1.0.0 -> v"));
-    assert!(out.contains("- Skipped [gem] bundler v1.0.0 -> v1.0.0 (pinned)"));
+    assert!(
+        out.contains("- Skipped [gem] bundler v1.0.0 -> v") && out.contains("(pinned)"),
+        "hybrid stdout:\n{out}\nhybrid stderr:\n{}",
+        stderr(&output)
+    );
     assert!(!out.contains(" json v9999.0.0 -> v"));
     assert!(out.contains("! Error [gem] zzzz-upnow-no-such-gem-000000000000 v1.0.0 -> v1.0.0"));
 

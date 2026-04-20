@@ -1,16 +1,21 @@
-mod cli;
+pub mod cli;
 
 use anyhow::{Error, Result};
 use clap::Parser;
 
 use crate::config::UpnowConfig;
 use crate::interactive;
-use crate::manager::{
-    ManagerPlugin, RunMode, all_plugins, build_ctx_for_plugin, resolve_selected_plugins,
+use crate::managers::{
+    ManagerCtx, ManagerPlugin, RunMode, all_plugins, build_ctx_for_plugin, resolve_selected_plugins,
 };
 use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
-use crate::ui::{finish_manager_spinner, init_output_theme, start_manager_spinner};
+use crate::ui::{
+    finish_manager_spinner, init_output_theme, start_manager_spinner, with_spinner_suspended,
+};
 use crate::util::logging::{LoggingOptions, init_logging, session_dir, set_current_manager};
+use crate::util::process::{
+    self, CommandFailedError, MUTATION_ENABLE_NOTICE, MUTATION_SKIP_NOTICE,
+};
 
 pub fn run() -> i32 {
     let cli = cli::Cli::parse();
@@ -42,7 +47,7 @@ fn init_command_logging(cli: &cli::Cli) -> Result<()> {
 }
 
 fn run_with_cli(cli: &cli::Cli) -> Result<i32> {
-    crate::util::process::set_debug_force_skip_mutating_commands(cli.debug_no_mutate());
+    process::set_debug_force_skip_mutating_commands(cli.debug_no_mutate());
 
     let run_mode = cli.run_mode();
     validate_interactive_mode(cli.interactive, run_mode)?;
@@ -60,27 +65,21 @@ fn run_with_cli(cli: &cli::Cli) -> Result<i32> {
 }
 
 fn maybe_emit_apply_mutation_mode_notice(run_mode: RunMode) -> Result<()> {
-    if !matches!(run_mode, RunMode::Apply) {
+    if !run_mode.is_apply() {
         return Ok(());
     }
 
-    crate::util::process::validate_required_mutation_mode()?;
+    process::validate_required_mutation_mode()?;
 
-    if !crate::util::process::mutation_mode_notice_enabled() {
+    if !process::mutation_mode_notice_enabled() {
         return Ok(());
     }
 
-    crate::ui::with_spinner_suspended(|| {
-        if crate::util::process::mutating_commands_are_skipped() {
-            eprintln!(
-                "note: apply runs in safe mode: {}",
-                crate::util::process::MUTATION_SKIP_NOTICE
-            );
+    with_spinner_suspended(|| {
+        if process::mutating_commands_are_skipped() {
+            eprintln!("note: apply runs in safe mode: {MUTATION_SKIP_NOTICE}");
         } else {
-            eprintln!(
-                "warning: apply runs with {}",
-                crate::util::process::MUTATION_ENABLE_NOTICE
-            );
+            eprintln!("warning: apply runs with {MUTATION_ENABLE_NOTICE}");
         }
     });
 
@@ -92,7 +91,7 @@ fn validate_interactive_mode(interactive: bool, run_mode: RunMode) -> Result<()>
         return Ok(());
     }
 
-    if !matches!(run_mode, RunMode::Apply) {
+    if !run_mode.is_apply() {
         anyhow::bail!("--interactive is only supported with 'apply'");
     }
 
@@ -135,11 +134,7 @@ fn run_selected_plugins(
             }
         };
 
-        if !manager_ctx
-            .policy
-            .mode
-            .allows_run(matches!(run_mode, RunMode::Apply))
-        {
+        if !manager_ctx.policy.mode.allows_run(run_mode.is_apply()) {
             continue;
         }
 
@@ -153,7 +148,7 @@ fn run_selected_plugins(
         }
 
         if let Some(command) = plugin.probe_command()
-            && !crate::util::process::command_exists(&command)
+            && !process::command_exists(&command)
         {
             emit_manager_preflight_skip(
                 plugin.id(),
@@ -167,18 +162,8 @@ fn run_selected_plugins(
         let run_result = plugin.run(&manager_ctx);
         finish_manager_spinner(spinner);
 
-        if cli.interactive
-            && matches!(run_mode, RunMode::Apply)
-            && let Some(new_pins) = manager_ctx.take_pending_pins()
-        {
-            config.set_manager_pins(plugin.id(), new_pins);
-            if let Err(err) = config.persist_manager_pins(plugin.id()) {
-                eprintln!(
-                    "error: failed to persist interactive pin updates after manager '{}': {err}",
-                    plugin.id()
-                );
-                had_manager_failure = true;
-            }
+        if cli.interactive && run_mode.is_apply() {
+            had_manager_failure |= persist_interactive_pins(config, plugin.id(), &manager_ctx);
         }
 
         if let Err(err) = run_result {
@@ -198,8 +183,8 @@ fn run_selected_plugins(
 fn is_signal_termination(err: &Error) -> bool {
     err.chain().any(|cause| {
         cause
-            .downcast_ref::<crate::util::process::CommandFailedError>()
-            .is_some_and(crate::util::process::CommandFailedError::was_signaled)
+            .downcast_ref::<CommandFailedError>()
+            .is_some_and(CommandFailedError::was_signaled)
             || cause
                 .downcast_ref::<interactive::InteractiveCancelled>()
                 .is_some()
@@ -216,14 +201,26 @@ fn emit_manager_preflight_skip(
     reason_code: ReasonCode,
     reason_detail: impl Into<String>,
 ) {
-    let outcome = ItemOutcome::skipped(
-        manager,
-        "*",
-        "*",
-        "*",
-        manager,
-        reason_code,
-        reason_detail,
-    );
+    let outcome = ItemOutcome::skipped(manager, "*", "*", "*", reason_code, reason_detail);
     emit_text_outcome(&outcome);
+}
+
+fn persist_interactive_pins(
+    config: &mut UpnowConfig,
+    manager_id: &'static str,
+    manager_ctx: &ManagerCtx,
+) -> bool {
+    let Some(new_pins) = manager_ctx.take_pending_pins() else {
+        return false;
+    };
+
+    config.set_manager_pins(manager_id, new_pins);
+    if let Err(err) = config.persist_manager_pins(manager_id) {
+        eprintln!(
+            "error: failed to persist interactive pin updates after manager '{manager_id}': {err}"
+        );
+        return true;
+    }
+
+    false
 }

@@ -1,101 +1,99 @@
-use super::{ItemOutcome, OutcomeStatus, ReasonCode};
-use crate::ui::{output_theme, with_spinner_suspended};
 use owo_colors::OwoColorize;
+
+use super::ReasonCode;
+use super::item::ItemOutcome;
+use super::types::OutcomeStatus;
+use crate::ui::{OutputTheme, output_theme, with_spinner_suspended};
+use crate::util::text::strip_v_prefix;
 
 impl ItemOutcome {
     pub fn to_text_line(&self) -> Option<String> {
         let theme = output_theme();
 
-        if self.status == OutcomeStatus::Skipped {
-            if self.reason_code == Some(ReasonCode::NoChange) {
-                return None;
-            }
-
-            if !theme.verbose && self.reason_code == Some(ReasonCode::MissingMetadata) {
-                return None;
-            }
+        if should_skip_outcome_line(self, theme) {
+            return None;
         }
 
-        let manager_rendered = if theme.color() {
-            format!("[{}]", self.manager.bold())
-        } else {
-            format!("[{}]", self.manager)
-        };
-
-        let name_rendered = if theme.color() {
-            self.name.bold().to_string()
-        } else {
-            self.name.clone()
-        };
-
-        let from = version_label(&self.from_version);
-        let mut line = if self.status == OutcomeStatus::Current {
-            format!(
-                "{} {} {} {}",
-                status_prefix(self.status, theme.color()),
-                manager_rendered,
-                name_rendered,
-                from
-            )
-        } else {
-            let arrow = if theme.unicode() { "→" } else { "->" };
-            let to = version_label(&self.to_version);
-            let pinned_skip = self.status == OutcomeStatus::Skipped
-                && self.reason_code == Some(ReasonCode::Pinned);
-            let from_rendered = render_from_version(&from, theme.color(), pinned_skip);
-            let to_rendered = render_to_version(&from, &to, theme.color(), !pinned_skip);
-            format!(
-                "{} {} {} {} {arrow} {}",
-                status_prefix(self.status, theme.color()),
-                manager_rendered,
-                name_rendered,
-                from_rendered,
-                to_rendered
-            )
-        };
-
+        let mut line = base_outcome_line(self, theme);
         append_status_note(&mut line, self, theme);
-
-        if theme.verbose {
-            if self.status == OutcomeStatus::Current
-                && let Some(age) = self.scan_age.as_deref()
-            {
-                line.push(' ');
-                line.push_str(&current_age_segment(age, self.scan_is_old, theme.color()));
-            }
-
-            line.push(' ');
-            line.push_str(&meta_segment(
-                &format!("(source: {})", self.source),
-                theme.color(),
-            ));
-        }
+        append_current_age_note(&mut line, self, theme);
 
         Some(line)
     }
 }
 
-fn append_status_note(line: &mut String, item: &ItemOutcome, theme: crate::ui::OutputTheme) {
+fn should_skip_outcome_line(item: &ItemOutcome, theme: OutputTheme) -> bool {
+    if item.status != OutcomeStatus::Skipped {
+        return false;
+    }
+
+    item.reason_code == Some(ReasonCode::NoChange)
+        || (!theme.verbose && item.reason_code == Some(ReasonCode::MissingMetadata))
+}
+
+fn base_outcome_line(item: &ItemOutcome, theme: OutputTheme) -> String {
+    let manager_rendered = render_manager(item.manager, theme.color());
+    let name_rendered = render_name(&item.name, theme.color());
+    let from = version_label(&item.from_version);
+
+    if item.status == OutcomeStatus::Current {
+        return format!(
+            "{} {} {} {}",
+            status_prefix(item.status, theme.color()),
+            manager_rendered,
+            name_rendered,
+            from
+        );
+    }
+
+    let arrow = if theme.unicode() { "→" } else { "->" };
+    let to = version_label(&item.to_version);
+    let pinned_skip =
+        item.status == OutcomeStatus::Skipped && item.reason_code == Some(ReasonCode::Pinned);
+    let from_rendered = render_from_version(&from, theme.color(), pinned_skip);
+    let to_rendered = render_to_version(&from, &to, theme.color(), !pinned_skip);
+
+    format!(
+        "{} {} {} {} {arrow} {}",
+        status_prefix(item.status, theme.color()),
+        manager_rendered,
+        name_rendered,
+        from_rendered,
+        to_rendered
+    )
+}
+
+fn append_current_age_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme) {
+    if !theme.verbose || item.status != OutcomeStatus::Current {
+        return;
+    }
+
+    if let Some(age) = item.scan_age.as_deref() {
+        line.push(' ');
+        line.push_str(&current_age_segment(age, item.scan_is_old, theme.color()));
+    }
+}
+
+fn render_manager(manager: &str, color: bool) -> String {
+    if color {
+        format!("[{}]", manager.bold())
+    } else {
+        format!("[{manager}]")
+    }
+}
+
+fn render_name(name: &str, color: bool) -> String {
+    if color {
+        name.bold().to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+fn append_status_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme) {
     match item.status {
         OutcomeStatus::Current => {}
-        OutcomeStatus::Update => {
-            if theme.verbose
-                && let (Some(latest), Some(latest_age), Some(required_age)) = (
-                    item.latest_version.as_deref(),
-                    item.latest_age.as_deref(),
-                    item.required_age.as_deref(),
-                )
-            {
-                let latest_note = format!(
-                    "(latest {} delayed: {} < {})",
-                    version_label(latest),
-                    latest_age,
-                    required_age
-                );
-                line.push(' ');
-                line.push_str(&meta_segment(&latest_note, theme.color()));
-            }
-        }
+        OutcomeStatus::Update => append_update_note(line, item, theme),
         OutcomeStatus::Delayed => {
             let note = delayed_note(item);
             line.push(' ');
@@ -107,6 +105,27 @@ fn append_status_note(line: &mut String, item: &ItemOutcome, theme: crate::ui::O
                 line.push_str(&note_segment(&format!("({reason})"), theme.color()));
             }
         }
+    }
+}
+
+fn append_update_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme) {
+    if !theme.verbose {
+        return;
+    }
+
+    if let (Some(latest), Some(latest_age), Some(required_age)) = (
+        item.latest_version.as_deref(),
+        item.latest_age.as_deref(),
+        item.required_age.as_deref(),
+    ) {
+        let latest_note = format!(
+            "(latest {} delayed: {} < {})",
+            version_label(latest),
+            latest_age,
+            required_age
+        );
+        line.push(' ');
+        line.push_str(&meta_segment(&latest_note, theme.color()));
     }
 }
 
@@ -140,8 +159,8 @@ pub fn render_to_version(from: &str, to: &str, color: bool, emphasize: bool) -> 
         return to.to_string();
     }
 
-    let from_core = from.strip_prefix('v').unwrap_or(from);
-    let to_core = to.strip_prefix('v').unwrap_or(to);
+    let from_core = strip_v_prefix(from);
+    let to_core = strip_v_prefix(to);
 
     let from_parts: Vec<&str> = from_core.split('.').collect();
     let to_parts: Vec<&str> = to_core.split('.').collect();
@@ -282,7 +301,7 @@ pub fn version_label(version: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{first_changed_part_index, render_from_version, render_to_version};
+    use super::*;
 
     #[test]
     fn changed_part_index_none_when_equal() {

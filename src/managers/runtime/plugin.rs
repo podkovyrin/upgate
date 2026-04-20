@@ -1,6 +1,7 @@
+use anyhow::Result;
+
 use super::context::ManagerCtx;
 use crate::config::ManagerMode;
-use anyhow::Result;
 
 pub trait ManagerPlugin: Sync {
     fn id(&self) -> &'static str;

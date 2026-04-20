@@ -1,9 +1,11 @@
-use crate::util::time::parse_rfc3339_unix;
-use anyhow::{Context, Result};
-use pep440_rs::Version as Pep440Version;
 use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::time::Duration;
+
+use anyhow::{Context, Result};
+use pep440_rs::Version as Pep440Version;
+
+use crate::util::time::parse_rfc3339_unix;
 
 #[derive(Debug, Clone)]
 pub struct Pep440Timestamp {

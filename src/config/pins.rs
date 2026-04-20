@@ -1,9 +1,12 @@
-use super::model::UpnowConfig;
-use super::path::config_path;
-use anyhow::{Context, Result, bail};
 use std::collections::BTreeSet;
 use std::fs;
+
+use anyhow::{Context, Result, bail};
 use toml_edit::{Array, DocumentMut, Item, Table, Value};
+
+use super::model::UpnowConfig;
+use super::path::config_path;
+use crate::util::text::is_blank;
 
 impl UpnowConfig {
     pub fn set_manager_pins(&mut self, manager_id: &str, pins: BTreeSet<String>) {
@@ -25,7 +28,7 @@ impl UpnowConfig {
         let mut doc = if path.exists() {
             let raw = fs::read_to_string(&path)
                 .with_context(|| format!("failed to read config file {}", path.display()))?;
-            if raw.trim().is_empty() {
+            if is_blank(&raw) {
                 DocumentMut::new()
             } else {
                 raw.parse::<DocumentMut>()

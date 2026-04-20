@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -6,7 +5,8 @@ use std::process::{Command, Output};
 mod common;
 
 use common::{
-    SandboxEnv, assert_success, scenario_path, spawn_upnow, stderr, stdout, write_executable,
+    SandboxEnv, assert_success, command_output, path_to_string, require_real_executable,
+    scenario_path, skip_hybrid_test_if_disabled, spawn_upnow, stderr, stdout, write_executable,
 };
 
 const DETERMINISTIC_SCENARIO: &str = "tests/scenarios/bun/deterministic";
@@ -72,7 +72,7 @@ impl Sandbox {
         cmd.args(args);
         self.apply_base_env(&mut cmd);
 
-        cmd.output().expect("failed to run fake bun")
+        command_output(&mut cmd, "fake bun")
     }
 
     fn find_real_bun(&self) -> Option<PathBuf> {
@@ -150,7 +150,7 @@ fn deterministic_plan_covers_ready_delayed_pinned_and_error_states() {
     assert!(out.contains("+ Update [bun] alpha-ready v1.0.0 -> v1.2.0"));
     assert!(out.contains("+ Update [bun] beta-fresh-latest v1.0.0 -> v1.0.5"));
     assert!(out.contains("~ Delayed [bun] gamma-delayed v2.0.0 -> v2.1.0"));
-    assert!(out.contains("- Skipped [bun] pinned-pkg v3.0.0 -> v3.0.0 (pinned)"));
+    assert!(out.contains("- Skipped [bun] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
     assert!(out.contains("! Error [bun] omega-error v0.1.0 -> v0.1.0"));
 
     let err = stderr(&output);
@@ -169,7 +169,7 @@ fn deterministic_apply_selective_path_runs_only_for_eligible_unpinned_packages()
     assert!(out.contains("+ Update [bun] alpha-ready v1.0.0 -> v1.2.0"));
     assert!(out.contains("+ Update [bun] beta-fresh-latest v1.0.0 -> v1.0.5"));
     assert!(out.contains("~ Delayed [bun] gamma-delayed v2.0.0 -> v2.1.0"));
-    assert!(out.contains("- Skipped [bun] pinned-pkg v3.0.0 -> v3.0.0 (pinned)"));
+    assert!(out.contains("- Skipped [bun] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
 
     let err = stderr(&output);
     assert!(err.contains("$ bun update -g alpha-ready@1.2.0 --minimum-release-age 604800"));
@@ -219,7 +219,7 @@ fn deterministic_scan_uses_fake_installed_state_and_reports_release_age_metadata
         "scan stdout:\n{out}\nscan stderr:\n{err}"
     );
     assert!(
-        out.contains("= Current [bun] scan-noage v5.0.0 (source: bun)"),
+        out.contains("= Current [bun] scan-noage v5.0.0"),
         "scan stdout:\n{out}\nscan stderr:\n{err}"
     );
 }
@@ -227,17 +227,14 @@ fn deterministic_scan_uses_fake_installed_state_and_reports_release_age_metadata
 #[test]
 #[ignore = "requires real bun + network; run via scripts/test-hybrid.sh"]
 fn hybrid_apply_uses_real_registry_time_data_with_fake_installed_state() {
-    if env::var("UPNOW_RUN_HYBRID_TESTS").as_deref() != Ok("1") {
-        eprintln!("skipping hybrid test; set UPNOW_RUN_HYBRID_TESTS=1 to enable");
+    if skip_hybrid_test_if_disabled() {
         return;
     }
 
     let sandbox = Sandbox::new(HYBRID_SCENARIO, HYBRID_CONFIG);
-    let Some(real_bun_path) = sandbox.find_real_bun() else {
-        panic!("hybrid test requires real bun in PATH");
-    };
+    let real_bun_path = require_real_executable(sandbox.find_real_bun(), "bun");
 
-    let real_bun_path = real_bun_path.to_string_lossy().into_owned();
+    let real_bun_path = path_to_string(&real_bun_path);
     let output = sandbox.run_upnow_with_env(
         &["apply", "--plain", "--managers", "bun", "--show-commands"],
         &[

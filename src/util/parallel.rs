@@ -26,9 +26,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::run_indexed_parallel;
     use std::thread;
     use std::time::Duration;
+
+    use super::run_indexed_parallel;
 
     #[test]
     fn run_indexed_parallel_preserves_input_order() {

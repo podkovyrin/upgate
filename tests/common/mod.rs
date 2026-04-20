@@ -2,15 +2,15 @@
 
 pub mod http;
 
-use std::env;
-use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{env, fs};
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+pub const HYBRID_OPT_IN_ENV: &str = "UPNOW_RUN_HYBRID_TESTS";
 
 pub fn unique_temp_dir(prefix: &str) -> PathBuf {
     static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -146,7 +146,34 @@ where
         cmd.env(key, value);
     }
 
-    cmd.output().expect("failed to run upnow")
+    command_output(&mut cmd, "upnow")
+}
+
+pub fn command_output(command: &mut Command, label: &str) -> Output {
+    command
+        .output()
+        .unwrap_or_else(|err| panic!("failed to run {label}: {err}"))
+}
+
+pub fn hybrid_tests_enabled() -> bool {
+    env::var(HYBRID_OPT_IN_ENV).as_deref() == Ok("1")
+}
+
+pub fn skip_hybrid_test_if_disabled() -> bool {
+    if hybrid_tests_enabled() {
+        return false;
+    }
+
+    eprintln!("skipping hybrid test; set {HYBRID_OPT_IN_ENV}=1 to enable");
+    true
+}
+
+pub fn require_real_executable(path: Option<PathBuf>, name: &str) -> PathBuf {
+    path.unwrap_or_else(|| panic!("hybrid test requires real {name} in PATH"))
+}
+
+pub fn path_to_string(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 pub fn stdout(output: &Output) -> String {

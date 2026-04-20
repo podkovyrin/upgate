@@ -1,13 +1,19 @@
-use crate::util::time::parse_duration;
-use anyhow::{Context, Result, bail};
-use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
 
+use anyhow::{Context, Result, bail};
+use serde::Deserialize;
+
+use crate::util::time::parse_duration;
+
 pub const PIN_ALL: &str = "*";
 pub(super) const DEFAULT_SCAN_OLD_AGE_THRESHOLD: &str = "365d";
+
+pub fn is_pinned(name: &str, pinned: &BTreeSet<String>) -> bool {
+    pinned.contains(name) || pinned.contains(PIN_ALL)
+}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]

@@ -1,6 +1,7 @@
-use crate::config::ManagerPolicy;
 use std::collections::BTreeSet;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
+
+use crate::config::ManagerPolicy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
@@ -16,6 +17,18 @@ impl RunMode {
 
     pub const fn is_scan(self) -> bool {
         matches!(self, Self::Scan)
+    }
+
+    pub const fn is_apply(self) -> bool {
+        matches!(self, Self::Apply)
+    }
+
+    pub const fn action_label(self) -> &'static str {
+        match self {
+            Self::Plan => "Planning",
+            Self::Apply => "Applying",
+            Self::Scan => "Scanning",
+        }
     }
 }
 
@@ -55,25 +68,24 @@ impl ManagerCtx {
     }
 
     pub const fn is_interactive_apply(&self) -> bool {
-        self.interactive && matches!(self.run_mode, RunMode::Apply)
+        self.interactive && self.run_mode.is_apply()
     }
 
-    pub fn record_pending_pins_if_changed(&self, pins: BTreeSet<String>) {
-        if pins == self.policy.pinned {
+    pub fn record_pending_pins_if_changed(&self, pins: &BTreeSet<String>) {
+        if pins == &self.policy.pinned {
             return;
         }
 
-        let mut slot = self
-            .pending_pins
-            .lock()
-            .expect("pending_pins mutex poisoned");
-        *slot = Some(pins);
+        *self.lock_pending_pins() = Some(pins.clone());
     }
 
     pub fn take_pending_pins(&self) -> Option<BTreeSet<String>> {
+        self.lock_pending_pins().take()
+    }
+
+    fn lock_pending_pins(&self) -> MutexGuard<'_, Option<BTreeSet<String>>> {
         self.pending_pins
             .lock()
-            .expect("pending_pins mutex poisoned")
-            .take()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }

@@ -1,21 +1,20 @@
-use crate::config::PIN_ALL;
-use crate::manager::{ManagerCtx, ManagerPlugin};
-use crate::managers::common::{
-    PlannedUpdate, emit_manager_level_error, emit_scan_current, run_per_item_apply_flow,
-};
-use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
-use crate::ui::output_theme;
-use crate::util::http::{HTTP_TIMEOUT_SECS, HTTP_USER_AGENT};
-use crate::util::process::{CmdStatus, run_cmd};
-use crate::util::time::human_age;
-use crate::util::time::now_unix_secs;
+use std::collections::{BTreeSet, HashMap};
+use std::time::Duration;
+
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
 use serde::Deserialize;
-use std::collections::{BTreeSet, HashMap};
-use std::time::Duration;
+
+use crate::config::is_pinned;
+#[allow(clippy::wildcard_imports)]
+use crate::managers::*;
+use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
+use crate::ui::output_theme;
+use crate::util::http::{HTTP_TIMEOUT_SECS, HTTP_USER_AGENT};
+use crate::util::process::{CmdStatus, run_cmd};
+use crate::util::time::{human_age, now_unix_secs};
 
 const BREW_MAX_PARALLEL_CHECKS_MIN: usize = 1;
 const BREW_API_FALLBACK_MAX_PARALLEL_CHECKS: usize = 4;
@@ -42,13 +41,13 @@ impl ManagerPlugin for BrewPlugin {
 
 pub static PLUGIN: BrewPlugin = BrewPlugin;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct OutdatedRoot {
     formulae: Vec<OutdatedFormula>,
     casks: Vec<OutdatedCask>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct OutdatedFormula {
     name: String,
     installed_versions: Vec<String>,
@@ -57,7 +56,7 @@ struct OutdatedFormula {
     _pinned_version: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct OutdatedCask {
     name: String,
     installed_versions: Vec<String>,
@@ -130,38 +129,14 @@ struct TapMeta {
     branch: Option<String>,
 }
 
-#[derive(Clone, Copy)]
-enum DataSource {
-    Git,
-    Api,
-    None,
-}
-
-impl DataSource {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Git => "git",
-            Self::Api => "api",
-            Self::None => "n/a",
-        }
-    }
-}
-
+#[derive(Clone)]
 enum PlanAction {
-    Upgrade {
-        source: DataSource,
-    },
-    Delayed {
-        age: String,
-        required: String,
-        source: DataSource,
-    },
-    Skipped {
-        reason: String,
-        source: DataSource,
-    },
+    Upgrade,
+    Delayed { age: String, required: String },
+    Skipped { reason: String },
 }
 
+#[derive(Clone)]
 struct PlanItem {
     name: String,
     installed: String,
@@ -183,6 +158,11 @@ struct ScanItem {
     name: String,
     version: String,
     tap_and_source: Option<(Option<String>, Option<String>)>,
+}
+
+struct BrewCollected {
+    plan: Vec<PlanItem>,
+    upgradable: Vec<PlannedUpdate>,
 }
 
 #[derive(Clone)]
@@ -220,103 +200,95 @@ struct GitHubCommitPerson {
 }
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
-    if ctx.is_scan() {
-        return scan(ctx);
-    }
+    run_manager_pipeline(ctx, scan, run_plan_apply)
+}
 
-    let min_age = ctx.policy.min_release_age.duration();
-
+fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
     maybe_refresh_brew_metadata(ctx.policy.no_update);
 
-    let outdated: OutdatedRoot =
-        match run_cmd("brew", ["outdated", "--json=v2"], CmdStatus::Success)
-            .output()
-            .and_then(|output| output.json())
-        {
-            Ok(outdated) => outdated,
-            Err(err) => {
-                emit_manager_error(format!("failed to read brew outdated state: {err}"));
-                return Ok(());
-            }
-        };
-
-    if outdated.formulae.is_empty() && outdated.casks.is_empty() {
-        return Ok(());
-    }
-
-    let jobs = build_brew_plan_jobs(outdated);
-
-    let tap_meta = match brew_tap_meta() {
-        Ok(tap_meta) => tap_meta,
-        Err(err) => {
-            emit_manager_error(format!("failed to read brew tap metadata: {err}"));
-            HashMap::new()
-        }
-    };
-
-    let now = now_unix_secs()?;
-
-    let github_client = match github_client() {
-        Ok(client) => Some(client),
-        Err(err) => {
-            emit_manager_error(format!("failed to initialize remote lookup client: {err}"));
-            None
-        }
-    };
-
-    let plan = resolve_brew_plan(
-        jobs,
-        &tap_meta,
-        github_client.as_ref(),
-        min_age,
-        now,
-        ctx.max_parallel_checks,
-    )?;
-
-    for item in &plan {
-        if ctx.is_interactive_apply() && matches!(item.action, PlanAction::Upgrade { .. }) {
-            continue;
-        }
-
-        let outcome = if matches!(item.action, PlanAction::Upgrade { .. })
-            && (ctx.policy.pinned.contains(&item.name) || ctx.policy.pinned.contains(PIN_ALL))
-        {
-            ItemOutcome::skipped(
+    run_plan_apply_framework(
+        ctx,
+        PLUGIN.id(),
+        PlanApplyFrameworkPolicy::SOFT_FETCH_STRICT_RESOLVE,
+        || {
+            run_cmd("brew", ["outdated", "--json=v2"], CmdStatus::Success)
+                .output()
+                .and_then(|output| output.json())
+                .context("failed to read brew outdated state")
+        },
+        |outdated: &OutdatedRoot| outdated.formulae.is_empty() && outdated.casks.is_empty(),
+        |outdated, runtime| {
+            let tap_meta = soft_fail_or(
+                brew_tap_meta(),
+                HashMap::new,
                 PLUGIN.id(),
-                item.name.clone(),
-                item.installed.clone(),
-                item.target.clone(),
+                "failed to read brew tap metadata",
+            );
+
+            let github_client = soft_fail(
+                github_client(),
                 PLUGIN.id(),
-                ReasonCode::Pinned,
-                "pinned",
+                "failed to initialize remote lookup client",
+            );
+
+            let jobs = build_brew_plan_jobs(outdated.clone());
+            resolve_brew_plan(
+                jobs,
+                &tap_meta,
+                github_client.as_ref(),
+                runtime.min_age,
+                runtime.now_unix_secs,
+                runtime.max_parallel_checks,
             )
-        } else {
-            item_to_outcome(item)
-        };
-        emit_text_outcome(&outcome);
-    }
+            .context("planning execution failed")
+        },
+        |_outdated, plan, _runtime| {
+            for item in &plan {
+                if ctx.is_interactive_apply() && matches!(item.action, PlanAction::Upgrade) {
+                    continue;
+                }
 
-    let upgradable: Vec<PlannedUpdate> = plan
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, item)| match item.action {
-            PlanAction::Upgrade { .. } => Some(PlannedUpdate {
-                manager: PLUGIN.id(),
-                source: PLUGIN.id(),
-                name: item.name.clone(),
-                current: item.installed.clone(),
-                target: item.target.clone(),
-                delayed_latest: None,
-                apply_spec_base: Some(idx.to_string()),
-            }),
-            PlanAction::Delayed { .. } | PlanAction::Skipped { .. } => None,
-        })
-        .collect();
+                let outcome = if matches!(item.action, PlanAction::Upgrade)
+                    && is_pinned(&item.name, &ctx.policy.pinned)
+                {
+                    ItemOutcome::skipped(
+                        PLUGIN.id(),
+                        item.name.clone(),
+                        item.installed.clone(),
+                        item.target.clone(),
+                        ReasonCode::Pinned,
+                        "pinned",
+                    )
+                } else {
+                    item_to_outcome(item)
+                };
+                emit_text_outcome(&outcome);
+            }
 
-    run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, move |selected| {
-        apply_brew_selected_plan(plan, selected);
-    })?;
-    Ok(())
+            let upgradable: Vec<PlannedUpdate> = plan
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, item)| match item.action {
+                    PlanAction::Upgrade => Some(PlannedUpdate {
+                        manager: PLUGIN.id(),
+                        name: item.name.clone(),
+                        current: item.installed.clone(),
+                        target: item.target.clone(),
+                        delayed_latest: None,
+                        apply_spec_base: Some(idx.to_string()),
+                    }),
+                    PlanAction::Delayed { .. } | PlanAction::Skipped { .. } => None,
+                })
+                .collect();
+
+            Ok(BrewCollected { plan, upgradable })
+        },
+        |ctx, _outdated, collected| {
+            run_per_item_apply_flow(ctx, PLUGIN.id(), collected.upgradable, move |selected| {
+                apply_brew_selected_plan(collected.plan, selected);
+            })
+        },
+    )
 }
 
 fn apply_brew_selected_plan(plan: Vec<PlanItem>, selected: Vec<PlannedUpdate>) {
@@ -330,11 +302,9 @@ fn apply_brew_selected_plan(plan: Vec<PlanItem>, selected: Vec<PlannedUpdate>) {
         .into_iter()
         .enumerate()
         .map(|(idx, mut item)| {
-            if matches!(item.action, PlanAction::Upgrade { .. }) && !selected_indices.contains(&idx)
-            {
+            if matches!(item.action, PlanAction::Upgrade) && !selected_indices.contains(&idx) {
                 item.action = PlanAction::Skipped {
                     reason: "pinned".to_string(),
-                    source: DataSource::None,
                 };
             }
             item
@@ -350,7 +320,7 @@ fn maybe_refresh_brew_metadata(no_update: bool) {
             .mutating()
             .output()
     {
-        emit_manager_error(format!("brew metadata refresh failed: {err}"));
+        emit_manager_level_error_with(PLUGIN.id(), "brew metadata refresh failed", err);
     }
 }
 
@@ -358,16 +328,15 @@ fn build_brew_plan_jobs(outdated: OutdatedRoot) -> Vec<PackageJob> {
     let formula_names: Vec<String> = outdated.formulae.iter().map(|f| f.name.clone()).collect();
     let cask_names: Vec<String> = outdated.casks.iter().map(|c| c.name.clone()).collect();
 
-    let info = match brew_info_for_names(&formula_names, &cask_names) {
-        Ok(info) => info,
-        Err(err) => {
-            emit_manager_error(format!("failed to read brew package metadata: {err}"));
-            InfoRoot {
-                formulae: Vec::new(),
-                casks: Vec::new(),
-            }
-        }
-    };
+    let info = soft_fail_or(
+        brew_info_for_names(&formula_names, &cask_names),
+        || InfoRoot {
+            formulae: Vec::new(),
+            casks: Vec::new(),
+        },
+        PLUGIN.id(),
+        "failed to read brew package metadata",
+    );
 
     let mut formula_info_by_name: HashMap<String, FormulaInfo> = HashMap::new();
     for formula in info.formulae {
@@ -483,15 +452,12 @@ fn resolve_brew_plan(
                             job.branch.as_deref(),
                             &job.source_path,
                         ) {
-                            Ok(ts) => {
-                                action_from_commit_age(min_age, now_unix_secs, ts, DataSource::Api)
-                            }
+                            Ok(ts) => action_from_commit_age(min_age, now_unix_secs, ts),
                             Err(remote_err) => PlanAction::Skipped {
                                 reason: format!(
                                     "failed age check: local git failed ({}); remote lookup failed ({})",
                                     job.local_err, remote_err
                                 ),
-                                source: DataSource::Api,
                             },
                         }
                     } else {
@@ -500,7 +466,6 @@ fn resolve_brew_plan(
                                 "failed age check: local git failed ({}) and remote lookup is unavailable",
                                 job.local_err
                             ),
-                            source: DataSource::None,
                         }
                     };
 
@@ -534,7 +499,7 @@ fn apply_brew_plan(plan: &[PlanItem]) {
         .iter()
         .filter(|i| i.is_formula)
         .filter_map(|i| match i.action {
-            PlanAction::Upgrade { .. } => Some(i.name.clone()),
+            PlanAction::Upgrade => Some(i.name.clone()),
             PlanAction::Delayed { .. } | PlanAction::Skipped { .. } => None,
         })
         .collect();
@@ -543,7 +508,7 @@ fn apply_brew_plan(plan: &[PlanItem]) {
         .iter()
         .filter(|i| !i.is_formula)
         .filter_map(|i| match i.action {
-            PlanAction::Upgrade { .. } => Some(i.name.clone()),
+            PlanAction::Upgrade => Some(i.name.clone()),
             PlanAction::Delayed { .. } | PlanAction::Skipped { .. } => None,
         })
         .collect();
@@ -555,7 +520,11 @@ fn apply_brew_plan(plan: &[PlanItem]) {
             .mutating()
             .output()
         {
-            emit_manager_error(format!("failed to apply brew formula upgrades: {err}"));
+            emit_manager_level_error_with(
+                PLUGIN.id(),
+                "failed to apply brew formula upgrades",
+                err,
+            );
         }
     }
 
@@ -566,18 +535,18 @@ fn apply_brew_plan(plan: &[PlanItem]) {
             .mutating()
             .output()
         {
-            emit_manager_error(format!("failed to apply brew cask upgrades: {err}"));
+            emit_manager_level_error_with(PLUGIN.id(), "failed to apply brew cask upgrades", err);
         }
     }
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {
-    let scan_items = match collect_brew_scan_items() {
-        Ok(items) => items,
-        Err(err) => {
-            emit_manager_error(err.to_string());
-            return Ok(());
-        }
+    let Some(scan_items) = soft_fail(
+        collect_brew_scan_items(),
+        PLUGIN.id(),
+        "failed to collect brew scan items",
+    ) else {
+        return Ok(());
     };
 
     if !output_theme().verbose {
@@ -685,14 +654,7 @@ fn emit_brew_scan_items(
 ) {
     for (idx, item) in scan_items.into_iter().enumerate() {
         let age = age_slots.and_then(|slots| slots.get(idx).copied().flatten());
-        emit_scan_current(
-            PLUGIN.id(),
-            PLUGIN.id(),
-            item.name,
-            item.version,
-            age,
-            old_threshold,
-        );
+        emit_scan_current(PLUGIN.id(), item.name, item.version, age, old_threshold);
     }
 }
 
@@ -745,10 +707,7 @@ fn phase_one_local_check(
             name: job.name,
             installed: job.installed,
             target: job.target,
-            action: PlanAction::Skipped {
-                reason,
-                source: DataSource::None,
-            },
+            action: PlanAction::Skipped { reason },
             is_formula: job.is_formula,
         });
     }
@@ -760,7 +719,6 @@ fn phase_one_local_check(
             target: job.target,
             action: PlanAction::Skipped {
                 reason: "unable to resolve package metadata from brew info".to_string(),
-                source: DataSource::None,
             },
             is_formula: job.is_formula,
         });
@@ -773,7 +731,6 @@ fn phase_one_local_check(
             target: job.target,
             action: PlanAction::Skipped {
                 reason: "missing tap".to_string(),
-                source: DataSource::None,
             },
             is_formula: job.is_formula,
         });
@@ -786,7 +743,6 @@ fn phase_one_local_check(
             target: job.target,
             action: PlanAction::Skipped {
                 reason: "missing ruby_source_path".to_string(),
-                source: DataSource::None,
             },
             is_formula: job.is_formula,
         });
@@ -813,7 +769,6 @@ fn phase_one_local_check(
             target: job.target,
             action: PlanAction::Skipped {
                 reason: format!("tap '{tap}' is not installed locally"),
-                source: DataSource::None,
             },
             is_formula: job.is_formula,
         });
@@ -824,7 +779,7 @@ fn phase_one_local_check(
             name: job.name,
             installed: job.installed,
             target: job.target,
-            action: action_from_commit_age(min_age, now_unix_secs, ts, DataSource::Git),
+            action: action_from_commit_age(min_age, now_unix_secs, ts),
             is_formula: job.is_formula,
         }),
         Err(local_err) => {
@@ -850,7 +805,6 @@ fn phase_one_local_check(
                         reason: format!(
                             "failed age check: local git failed ({local_err}) and no remote fallback available"
                         ),
-                        source: DataSource::None,
                     },
                     is_formula: job.is_formula,
                 })
@@ -861,34 +815,27 @@ fn phase_one_local_check(
 
 fn item_to_outcome(item: &PlanItem) -> ItemOutcome {
     match &item.action {
-        PlanAction::Upgrade { source } => ItemOutcome::update(
+        PlanAction::Upgrade => ItemOutcome::update(
             PLUGIN.id(),
             item.name.clone(),
             item.installed.clone(),
             item.target.clone(),
-            source.as_str(),
         ),
-        PlanAction::Delayed {
-            age,
-            required,
-            source,
-        } => ItemOutcome::delayed_too_fresh(
+        PlanAction::Delayed { age, required } => ItemOutcome::delayed_too_fresh(
             PLUGIN.id(),
             item.name.clone(),
             item.installed.clone(),
             item.target.clone(),
-            source.as_str(),
             age.clone(),
             required.clone(),
         ),
-        PlanAction::Skipped { reason, source } => {
+        PlanAction::Skipped { reason } => {
             if reason.contains("failed age check") {
                 return ItemOutcome::error(
                     PLUGIN.id(),
                     item.name.clone(),
                     item.installed.clone(),
                     item.target.clone(),
-                    source.as_str(),
                     ReasonCode::CommandFailed,
                     reason.clone(),
                 );
@@ -905,7 +852,6 @@ fn item_to_outcome(item: &PlanItem) -> ItemOutcome {
                 item.name.clone(),
                 item.installed.clone(),
                 item.target.clone(),
-                source.as_str(),
                 reason_code,
                 reason.clone(),
             )
@@ -913,25 +859,16 @@ fn item_to_outcome(item: &PlanItem) -> ItemOutcome {
     }
 }
 
-fn action_from_commit_age(
-    min_age: Duration,
-    now_unix_secs: u64,
-    committed_at: u64,
-    source: DataSource,
-) -> PlanAction {
+fn action_from_commit_age(min_age: Duration, now_unix_secs: u64, committed_at: u64) -> PlanAction {
     let age_secs = now_unix_secs.saturating_sub(committed_at);
 
     if age_secs >= min_age.as_secs() {
-        return PlanAction::Upgrade { source };
+        return PlanAction::Upgrade;
     }
 
     let age = human_age(age_secs);
     let required = human_age(min_age.as_secs());
-    PlanAction::Delayed {
-        age,
-        required,
-        source,
-    }
+    PlanAction::Delayed { age, required }
 }
 
 fn git_last_commit_unix_seconds(
@@ -1162,10 +1099,6 @@ fn github_client() -> Result<Client> {
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
         .build()
         .context("failed to build HTTP client")
-}
-
-fn emit_manager_error(detail: impl AsRef<str>) {
-    emit_manager_level_error(PLUGIN.id(), PLUGIN.id(), detail);
 }
 
 #[cfg(test)]

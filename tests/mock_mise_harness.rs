@@ -1,11 +1,11 @@
-use std::env;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
 mod common;
 
 use common::{
-    SandboxEnv, assert_success, scenario_path, spawn_upnow, stderr, stdout, write_executable,
+    SandboxEnv, assert_success, command_output, path_to_string, require_real_executable,
+    scenario_path, skip_hybrid_test_if_disabled, spawn_upnow, stderr, stdout, write_executable,
 };
 
 const MISE_DETERMINISTIC_SCENARIO_DIR: &str = "tests/scenarios/mise/deterministic";
@@ -78,7 +78,7 @@ impl Sandbox {
         cmd.args(args);
         self.apply_base_env(&mut cmd);
 
-        cmd.output().expect("failed to run fake mise")
+        command_output(&mut cmd, "fake mise")
     }
 
     fn run_fake_npm(&self, args: &[&str]) -> Output {
@@ -86,7 +86,7 @@ impl Sandbox {
         cmd.args(args);
         self.apply_base_env(&mut cmd);
 
-        cmd.output().expect("failed to run fake npm")
+        command_output(&mut cmd, "fake npm")
     }
 
     fn find_real_npm(&self) -> Option<PathBuf> {
@@ -145,7 +145,7 @@ fn deterministic_plan_covers_updates_pinned_and_age_error_states() {
     let out = stdout(&output);
     assert!(out.contains("+ Update [mise] npm:alpha-ready v1.0.0 -> v1.2.0"));
     assert!(out.contains("+ Update [mise] npm:beta-fresh-latest v1.0.0 -> v1.0.5"));
-    assert!(out.contains("- Skipped [mise] node v20.0.0 -> v20.0.0 (pinned)"));
+    assert!(out.contains("- Skipped [mise] node v20.0.0 -> v20.1.0 (pinned)"));
     assert!(out.contains("! Error [mise] npm:gamma-error v2.0.0 -> v2.0.0"));
 
     let err = stderr(&output);
@@ -168,7 +168,7 @@ fn deterministic_apply_selective_path_runs_only_for_unpinned_eligible_items() {
     let out = stdout(&output);
     assert!(out.contains("+ Update [mise] npm:alpha-ready v1.0.0 -> v1.2.0"));
     assert!(out.contains("+ Update [mise] npm:beta-fresh-latest v1.0.0 -> v1.0.5"));
-    assert!(out.contains("- Skipped [mise] node v20.0.0 -> v20.0.0 (pinned)"));
+    assert!(out.contains("- Skipped [mise] node v20.0.0 -> v20.1.0 (pinned)"));
 
     let err = stderr(&output);
     assert!(err.contains("$ mise upgrade --before 7d npm:alpha-ready"));
@@ -221,11 +221,11 @@ fn deterministic_scan_uses_installed_state_and_handles_missing_npm_age() {
         "scan stdout:\n{out}\nscan stderr:\n{err}"
     );
     assert!(
-        out.contains("= Current [mise] npm:scan-noage v5.0.0 (source: mise)"),
+        out.contains("= Current [mise] npm:scan-noage v5.0.0"),
         "scan stdout:\n{out}\nscan stderr:\n{err}"
     );
     assert!(
-        out.contains("= Current [mise] node v20.0.0 (source: mise)"),
+        out.contains("= Current [mise] node v20.0.0"),
         "scan stdout:\n{out}\nscan stderr:\n{err}"
     );
 }
@@ -233,8 +233,7 @@ fn deterministic_scan_uses_installed_state_and_handles_missing_npm_age() {
 #[test]
 #[ignore = "requires real npm + network; run via scripts/test-hybrid.sh"]
 fn hybrid_apply_uses_real_npm_time_data_with_fake_mise_state() {
-    if env::var("UPNOW_RUN_HYBRID_TESTS").as_deref() != Ok("1") {
-        eprintln!("skipping hybrid test; set UPNOW_RUN_HYBRID_TESTS=1 to enable");
+    if skip_hybrid_test_if_disabled() {
         return;
     }
 
@@ -243,11 +242,9 @@ fn hybrid_apply_uses_real_npm_time_data_with_fake_mise_state() {
         NPM_HYBRID_SCENARIO_DIR,
         HYBRID_CONFIG,
     );
-    let Some(real_npm_path) = sandbox.find_real_npm() else {
-        panic!("hybrid test requires real npm in PATH");
-    };
+    let real_npm_path = require_real_executable(sandbox.find_real_npm(), "npm");
 
-    let real_npm_path = real_npm_path.to_string_lossy().into_owned();
+    let real_npm_path = path_to_string(&real_npm_path);
     let output = sandbox.run_upnow_with_env(
         &["apply", "--plain", "--managers", "mise", "--show-commands"],
         &[

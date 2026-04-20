@@ -1,8 +1,10 @@
-use crate::util::time::parse_rfc3339_unix;
-use anyhow::{Context, Result};
-use semver::Version;
 use std::collections::BTreeMap;
 use std::time::Duration;
+
+use anyhow::{Context, Result};
+use semver::Version;
+
+use crate::util::time::parse_rfc3339_unix;
 
 #[derive(Debug, Clone)]
 pub struct SemverTimestamp {

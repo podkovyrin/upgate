@@ -1,11 +1,13 @@
+use std::fs;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+
 use super::model::{
     DEFAULT_SCAN_OLD_AGE_THRESHOLD, ManagerMode, ManagerPolicy, ReleaseAge, UpnowConfig,
 };
 use super::path::config_path;
 use crate::util::time::parse_duration;
-use anyhow::{Context, Result};
-use std::fs;
-use std::time::Duration;
 
 impl UpnowConfig {
     pub fn load() -> Result<Self> {

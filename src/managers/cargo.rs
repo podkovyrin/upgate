@@ -1,21 +1,16 @@
-use crate::manager::{ManagerCtx, ManagerPlugin};
-use crate::managers::common::{
-    DelayedLatest, PlanMeta, ResolvedPlanTarget, SemverAgeResolution, SemverTimestamp,
-    emit_manager_level_error, emit_plan_and_collect_upgradable, emit_scan_current,
-    plan_decision_from_resolution, release_age_secs_for_version, resolve_semver_with_min_age,
-    run_per_item_apply_flow, verbose_now_unix_secs,
-};
-use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
-use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::{CmdStatus, run_cmd};
-use crate::util::time::now_unix_secs;
-use crate::util::time::parse_rfc3339_unix;
+use std::collections::{BTreeMap, HashSet};
+use std::time::Duration;
+
 use anyhow::{Context, Result, bail};
 use reqwest::blocking::Client;
 use semver::Version;
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashSet};
-use std::time::Duration;
+
+#[allow(clippy::wildcard_imports)]
+use crate::managers::*;
+use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
+use crate::util::process::{CmdStatus, run_cmd};
+use crate::util::time::parse_rfc3339_unix;
 
 const CARGO_MAX_PARALLEL_CHECKS: usize = 4;
 
@@ -51,94 +46,52 @@ struct CargoInstallMeta {
     no_default_features: bool,
 }
 
-struct CargoPlanItem {
-    name: String,
-    current: String,
-    resolved: Result<CargoResolvedTarget, String>,
-}
+type CargoPlanItem = ResolvedPlanItem<AgeResolvedTarget>;
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
-    if ctx.is_scan() {
-        return scan(ctx);
-    }
+    run_manager_pipeline(ctx, scan, run_plan_apply)
+}
 
-    let min_age = ctx.policy.min_release_age.duration();
-
-    let installed = match cargo_installed_crates() {
-        Ok(installed) => installed,
-        Err(err) => {
-            emit_cargo_manager_error(format!("failed to read installed Cargo tools: {err}"));
-            return Ok(());
-        }
-    };
-
-    if installed.is_empty() {
-        return Ok(());
-    }
-
-    let now = now_unix_secs()?;
-
-    let crates_client = match crate::util::http::default_blocking_client() {
-        Ok(client) => client,
-        Err(err) => {
-            emit_cargo_manager_error(format!("failed to initialize metadata HTTP client: {err}"));
-            return Ok(());
-        }
-    };
-
-    let plan = match resolve_cargo_plan(
-        &installed,
-        &crates_client,
-        now,
-        min_age,
-        ctx.max_parallel_checks,
-    ) {
-        Ok(plan) => plan,
-        Err(err) => {
-            emit_cargo_manager_error(format!("planning execution failed: {err}"));
-            return Ok(());
-        }
-    };
-
-    let upgradable = emit_plan_and_collect_upgradable(
-        plan,
-        |item| {
-            let CargoPlanItem {
-                name,
-                current,
-                resolved,
-            } = item;
-
-            let decision = plan_decision_from_resolution(&current, resolved, min_age);
-
-            (
-                PlanMeta {
-                    manager: PLUGIN.id(),
-                    source: "crates.io",
-                    name,
-                    current,
-                },
-                decision,
+fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
+    run_plan_apply_framework(
+        ctx,
+        PLUGIN.id(),
+        PlanApplyFrameworkPolicy::SOFT_FETCH_SOFT_RESOLVE,
+        || cargo_installed_crates().context("failed to read installed Cargo tools"),
+        BTreeMap::is_empty,
+        |installed, runtime| {
+            resolve_cargo_plan(
+                installed,
+                runtime.now_unix_secs,
+                runtime.min_age,
+                runtime.max_parallel_checks,
             )
+            .context("planning execution failed")
         },
-        ctx.is_interactive_apply(),
-        Some(&ctx.policy.pinned),
-    );
-
-    run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, |selected| {
-        apply_cargo_updates(&installed, selected);
-    })?;
-
-    Ok(())
+        |_installed, plan, runtime| {
+            Ok(collect_upgradable_from_resolved_plan(
+                PLUGIN.id(),
+                plan,
+                runtime.min_age,
+                runtime.suppress_update_outcomes,
+                runtime.pinned,
+            ))
+        },
+        |ctx, installed, upgradable| {
+            run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, |selected| {
+                apply_cargo_updates(installed, selected);
+            })
+        },
+    )
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {
-    let installed = match cargo_installed_crates() {
-        Ok(installed) => installed,
-        Err(err) => {
-            emit_cargo_manager_error(format!("failed to read installed Cargo tools: {err}"));
-            return Ok(());
-        }
+    let Some(installed) = soft_fail(
+        cargo_installed_crates(),
+        PLUGIN.id(),
+        "failed to read installed Cargo tools",
+    ) else {
+        return Ok(());
     };
 
     if installed.is_empty() {
@@ -148,15 +101,11 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
     let now = verbose_now_unix_secs()?;
 
     let crates_client = if now.is_some() {
-        match crate::util::http::default_blocking_client() {
-            Ok(client) => Some(client),
-            Err(err) => {
-                emit_cargo_manager_error(format!(
-                    "failed to initialize metadata HTTP client: {err}"
-                ));
-                None
-            }
-        }
+        soft_fail(
+            crate::util::http::default_blocking_client(),
+            PLUGIN.id(),
+            "failed to initialize metadata HTTP client",
+        )
     } else {
         None
     };
@@ -172,11 +121,18 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
 
 fn resolve_cargo_plan(
     installed: &BTreeMap<String, InstalledCrate>,
-    crates_client: &Client,
     now_unix_secs: u64,
     min_age: Duration,
     max_parallel_checks: usize,
 ) -> Result<Vec<CargoPlanItem>> {
+    let Some(crates_client) = soft_fail(
+        crate::util::http::default_blocking_client(),
+        PLUGIN.id(),
+        "failed to initialize metadata HTTP client",
+    ) else {
+        return Ok(Vec::new());
+    };
+
     let jobs: Vec<(String, String)> = installed
         .iter()
         .map(|(name, entry)| (name.clone(), entry.version.clone()))
@@ -185,7 +141,7 @@ fn resolve_cargo_plan(
     let threads = effective_parallelism(max_parallel_checks, CARGO_MAX_PARALLEL_CHECKS);
     run_indexed_parallel(jobs, threads, PLUGIN.id(), |(name, current)| {
         let resolved = cargo_resolve_target_with_min_age(
-            crates_client,
+            &crates_client,
             &name,
             &current,
             now_unix_secs,
@@ -193,17 +149,13 @@ fn resolve_cargo_plan(
         )
         .map_err(|err| err.to_string());
 
-        CargoPlanItem {
-            name,
-            current,
-            resolved,
-        }
+        CargoPlanItem::new(name, current, resolved)
     })
 }
 
 fn apply_cargo_updates(
     installed: &BTreeMap<String, InstalledCrate>,
-    upgradable: Vec<crate::managers::common::PlannedUpdate>,
+    upgradable: Vec<crate::managers::PlannedUpdate>,
 ) {
     for item in upgradable {
         let name = item.name;
@@ -221,16 +173,7 @@ fn apply_cargo_updates(
             .mutating()
             .output()
         {
-            let outcome = ItemOutcome::error(
-                PLUGIN.id(),
-                name,
-                current,
-                version,
-                "crates.io",
-                ReasonCode::CommandFailed,
-                err.to_string(),
-            );
-            emit_text_outcome(&outcome);
+            emit_apply_error(PLUGIN.id(), name, current, version, err);
         }
     }
 }
@@ -252,7 +195,6 @@ fn emit_cargo_scan_outcomes(
 
         emit_scan_current(
             PLUGIN.id(),
-            "crates.io",
             name.clone(),
             entry.version.clone(),
             age_secs,
@@ -324,13 +266,11 @@ struct CargoInstallLedgerEntry {
 fn cargo_install_tracking_map() -> Result<BTreeMap<String, CargoInstallMeta>> {
     let cargo_home = std::env::var("CARGO_HOME")
         .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(|v| v.trim().to_string())
+        .and_then(|v| crate::util::text::trim_non_empty(&v).map(ToString::to_string))
         .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-                .map(|home| format!("{}/.cargo", home.trim()))
+            std::env::var("HOME").ok().and_then(|home| {
+                crate::util::text::trim_non_empty(&home).map(|home| format!("{home}/.cargo"))
+            })
         })
         .context("CARGO_HOME and HOME are not set")?;
 
@@ -398,34 +338,13 @@ fn apply_cargo_install_meta_args(args: &mut Vec<String>, meta: Option<&CargoInst
     }
 }
 
-struct CargoResolvedTarget {
-    selected_version: Option<String>,
-    latest_version: Option<String>,
-    latest_age_secs: Option<u64>,
-}
-
-impl ResolvedPlanTarget for CargoResolvedTarget {
-    fn selected_version(&self) -> Option<&str> {
-        self.selected_version.as_deref()
-    }
-
-    fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
-        DelayedLatest::from_too_fresh_latest(
-            self.selected_version.as_deref(),
-            self.latest_version.as_deref(),
-            self.latest_age_secs,
-            min_age,
-        )
-    }
-}
-
 fn cargo_resolve_target_with_min_age(
     crates_client: &Client,
     name: &str,
     current: &str,
     now_unix_secs: u64,
     min_age: Duration,
-) -> Result<CargoResolvedTarget> {
+) -> Result<AgeResolvedTarget> {
     let output = run_cmd(
         "cargo",
         ["search", name, "--limit", "1"],
@@ -437,21 +356,13 @@ fn cargo_resolve_target_with_min_age(
 
     let all_versions = crates_io_versions(crates_client, name)?;
 
-    let SemverAgeResolution {
-        selected_version,
-        latest_version,
-        latest_age_secs,
-    } = resolve_semver_with_min_age(current, &all_versions, now_unix_secs, min_age)
+    let resolved = resolve_semver_with_min_age(current, &all_versions, now_unix_secs, min_age)
         .with_context(|| format!("failed to resolve eligible semver target for {name}"))?;
 
     // Keep the parsed search latest in scope to validate semver hygiene and avoid stale data.
     let _ = latest;
 
-    Ok(CargoResolvedTarget {
-        selected_version,
-        latest_version,
-        latest_age_secs,
-    })
+    Ok(resolved.into())
 }
 
 fn parse_cargo_search_latest_version(crate_name: &str, stdout: &str) -> Result<Version> {
@@ -546,15 +457,7 @@ fn crates_io_versions(client: &Client, crate_name: &str) -> Result<Vec<SemverTim
 }
 
 fn crates_io_base_url() -> String {
-    std::env::var("UPNOW_CARGO_CRATES_IO_BASE_URL")
-        .ok()
-        .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "https://crates.io".to_string())
-}
-
-fn emit_cargo_manager_error(detail: impl AsRef<str>) {
-    emit_manager_level_error(PLUGIN.id(), "crates.io", detail);
+    crate::util::http::env_base_url("UPNOW_CARGO_CRATES_IO_BASE_URL", "https://crates.io")
 }
 
 #[cfg(test)]

@@ -1,13 +1,14 @@
+use std::collections::BTreeSet;
+
 use super::choose_items_for_manager;
-use crate::config::PIN_ALL;
-use crate::manager::ManagerCtx;
-use crate::managers::common::PlannedUpdate;
+use crate::config::{PIN_ALL, is_pinned};
+use crate::managers::{ManagerCtx, PlannedUpdate};
 use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 
 pub struct ApplySelection {
     pub selected: Vec<PlannedUpdate>,
     pub all_selected: bool,
-    pub pinned_after_selection: std::collections::BTreeSet<String>,
+    pub pinned_after_selection: BTreeSet<String>,
 }
 
 pub fn select_upgradable_items_with_meta(
@@ -29,7 +30,7 @@ pub fn select_upgradable_items_with_meta(
         let total = upgradable.len();
         let selected: Vec<PlannedUpdate> = upgradable
             .into_iter()
-            .filter(|item| !is_item_pinned(&item.name, &pinned))
+            .filter(|item| !is_pinned(&item.name, &pinned))
             .collect();
         return Ok(ApplySelection {
             all_selected: selected.len() == total,
@@ -41,11 +42,12 @@ pub fn select_upgradable_items_with_meta(
     let chosen_items = choose_items_for_manager(manager_id, &upgradable, &pinned)?;
     assert_eq!(chosen_items.len(), upgradable.len());
     let all_selected = chosen_items.iter().all(|chosen| *chosen);
+
     if chosen_items.iter().any(|chosen| *chosen) {
         pinned.remove(PIN_ALL);
     }
 
-    let mut selected_items = Vec::new();
+    let mut selected_items = Vec::with_capacity(upgradable.len());
     let mut pinned_items = Vec::new();
 
     for (item, chosen) in std::iter::zip(upgradable, chosen_items) {
@@ -68,20 +70,16 @@ pub fn select_upgradable_items_with_meta(
             item.name.clone(),
             item.current.clone(),
             item.target.clone(),
-            "selected",
             ReasonCode::Pinned,
             "pinned",
         ));
     }
 
-    ctx.record_pending_pins_if_changed(pinned.clone());
+    ctx.record_pending_pins_if_changed(&pinned);
 
     Ok(ApplySelection {
         selected: selected_items,
         all_selected,
         pinned_after_selection: pinned,
     })
-}
-fn is_item_pinned(name: &str, pinned: &std::collections::BTreeSet<String>) -> bool {
-    pinned.contains(name) || pinned.contains(PIN_ALL)
 }

@@ -1,20 +1,16 @@
-use crate::config::ManagerMode;
-use crate::manager::{ManagerCtx, ManagerPlugin};
-use crate::managers::common::{
-    DelayedLatest, PlanMeta, ResolvedPlanTarget, emit_manager_level_error,
-    emit_plan_and_collect_upgradable, emit_scan_current, plan_decision_from_resolution,
-    run_per_item_apply_flow, verbose_now_unix_secs,
-};
-use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
-use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
-use crate::util::process::{CmdStatus, run_cmd};
-use crate::util::time::now_unix_secs;
-use crate::util::time::parse_rfc3339_unix;
+use std::collections::BTreeMap;
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use reqwest::blocking::Client;
 use semver::Version;
-use std::collections::BTreeMap;
-use std::time::Duration;
+
+use crate::config::ManagerMode;
+#[allow(clippy::wildcard_imports)]
+use crate::managers::*;
+use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
+use crate::util::process::{CmdStatus, run_cmd};
+use crate::util::time::parse_rfc3339_unix;
 
 const GEM_MAX_PARALLEL_CHECKS: usize = 4;
 
@@ -56,32 +52,7 @@ enum GemDiscoveredItem {
     Managed { name: String, current: String },
 }
 
-struct GemPlanItem {
-    name: String,
-    current: String,
-    resolved: Result<GemResolvedTarget, String>,
-}
-
-struct GemResolvedTarget {
-    selected_version: Option<String>,
-    latest_version: Option<String>,
-    latest_age_secs: Option<u64>,
-}
-
-impl ResolvedPlanTarget for GemResolvedTarget {
-    fn selected_version(&self) -> Option<&str> {
-        self.selected_version.as_deref()
-    }
-
-    fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
-        DelayedLatest::from_too_fresh_latest(
-            self.selected_version.as_deref(),
-            self.latest_version.as_deref(),
-            self.latest_age_secs,
-            min_age,
-        )
-    }
-}
+type GemPlanItem = ResolvedPlanItem<AgeResolvedTarget>;
 
 #[derive(Debug, serde::Deserialize)]
 struct RubyGemsVersionItem {
@@ -93,125 +64,95 @@ struct RubyGemsVersionItem {
     ruby_version: Option<String>,
 }
 
-#[allow(clippy::too_many_lines)]
 fn run(ctx: &ManagerCtx) -> Result<()> {
-    if ctx.is_scan() {
-        return scan(ctx);
-    }
-
-    let min_age = ctx.policy.min_release_age.duration();
-
-    let installed = match gem_installed_inventory() {
-        Ok(installed) => installed,
-        Err(err) => {
-            emit_gem_manager_error(format!("failed to read installed gems: {err}"));
-            return Ok(());
-        }
-    };
-
-    let outdated = match gem_outdated_map() {
-        Ok(outdated) => outdated,
-        Err(err) => {
-            emit_gem_manager_error(format!("failed to query outdated gems: {err}"));
-            return Ok(());
-        }
-    };
-
-    if outdated.is_empty() {
-        return Ok(());
-    }
-
-    let now = now_unix_secs()?;
-
-    let ruby_runtime = match ruby_runtime_version() {
-        Ok(runtime) => runtime,
-        Err(err) => {
-            emit_gem_manager_error(format!("failed to detect Ruby runtime version: {err}"));
-            return Ok(());
-        }
-    };
-
-    let rubygems_client = match crate::util::http::default_blocking_client() {
-        Ok(client) => client,
-        Err(err) => {
-            emit_gem_manager_error(format!("failed to initialize metadata HTTP client: {err}"));
-            return Ok(());
-        }
-    };
-
-    let discovered: Vec<GemDiscoveredItem> = outdated
-        .into_iter()
-        .filter_map(|(name, item)| {
-            let is_default = installed.get(&name).is_some_and(|g| g.is_default);
-            if is_default {
-                None
-            } else {
-                Some(GemDiscoveredItem::Managed {
-                    name,
-                    current: item.current,
-                })
-            }
-        })
-        .collect();
-
-    let managed_jobs: Vec<(String, String)> = discovered
-        .iter()
-        .map(|item| match item {
-            GemDiscoveredItem::Managed { name, current } => (name.clone(), current.clone()),
-        })
-        .collect();
-
-    let threads = effective_parallelism(ctx.max_parallel_checks, GEM_MAX_PARALLEL_CHECKS);
-    let plan: Vec<GemPlanItem> =
-        run_indexed_parallel(managed_jobs, threads, PLUGIN.id(), |(name, current)| {
-            let resolved = rubygems_resolve_target_with_min_age(
-                &rubygems_client,
-                &name,
-                &current,
-                &ruby_runtime,
-                now,
-                min_age,
-            )
-            .map_err(|err| err.to_string());
-
-            GemPlanItem {
-                name,
-                current,
-                resolved,
-            }
-        })?;
-
-    let upgradable = emit_plan_and_collect_upgradable(
-        plan,
-        |item| {
-            let GemPlanItem {
-                name,
-                current,
-                resolved,
-            } = item;
-
-            let decision = plan_decision_from_resolution(&current, resolved, min_age);
-
-            (
-                PlanMeta {
-                    manager: PLUGIN.id(),
-                    source: "rubygems",
-                    name,
-                    current,
-                },
-                decision,
-            )
-        },
-        ctx.is_interactive_apply(),
-        Some(&ctx.policy.pinned),
-    );
-
-    run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, apply_gem_updates)?;
-
-    Ok(())
+    run_manager_pipeline(ctx, scan, run_plan_apply)
 }
 
-fn apply_gem_updates(upgradable: Vec<crate::managers::common::PlannedUpdate>) {
+#[allow(clippy::too_many_lines)]
+fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
+    run_plan_apply_framework(
+        ctx,
+        PLUGIN.id(),
+        PlanApplyFrameworkPolicy::SOFT_FETCH_STRICT_RESOLVE,
+        || {
+            let installed = gem_installed_inventory().context("failed to read installed gems")?;
+            let outdated = gem_outdated_map().context("failed to query outdated gems")?;
+
+            let discovered: Vec<GemDiscoveredItem> = outdated
+                .into_iter()
+                .filter_map(|(name, item)| {
+                    let is_default = installed.get(&name).is_some_and(|g| g.is_default);
+                    if is_default {
+                        None
+                    } else {
+                        Some(GemDiscoveredItem::Managed {
+                            name,
+                            current: item.current,
+                        })
+                    }
+                })
+                .collect();
+
+            Ok(discovered)
+        },
+        Vec::is_empty,
+        |discovered, runtime| {
+            let Some(ruby_runtime) = soft_fail(
+                ruby_runtime_version(),
+                PLUGIN.id(),
+                "failed to detect Ruby runtime version",
+            ) else {
+                return Ok(Vec::new());
+            };
+
+            let Some(rubygems_client) = soft_fail(
+                crate::util::http::default_blocking_client(),
+                PLUGIN.id(),
+                "failed to initialize metadata HTTP client",
+            ) else {
+                return Ok(Vec::new());
+            };
+
+            let managed_jobs: Vec<(String, String)> = discovered
+                .iter()
+                .map(|item| match item {
+                    GemDiscoveredItem::Managed { name, current } => (name.clone(), current.clone()),
+                })
+                .collect();
+
+            let threads =
+                effective_parallelism(runtime.max_parallel_checks, GEM_MAX_PARALLEL_CHECKS);
+            run_indexed_parallel(managed_jobs, threads, PLUGIN.id(), |(name, current)| {
+                let resolved = rubygems_resolve_target_with_min_age(
+                    &rubygems_client,
+                    &name,
+                    &current,
+                    &ruby_runtime,
+                    runtime.now_unix_secs,
+                    runtime.min_age,
+                )
+                .map_err(|err| err.to_string());
+
+                GemPlanItem::new(name, current, resolved)
+            })
+            .context("planning execution failed")
+        },
+        |_discovered, plan, runtime| {
+            Ok(collect_upgradable_from_resolved_plan(
+                PLUGIN.id(),
+                plan,
+                runtime.min_age,
+                runtime.suppress_update_outcomes,
+                runtime.pinned,
+            ))
+        },
+        |ctx, _discovered, upgradable| {
+            run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, apply_gem_updates)
+        },
+    )
+}
+
+fn apply_gem_updates(upgradable: Vec<crate::managers::PlannedUpdate>) {
     for item in upgradable {
         let name = item.name;
         let current = item.current;
@@ -220,27 +161,18 @@ fn apply_gem_updates(upgradable: Vec<crate::managers::common::PlannedUpdate>) {
             .mutating()
             .output()
         {
-            let outcome = ItemOutcome::error(
-                PLUGIN.id(),
-                name,
-                current,
-                target,
-                "rubygems",
-                ReasonCode::CommandFailed,
-                err.to_string(),
-            );
-            emit_text_outcome(&outcome);
+            emit_apply_error(PLUGIN.id(), name, current, target, err);
         }
     }
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {
-    let installed = match gem_installed_inventory() {
-        Ok(installed) => installed,
-        Err(err) => {
-            emit_gem_manager_error(format!("failed to read installed gems: {err}"));
-            return Ok(());
-        }
+    let Some(installed) = soft_fail(
+        gem_installed_inventory(),
+        PLUGIN.id(),
+        "failed to read installed gems",
+    ) else {
+        return Ok(());
     };
 
     if installed.is_empty() {
@@ -271,7 +203,6 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
 
         emit_scan_current(
             PLUGIN.id(),
-            "rubygems",
             name,
             installed.version,
             age_secs,
@@ -373,11 +304,15 @@ fn parse_gem_outdated_output(text: &str) -> BTreeMap<String, OutdatedGem> {
             .strip_prefix("default:")
             .map_or_else(|| current.trim().to_string(), |v| v.trim().to_string());
 
-        if name.trim().is_empty() || current.is_empty() {
+        let Some(name) = crate::util::text::trim_non_empty(name) else {
+            continue;
+        };
+
+        if current.is_empty() {
             continue;
         }
 
-        out.insert(name.trim().to_string(), OutdatedGem { current });
+        out.insert(name.to_string(), OutdatedGem { current });
     }
 
     out
@@ -398,7 +333,7 @@ fn rubygems_resolve_target_with_min_age(
     ruby_runtime: &Version,
     now_unix_secs: u64,
     min_age: Duration,
-) -> Result<GemResolvedTarget> {
+) -> Result<AgeResolvedTarget> {
     let current_ver = parse_version_for_compare(current).with_context(|| {
         format!("failed to parse current gem version for {gem_name}: {current}")
     })?;
@@ -461,11 +396,11 @@ fn rubygems_resolve_target_with_min_age(
             (None, None)
         };
 
-    Ok(GemResolvedTarget {
+    Ok(AgeResolvedTarget::new(
         selected_version,
         latest_version,
         latest_age_secs,
-    })
+    ))
 }
 
 fn rubygems_release_age_secs(
@@ -504,11 +439,7 @@ fn rubygems_versions(client: &Client, gem_name: &str) -> Result<Vec<RubyGemsVers
 }
 
 fn rubygems_base_url() -> String {
-    std::env::var("UPNOW_GEM_RUBYGEMS_BASE_URL")
-        .ok()
-        .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "https://rubygems.org".to_string())
+    crate::util::http::env_base_url("UPNOW_GEM_RUBYGEMS_BASE_URL", "https://rubygems.org")
 }
 
 fn ruby_requirement_allows(runtime: &Version, requirement_raw: Option<&str>) -> bool {
@@ -564,7 +495,7 @@ fn requirement_token_matches(runtime: &Version, token: &str) -> Option<bool> {
 
 fn pessimistic_upper_bound(raw: &str) -> Option<Version> {
     let trimmed = raw.trim();
-    let normalized = trimmed.strip_prefix('v').unwrap_or(trimmed);
+    let normalized = crate::util::text::strip_v_prefix(trimmed);
     let segments: Vec<&str> = normalized.split('.').collect();
     if segments.is_empty() {
         return None;
@@ -596,7 +527,7 @@ fn pessimistic_upper_bound(raw: &str) -> Option<Version> {
 }
 
 fn parse_version_for_compare(raw: &str) -> Option<Version> {
-    let trimmed = raw.strip_prefix('v').unwrap_or(raw);
+    let trimmed = crate::util::text::strip_v_prefix(raw);
 
     if let Ok(v) = Version::parse(trimmed) {
         return Some(v);
@@ -628,10 +559,6 @@ fn parse_version_for_compare(raw: &str) -> Option<Version> {
     }
 
     Version::parse(&format!("{}.{}.{}", nums[0], nums[1], nums[2])).ok()
-}
-
-fn emit_gem_manager_error(detail: impl AsRef<str>) {
-    emit_manager_level_error(PLUGIN.id(), "rubygems", detail);
 }
 
 #[cfg(test)]
@@ -676,11 +603,11 @@ mod tests {
 
     #[test]
     fn delayed_latest_hidden_when_latest_not_delayed() {
-        let target = GemResolvedTarget {
-            selected_version: Some("13.3.1".to_string()),
-            latest_version: Some("13.3.1".to_string()),
-            latest_age_secs: Some(10 * 24 * 60 * 60),
-        };
+        let target = AgeResolvedTarget::new(
+            Some("13.3.1".to_string()),
+            Some("13.3.1".to_string()),
+            Some(10 * 24 * 60 * 60),
+        );
 
         assert!(
             target
@@ -691,11 +618,11 @@ mod tests {
 
     #[test]
     fn delayed_latest_present_when_latest_too_fresh() {
-        let target = GemResolvedTarget {
-            selected_version: Some("13.2.1".to_string()),
-            latest_version: Some("13.3.1".to_string()),
-            latest_age_secs: Some(2 * 24 * 60 * 60),
-        };
+        let target = AgeResolvedTarget::new(
+            Some("13.2.1".to_string()),
+            Some("13.3.1".to_string()),
+            Some(2 * 24 * 60 * 60),
+        );
 
         assert!(
             target

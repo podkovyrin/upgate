@@ -1,8 +1,10 @@
+use std::collections::BTreeSet;
+
+use anyhow::{Result, bail};
+
 use super::{ManagerCtx, ManagerPlugin, RunMode};
 use crate::config::UpnowConfig;
 use crate::managers;
-use anyhow::{Result, bail};
-use std::collections::BTreeSet;
 
 pub fn all_plugins() -> &'static [&'static dyn ManagerPlugin] {
     static ALL: [&dyn ManagerPlugin; 12] = [

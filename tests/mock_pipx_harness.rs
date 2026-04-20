@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -11,8 +10,8 @@ use common::http::{
     BackgroundTcpServer, read_http_request_head, run_fake_http_server, write_http_response_text,
 };
 use common::{
-    SandboxEnv, assert_success, fixture_path, scenario_path, spawn_upnow, stderr, stdout,
-    write_executable,
+    SandboxEnv, assert_success, command_output, fixture_path, scenario_path,
+    skip_hybrid_test_if_disabled, spawn_upnow, stderr, stdout, write_executable,
 };
 
 const DETERMINISTIC_SCENARIO: &str = "tests/scenarios/pipx/deterministic";
@@ -92,7 +91,7 @@ impl Sandbox {
         cmd.args(args);
         self.apply_base_env(&mut cmd);
 
-        cmd.output().expect("failed to run fake pipx")
+        command_output(&mut cmd, "fake pipx")
     }
 
     fn apply_base_env(&self, cmd: &mut Command) {
@@ -145,7 +144,7 @@ fn deterministic_plan_covers_update_delayed_pinned_and_error_states() {
     let out = stdout(&output);
     assert!(out.contains("+ Update [pipx] alpha-ready v1.0.0 -> v1.2.0"));
     assert!(out.contains("~ Delayed [pipx] gamma-delayed v2.0.0 -> v2.1.0"));
-    assert!(out.contains("- Skipped [pipx] pinned-pkg v3.0.0 -> v3.0.0 (pinned)"));
+    assert!(out.contains("- Skipped [pipx] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
     assert!(out.contains("! Error [pipx] omega-error v0.1.0 -> v0.1.0"));
 
     let err = stderr(&output);
@@ -169,7 +168,7 @@ fn deterministic_apply_selective_path_runs_updates_only_for_eligible_unpinned_it
     let out = stdout(&output);
     assert!(out.contains("+ Update [pipx] alpha-ready v1.0.0 -> v1.2.0"));
     assert!(out.contains("~ Delayed [pipx] gamma-delayed v2.0.0 -> v2.1.0"));
-    assert!(out.contains("- Skipped [pipx] pinned-pkg v3.0.0 -> v3.0.0 (pinned)"));
+    assert!(out.contains("- Skipped [pipx] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
 
     let err = stderr(&output);
     assert!(err.contains("$ pipx upgrade alpha-ready==1.2.0"));
@@ -192,7 +191,7 @@ fn deterministic_scan_reports_current_state_and_missing_age_fallback() {
         "scan stdout:\n{out}\nscan stderr:\n{err}"
     );
     assert!(
-        out.contains("= Current [pipx] scan-noage v5.0.0 (source: pypi)"),
+        out.contains("= Current [pipx] scan-noage v5.0.0"),
         "scan stdout:\n{out}\nscan stderr:\n{err}"
     );
 }
@@ -200,8 +199,7 @@ fn deterministic_scan_reports_current_state_and_missing_age_fallback() {
 #[test]
 #[ignore = "requires network + real PyPI; run via scripts/test-hybrid.sh"]
 fn hybrid_apply_uses_real_pypi_data_with_fake_installed_state() {
-    if env::var("UPNOW_RUN_HYBRID_TESTS").as_deref() != Ok("1") {
-        eprintln!("skipping hybrid test; set UPNOW_RUN_HYBRID_TESTS=1 to enable");
+    if skip_hybrid_test_if_disabled() {
         return;
     }
 
@@ -218,7 +216,11 @@ fn hybrid_apply_uses_real_pypi_data_with_fake_installed_state() {
 
     let out = stdout(&output);
     assert!(out.contains("+ Update [pipx] requests v2.0.0 -> v"));
-    assert!(out.contains("- Skipped [pipx] black v1.0.0 -> v1.0.0 (pinned)"));
+    assert!(
+        out.contains("- Skipped [pipx] black v1.0.0 -> v") && out.contains("(pinned)"),
+        "hybrid stdout:\n{out}\nhybrid stderr:\n{}",
+        stderr(&output)
+    );
     assert!(!out.contains(" packaging v9999.0.0 -> v"));
     assert!(
         out.contains("! Error [pipx] zzzz-upnow-no-such-package-000000000000 v1.0.0 -> v1.0.0")

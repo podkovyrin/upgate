@@ -1,11 +1,11 @@
-use std::env;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
 mod common;
 
 use common::{
-    SandboxEnv, assert_success, scenario_path, spawn_upnow, stderr, stdout, write_executable,
+    SandboxEnv, assert_success, command_output, path_to_string, require_real_executable,
+    scenario_path, skip_hybrid_test_if_disabled, spawn_upnow, stderr, stdout, write_executable,
 };
 
 const DETERMINISTIC_BREW_SCENARIO_DIR: &str = "tests/scenarios/brew/deterministic";
@@ -75,7 +75,7 @@ impl Sandbox {
         cmd.args(args);
         self.apply_base_env(&mut cmd);
 
-        cmd.output().expect("failed to run fake brew")
+        command_output(&mut cmd, "fake brew")
     }
 
     fn run_fake_git(&self, args: &[&str]) -> Output {
@@ -83,7 +83,7 @@ impl Sandbox {
         cmd.args(args);
         self.apply_base_env(&mut cmd);
 
-        cmd.output().expect("failed to run fake git")
+        command_output(&mut cmd, "fake git")
     }
 
     fn find_real_brew(&self) -> Option<PathBuf> {
@@ -203,21 +203,16 @@ fn deterministic_scan_reports_current_installed_state() {
 #[test]
 #[ignore = "requires real brew + git + network; run via scripts/test-hybrid.sh"]
 fn hybrid_apply_uses_real_tap_metadata_and_git_history_with_fake_outdated_state() {
-    if env::var("UPNOW_RUN_HYBRID_TESTS").as_deref() != Ok("1") {
-        eprintln!("skipping hybrid test; set UPNOW_RUN_HYBRID_TESTS=1 to enable");
+    if skip_hybrid_test_if_disabled() {
         return;
     }
 
     let sandbox = Sandbox::new(HYBRID_BREW_SCENARIO_DIR, HYBRID_CONFIG);
-    let Some(real_brew_path) = sandbox.find_real_brew() else {
-        panic!("hybrid test requires real brew in PATH");
-    };
-    let Some(real_git_path) = sandbox.find_real_git() else {
-        panic!("hybrid test requires real git in PATH");
-    };
+    let real_brew_path = require_real_executable(sandbox.find_real_brew(), "brew");
+    let real_git_path = require_real_executable(sandbox.find_real_git(), "git");
 
-    let real_brew_path = real_brew_path.to_string_lossy().into_owned();
-    let real_git_path = real_git_path.to_string_lossy().into_owned();
+    let real_brew_path = path_to_string(&real_brew_path);
+    let real_git_path = path_to_string(&real_git_path);
     let output = sandbox.run_upnow_with_env(
         &[
             "apply",

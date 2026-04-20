@@ -57,11 +57,8 @@ impl Drop for BackgroundTcpServer {
     }
 }
 
-pub fn run_fake_http_server<F>(
-    listener: &TcpListener,
-    stop: &AtomicBool,
-    mut handle_connection: F,
-) where
+pub fn run_fake_http_server<F>(listener: &TcpListener, stop: &AtomicBool, mut handle_connection: F)
+where
     F: FnMut(&mut TcpStream),
 {
     loop {

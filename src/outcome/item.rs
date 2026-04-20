@@ -7,7 +7,6 @@ pub struct ItemOutcome {
     pub from_version: String,
     pub to_version: String,
     pub status: OutcomeStatus,
-    pub source: String,
     pub reason_code: Option<ReasonCode>,
     pub reason_detail: Option<String>,
     pub age: Option<String>,
@@ -25,7 +24,6 @@ impl ItemOutcome {
         from_version: impl Into<String>,
         to_version: impl Into<String>,
         status: OutcomeStatus,
-        source: impl Into<String>,
     ) -> Self {
         Self {
             manager,
@@ -33,7 +31,6 @@ impl ItemOutcome {
             from_version: from_version.into(),
             to_version: to_version.into(),
             status,
-            source: source.into(),
             reason_code: None,
             reason_detail: None,
             age: None,
@@ -49,7 +46,6 @@ impl ItemOutcome {
         manager: &'static str,
         name: impl Into<String>,
         version: impl Into<String>,
-        source: impl Into<String>,
     ) -> Self {
         let version = version.into();
         Self::base(
@@ -58,7 +54,6 @@ impl ItemOutcome {
             version.clone(),
             version,
             OutcomeStatus::Current,
-            source,
         )
     }
 
@@ -66,7 +61,6 @@ impl ItemOutcome {
         manager: &'static str,
         name: impl Into<String>,
         version: impl Into<String>,
-        source: impl Into<String>,
         age: impl Into<String>,
         is_old: bool,
     ) -> Self {
@@ -77,7 +71,6 @@ impl ItemOutcome {
             version.clone(),
             version,
             OutcomeStatus::Current,
-            source,
         );
         outcome.scan_age = Some(age.into());
         outcome.scan_is_old = is_old;
@@ -89,7 +82,6 @@ impl ItemOutcome {
         name: impl Into<String>,
         from_version: impl Into<String>,
         to_version: impl Into<String>,
-        source: impl Into<String>,
     ) -> Self {
         Self::base(
             manager,
@@ -97,7 +89,6 @@ impl ItemOutcome {
             from_version,
             to_version,
             OutcomeStatus::Update,
-            source,
         )
     }
 
@@ -107,7 +98,6 @@ impl ItemOutcome {
         name: impl Into<String>,
         from_version: impl Into<String>,
         to_version: impl Into<String>,
-        source: impl Into<String>,
         latest_version: impl Into<String>,
         latest_age: impl Into<String>,
         required_age: impl Into<String>,
@@ -118,7 +108,6 @@ impl ItemOutcome {
             from_version,
             to_version,
             OutcomeStatus::Update,
-            source,
         );
         outcome.reason_code = Some(ReasonCode::TooFresh);
         outcome.required_age = Some(required_age.into());
@@ -131,7 +120,6 @@ impl ItemOutcome {
         manager: &'static str,
         name: impl Into<String>,
         version: impl Into<String>,
-        source: impl Into<String>,
         required_age: impl Into<String>,
     ) -> Self {
         let version = version.into();
@@ -141,7 +129,6 @@ impl ItemOutcome {
             version.clone(),
             version,
             OutcomeStatus::Delayed,
-            source,
         );
         outcome.reason_code = Some(ReasonCode::NoEligibleRelease);
         outcome.required_age = Some(required_age.into());
@@ -152,7 +139,6 @@ impl ItemOutcome {
         manager: &'static str,
         name: impl Into<String>,
         current_version: impl Into<String>,
-        source: impl Into<String>,
         latest_version: impl Into<String>,
         latest_age: impl Into<String>,
         required_age: impl Into<String>,
@@ -163,7 +149,6 @@ impl ItemOutcome {
             current_version,
             latest_version,
             OutcomeStatus::Delayed,
-            source,
         );
         outcome.reason_code = Some(ReasonCode::NoEligibleRelease);
         outcome.required_age = Some(required_age.into());
@@ -176,7 +161,6 @@ impl ItemOutcome {
         name: impl Into<String>,
         from_version: impl Into<String>,
         to_version: impl Into<String>,
-        source: impl Into<String>,
         age: impl Into<String>,
         required_age: impl Into<String>,
     ) -> Self {
@@ -186,7 +170,6 @@ impl ItemOutcome {
             from_version,
             to_version,
             OutcomeStatus::Delayed,
-            source,
         );
         outcome.reason_code = Some(ReasonCode::TooFresh);
         outcome.age = Some(age.into());
@@ -199,7 +182,6 @@ impl ItemOutcome {
         name: impl Into<String>,
         from_version: impl Into<String>,
         to_version: impl Into<String>,
-        source: impl Into<String>,
         reason_code: ReasonCode,
         reason_detail: impl Into<String>,
     ) -> Self {
@@ -209,7 +191,6 @@ impl ItemOutcome {
             from_version,
             to_version,
             OutcomeStatus::Skipped,
-            source,
         );
         outcome.reason_code = Some(reason_code);
         outcome.reason_detail = Some(reason_detail.into());
@@ -220,7 +201,6 @@ impl ItemOutcome {
         manager: &'static str,
         name: impl Into<String>,
         version: impl Into<String>,
-        source: impl Into<String>,
     ) -> Self {
         let version = version.into();
         let mut outcome = Self::base(
@@ -229,7 +209,6 @@ impl ItemOutcome {
             version.clone(),
             version,
             OutcomeStatus::Skipped,
-            source,
         );
         outcome.reason_code = Some(ReasonCode::NoChange);
         outcome.reason_detail = Some("already at selected target".to_string());
@@ -241,7 +220,6 @@ impl ItemOutcome {
         name: impl Into<String>,
         from_version: impl Into<String>,
         to_version: impl Into<String>,
-        source: impl Into<String>,
         reason_code: ReasonCode,
         reason_detail: impl Into<String>,
     ) -> Self {
@@ -251,7 +229,6 @@ impl ItemOutcome {
             from_version,
             to_version,
             OutcomeStatus::Error,
-            source,
         );
         outcome.reason_code = Some(reason_code);
         outcome.reason_detail = Some(reason_detail.into());
