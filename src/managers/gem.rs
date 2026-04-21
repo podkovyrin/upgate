@@ -6,7 +6,10 @@ use reqwest::blocking::Client;
 use semver::Version;
 
 use crate::config::ManagerMode;
-use crate::managers::shared::versioning::policy::VersionPolicy;
+use crate::managers::shared::versioning::policy::{
+    GateBypass, OrderedCandidate, RecommendedOutcome, VersionPolicy, classify_semver_release,
+    evaluate_candidates,
+};
 #[allow(clippy::wildcard_imports)]
 use crate::managers::*;
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
@@ -135,6 +138,7 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                     &ruby_runtime,
                     runtime.now_unix_secs,
                     runtime.min_age,
+                    ctx.policy.version_policy,
                 )
                 .map_err(|err| err.to_string());
 
@@ -338,15 +342,15 @@ fn rubygems_resolve_target_with_min_age(
     ruby_runtime: &Version,
     now_unix_secs: u64,
     min_age: Duration,
+    version_policy: VersionPolicy,
 ) -> Result<AgeResolvedTarget> {
     let current_ver = parse_version_for_compare(current).with_context(|| {
         format!("failed to parse current gem version for {gem_name}: {current}")
     })?;
+    let installed_class = classify_semver_release(current);
 
     let versions = rubygems_versions(rubygems_client, gem_name)?;
-
-    let mut newest_any: Option<(Version, String, u64)> = None;
-    let mut eligible: Option<(Version, String, u64)> = None;
+    let mut candidates: Vec<OrderedCandidate<Version>> = Vec::new();
 
     for item in versions {
         if item.prerelease {
@@ -368,44 +372,45 @@ fn rubygems_resolve_target_with_min_age(
             )
         })?;
 
-        if newest_any
-            .as_ref()
-            .is_none_or(|(curr, _, _)| version > *curr)
-        {
-            newest_any = Some((version.clone(), item.number.clone(), released_at_unix));
-        }
-
-        if version >= current_ver {
-            let age_secs = now_unix_secs.saturating_sub(released_at_unix);
-            if age_secs >= min_age.as_secs()
-                && eligible.as_ref().is_none_or(|(curr, _, _)| version > *curr)
-            {
-                eligible = Some((version, item.number, released_at_unix));
-            }
-        }
+        candidates.push(OrderedCandidate {
+            version: item.number.clone(),
+            parsed: version,
+            release_class: classify_semver_release(&item.number),
+            published_unix: released_at_unix,
+        });
     }
 
-    let selected_version = eligible.map(|(_, raw, _)| raw).or_else(|| {
-        newest_any
-            .as_ref()
-            .and_then(|(latest, _, _)| (current_ver >= *latest).then(|| current.to_string()))
-    });
+    let resolution = evaluate_candidates(
+        &current_ver,
+        &candidates,
+        installed_class,
+        version_policy,
+        now_unix_secs,
+        min_age,
+        GateBypass::NONE,
+    );
 
-    let (latest_version, latest_age_secs) =
-        if let Some((_latest, latest_raw, latest_released_at)) = newest_any {
-            (
-                Some(latest_raw),
-                Some(now_unix_secs.saturating_sub(latest_released_at)),
-            )
-        } else {
-            (None, None)
-        };
+    let (selected_version, current_blocked_by_policy) = match resolution.recommendation {
+        RecommendedOutcome::Update { target_version } => (Some(target_version), false),
+        RecommendedOutcome::DelayedByAge => (None, false),
+        RecommendedOutcome::CurrentNoNewer => (Some(current.to_string()), false),
+        RecommendedOutcome::CurrentBlockedByPolicy => (Some(current.to_string()), true),
+    };
+    let latest_blocked_by_policy_version = resolution
+        .evaluations
+        .iter()
+        .find(|eval| !eval.policy_allowed)
+        .map(|eval| eval.version.clone());
 
-    Ok(AgeResolvedTarget::new(
+    Ok(AgeResolvedTarget {
         selected_version,
-        latest_version,
-        latest_age_secs,
-    ))
+        latest_version: resolution.latest_overall_version,
+        latest_age_secs: resolution.latest_overall_age_secs,
+        current_blocked_by_policy,
+        version_policy: (version_policy != VersionPolicy::Disabled)
+            .then(|| version_policy.as_str().to_string()),
+        latest_blocked_by_policy_version,
+    })
 }
 
 fn rubygems_release_age_secs(

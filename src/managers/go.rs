@@ -6,6 +6,10 @@ use anyhow::{Context, Result, bail};
 use semver::Version;
 
 use crate::config::is_pinned;
+use crate::managers::shared::versioning::policy::{
+    GateBypass, OrderedCandidate, RecommendedOutcome, VersionPolicy, classify_semver_release,
+    evaluate_candidates,
+};
 #[allow(clippy::wildcard_imports)]
 use crate::managers::*;
 use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
@@ -24,6 +28,10 @@ impl ManagerPlugin for GoPlugin {
 
     fn default_min_release_age(&self) -> &'static str {
         "7d"
+    }
+
+    fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
+        true
     }
 
     fn run(&self, ctx: &ManagerCtx) -> Result<()> {
@@ -68,6 +76,7 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                 discovered,
                 runtime.now_unix_secs,
                 runtime.min_age,
+                ctx.policy.version_policy,
                 runtime.max_parallel_checks,
             )
             .context("planning execution failed")
@@ -110,6 +119,7 @@ fn resolve_go_plan(
     discovered: &[GoDiscoveredTool],
     now_unix_secs: u64,
     min_age: Duration,
+    version_policy: VersionPolicy,
     max_parallel_checks: usize,
 ) -> Result<Vec<GoPlanItem>> {
     let managed_jobs: Vec<GoManagedTool> = discovered
@@ -127,6 +137,7 @@ fn resolve_go_plan(
             &tool.current_version,
             now_unix_secs,
             min_age,
+            version_policy,
         )
         .map_err(|err| err.to_string());
 
@@ -456,15 +467,15 @@ fn go_resolve_target_with_min_age(
     current: &str,
     now_unix_secs: u64,
     min_age: Duration,
+    version_policy: VersionPolicy,
 ) -> Result<AgeResolvedTarget> {
     let current_ver = parse_go_semver(current).with_context(|| {
         format!("failed to parse current go semver for {module_path}: {current}")
     })?;
+    let installed_class = classify_semver_release(current);
 
     let versions = go_module_versions(module_path)?;
-
-    let mut newest_any: Option<(Version, String, u64)> = None;
-    let mut eligible: Option<(Version, String, u64)> = None;
+    let mut candidates: Vec<OrderedCandidate<Version>> = Vec::new();
 
     for version_raw in versions {
         let Some(version) = parse_go_semver(&version_raw) else {
@@ -476,44 +487,45 @@ fn go_resolve_target_with_min_age(
             continue;
         };
 
-        if newest_any
-            .as_ref()
-            .is_none_or(|(curr, _, _)| version > *curr)
-        {
-            newest_any = Some((version.clone(), version_raw.clone(), released_at_unix));
-        }
-
-        if version >= current_ver {
-            let age_secs = now_unix_secs.saturating_sub(released_at_unix);
-            if age_secs >= min_age.as_secs()
-                && eligible.as_ref().is_none_or(|(curr, _, _)| version > *curr)
-            {
-                eligible = Some((version, version_raw, released_at_unix));
-            }
-        }
+        candidates.push(OrderedCandidate {
+            version: version_raw.clone(),
+            parsed: version,
+            release_class: classify_semver_release(&version_raw),
+            published_unix: released_at_unix,
+        });
     }
 
-    let selected_version = eligible.map(|(_, raw, _)| raw).or_else(|| {
-        newest_any
-            .as_ref()
-            .and_then(|(latest, _, _)| (current_ver >= *latest).then(|| current.to_string()))
-    });
+    let resolution = evaluate_candidates(
+        &current_ver,
+        &candidates,
+        installed_class,
+        version_policy,
+        now_unix_secs,
+        min_age,
+        GateBypass::NONE,
+    );
 
-    let (latest_version, latest_age_secs) =
-        if let Some((_latest, latest_raw, latest_released_at)) = newest_any {
-            (
-                Some(latest_raw),
-                Some(now_unix_secs.saturating_sub(latest_released_at)),
-            )
-        } else {
-            (None, None)
-        };
+    let (selected_version, current_blocked_by_policy) = match resolution.recommendation {
+        RecommendedOutcome::Update { target_version } => (Some(target_version), false),
+        RecommendedOutcome::DelayedByAge => (None, false),
+        RecommendedOutcome::CurrentNoNewer => (Some(current.to_string()), false),
+        RecommendedOutcome::CurrentBlockedByPolicy => (Some(current.to_string()), true),
+    };
+    let latest_blocked_by_policy_version = resolution
+        .evaluations
+        .iter()
+        .find(|eval| !eval.policy_allowed)
+        .map(|eval| eval.version.clone());
 
-    Ok(AgeResolvedTarget::new(
+    Ok(AgeResolvedTarget {
         selected_version,
-        latest_version,
-        latest_age_secs,
-    ))
+        latest_version: resolution.latest_overall_version,
+        latest_age_secs: resolution.latest_overall_age_secs,
+        current_blocked_by_policy,
+        version_policy: (version_policy != VersionPolicy::Disabled)
+            .then(|| version_policy.as_str().to_string()),
+        latest_blocked_by_policy_version,
+    })
 }
 
 #[derive(Debug, serde::Deserialize)]
