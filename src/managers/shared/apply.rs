@@ -2,6 +2,7 @@ use anyhow::Result;
 
 use super::PlannedUpdate;
 use crate::managers::runtime::ManagerCtx;
+use crate::managers::shared::versioning::policy::VersionPolicy;
 use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 
 pub fn run_per_item_apply_flow<F>(
@@ -37,13 +38,27 @@ where
         return Ok(());
     };
 
-    if selection.all_selected && selection.pinned_after_selection.is_empty() {
+    // When version-policy filtering is enabled, prefer per-item apply so the
+    // exact selected target is honored and cannot widen via manager-global logic.
+    if should_apply_all(
+        ctx.policy.version_policy,
+        selection.all_selected,
+        selection.pinned_after_selection.is_empty(),
+    ) {
         apply_all_with_error_outcome(manager_id, apply_all);
         return Ok(());
     }
 
     apply_selected(selection.selected);
     Ok(())
+}
+
+fn should_apply_all(
+    version_policy: VersionPolicy,
+    all_selected: bool,
+    has_no_pins_after_selection: bool,
+) -> bool {
+    version_policy == VersionPolicy::Disabled && all_selected && has_no_pins_after_selection
 }
 
 fn resolve_apply_selection(
@@ -87,4 +102,31 @@ pub fn emit_apply_error(
         detail.to_string(),
     );
     emit_text_outcome(&outcome);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_apply_allowed_when_policy_disabled_and_everything_selected() {
+        assert!(should_apply_all(VersionPolicy::Disabled, true, true));
+    }
+
+    #[test]
+    fn global_apply_blocked_when_policy_enabled() {
+        for policy in [
+            VersionPolicy::Stable,
+            VersionPolicy::SameTrack,
+            VersionPolicy::Any,
+        ] {
+            assert!(!should_apply_all(policy, true, true), "policy={policy:?}");
+        }
+    }
+
+    #[test]
+    fn global_apply_blocked_when_not_everything_selected_or_pins_remain() {
+        assert!(!should_apply_all(VersionPolicy::Disabled, false, true));
+        assert!(!should_apply_all(VersionPolicy::Disabled, true, false));
+    }
 }
