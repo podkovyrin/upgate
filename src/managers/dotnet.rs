@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use reqwest::blocking::Client;
 
 use crate::config::ManagerMode;
+use crate::managers::shared::versioning::policy::VersionPolicy;
 #[allow(clippy::wildcard_imports)]
 use crate::managers::*;
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
@@ -25,6 +26,10 @@ impl ManagerPlugin for DotnetPlugin {
 
     fn default_mode(&self) -> ManagerMode {
         ManagerMode::Off
+    }
+
+    fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
+        true
     }
 
     fn run(&self, ctx: &ManagerCtx) -> Result<()> {
@@ -98,6 +103,7 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                 runtime.now_unix_secs,
                 runtime.min_age,
                 runtime.max_parallel_checks,
+                ctx.policy.version_policy,
             )
             .context("planning execution failed")
         },
@@ -151,6 +157,7 @@ fn resolve_dotnet_plan(
     now_unix_secs: u64,
     min_age: Duration,
     max_parallel_checks: usize,
+    version_policy: VersionPolicy,
 ) -> Result<Vec<DotnetPlanItem>> {
     let Some(nuget_client) = soft_fail(
         crate::util::http::default_blocking_client(),
@@ -173,6 +180,7 @@ fn resolve_dotnet_plan(
             &current,
             now_unix_secs,
             min_age,
+            version_policy,
         )
         .map_err(|err| err.to_string());
 
@@ -278,11 +286,15 @@ fn nuget_resolve_target_with_min_age(
     current: &str,
     now_unix_secs: u64,
     min_age: Duration,
+    version_policy: VersionPolicy,
 ) -> Result<AgeResolvedTarget> {
     let versions = nuget_versions_with_publish_times(nuget_client, package_id)?;
 
-    let resolved = resolve_semver_with_min_age(current, &versions, now_unix_secs, min_age)
-        .with_context(|| format!("failed to resolve eligible semver target for {package_id}"))?;
+    let resolved =
+        resolve_semver_with_min_age(current, &versions, now_unix_secs, min_age, version_policy)
+            .with_context(|| {
+                format!("failed to resolve eligible semver target for {package_id}")
+            })?;
 
     Ok(resolved.into())
 }

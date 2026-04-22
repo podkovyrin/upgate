@@ -4,6 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use reqwest::blocking::Client;
 
+use crate::managers::shared::versioning::policy::VersionPolicy;
 #[allow(clippy::wildcard_imports)]
 use crate::managers::*;
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
@@ -20,6 +21,10 @@ impl ManagerPlugin for PipxPlugin {
 
     fn default_min_release_age(&self) -> &'static str {
         "7d"
+    }
+
+    fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
+        true
     }
 
     fn run(&self, ctx: &ManagerCtx) -> Result<()> {
@@ -89,6 +94,7 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                 runtime.now_unix_secs,
                 runtime.min_age,
                 runtime.max_parallel_checks,
+                ctx.policy.version_policy,
             )
             .context("planning execution failed")
         },
@@ -147,6 +153,7 @@ fn resolve_pipx_plan(
     now_unix_secs: u64,
     min_age: Duration,
     max_parallel_checks: usize,
+    version_policy: VersionPolicy,
 ) -> Result<Vec<PipxPlanItem>> {
     let pypi_client =
         crate::util::http::default_blocking_client().context("failed to build PyPI HTTP client")?;
@@ -154,9 +161,15 @@ fn resolve_pipx_plan(
 
     let threads = effective_parallelism(max_parallel_checks, PIPX_MAX_PARALLEL_CHECKS);
     run_indexed_parallel(jobs, threads, PLUGIN.id(), |(name, current)| {
-        let resolved =
-            pypi_resolve_target_with_min_age(&pypi_client, &name, &current, now_unix_secs, min_age)
-                .map_err(|err| err.to_string());
+        let resolved = pypi_resolve_target_with_min_age(
+            &pypi_client,
+            &name,
+            &current,
+            now_unix_secs,
+            min_age,
+            version_policy,
+        )
+        .map_err(|err| err.to_string());
 
         PipxPlanItem::new(name, current, resolved)
     })
@@ -199,12 +212,14 @@ fn pypi_resolve_target_with_min_age(
     current: &str,
     now_unix_secs: u64,
     min_age: Duration,
+    version_policy: VersionPolicy,
 ) -> Result<AgeResolvedTarget> {
     let root = pypi_root(pypi_client, pkg)?;
     let releases = pypi_pep440_releases(pkg, &root)?;
 
-    let resolved = resolve_pep440_with_min_age(current, &releases, now_unix_secs, min_age)
-        .with_context(|| format!("failed to resolve eligible PEP440 target for {pkg}"))?;
+    let resolved =
+        resolve_pep440_with_min_age(current, &releases, now_unix_secs, min_age, version_policy)
+            .with_context(|| format!("failed to resolve eligible PEP440 target for {pkg}"))?;
 
     let _ = root.info.version;
     Ok(resolved.into())

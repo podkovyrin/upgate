@@ -4,6 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+use crate::managers::shared::versioning::policy::VersionPolicy;
 #[allow(clippy::wildcard_imports)]
 use crate::managers::*;
 use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
@@ -21,6 +22,10 @@ impl ManagerPlugin for YarnPlugin {
 
     fn default_min_release_age(&self) -> &'static str {
         "7d"
+    }
+
+    fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
+        true
     }
 
     fn run(&self, ctx: &ManagerCtx) -> Result<()> {
@@ -105,6 +110,7 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                 runtime.now_unix_secs,
                 runtime.min_age,
                 runtime.max_parallel_checks,
+                ctx.policy.version_policy,
             )
             .context("planning execution failed")
         },
@@ -178,6 +184,7 @@ fn resolve_yarn_plan(
     now_unix_secs: u64,
     min_age: Duration,
     max_parallel_checks: usize,
+    version_policy: VersionPolicy,
 ) -> Result<Vec<YarnPlanItem>> {
     let jobs: Vec<(String, String)> = installed
         .iter()
@@ -186,8 +193,14 @@ fn resolve_yarn_plan(
 
     let threads = effective_parallelism(max_parallel_checks, YARN_MAX_PARALLEL_CHECKS);
     run_indexed_parallel(jobs, threads, PLUGIN.id(), |(name, current)| {
-        let resolved = yarn_resolve_target_with_min_age(&name, &current, now_unix_secs, min_age)
-            .map_err(|err| err.to_string());
+        let resolved = yarn_resolve_target_with_min_age(
+            &name,
+            &current,
+            now_unix_secs,
+            min_age,
+            version_policy,
+        )
+        .map_err(|err| err.to_string());
 
         YarnPlanItem::new(name, current, resolved)
     })
@@ -288,6 +301,7 @@ fn yarn_resolve_target_with_min_age(
     current: &str,
     now_unix_secs: u64,
     min_age: Duration,
+    version_policy: VersionPolicy,
 ) -> Result<AgeResolvedTarget> {
     let output = run_cmd("yarn", ["info", name, "time", "--json"], CmdStatus::Success).output()?;
     let text = output.stdout()?;
@@ -295,8 +309,9 @@ fn yarn_resolve_target_with_min_age(
     let obj = parse_yarn_inspect_object(text, "time")?;
     let releases = yarn_semver_time_releases(name, &obj)?;
 
-    let resolved = resolve_semver_with_min_age(current, &releases, now_unix_secs, min_age)
-        .with_context(|| format!("failed to resolve eligible semver target for {name}"))?;
+    let resolved =
+        resolve_semver_with_min_age(current, &releases, now_unix_secs, min_age, version_policy)
+            .with_context(|| format!("failed to resolve eligible semver target for {name}"))?;
 
     Ok(resolved.into())
 }

@@ -5,6 +5,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use pep440_rs::Version as Pep440Version;
 
+use super::policy::{
+    GateBypass, OrderedCandidate, RecommendedOutcome, VersionPolicy, classify_pep440_release,
+    evaluate_candidates,
+};
 use crate::util::time::parse_rfc3339_unix;
 
 #[derive(Debug, Clone)]
@@ -25,55 +29,47 @@ pub fn resolve_pep440_with_min_age(
     releases: &[Pep440Timestamp],
     now_unix_secs: u64,
     min_age: Duration,
+    version_policy: VersionPolicy,
 ) -> Result<Pep440AgeResolution> {
     let current_ver = Pep440Version::from_str(current)
         .with_context(|| format!("failed to parse current PEP440 version: {current}"))?;
-
-    let mut eligible: Option<(Pep440Version, String, u64)> = None;
-    let mut newest_any: Option<(Pep440Version, String, u64)> = None;
-
-    for item in releases {
-        let Ok(version) = Pep440Version::from_str(&item.version) else {
-            continue;
-        };
-
-        if newest_any
-            .as_ref()
-            .is_none_or(|(curr, _, _)| version > *curr)
-        {
-            newest_any = Some((version.clone(), item.version.clone(), item.published_unix));
-        }
-
-        if version >= current_ver {
-            let age_secs = now_unix_secs.saturating_sub(item.published_unix);
-            if age_secs >= min_age.as_secs()
-                && eligible.as_ref().is_none_or(|(curr, _, _)| version > *curr)
-            {
-                eligible = Some((version, item.version.clone(), item.published_unix));
-            }
-        }
-    }
-
-    let selected_version = eligible.map(|(_, version, _)| version).or_else(|| {
-        newest_any.as_ref().and_then(|(latest_ver, _, _)| {
-            (current_ver >= *latest_ver).then(|| current.to_string())
+    let installed_class = classify_pep440_release(current);
+    let candidates = releases
+        .iter()
+        .filter_map(|item| {
+            Pep440Version::from_str(&item.version)
+                .ok()
+                .map(|parsed| OrderedCandidate {
+                    version: item.version.clone(),
+                    parsed,
+                    release_class: classify_pep440_release(&item.version),
+                    published_unix: item.published_unix,
+                })
         })
-    });
+        .collect::<Vec<_>>();
 
-    let (latest_version, latest_age_secs) =
-        if let Some((_latest_ver, latest_str, latest_ts)) = newest_any {
-            (
-                Some(latest_str),
-                Some(now_unix_secs.saturating_sub(latest_ts)),
-            )
-        } else {
-            (None, None)
-        };
+    let resolution = evaluate_candidates(
+        &current_ver,
+        &candidates,
+        installed_class,
+        version_policy,
+        now_unix_secs,
+        min_age,
+        GateBypass::NONE,
+    );
+
+    let selected_version = match resolution.recommendation {
+        RecommendedOutcome::Update { target_version } => Some(target_version),
+        RecommendedOutcome::DelayedByAge => None,
+        RecommendedOutcome::CurrentNoNewer | RecommendedOutcome::CurrentBlockedByPolicy => {
+            Some(current.to_string())
+        }
+    };
 
     Ok(Pep440AgeResolution {
         selected_version,
-        latest_version,
-        latest_age_secs,
+        latest_version: resolution.latest_overall_version,
+        latest_age_secs: resolution.latest_overall_age_secs,
     })
 }
 
@@ -143,11 +139,12 @@ mod tests {
             &releases,
             now,
             Duration::from_secs(7 * 24 * 60 * 60),
+            VersionPolicy::Disabled,
         )
         .expect("resolution should succeed");
 
         assert_eq!(resolved.selected_version.as_deref(), Some("2.0.0"));
-        assert_eq!(resolved.latest_version.as_deref(), Some("1.9.9"));
+        assert_eq!(resolved.latest_version, None);
     }
 
     #[test]
@@ -163,10 +160,59 @@ mod tests {
             &releases,
             now,
             Duration::from_secs(7 * 24 * 60 * 60),
+            VersionPolicy::Disabled,
         )
         .expect("resolution should succeed");
 
         assert_eq!(resolved.selected_version.as_deref(), Some("1.0.0"));
-        assert_eq!(resolved.latest_version.as_deref(), Some("1.0.0"));
+        assert_eq!(resolved.latest_version, None);
+    }
+
+    #[test]
+    fn applies_version_policy_before_age_gate_for_selection() {
+        let now = 1_800_000_000;
+        let releases = vec![
+            Pep440Timestamp {
+                version: "1.3.0b1".to_string(),
+                published_unix: now - 20 * 24 * 60 * 60,
+            },
+            Pep440Timestamp {
+                version: "1.2.5".to_string(),
+                published_unix: now - 2 * 24 * 60 * 60,
+            },
+        ];
+
+        let resolved = resolve_pep440_with_min_age(
+            "1.2.0",
+            &releases,
+            now,
+            Duration::from_secs(7 * 24 * 60 * 60),
+            VersionPolicy::Stable,
+        )
+        .expect("resolution should succeed");
+
+        assert_eq!(resolved.selected_version, None);
+        assert_eq!(resolved.latest_version.as_deref(), Some("1.3.0b1"));
+    }
+
+    #[test]
+    fn keeps_current_when_newer_versions_exist_but_all_blocked_by_policy() {
+        let now = 1_800_000_000;
+        let releases = vec![Pep440Timestamp {
+            version: "1.3.0b1".to_string(),
+            published_unix: now - 20 * 24 * 60 * 60,
+        }];
+
+        let resolved = resolve_pep440_with_min_age(
+            "1.2.0",
+            &releases,
+            now,
+            Duration::from_secs(0),
+            VersionPolicy::Stable,
+        )
+        .expect("resolution should succeed");
+
+        assert_eq!(resolved.selected_version.as_deref(), Some("1.2.0"));
+        assert_eq!(resolved.latest_version.as_deref(), Some("1.3.0b1"));
     }
 }

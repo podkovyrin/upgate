@@ -6,6 +6,7 @@ use reqwest::blocking::Client;
 use semver::Version;
 use serde::Deserialize;
 
+use crate::managers::shared::versioning::policy::VersionPolicy;
 #[allow(clippy::wildcard_imports)]
 use crate::managers::*;
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
@@ -23,6 +24,10 @@ impl ManagerPlugin for CargoPlugin {
 
     fn default_min_release_age(&self) -> &'static str {
         "7d"
+    }
+
+    fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
+        true
     }
 
     fn run(&self, ctx: &ManagerCtx) -> Result<()> {
@@ -65,6 +70,7 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                 runtime.now_unix_secs,
                 runtime.min_age,
                 runtime.max_parallel_checks,
+                ctx.policy.version_policy,
             )
             .context("planning execution failed")
         },
@@ -124,6 +130,7 @@ fn resolve_cargo_plan(
     now_unix_secs: u64,
     min_age: Duration,
     max_parallel_checks: usize,
+    version_policy: VersionPolicy,
 ) -> Result<Vec<CargoPlanItem>> {
     let Some(crates_client) = soft_fail(
         crate::util::http::default_blocking_client(),
@@ -146,6 +153,7 @@ fn resolve_cargo_plan(
             &current,
             now_unix_secs,
             min_age,
+            version_policy,
         )
         .map_err(|err| err.to_string());
 
@@ -344,6 +352,7 @@ fn cargo_resolve_target_with_min_age(
     current: &str,
     now_unix_secs: u64,
     min_age: Duration,
+    version_policy: VersionPolicy,
 ) -> Result<AgeResolvedTarget> {
     let output = run_cmd(
         "cargo",
@@ -356,8 +365,14 @@ fn cargo_resolve_target_with_min_age(
 
     let all_versions = crates_io_versions(crates_client, name)?;
 
-    let resolved = resolve_semver_with_min_age(current, &all_versions, now_unix_secs, min_age)
-        .with_context(|| format!("failed to resolve eligible semver target for {name}"))?;
+    let resolved = resolve_semver_with_min_age(
+        current,
+        &all_versions,
+        now_unix_secs,
+        min_age,
+        version_policy,
+    )
+    .with_context(|| format!("failed to resolve eligible semver target for {name}"))?;
 
     // Keep the parsed search latest in scope to validate semver hygiene and avoid stale data.
     let _ = latest;

@@ -4,6 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use crate::managers::shared::versioning::policy::VersionPolicy;
 #[allow(clippy::wildcard_imports)]
 use crate::managers::*;
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
@@ -20,6 +21,10 @@ impl ManagerPlugin for NpmPlugin {
 
     fn default_min_release_age(&self) -> &'static str {
         "7d"
+    }
+
+    fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
+        true
     }
 
     fn run(&self, ctx: &ManagerCtx) -> Result<()> {
@@ -66,6 +71,7 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                 runtime.now_unix_secs,
                 runtime.min_age,
                 runtime.max_parallel_checks,
+                ctx.policy.version_policy,
             )
             .context("planning execution failed")
         },
@@ -122,6 +128,7 @@ fn resolve_npm_plan(
     now_unix_secs: u64,
     min_age: Duration,
     max_parallel_checks: usize,
+    version_policy: VersionPolicy,
 ) -> Result<Vec<NpmPlanItem>> {
     let jobs: Vec<(String, String)> = outdated
         .iter()
@@ -130,8 +137,14 @@ fn resolve_npm_plan(
 
     let threads = effective_parallelism(max_parallel_checks, NPM_MAX_PARALLEL_CHECKS);
     run_indexed_parallel(jobs, threads, PLUGIN.id(), |(name, current)| {
-        let resolved = npm_resolve_target_with_min_age(&name, &current, now_unix_secs, min_age)
-            .map_err(|err| err.to_string());
+        let resolved = npm_resolve_target_with_min_age(
+            &name,
+            &current,
+            now_unix_secs,
+            min_age,
+            version_policy,
+        )
+        .map_err(|err| err.to_string());
 
         NpmPlanItem::new(name, current, resolved)
     })
@@ -205,6 +218,7 @@ fn npm_resolve_target_with_min_age(
     current: &str,
     now_unix_secs: u64,
     min_age: Duration,
+    version_policy: VersionPolicy,
 ) -> Result<AgeResolvedTarget> {
     let timestamps_by_version: NpmTimeMap =
         run_cmd("npm", ["view", name, "time", "--json"], CmdStatus::Success)
@@ -213,8 +227,9 @@ fn npm_resolve_target_with_min_age(
 
     let releases = npm_semver_time_releases(name, &timestamps_by_version)?;
 
-    let resolved = resolve_semver_with_min_age(current, &releases, now_unix_secs, min_age)
-        .with_context(|| format!("failed to resolve eligible semver target for {name}"))?;
+    let resolved =
+        resolve_semver_with_min_age(current, &releases, now_unix_secs, min_age, version_policy)
+            .with_context(|| format!("failed to resolve eligible semver target for {name}"))?;
 
     Ok(resolved.into())
 }
