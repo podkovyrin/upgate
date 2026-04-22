@@ -22,6 +22,7 @@ pub struct AgeResolvedTarget {
     pub selected_version: Option<String>,
     pub latest_version: Option<String>,
     pub latest_age_secs: Option<u64>,
+    pub current_blocked_by_policy: bool,
 }
 
 impl AgeResolvedTarget {
@@ -30,10 +31,20 @@ impl AgeResolvedTarget {
         latest_version: Option<String>,
         latest_age_secs: Option<u64>,
     ) -> Self {
+        Self::new_with_policy_flag(selected_version, latest_version, latest_age_secs, false)
+    }
+
+    pub const fn new_with_policy_flag(
+        selected_version: Option<String>,
+        latest_version: Option<String>,
+        latest_age_secs: Option<u64>,
+        current_blocked_by_policy: bool,
+    ) -> Self {
         Self {
             selected_version,
             latest_version,
             latest_age_secs,
+            current_blocked_by_policy,
         }
     }
 
@@ -49,20 +60,22 @@ impl AgeResolvedTarget {
 
 impl From<SemverAgeResolution> for AgeResolvedTarget {
     fn from(value: SemverAgeResolution) -> Self {
-        Self::new(
+        Self::new_with_policy_flag(
             value.selected_version,
             value.latest_version,
             value.latest_age_secs,
+            value.current_blocked_by_policy,
         )
     }
 }
 
 impl From<Pep440AgeResolution> for AgeResolvedTarget {
     fn from(value: Pep440AgeResolution) -> Self {
-        Self::new(
+        Self::new_with_policy_flag(
             value.selected_version,
             value.latest_version,
             value.latest_age_secs,
+            value.current_blocked_by_policy,
         )
     }
 }
@@ -99,6 +112,7 @@ pub enum PlanDecision {
         required_age: String,
         delayed_latest: Option<DelayedLatest>,
     },
+    CurrentBlockedByPolicy,
     NoChange,
     Update {
         target: String,

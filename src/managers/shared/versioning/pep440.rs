@@ -22,6 +22,7 @@ pub struct Pep440AgeResolution {
     pub selected_version: Option<String>,
     pub latest_version: Option<String>,
     pub latest_age_secs: Option<u64>,
+    pub current_blocked_by_policy: bool,
 }
 
 pub fn resolve_pep440_with_min_age(
@@ -58,18 +59,18 @@ pub fn resolve_pep440_with_min_age(
         GateBypass::NONE,
     );
 
-    let selected_version = match resolution.recommendation {
-        RecommendedOutcome::Update { target_version } => Some(target_version),
-        RecommendedOutcome::DelayedByAge => None,
-        RecommendedOutcome::CurrentNoNewer | RecommendedOutcome::CurrentBlockedByPolicy => {
-            Some(current.to_string())
-        }
+    let (selected_version, current_blocked_by_policy) = match resolution.recommendation {
+        RecommendedOutcome::Update { target_version } => (Some(target_version), false),
+        RecommendedOutcome::DelayedByAge => (None, false),
+        RecommendedOutcome::CurrentNoNewer => (Some(current.to_string()), false),
+        RecommendedOutcome::CurrentBlockedByPolicy => (Some(current.to_string()), true),
     };
 
     Ok(Pep440AgeResolution {
         selected_version,
         latest_version: resolution.latest_overall_version,
         latest_age_secs: resolution.latest_overall_age_secs,
+        current_blocked_by_policy,
     })
 }
 
@@ -145,6 +146,7 @@ mod tests {
 
         assert_eq!(resolved.selected_version.as_deref(), Some("2.0.0"));
         assert_eq!(resolved.latest_version, None);
+        assert!(!resolved.current_blocked_by_policy);
     }
 
     #[test]
@@ -166,6 +168,7 @@ mod tests {
 
         assert_eq!(resolved.selected_version.as_deref(), Some("1.0.0"));
         assert_eq!(resolved.latest_version, None);
+        assert!(!resolved.current_blocked_by_policy);
     }
 
     #[test]
@@ -193,6 +196,7 @@ mod tests {
 
         assert_eq!(resolved.selected_version, None);
         assert_eq!(resolved.latest_version.as_deref(), Some("1.3.0b1"));
+        assert!(!resolved.current_blocked_by_policy);
     }
 
     #[test]
@@ -214,5 +218,6 @@ mod tests {
 
         assert_eq!(resolved.selected_version.as_deref(), Some("1.2.0"));
         assert_eq!(resolved.latest_version.as_deref(), Some("1.3.0b1"));
+        assert!(resolved.current_blocked_by_policy);
     }
 }

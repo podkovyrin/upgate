@@ -6,6 +6,9 @@ use crate::util::time::human_age;
 pub trait ResolvedPlanTarget {
     fn selected_version(&self) -> Option<&str>;
     fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest>;
+    fn current_blocked_by_policy(&self) -> bool {
+        false
+    }
 }
 
 impl ResolvedPlanTarget for AgeResolvedTarget {
@@ -15,6 +18,10 @@ impl ResolvedPlanTarget for AgeResolvedTarget {
 
     fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
         Self::delayed_latest(self, min_age)
+    }
+
+    fn current_blocked_by_policy(&self) -> bool {
+        self.current_blocked_by_policy
     }
 }
 
@@ -32,6 +39,9 @@ where
                 required_age: human_age(min_age.as_secs()),
                 delayed_latest: target.delayed_latest(min_age),
             },
+            Some(selected) if selected == current_version && target.current_blocked_by_policy() => {
+                PlanDecision::CurrentBlockedByPolicy
+            }
             Some(selected) if selected == current_version => PlanDecision::NoChange,
             Some(selected) => PlanDecision::Update {
                 target: selected.to_string(),
@@ -51,6 +61,7 @@ mod tests {
     struct MockTarget {
         selected: Option<&'static str>,
         delayed_latest: Option<DelayedLatest>,
+        blocked_by_policy: bool,
     }
 
     impl ResolvedPlanTarget for MockTarget {
@@ -60,6 +71,10 @@ mod tests {
 
         fn delayed_latest(&self, _min_age: Duration) -> Option<DelayedLatest> {
             self.delayed_latest.clone()
+        }
+
+        fn current_blocked_by_policy(&self) -> bool {
+            self.blocked_by_policy
         }
     }
 
@@ -88,6 +103,7 @@ mod tests {
                     latest_age: "1h".to_string(),
                     required_age: "2h".to_string(),
                 }),
+                blocked_by_policy: false,
             }),
             Duration::from_secs(7_200),
         );
@@ -113,6 +129,7 @@ mod tests {
             Ok(MockTarget {
                 selected: Some("1.0.0"),
                 delayed_latest: None,
+                blocked_by_policy: false,
             }),
             Duration::from_secs(3_600),
         );
@@ -131,6 +148,7 @@ mod tests {
                     latest_age: "1h".to_string(),
                     required_age: "7d".to_string(),
                 }),
+                blocked_by_policy: false,
             }),
             Duration::from_secs(604_800),
         );
@@ -146,5 +164,20 @@ mod tests {
             }
             _ => panic!("expected PlanDecision::Update"),
         }
+    }
+
+    #[test]
+    fn returns_current_blocked_by_policy_when_selected_matches_current_and_policy_blocks_newer() {
+        let decision = plan_decision_from_resolution(
+            "1.0.0",
+            Ok(MockTarget {
+                selected: Some("1.0.0"),
+                delayed_latest: None,
+                blocked_by_policy: true,
+            }),
+            Duration::from_secs(3_600),
+        );
+
+        assert!(matches!(decision, PlanDecision::CurrentBlockedByPolicy));
     }
 }

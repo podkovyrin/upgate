@@ -112,6 +112,10 @@ fn handle_regular_decision(
             let outcome = delayed_outcome(manager, name, current, required_age, delayed_latest);
             emit_text_outcome(&outcome);
         }
+        PlanDecision::CurrentBlockedByPolicy => {
+            let outcome = ItemOutcome::current(manager, name, current);
+            emit_text_outcome(&outcome);
+        }
         PlanDecision::NoChange => {
             let outcome = ItemOutcome::skipped_no_change(manager, name, current);
             emit_text_outcome(&outcome);
