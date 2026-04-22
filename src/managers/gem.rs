@@ -6,6 +6,7 @@ use reqwest::blocking::Client;
 use semver::Version;
 
 use crate::config::ManagerMode;
+use crate::managers::shared::versioning::policy::VersionPolicy;
 #[allow(clippy::wildcard_imports)]
 use crate::managers::*;
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
@@ -27,6 +28,10 @@ impl ManagerPlugin for GemPlugin {
 
     fn default_mode(&self) -> ManagerMode {
         ManagerMode::Off
+    }
+
+    fn supports_version_policy(&self, policy: VersionPolicy) -> bool {
+        matches!(policy, VersionPolicy::Disabled | VersionPolicy::Stable)
     }
 
     fn run(&self, ctx: &ManagerCtx) -> Result<()> {
