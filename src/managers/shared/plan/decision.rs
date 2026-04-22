@@ -90,7 +90,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::managers::shared::{DelayedLatest, PlanDecision};
+    use crate::managers::shared::DelayedLatest;
 
     #[derive(Clone)]
     struct MockTarget {

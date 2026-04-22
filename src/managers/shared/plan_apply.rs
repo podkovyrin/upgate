@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Error, Result};
 
 use super::{
-    PlanDecision, PlanMeta, PlannedUpdate, ResolvedPlanTarget, emit_manager_level_error,
+    PlanMeta, PlannedUpdate, ResolvedPlanTarget, emit_manager_level_error,
     emit_plan_and_collect_upgradable, plan_decision_from_resolution,
 };
 use crate::managers::runtime::ManagerCtx;
@@ -109,18 +109,6 @@ where
     let collected = collect_result(&discovered, resolved, &runtime)?;
 
     apply_updates(ctx, &discovered, collected)
-}
-
-pub fn collect_upgradable_from_plan<T, Analyze>(
-    items: Vec<T>,
-    analyze: Analyze,
-    suppress_update_outcomes: bool,
-    pinned: &BTreeSet<String>,
-) -> Vec<PlannedUpdate>
-where
-    Analyze: FnMut(T) -> (PlanMeta, PlanDecision),
-{
-    emit_plan_and_collect_upgradable(items, analyze, suppress_update_outcomes, Some(pinned))
 }
 
 pub fn collect_upgradable_from_resolved_plan<T>(

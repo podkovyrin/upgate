@@ -7,11 +7,6 @@ if [[ -z "${scenario_dir}" ]]; then
   exit 70
 fi
 
-if [[ "$#" -eq 4 && "$1" == "upgrade" && "$2" == "--dry-run" && "$3" == "--before" ]]; then
-  cat "${scenario_dir}/upgrade-dry-run.txt"
-  exit 0
-fi
-
 if [[ "$#" -eq 2 && "$1" == "outdated" && "$2" == "--json" ]]; then
   cat "${scenario_dir}/outdated.json"
   exit 0
@@ -22,7 +17,19 @@ if [[ "$#" -eq 2 && "$1" == "ls" && "$2" == "--json" ]]; then
   exit 0
 fi
 
-if [[ "$#" -ge 3 && "$1" == "upgrade" && "$2" == "--before" ]]; then
+if [[ "$#" -eq 3 && "$1" == "ls-remote" && "$2" == "--json" ]]; then
+  tool="$3"
+  file="${scenario_dir}/ls-remote/${tool}.json"
+  if [[ ! -f "${file}" ]]; then
+    echo "fake mise: missing fixture for tool '${tool}' at ${file}" >&2
+    exit 66
+  fi
+
+  cat "${file}"
+  exit 0
+fi
+
+if [[ "$#" -eq 2 && "$1" == "upgrade" ]]; then
   # apply paths are skipped by default via SKIP_MUTATING_COMMANDS, but keep
   # a harmless fallback for explicit local runs with that guard disabled.
   echo '{}'

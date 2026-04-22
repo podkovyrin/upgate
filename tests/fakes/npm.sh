@@ -35,6 +35,10 @@ if [[ "$#" -eq 4 && "$1" == "view" && "$3" == "time" && "$4" == "--json" ]]; the
   fi
 
   file="${scenario_dir}/time/${pkg}.json"
+  if [[ ! -f "${file}" && "${pkg}" == *"@"* ]]; then
+    pkg_base="${pkg%@*}"
+    file="${scenario_dir}/time/${pkg_base}.json"
+  fi
   if [[ ! -f "${file}" ]]; then
     echo "fake npm: missing fixture for package '${pkg}' at ${file}" >&2
     exit 66

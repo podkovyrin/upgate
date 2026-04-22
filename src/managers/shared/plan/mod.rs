@@ -9,4 +9,4 @@ pub use emit::{
     emit_manager_level_error, emit_manager_level_error_with, emit_scan_current,
     emit_version_scan_outcomes, soft_fail, soft_fail_or, verbose_now_unix_secs,
 };
-pub use types::{AgeResolvedTarget, DelayedLatest, PlanDecision, PlanMeta, PlannedUpdate};
+pub use types::{AgeResolvedTarget, DelayedLatest, PlanMeta, PlannedUpdate};

@@ -108,22 +108,22 @@ fn fake_mise_harness_routes_commands_to_expected_fixtures() {
         DETERMINISTIC_CONFIG,
     );
 
-    let dry_run = sandbox.run_fake_mise(&["upgrade", "--dry-run", "--before", "7d"]);
-    assert_success(&dry_run, "fake mise dry-run");
-    let dry_run_stdout = stdout(&dry_run);
-    assert!(dry_run_stdout.contains("Would install npm:alpha-ready@1.2.0"));
+    let ls_remote = sandbox.run_fake_mise(&["ls-remote", "--json", "node"]);
+    assert_success(&ls_remote, "fake mise ls-remote");
+    let ls_remote_stdout = stdout(&ls_remote);
+    assert!(ls_remote_stdout.contains("\"20.1.0\""));
 
     let outdated = sandbox.run_fake_mise(&["outdated", "--json"]);
     assert_success(&outdated, "fake mise outdated");
     let outdated_stdout = stdout(&outdated);
     assert!(outdated_stdout.contains("npm:beta-fresh-latest"));
 
-    let npm_view = sandbox.run_fake_npm(&["view", "beta-fresh-latest@1.1.0", "time", "--json"]);
+    let npm_view = sandbox.run_fake_npm(&["view", "beta-fresh-latest", "time", "--json"]);
     assert_success(&npm_view, "fake npm for mise");
     let npm_view_stdout = stdout(&npm_view);
     assert!(npm_view_stdout.contains("2099-01-01"));
 
-    let missing = sandbox.run_fake_npm(&["view", "does-not-exist@1.0.0", "time", "--json"]);
+    let missing = sandbox.run_fake_npm(&["view", "does-not-exist", "time", "--json"]);
     assert_eq!(
         missing.status.code(),
         Some(66),
@@ -149,9 +149,9 @@ fn deterministic_plan_covers_updates_pinned_and_age_error_states() {
     assert!(out.contains("! Error [mise] npm:gamma-error v2.0.0 -> v2.0.0"));
 
     let err = stderr(&output);
-    assert!(err.contains("$ mise upgrade --dry-run --before 7d"));
-    assert!(err.contains("$ mise outdated --json"));
-    assert!(err.contains("$ npm view beta-fresh-latest@1.1.0 time --json"));
+    assert!(err.contains("$ mise ls --json"));
+    assert!(err.contains("$ mise ls-remote --json node"));
+    assert!(err.contains("$ npm view beta-fresh-latest time --json"));
 }
 
 #[test]
@@ -171,14 +171,14 @@ fn deterministic_apply_selective_path_runs_only_for_unpinned_eligible_items() {
     assert!(out.contains("- Skipped [mise] node v20.0.0 -> v20.1.0 (pinned)"));
 
     let err = stderr(&output);
-    assert!(err.contains("$ mise upgrade --before 7d npm:alpha-ready"));
-    assert!(err.contains("$ mise upgrade --before 7d npm:beta-fresh-latest"));
-    assert!(!err.contains("$ mise upgrade --before 7d\n"));
-    assert!(!err.contains("$ mise upgrade --before 7d node"));
+    assert!(err.contains("$ mise upgrade npm:alpha-ready@1.2.0"));
+    assert!(err.contains("$ mise upgrade npm:beta-fresh-latest@1.0.5"));
+    assert!(!err.contains("$ mise upgrade node@20.1.0"));
+    assert!(!err.contains("$ mise upgrade\n"));
 }
 
 #[test]
-fn deterministic_apply_uses_global_upgrade_when_no_items_are_pinned() {
+fn deterministic_apply_runs_per_item_exact_targets_when_no_items_are_pinned() {
     let config = r#"
 [mise]
 mode = "apply"
@@ -196,11 +196,13 @@ min_release_age = "7d"
     let out = stdout(&output);
     assert!(out.contains("+ Update [mise] npm:alpha-ready v1.0.0 -> v1.2.0"));
     assert!(out.contains("+ Update [mise] npm:beta-fresh-latest v1.0.0 -> v1.0.5"));
+    assert!(out.contains("+ Update [mise] node v20.0.0 -> v20.1.0"));
 
     let err = stderr(&output);
-    assert!(err.contains("$ mise upgrade --before 7d"));
-    assert!(!err.contains("$ mise upgrade --before 7d npm:alpha-ready"));
-    assert!(!err.contains("$ mise upgrade --before 7d npm:beta-fresh-latest"));
+    assert!(err.contains("$ mise upgrade npm:alpha-ready@1.2.0"));
+    assert!(err.contains("$ mise upgrade npm:beta-fresh-latest@1.0.5"));
+    assert!(err.contains("$ mise upgrade node@20.1.0"));
+    assert!(!err.contains("$ mise upgrade\n"));
 }
 
 #[test]
@@ -278,11 +280,9 @@ fn hybrid_apply_uses_real_npm_time_data_with_fake_mise_state() {
             || err.contains("warning: apply runs with real mutating commands ENABLED"),
         "hybrid stderr:\n{err}"
     );
-    assert!(err.contains("$ mise upgrade --before 7d"));
-    assert!(!err.contains("$ mise upgrade --before 7d npm:typescript"));
-    assert!(!err.contains("$ mise upgrade --before 7d npm:react"));
-    assert!(!err.contains("$ mise upgrade --before 7d npm:eslint"));
-    assert!(
-        !err.contains("$ mise upgrade --before 7d npm:zzzz-upnow-no-such-package-000000000000")
-    );
+    assert!(err.contains("$ mise upgrade npm:typescript@"));
+    assert!(err.contains("$ mise upgrade npm:react@"));
+    assert!(err.contains("$ mise upgrade npm:eslint@"));
+    assert!(!err.contains("$ mise upgrade\n"));
+    assert!(!err.contains("$ mise upgrade npm:zzzz-upnow-no-such-package-000000000000@"));
 }
