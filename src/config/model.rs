@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+use crate::managers::shared::versioning::policy::VersionPolicy;
 use crate::util::time::parse_duration;
 
 pub const PIN_ALL: &str = "*";
@@ -35,6 +36,8 @@ pub(super) struct GlobalSectionConfig {
 pub(super) struct ManagerSectionConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) min_release_age: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) version_policy: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) no_update: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -129,6 +132,7 @@ impl ManagerMode {
 #[derive(Debug, Clone)]
 pub struct ManagerPolicy {
     pub min_release_age: ReleaseAge,
+    pub version_policy: VersionPolicy,
     pub no_update: bool,
     pub mode: ManagerMode,
     pub pinned: BTreeSet<String>,

@@ -33,6 +33,7 @@ no_update = false
 [npm]
 mode = "apply"
 min_release_age = "7d"
+version_policy = "stable"
 pinned = ["typescript"]
 ```
 
@@ -66,6 +67,18 @@ Common defaults:
 - `brew`: `12h`
 - most others: `7d`
 
+### `version_policy`
+
+Optional prerelease eligibility policy for update target selection.
+
+Supported values:
+
+- `stable`: only final releases are eligible
+- `same-track`: follow the installed stability track (never move to a less stable lane)
+- `any`: prereleases and finals are both eligible
+
+If unset, version policy filtering is disabled and legacy behavior is preserved.
+
 ### `pinned`
 
 Optional list of package/tool names to skip for that manager.
@@ -87,7 +100,7 @@ Optional Homebrew-specific behavior toggle.
 You can override config values at runtime:
 
 ```bash
-upnow plan -S brew.no_update=true -S npm.min_release_age=14d
+upnow plan -S brew.no_update=true -S npm.min_release_age=14d -S npm.version_policy=stable
 ```
 
 Format:

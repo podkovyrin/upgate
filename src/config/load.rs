@@ -7,6 +7,7 @@ use super::model::{
     DEFAULT_SCAN_OLD_AGE_THRESHOLD, ManagerMode, ManagerPolicy, ReleaseAge, UpnowConfig,
 };
 use super::path::config_path;
+use crate::managers::shared::versioning::policy::VersionPolicy;
 use crate::util::time::parse_duration;
 
 impl UpnowConfig {
@@ -49,6 +50,10 @@ impl UpnowConfig {
             .and_then(|cfg| cfg.min_release_age.as_deref())
             .unwrap_or(default_min_release_age);
         let min_release_age = ReleaseAge::parse_for(manager_id, min_release_age_raw)?;
+        let version_policy = VersionPolicy::parse_optional_for(
+            manager_id,
+            section.and_then(|cfg| cfg.version_policy.as_deref()),
+        )?;
 
         let no_update = if supports_no_update {
             section.and_then(|cfg| cfg.no_update).unwrap_or(false)
@@ -64,11 +69,63 @@ impl UpnowConfig {
 
         Ok(ManagerPolicy {
             min_release_age,
+            version_policy,
             no_update,
             mode,
             pinned: section
                 .map(|cfg| cfg.pinned.iter().cloned().collect())
                 .unwrap_or_default(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::managers::shared::versioning::policy::VersionPolicy;
+
+    #[test]
+    fn resolve_manager_policy_defaults_version_policy_to_disabled() {
+        let config = UpnowConfig::default();
+        let policy = config
+            .resolve_manager_policy("npm", "7d", ManagerMode::Apply, false)
+            .expect("policy resolution should succeed");
+
+        assert_eq!(policy.version_policy, VersionPolicy::Disabled);
+    }
+
+    #[test]
+    fn resolve_manager_policy_parses_version_policy_value() {
+        let mut config = UpnowConfig::default();
+        config
+            .sections
+            .entry("npm".to_string())
+            .or_default()
+            .version_policy = Some("same-track".to_string());
+
+        let policy = config
+            .resolve_manager_policy("npm", "7d", ManagerMode::Apply, false)
+            .expect("policy resolution should succeed");
+
+        assert_eq!(policy.version_policy, VersionPolicy::SameTrack);
+    }
+
+    #[test]
+    fn resolve_manager_policy_rejects_invalid_version_policy_value() {
+        let mut config = UpnowConfig::default();
+        config
+            .sections
+            .entry("npm".to_string())
+            .or_default()
+            .version_policy = Some("beta-only".to_string());
+
+        let err = config
+            .resolve_manager_policy("npm", "7d", ManagerMode::Apply, false)
+            .expect_err("invalid policy value should fail");
+
+        assert_eq!(
+            err.to_string(),
+            "Invalid version_policy for [npm]: expected one of \"stable\", \"same-track\", \"any\", got \"beta-only\""
+        );
     }
 }
