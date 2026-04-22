@@ -275,6 +275,7 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                         current: item.installed.clone(),
                         target: item.target.clone(),
                         delayed_latest: None,
+                        version_policy: None,
                         apply_spec_base: Some(idx.to_string()),
                     }),
                     PlanAction::Delayed { .. } | PlanAction::Skipped { .. } => None,

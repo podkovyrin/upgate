@@ -216,6 +216,7 @@ fn mise_plan_decision(
         return PlanDecision::Update {
             target: to_version,
             delayed_latest: None,
+            version_policy: None,
         };
     };
 
@@ -223,6 +224,7 @@ fn mise_plan_decision(
         return PlanDecision::Update {
             target: to_version,
             delayed_latest: None,
+            version_policy: None,
         };
     }
 
@@ -241,6 +243,7 @@ fn mise_plan_decision(
     PlanDecision::Update {
         target: to_version,
         delayed_latest,
+        version_policy: None,
     }
 }
 
@@ -423,9 +426,11 @@ mod tests {
             PlanDecision::Update {
                 target,
                 delayed_latest,
+                version_policy,
             } => {
                 assert_eq!(target, "21.0.0");
                 assert!(delayed_latest.is_none());
+                assert!(version_policy.is_none());
             }
             _ => panic!("expected update decision"),
         }
@@ -451,9 +456,11 @@ mod tests {
             PlanDecision::Update {
                 target,
                 delayed_latest,
+                version_policy,
             } => {
                 assert_eq!(target, "8.0.0");
                 assert!(delayed_latest.is_none());
+                assert!(version_policy.is_none());
             }
             _ => panic!("expected update decision"),
         }

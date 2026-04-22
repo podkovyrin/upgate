@@ -13,6 +13,8 @@ pub struct ItemOutcome {
     pub required_age: Option<String>,
     pub latest_version: Option<String>,
     pub latest_age: Option<String>,
+    pub version_policy: Option<String>,
+    pub latest_blocked_by_policy_version: Option<String>,
     pub scan_age: Option<String>,
     pub scan_is_old: bool,
 }
@@ -37,6 +39,8 @@ impl ItemOutcome {
             required_age: None,
             latest_version: None,
             latest_age: None,
+            version_policy: None,
+            latest_blocked_by_policy_version: None,
             scan_age: None,
             scan_is_old: false,
         }

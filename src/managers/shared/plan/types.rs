@@ -18,11 +18,19 @@ pub struct DelayedLatest {
 }
 
 #[derive(Debug, Clone)]
+pub struct VersionPolicyMeta {
+    pub policy: String,
+    pub latest_blocked_version: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct AgeResolvedTarget {
     pub selected_version: Option<String>,
     pub latest_version: Option<String>,
     pub latest_age_secs: Option<u64>,
     pub current_blocked_by_policy: bool,
+    pub version_policy: Option<String>,
+    pub latest_blocked_by_policy_version: Option<String>,
 }
 
 impl AgeResolvedTarget {
@@ -45,6 +53,8 @@ impl AgeResolvedTarget {
             latest_version,
             latest_age_secs,
             current_blocked_by_policy,
+            version_policy: None,
+            latest_blocked_by_policy_version: None,
         }
     }
 
@@ -66,6 +76,7 @@ impl From<SemverAgeResolution> for AgeResolvedTarget {
             value.latest_age_secs,
             value.current_blocked_by_policy,
         )
+        .with_policy_details(value.version_policy, value.latest_blocked_by_policy_version)
     }
 }
 
@@ -77,6 +88,7 @@ impl From<Pep440AgeResolution> for AgeResolvedTarget {
             value.latest_age_secs,
             value.current_blocked_by_policy,
         )
+        .with_policy_details(value.version_policy, value.latest_blocked_by_policy_version)
     }
 }
 
@@ -106,17 +118,33 @@ impl DelayedLatest {
     }
 }
 
+impl AgeResolvedTarget {
+    fn with_policy_details(
+        mut self,
+        version_policy: Option<String>,
+        latest_blocked_by_policy_version: Option<String>,
+    ) -> Self {
+        self.version_policy = version_policy;
+        self.latest_blocked_by_policy_version = latest_blocked_by_policy_version;
+        self
+    }
+}
+
 pub enum PlanDecision {
     Error(String),
     DelayedNoEligible {
         required_age: String,
         delayed_latest: Option<DelayedLatest>,
+        version_policy: Option<VersionPolicyMeta>,
     },
-    CurrentBlockedByPolicy,
+    CurrentBlockedByPolicy {
+        version_policy: VersionPolicyMeta,
+    },
     NoChange,
     Update {
         target: String,
         delayed_latest: Option<DelayedLatest>,
+        version_policy: Option<VersionPolicyMeta>,
     },
 }
 
@@ -127,18 +155,19 @@ pub struct PlannedUpdate {
     pub current: String,
     pub target: String,
     pub delayed_latest: Option<DelayedLatest>,
+    pub version_policy: Option<VersionPolicyMeta>,
     pub apply_spec_base: Option<String>,
 }
 
 impl PlannedUpdate {
     pub fn to_update_outcome(&self) -> ItemOutcome {
-        if let Some(DelayedLatest {
+        let mut outcome = if let Some(DelayedLatest {
             latest_version,
             latest_age,
             required_age,
         }) = &self.delayed_latest
         {
-            return ItemOutcome::update_with_delayed_latest(
+            ItemOutcome::update_with_delayed_latest(
                 self.manager,
                 self.name.clone(),
                 self.current.clone(),
@@ -146,14 +175,21 @@ impl PlannedUpdate {
                 latest_version.clone(),
                 latest_age.clone(),
                 required_age.clone(),
-            );
+            )
+        } else {
+            ItemOutcome::update(
+                self.manager,
+                self.name.clone(),
+                self.current.clone(),
+                self.target.clone(),
+            )
+        };
+
+        if let Some(policy) = &self.version_policy {
+            outcome.version_policy = Some(policy.policy.clone());
+            outcome.latest_blocked_by_policy_version = policy.latest_blocked_version.clone();
         }
 
-        ItemOutcome::update(
-            self.manager,
-            self.name.clone(),
-            self.current.clone(),
-            self.target.clone(),
-        )
+        outcome
     }
 }

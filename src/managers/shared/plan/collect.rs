@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use super::types::{DelayedLatest, PlanDecision, PlanMeta, PlannedUpdate};
+use super::types::{DelayedLatest, PlanDecision, PlanMeta, PlannedUpdate, VersionPolicyMeta};
 use crate::config::is_pinned;
 use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 
@@ -62,6 +62,7 @@ fn handle_pinned_decision(
         if let PlanDecision::Update {
             target,
             delayed_latest,
+            version_policy,
         } = decision
         {
             upgradable.push(PlannedUpdate {
@@ -70,6 +71,7 @@ fn handle_pinned_decision(
                 current,
                 target,
                 delayed_latest,
+                version_policy,
                 apply_spec_base: None,
             });
         }
@@ -108,12 +110,22 @@ fn handle_regular_decision(
         PlanDecision::DelayedNoEligible {
             required_age,
             delayed_latest,
+            version_policy,
         } => {
-            let outcome = delayed_outcome(manager, name, current, required_age, delayed_latest);
+            let outcome = delayed_outcome(
+                manager,
+                name,
+                current,
+                required_age,
+                delayed_latest,
+                version_policy,
+            );
             emit_text_outcome(&outcome);
         }
-        PlanDecision::CurrentBlockedByPolicy => {
-            let outcome = ItemOutcome::current(manager, name, current);
+        PlanDecision::CurrentBlockedByPolicy { version_policy } => {
+            let mut outcome = ItemOutcome::current(manager, name, current);
+            outcome.version_policy = Some(version_policy.policy);
+            outcome.latest_blocked_by_policy_version = version_policy.latest_blocked_version;
             emit_text_outcome(&outcome);
         }
         PlanDecision::NoChange => {
@@ -123,6 +135,7 @@ fn handle_regular_decision(
         PlanDecision::Update {
             target,
             delayed_latest,
+            version_policy,
         } => {
             let planned = PlannedUpdate {
                 manager,
@@ -130,6 +143,7 @@ fn handle_regular_decision(
                 current,
                 target,
                 delayed_latest,
+                version_policy,
                 apply_spec_base: None,
             };
             if !suppress_update_outcomes {
@@ -146,22 +160,30 @@ fn delayed_outcome(
     current: String,
     required_age: String,
     delayed_latest: Option<DelayedLatest>,
+    version_policy: Option<VersionPolicyMeta>,
 ) -> ItemOutcome {
-    if let Some(DelayedLatest {
+    let mut outcome = if let Some(DelayedLatest {
         latest_version,
         latest_age,
         required_age,
     }) = delayed_latest
     {
-        return ItemOutcome::delayed_no_eligible_with_latest(
+        ItemOutcome::delayed_no_eligible_with_latest(
             manager,
             name,
             current,
             latest_version,
             latest_age,
             required_age,
-        );
+        )
+    } else {
+        ItemOutcome::delayed_no_eligible(manager, name, current, required_age)
+    };
+
+    if let Some(policy) = version_policy {
+        outcome.version_policy = Some(policy.policy);
+        outcome.latest_blocked_by_policy_version = policy.latest_blocked_version;
     }
 
-    ItemOutcome::delayed_no_eligible(manager, name, current, required_age)
+    outcome
 }

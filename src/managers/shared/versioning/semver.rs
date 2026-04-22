@@ -22,6 +22,8 @@ pub struct SemverAgeResolution {
     pub latest_version: Option<String>,
     pub latest_age_secs: Option<u64>,
     pub current_blocked_by_policy: bool,
+    pub version_policy: Option<String>,
+    pub latest_blocked_by_policy_version: Option<String>,
 }
 
 pub fn resolve_semver_with_min_age(
@@ -67,12 +69,21 @@ pub fn resolve_semver_with_min_age(
         RecommendedOutcome::CurrentNoNewer => (Some(current.to_string()), false),
         RecommendedOutcome::CurrentBlockedByPolicy => (Some(current.to_string()), true),
     };
+    let version_policy =
+        (version_policy != VersionPolicy::Disabled).then(|| version_policy.as_str().to_string());
+    let latest_blocked_by_policy_version = resolution
+        .evaluations
+        .iter()
+        .find(|eval| !eval.policy_allowed)
+        .map(|eval| eval.version.clone());
 
     Ok(SemverAgeResolution {
         selected_version,
         latest_version: resolution.latest_overall_version,
         latest_age_secs: resolution.latest_overall_age_secs,
         current_blocked_by_policy,
+        version_policy,
+        latest_blocked_by_policy_version,
     })
 }
 
@@ -136,6 +147,8 @@ mod tests {
         assert_eq!(resolved.selected_version.as_deref(), Some("2.0.0"));
         assert_eq!(resolved.latest_version, None);
         assert!(!resolved.current_blocked_by_policy);
+        assert_eq!(resolved.version_policy, None);
+        assert_eq!(resolved.latest_blocked_by_policy_version, None);
     }
 
     #[test]
@@ -158,6 +171,8 @@ mod tests {
         assert_eq!(resolved.selected_version.as_deref(), Some("1.0.0"));
         assert_eq!(resolved.latest_version, None);
         assert!(!resolved.current_blocked_by_policy);
+        assert_eq!(resolved.version_policy, None);
+        assert_eq!(resolved.latest_blocked_by_policy_version, None);
     }
 
     #[test]
@@ -186,6 +201,11 @@ mod tests {
         assert_eq!(resolved.selected_version, None);
         assert_eq!(resolved.latest_version.as_deref(), Some("1.3.0-beta.1"));
         assert!(!resolved.current_blocked_by_policy);
+        assert_eq!(resolved.version_policy.as_deref(), Some("stable"));
+        assert_eq!(
+            resolved.latest_blocked_by_policy_version.as_deref(),
+            Some("1.3.0-beta.1")
+        );
     }
 
     #[test]
@@ -208,5 +228,10 @@ mod tests {
         assert_eq!(resolved.selected_version.as_deref(), Some("1.2.0"));
         assert_eq!(resolved.latest_version.as_deref(), Some("1.3.0-beta.1"));
         assert!(resolved.current_blocked_by_policy);
+        assert_eq!(resolved.version_policy.as_deref(), Some("stable"));
+        assert_eq!(
+            resolved.latest_blocked_by_policy_version.as_deref(),
+            Some("1.3.0-beta.1")
+        );
     }
 }

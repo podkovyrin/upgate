@@ -92,12 +92,16 @@ fn render_name(name: &str, color: bool) -> String {
 
 fn append_status_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme) {
     match item.status {
-        OutcomeStatus::Current => {}
-        OutcomeStatus::Update => append_update_note(line, item, theme),
+        OutcomeStatus::Current => append_current_policy_note(line, item, theme),
+        OutcomeStatus::Update => {
+            append_update_note(line, item, theme);
+            append_policy_block_note(line, item, theme);
+        }
         OutcomeStatus::Delayed => {
             let note = delayed_note(item);
             line.push(' ');
             line.push_str(&note_segment(&note, theme.color()));
+            append_policy_block_note(line, item, theme);
         }
         OutcomeStatus::Skipped | OutcomeStatus::Error => {
             if let Some(reason) = &item.reason_detail {
@@ -127,6 +131,40 @@ fn append_update_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme)
         line.push(' ');
         line.push_str(&meta_segment(&latest_note, theme.color()));
     }
+}
+
+fn append_current_policy_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme) {
+    let Some(policy) = item.version_policy.as_deref() else {
+        return;
+    };
+
+    let note = if let Some(latest) = item.latest_blocked_by_policy_version.as_deref() {
+        format!(
+            "(latest {} blocked by version policy: {policy})",
+            version_label(latest)
+        )
+    } else {
+        format!("(newer versions blocked by version policy: {policy})")
+    };
+
+    line.push(' ');
+    line.push_str(&note_segment(&note, theme.color()));
+}
+
+fn append_policy_block_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme) {
+    let Some(policy) = item.version_policy.as_deref() else {
+        return;
+    };
+    let Some(latest) = item.latest_blocked_by_policy_version.as_deref() else {
+        return;
+    };
+
+    let note = format!(
+        "(latest {} blocked by version policy: {policy})",
+        version_label(latest)
+    );
+    line.push(' ');
+    line.push_str(&note_segment(&note, theme.color()));
 }
 
 fn delayed_note(item: &ItemOutcome) -> String {
@@ -356,5 +394,48 @@ mod tests {
         let rendered = render_to_version("v1.2.3", "v1.3.0", true, false);
         assert!(rendered.contains("\u{1b}[34m"));
         assert!(!rendered.contains("\u{1b}[1m"));
+    }
+
+    #[test]
+    fn current_with_policy_note_includes_blocked_latest() {
+        let mut item = ItemOutcome::current("npm", "foo", "1.2.0");
+        item.version_policy = Some("stable".to_string());
+        item.latest_blocked_by_policy_version = Some("1.3.0-beta.1".to_string());
+
+        let rendered = item.to_text_line().expect("line should render");
+        assert!(rendered.contains("blocked by version policy: stable"));
+        assert!(rendered.contains("v1.3.0-beta.1"));
+    }
+
+    #[test]
+    fn current_with_policy_note_without_blocked_latest_uses_generic_text() {
+        let mut item = ItemOutcome::current("pipx", "bar", "2.0.0rc1");
+        item.version_policy = Some("stable".to_string());
+
+        let rendered = item.to_text_line().expect("line should render");
+        assert!(rendered.contains("newer versions blocked by version policy: stable"));
+    }
+
+    #[test]
+    fn update_with_policy_note_includes_blocked_latest() {
+        let mut item = ItemOutcome::update("npm", "baz", "1.2.0", "1.2.5");
+        item.version_policy = Some("stable".to_string());
+        item.latest_blocked_by_policy_version = Some("1.3.0-beta.1".to_string());
+
+        let rendered = item.to_text_line().expect("line should render");
+        assert!(rendered.contains("blocked by version policy: stable"));
+        assert!(rendered.contains("v1.3.0-beta.1"));
+    }
+
+    #[test]
+    fn delayed_with_policy_note_includes_blocked_latest() {
+        let mut item = ItemOutcome::delayed_too_fresh("npm", "qux", "3.1.0", "3.1.1", "3d", "7d");
+        item.version_policy = Some("stable".to_string());
+        item.latest_blocked_by_policy_version = Some("4.0.0-beta.2".to_string());
+
+        let rendered = item.to_text_line().expect("line should render");
+        assert!(rendered.contains("(3d < 7d)"));
+        assert!(rendered.contains("blocked by version policy: stable"));
+        assert!(rendered.contains("v4.0.0-beta.2"));
     }
 }

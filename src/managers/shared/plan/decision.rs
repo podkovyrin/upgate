@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::types::{AgeResolvedTarget, DelayedLatest, PlanDecision};
+use super::types::{AgeResolvedTarget, DelayedLatest, PlanDecision, VersionPolicyMeta};
 use crate::util::time::human_age;
 
 pub trait ResolvedPlanTarget {
@@ -8,6 +8,12 @@ pub trait ResolvedPlanTarget {
     fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest>;
     fn current_blocked_by_policy(&self) -> bool {
         false
+    }
+    fn version_policy(&self) -> Option<&str> {
+        None
+    }
+    fn latest_blocked_by_policy_version(&self) -> Option<&str> {
+        None
     }
 }
 
@@ -22,6 +28,14 @@ impl ResolvedPlanTarget for AgeResolvedTarget {
 
     fn current_blocked_by_policy(&self) -> bool {
         self.current_blocked_by_policy
+    }
+
+    fn version_policy(&self) -> Option<&str> {
+        self.version_policy.as_deref()
+    }
+
+    fn latest_blocked_by_policy_version(&self) -> Option<&str> {
+        self.latest_blocked_by_policy_version.as_deref()
     }
 }
 
@@ -38,18 +52,39 @@ where
             None => PlanDecision::DelayedNoEligible {
                 required_age: human_age(min_age.as_secs()),
                 delayed_latest: target.delayed_latest(min_age),
+                version_policy: version_policy_meta(&target),
             },
             Some(selected) if selected == current_version && target.current_blocked_by_policy() => {
-                PlanDecision::CurrentBlockedByPolicy
+                PlanDecision::CurrentBlockedByPolicy {
+                    version_policy: version_policy_meta(&target).unwrap_or_else(|| {
+                        VersionPolicyMeta {
+                            policy: "unknown".to_string(),
+                            latest_blocked_version: None,
+                        }
+                    }),
+                }
             }
             Some(selected) if selected == current_version => PlanDecision::NoChange,
             Some(selected) => PlanDecision::Update {
                 target: selected.to_string(),
                 delayed_latest: target.delayed_latest(min_age),
+                version_policy: version_policy_meta(&target),
             },
         },
         Err(err) => PlanDecision::Error(err),
     }
+}
+
+fn version_policy_meta<T>(target: &T) -> Option<VersionPolicyMeta>
+where
+    T: ResolvedPlanTarget,
+{
+    target.version_policy().map(|policy| VersionPolicyMeta {
+        policy: policy.to_string(),
+        latest_blocked_version: target
+            .latest_blocked_by_policy_version()
+            .map(str::to_string),
+    })
 }
 
 #[cfg(test)]
@@ -62,6 +97,8 @@ mod tests {
         selected: Option<&'static str>,
         delayed_latest: Option<DelayedLatest>,
         blocked_by_policy: bool,
+        version_policy: Option<&'static str>,
+        latest_blocked_by_policy_version: Option<&'static str>,
     }
 
     impl ResolvedPlanTarget for MockTarget {
@@ -75,6 +112,14 @@ mod tests {
 
         fn current_blocked_by_policy(&self) -> bool {
             self.blocked_by_policy
+        }
+
+        fn version_policy(&self) -> Option<&str> {
+            self.version_policy
+        }
+
+        fn latest_blocked_by_policy_version(&self) -> Option<&str> {
+            self.latest_blocked_by_policy_version
         }
     }
 
@@ -104,6 +149,8 @@ mod tests {
                     required_age: "2h".to_string(),
                 }),
                 blocked_by_policy: false,
+                version_policy: None,
+                latest_blocked_by_policy_version: None,
             }),
             Duration::from_secs(7_200),
         );
@@ -112,11 +159,13 @@ mod tests {
             PlanDecision::DelayedNoEligible {
                 required_age,
                 delayed_latest,
+                version_policy,
             } => {
                 assert_eq!(required_age, "2h");
                 let delayed = delayed_latest.expect("expected delayed latest metadata");
                 assert_eq!(delayed.latest_version, "1.1.0");
                 assert_eq!(delayed.latest_age, "1h");
+                assert!(version_policy.is_none());
             }
             _ => panic!("expected PlanDecision::DelayedNoEligible"),
         }
@@ -130,6 +179,8 @@ mod tests {
                 selected: Some("1.0.0"),
                 delayed_latest: None,
                 blocked_by_policy: false,
+                version_policy: None,
+                latest_blocked_by_policy_version: None,
             }),
             Duration::from_secs(3_600),
         );
@@ -149,6 +200,8 @@ mod tests {
                     required_age: "7d".to_string(),
                 }),
                 blocked_by_policy: false,
+                version_policy: None,
+                latest_blocked_by_policy_version: None,
             }),
             Duration::from_secs(604_800),
         );
@@ -157,10 +210,12 @@ mod tests {
             PlanDecision::Update {
                 target,
                 delayed_latest,
+                version_policy,
             } => {
                 assert_eq!(target, "1.2.0");
                 let delayed = delayed_latest.expect("expected delayed latest metadata");
                 assert_eq!(delayed.latest_version, "1.3.0");
+                assert!(version_policy.is_none());
             }
             _ => panic!("expected PlanDecision::Update"),
         }
@@ -174,10 +229,21 @@ mod tests {
                 selected: Some("1.0.0"),
                 delayed_latest: None,
                 blocked_by_policy: true,
+                version_policy: Some("stable"),
+                latest_blocked_by_policy_version: Some("1.3.0-beta.1"),
             }),
             Duration::from_secs(3_600),
         );
 
-        assert!(matches!(decision, PlanDecision::CurrentBlockedByPolicy));
+        match decision {
+            PlanDecision::CurrentBlockedByPolicy { version_policy } => {
+                assert_eq!(version_policy.policy, "stable");
+                assert_eq!(
+                    version_policy.latest_blocked_version.as_deref(),
+                    Some("1.3.0-beta.1")
+                );
+            }
+            _ => panic!("expected PlanDecision::CurrentBlockedByPolicy"),
+        }
     }
 }
