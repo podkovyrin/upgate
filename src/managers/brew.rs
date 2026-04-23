@@ -8,6 +8,9 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT}
 use serde::Deserialize;
 
 use crate::config::is_pinned;
+use crate::managers::shared::versioning::policy::{
+    VersionPolicy, classify_semver_release, evaluate_version_policy,
+};
 #[allow(clippy::wildcard_imports)]
 use crate::managers::*;
 use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
@@ -31,6 +34,10 @@ impl ManagerPlugin for BrewPlugin {
     }
 
     fn supports_no_update(&self) -> bool {
+        true
+    }
+
+    fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
         true
     }
 
@@ -132,8 +139,17 @@ struct TapMeta {
 #[derive(Clone)]
 enum PlanAction {
     Upgrade,
-    Delayed { age: String, required: String },
-    Skipped { reason: String },
+    Delayed {
+        age: String,
+        required: String,
+    },
+    CurrentBlockedByPolicy {
+        policy: String,
+        blocked_version: String,
+    },
+    Skipped {
+        reason: String,
+    },
 }
 
 #[derive(Clone)]
@@ -237,6 +253,7 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                 &tap_meta,
                 github_client.as_ref(),
                 runtime.min_age,
+                ctx.policy.version_policy,
                 runtime.now_unix_secs,
                 runtime.max_parallel_checks,
             )
@@ -278,7 +295,9 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                         version_policy: None,
                         apply_spec_base: Some(idx.to_string()),
                     }),
-                    PlanAction::Delayed { .. } | PlanAction::Skipped { .. } => None,
+                    PlanAction::Delayed { .. }
+                    | PlanAction::CurrentBlockedByPolicy { .. }
+                    | PlanAction::Skipped { .. } => None,
                 })
                 .collect();
 
@@ -406,6 +425,7 @@ fn resolve_brew_plan(
     tap_meta: &HashMap<String, TapMeta>,
     github_client: Option<&Client>,
     min_age: Duration,
+    version_policy: VersionPolicy,
     now_unix_secs: u64,
     max_parallel_checks: usize,
 ) -> Result<Vec<PlanItem>> {
@@ -417,7 +437,9 @@ fn resolve_brew_plan(
     let phase_one_results: Vec<PhaseOneResult> = pool.install(|| {
         jobs.into_par_iter()
             .enumerate()
-            .map(|(index, job)| phase_one_local_check(index, job, min_age, now_unix_secs, tap_meta))
+            .map(|(index, job)| {
+                phase_one_local_check(index, job, min_age, version_policy, now_unix_secs, tap_meta)
+            })
             .collect()
     });
 
@@ -501,7 +523,9 @@ fn apply_brew_plan(plan: &[PlanItem]) {
         .filter(|i| i.is_formula)
         .filter_map(|i| match i.action {
             PlanAction::Upgrade => Some(i.name.clone()),
-            PlanAction::Delayed { .. } | PlanAction::Skipped { .. } => None,
+            PlanAction::Delayed { .. }
+            | PlanAction::CurrentBlockedByPolicy { .. }
+            | PlanAction::Skipped { .. } => None,
         })
         .collect();
 
@@ -510,7 +534,9 @@ fn apply_brew_plan(plan: &[PlanItem]) {
         .filter(|i| !i.is_formula)
         .filter_map(|i| match i.action {
             PlanAction::Upgrade => Some(i.name.clone()),
-            PlanAction::Delayed { .. } | PlanAction::Skipped { .. } => None,
+            PlanAction::Delayed { .. }
+            | PlanAction::CurrentBlockedByPolicy { .. }
+            | PlanAction::Skipped { .. } => None,
         })
         .collect();
 
@@ -700,6 +726,7 @@ fn phase_one_local_check(
     index: usize,
     job: PackageJob,
     min_age: Duration,
+    version_policy: VersionPolicy,
     now_unix_secs: u64,
     tap_meta: &HashMap<String, TapMeta>,
 ) -> PhaseOneResult {
@@ -709,6 +736,16 @@ fn phase_one_local_check(
             installed: job.installed,
             target: job.target,
             action: PlanAction::Skipped { reason },
+            is_formula: job.is_formula,
+        });
+    }
+
+    if let Some(action) = policy_gate_action_for_brew(&job.installed, &job.target, version_policy) {
+        return PhaseOneResult::Final(PlanItem {
+            name: job.name,
+            installed: job.installed,
+            target: job.target,
+            action,
             is_formula: job.is_formula,
         });
     }
@@ -830,6 +867,16 @@ fn item_to_outcome(item: &PlanItem) -> ItemOutcome {
             age.clone(),
             required.clone(),
         ),
+        PlanAction::CurrentBlockedByPolicy {
+            policy,
+            blocked_version,
+        } => {
+            let mut outcome =
+                ItemOutcome::current(PLUGIN.id(), item.name.clone(), item.installed.clone());
+            outcome.version_policy = Some(policy.clone());
+            outcome.latest_blocked_by_policy_version = Some(blocked_version.clone());
+            outcome
+        }
         PlanAction::Skipped { reason } => {
             if reason.contains("failed age check") {
                 return ItemOutcome::error(
@@ -870,6 +917,47 @@ fn action_from_commit_age(min_age: Duration, now_unix_secs: u64, committed_at: u
     let age = human_age(age_secs);
     let required = human_age(min_age.as_secs());
     PlanAction::Delayed { age, required }
+}
+
+fn policy_gate_action_for_brew(
+    installed: &str,
+    target: &str,
+    policy: VersionPolicy,
+) -> Option<PlanAction> {
+    let installed_class = classify_brew_release(installed);
+    let target_class = classify_brew_release(target);
+    let decision = evaluate_version_policy(policy, installed_class, target_class);
+
+    (!decision.allowed).then(|| PlanAction::CurrentBlockedByPolicy {
+        policy: decision.effective_policy.as_str().to_string(),
+        blocked_version: target.to_string(),
+    })
+}
+
+fn classify_brew_release(raw: &str) -> crate::managers::shared::versioning::policy::ReleaseClass {
+    let normalized = normalize_brew_version_for_policy(raw);
+    classify_semver_release(&normalized)
+}
+
+fn normalize_brew_version_for_policy(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let without_cask_build = trimmed
+        .split_once(',')
+        .map_or(trimmed, |(head, _)| head.trim());
+
+    strip_brew_revision_suffix(without_cask_build).to_string()
+}
+
+fn strip_brew_revision_suffix(raw: &str) -> &str {
+    let Some((head, revision)) = raw.rsplit_once('_') else {
+        return raw;
+    };
+
+    if !head.is_empty() && revision.chars().all(|ch| ch.is_ascii_digit()) {
+        return head;
+    }
+
+    raw
 }
 
 fn git_last_commit_unix_seconds(
@@ -1142,5 +1230,88 @@ mod tests {
             .expect("fallback expected");
         assert_eq!(remote, "https://github.com/acme/custom-tap");
         assert_eq!(branch.as_deref(), Some("master"));
+    }
+
+    #[test]
+    fn policy_gate_blocks_prerelease_under_stable() {
+        let action = policy_gate_action_for_brew("1.2.0", "1.3.0-beta.1", VersionPolicy::Stable)
+            .expect("stable should block prerelease target");
+
+        match action {
+            PlanAction::CurrentBlockedByPolicy {
+                policy,
+                blocked_version,
+            } => {
+                assert_eq!(policy, "stable");
+                assert_eq!(blocked_version, "1.3.0-beta.1");
+            }
+            _ => panic!("expected CurrentBlockedByPolicy"),
+        }
+    }
+
+    #[test]
+    fn policy_gate_allows_final_under_stable() {
+        let action = policy_gate_action_for_brew("1.2.0", "1.3.0", VersionPolicy::Stable);
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn same_track_unknown_installed_falls_back_to_stable_and_blocks_prerelease() {
+        let action =
+            policy_gate_action_for_brew("latest", "1.0.0-beta.1", VersionPolicy::SameTrack)
+                .expect("fallback stable should block prerelease target");
+
+        match action {
+            PlanAction::CurrentBlockedByPolicy {
+                policy,
+                blocked_version,
+            } => {
+                assert_eq!(policy, "stable");
+                assert_eq!(blocked_version, "1.0.0-beta.1");
+            }
+            _ => panic!("expected CurrentBlockedByPolicy"),
+        }
+    }
+
+    #[test]
+    fn policy_normalization_strips_brew_revision_suffix() {
+        assert_eq!(normalize_brew_version_for_policy("1.2.3_1"), "1.2.3");
+        assert_eq!(
+            normalize_brew_version_for_policy("1.2.3-rc1_2"),
+            "1.2.3-rc1"
+        );
+    }
+
+    #[test]
+    fn policy_normalization_strips_cask_build_component() {
+        assert_eq!(normalize_brew_version_for_policy("1.2.3,12345"), "1.2.3");
+        assert_eq!(
+            normalize_brew_version_for_policy("1.2.3-beta.1,abcdef"),
+            "1.2.3-beta.1"
+        );
+    }
+
+    #[test]
+    fn stable_policy_allows_formula_revision_suffixes() {
+        let action = policy_gate_action_for_brew("1.2.3_1", "1.2.4_2", VersionPolicy::Stable);
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn stable_policy_blocks_cask_prerelease_after_comma_normalization() {
+        let action =
+            policy_gate_action_for_brew("1.2.3,12345", "1.3.0-beta.1,67890", VersionPolicy::Stable)
+                .expect("stable should block prerelease target");
+
+        match action {
+            PlanAction::CurrentBlockedByPolicy {
+                policy,
+                blocked_version,
+            } => {
+                assert_eq!(policy, "stable");
+                assert_eq!(blocked_version, "1.3.0-beta.1,67890");
+            }
+            _ => panic!("expected CurrentBlockedByPolicy"),
+        }
     }
 }
