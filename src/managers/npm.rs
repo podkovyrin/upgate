@@ -170,11 +170,12 @@ fn apply_npm_selected_updates(min_age_days: u64, upgradable: Vec<crate::managers
         let name = item.name;
         let current = item.current;
         let target = item.target;
+        let package_spec = format!("{name}@{target}");
 
         let args = [
+            "install".to_string(),
             "-g".to_string(),
-            "update".to_string(),
-            name.clone(),
+            package_spec,
             "--min-release-age".to_string(),
             min_age_days.clone(),
         ];

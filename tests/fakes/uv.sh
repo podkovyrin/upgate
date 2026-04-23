@@ -68,5 +68,12 @@ if [[ "$#" -eq 6 && "$1" == "tool" && "$2" == "install" && "$3" == "--upgrade" &
   exit 0
 fi
 
+if [[ "$#" -eq 4 && "$1" == "tool" && "$2" == "install" && "$3" == "--upgrade" ]]; then
+  # apply paths are skipped by default via SKIP_MUTATING_COMMANDS, but keep
+  # a harmless fallback for explicit local runs with that guard disabled.
+  echo '{}'
+  exit 0
+fi
+
 echo "fake uv: unsupported args: $*" >&2
 exit 64

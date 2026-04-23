@@ -92,16 +92,21 @@ fn render_name(name: &str, color: bool) -> String {
 
 fn append_status_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme) {
     match item.status {
-        OutcomeStatus::Current => append_current_policy_note(line, item, theme),
+        OutcomeStatus::Current => {
+            append_current_policy_note(line, item, theme);
+            append_policy_warning_note(line, item, theme);
+        }
         OutcomeStatus::Update => {
             append_update_note(line, item, theme);
             append_policy_block_note(line, item, theme);
+            append_policy_warning_note(line, item, theme);
         }
         OutcomeStatus::Delayed => {
             let note = delayed_note(item);
             line.push(' ');
             line.push_str(&note_segment(&note, theme.color()));
             append_policy_block_note(line, item, theme);
+            append_policy_warning_note(line, item, theme);
         }
         OutcomeStatus::Skipped | OutcomeStatus::Error => {
             if let Some(reason) = &item.reason_detail {
@@ -163,6 +168,16 @@ fn append_policy_block_note(line: &mut String, item: &ItemOutcome, theme: Output
         "(latest {} blocked by version policy: {policy})",
         version_label(latest)
     );
+    line.push(' ');
+    line.push_str(&note_segment(&note, theme.color()));
+}
+
+fn append_policy_warning_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme) {
+    let Some(warning) = item.version_policy_warning.as_deref() else {
+        return;
+    };
+
+    let note = format!("(version policy warning: {warning})");
     line.push(' ');
     line.push_str(&note_segment(&note, theme.color()));
 }
@@ -437,5 +452,17 @@ mod tests {
         assert!(rendered.contains("(3d < 7d)"));
         assert!(rendered.contains("blocked by version policy: stable"));
         assert!(rendered.contains("v4.0.0-beta.2"));
+    }
+
+    #[test]
+    fn policy_warning_note_is_rendered_when_present() {
+        let mut item = ItemOutcome::current("npm", "foo", "1.2.0");
+        item.version_policy = Some("same-track".to_string());
+        item.version_policy_warning =
+            Some("same-track fell back to stable because installed track is unknown".to_string());
+
+        let rendered = item.to_text_line().expect("line should render");
+        assert!(rendered.contains("version policy warning"));
+        assert!(rendered.contains("same-track fell back to stable"));
     }
 }

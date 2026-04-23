@@ -58,6 +58,16 @@ pub enum PolicyWarning {
     InstalledTrackUnknownFallbackStable,
 }
 
+impl PolicyWarning {
+    pub const fn as_note(self) -> &'static str {
+        match self {
+            Self::InstalledTrackUnknownFallbackStable => {
+                "same-track fell back to stable because installed track is unknown"
+            }
+        }
+    }
+}
+
 /// Reasons why the version-policy gate denied a candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyBlockReason {

@@ -7,8 +7,8 @@ use semver::Version;
 
 use crate::config::is_pinned;
 use crate::managers::shared::versioning::policy::{
-    GateBypass, OrderedCandidate, RecommendedOutcome, VersionPolicy, classify_semver_release,
-    evaluate_candidates,
+    GateBypass, OrderedCandidate, PolicyWarning, RecommendedOutcome, VersionPolicy,
+    classify_semver_release, evaluate_candidates,
 };
 #[allow(clippy::wildcard_imports)]
 use crate::managers::*;
@@ -516,6 +516,12 @@ fn go_resolve_target_with_min_age(
         .iter()
         .find(|eval| !eval.policy_allowed)
         .map(|eval| eval.version.clone());
+    let version_policy_warning = resolution
+        .evaluations
+        .iter()
+        .find_map(|eval| eval.policy_warning)
+        .map(PolicyWarning::as_note)
+        .map(str::to_string);
 
     Ok(AgeResolvedTarget {
         selected_version,
@@ -525,6 +531,7 @@ fn go_resolve_target_with_min_age(
         version_policy: (version_policy != VersionPolicy::Disabled)
             .then(|| version_policy.as_str().to_string()),
         latest_blocked_by_policy_version,
+        version_policy_warning,
     })
 }
 

@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 use semver::Version;
 
 use super::policy::{
-    GateBypass, OrderedCandidate, RecommendedOutcome, VersionPolicy, classify_semver_release,
-    evaluate_candidates,
+    GateBypass, OrderedCandidate, PolicyWarning, RecommendedOutcome, VersionPolicy,
+    classify_semver_release, evaluate_candidates,
 };
 use crate::util::time::parse_rfc3339_unix;
 
@@ -24,6 +24,7 @@ pub struct SemverAgeResolution {
     pub current_blocked_by_policy: bool,
     pub version_policy: Option<String>,
     pub latest_blocked_by_policy_version: Option<String>,
+    pub version_policy_warning: Option<String>,
 }
 
 pub fn resolve_semver_with_min_age(
@@ -76,6 +77,12 @@ pub fn resolve_semver_with_min_age(
         .iter()
         .find(|eval| !eval.policy_allowed)
         .map(|eval| eval.version.clone());
+    let version_policy_warning = resolution
+        .evaluations
+        .iter()
+        .find_map(|eval| eval.policy_warning)
+        .map(PolicyWarning::as_note)
+        .map(str::to_string);
 
     Ok(SemverAgeResolution {
         selected_version,
@@ -84,6 +91,7 @@ pub fn resolve_semver_with_min_age(
         current_blocked_by_policy,
         version_policy,
         latest_blocked_by_policy_version,
+        version_policy_warning,
     })
 }
 
@@ -149,6 +157,7 @@ mod tests {
         assert!(!resolved.current_blocked_by_policy);
         assert_eq!(resolved.version_policy, None);
         assert_eq!(resolved.latest_blocked_by_policy_version, None);
+        assert_eq!(resolved.version_policy_warning, None);
     }
 
     #[test]
@@ -173,6 +182,7 @@ mod tests {
         assert!(!resolved.current_blocked_by_policy);
         assert_eq!(resolved.version_policy, None);
         assert_eq!(resolved.latest_blocked_by_policy_version, None);
+        assert_eq!(resolved.version_policy_warning, None);
     }
 
     #[test]
@@ -206,6 +216,7 @@ mod tests {
             resolved.latest_blocked_by_policy_version.as_deref(),
             Some("1.3.0-beta.1")
         );
+        assert_eq!(resolved.version_policy_warning, None);
     }
 
     #[test]
@@ -232,6 +243,30 @@ mod tests {
         assert_eq!(
             resolved.latest_blocked_by_policy_version.as_deref(),
             Some("1.3.0-beta.1")
+        );
+        assert_eq!(resolved.version_policy_warning, None);
+    }
+
+    #[test]
+    fn same_track_unknown_installed_track_sets_fallback_warning() {
+        let now = 1_800_000_000;
+        let releases = vec![SemverTimestamp {
+            version: "1.1.0-beta.1".to_string(),
+            published_unix: now - 20 * 24 * 60 * 60,
+        }];
+
+        let resolved = resolve_semver_with_min_age(
+            "1.0.0-foo.1",
+            &releases,
+            now,
+            Duration::from_secs(0),
+            VersionPolicy::SameTrack,
+        )
+        .expect("resolution should succeed");
+
+        assert_eq!(
+            resolved.version_policy_warning.as_deref(),
+            Some("same-track fell back to stable because installed track is unknown")
         );
     }
 }

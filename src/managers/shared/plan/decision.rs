@@ -15,6 +15,9 @@ pub trait ResolvedPlanTarget {
     fn latest_blocked_by_policy_version(&self) -> Option<&str> {
         None
     }
+    fn version_policy_warning(&self) -> Option<&str> {
+        None
+    }
 }
 
 impl ResolvedPlanTarget for AgeResolvedTarget {
@@ -36,6 +39,10 @@ impl ResolvedPlanTarget for AgeResolvedTarget {
 
     fn latest_blocked_by_policy_version(&self) -> Option<&str> {
         self.latest_blocked_by_policy_version.as_deref()
+    }
+
+    fn version_policy_warning(&self) -> Option<&str> {
+        self.version_policy_warning.as_deref()
     }
 }
 
@@ -60,6 +67,7 @@ where
                         VersionPolicyMeta {
                             policy: "unknown".to_string(),
                             latest_blocked_version: None,
+                            warning: None,
                         }
                     }),
                 }
@@ -84,6 +92,7 @@ where
         latest_blocked_version: target
             .latest_blocked_by_policy_version()
             .map(str::to_string),
+        warning: target.version_policy_warning().map(str::to_string),
     })
 }
 
@@ -99,6 +108,7 @@ mod tests {
         blocked_by_policy: bool,
         version_policy: Option<&'static str>,
         latest_blocked_by_policy_version: Option<&'static str>,
+        version_policy_warning: Option<&'static str>,
     }
 
     impl ResolvedPlanTarget for MockTarget {
@@ -120,6 +130,10 @@ mod tests {
 
         fn latest_blocked_by_policy_version(&self) -> Option<&str> {
             self.latest_blocked_by_policy_version
+        }
+
+        fn version_policy_warning(&self) -> Option<&str> {
+            self.version_policy_warning
         }
     }
 
@@ -151,6 +165,7 @@ mod tests {
                 blocked_by_policy: false,
                 version_policy: None,
                 latest_blocked_by_policy_version: None,
+                version_policy_warning: None,
             }),
             Duration::from_secs(7_200),
         );
@@ -181,6 +196,7 @@ mod tests {
                 blocked_by_policy: false,
                 version_policy: None,
                 latest_blocked_by_policy_version: None,
+                version_policy_warning: None,
             }),
             Duration::from_secs(3_600),
         );
@@ -202,6 +218,7 @@ mod tests {
                 blocked_by_policy: false,
                 version_policy: None,
                 latest_blocked_by_policy_version: None,
+                version_policy_warning: None,
             }),
             Duration::from_secs(604_800),
         );
@@ -231,6 +248,9 @@ mod tests {
                 blocked_by_policy: true,
                 version_policy: Some("stable"),
                 latest_blocked_by_policy_version: Some("1.3.0-beta.1"),
+                version_policy_warning: Some(
+                    "same-track fell back to stable because installed track is unknown",
+                ),
             }),
             Duration::from_secs(3_600),
         );
@@ -241,6 +261,10 @@ mod tests {
                 assert_eq!(
                     version_policy.latest_blocked_version.as_deref(),
                     Some("1.3.0-beta.1")
+                );
+                assert_eq!(
+                    version_policy.warning.as_deref(),
+                    Some("same-track fell back to stable because installed track is unknown")
                 );
             }
             _ => panic!("expected PlanDecision::CurrentBlockedByPolicy"),

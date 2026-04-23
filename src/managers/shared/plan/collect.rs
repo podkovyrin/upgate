@@ -126,6 +126,7 @@ fn handle_regular_decision(
             let mut outcome = ItemOutcome::current(manager, name, current);
             outcome.version_policy = Some(version_policy.policy);
             outcome.latest_blocked_by_policy_version = version_policy.latest_blocked_version;
+            outcome.version_policy_warning = version_policy.warning;
             emit_text_outcome(&outcome);
         }
         PlanDecision::NoChange => {
@@ -183,6 +184,7 @@ fn delayed_outcome(
     if let Some(policy) = version_policy {
         outcome.version_policy = Some(policy.policy);
         outcome.latest_blocked_by_policy_version = policy.latest_blocked_version;
+        outcome.version_policy_warning = policy.warning;
     }
 
     outcome

@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use pep440_rs::Version as Pep440Version;
 
 use super::policy::{
-    GateBypass, OrderedCandidate, RecommendedOutcome, VersionPolicy, classify_pep440_release,
-    evaluate_candidates,
+    GateBypass, OrderedCandidate, PolicyWarning, RecommendedOutcome, VersionPolicy,
+    classify_pep440_release, evaluate_candidates,
 };
 use crate::util::time::parse_rfc3339_unix;
 
@@ -25,6 +25,7 @@ pub struct Pep440AgeResolution {
     pub current_blocked_by_policy: bool,
     pub version_policy: Option<String>,
     pub latest_blocked_by_policy_version: Option<String>,
+    pub version_policy_warning: Option<String>,
 }
 
 pub fn resolve_pep440_with_min_age(
@@ -74,6 +75,12 @@ pub fn resolve_pep440_with_min_age(
         .iter()
         .find(|eval| !eval.policy_allowed)
         .map(|eval| eval.version.clone());
+    let version_policy_warning = resolution
+        .evaluations
+        .iter()
+        .find_map(|eval| eval.policy_warning)
+        .map(PolicyWarning::as_note)
+        .map(str::to_string);
 
     Ok(Pep440AgeResolution {
         selected_version,
@@ -82,6 +89,7 @@ pub fn resolve_pep440_with_min_age(
         current_blocked_by_policy,
         version_policy,
         latest_blocked_by_policy_version,
+        version_policy_warning,
     })
 }
 
@@ -160,6 +168,7 @@ mod tests {
         assert!(!resolved.current_blocked_by_policy);
         assert_eq!(resolved.version_policy, None);
         assert_eq!(resolved.latest_blocked_by_policy_version, None);
+        assert_eq!(resolved.version_policy_warning, None);
     }
 
     #[test]
@@ -184,6 +193,7 @@ mod tests {
         assert!(!resolved.current_blocked_by_policy);
         assert_eq!(resolved.version_policy, None);
         assert_eq!(resolved.latest_blocked_by_policy_version, None);
+        assert_eq!(resolved.version_policy_warning, None);
     }
 
     #[test]
@@ -217,6 +227,7 @@ mod tests {
             resolved.latest_blocked_by_policy_version.as_deref(),
             Some("1.3.0b1")
         );
+        assert_eq!(resolved.version_policy_warning, None);
     }
 
     #[test]
@@ -244,5 +255,6 @@ mod tests {
             resolved.latest_blocked_by_policy_version.as_deref(),
             Some("1.3.0b1")
         );
+        assert_eq!(resolved.version_policy_warning, None);
     }
 }

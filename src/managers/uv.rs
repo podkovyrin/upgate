@@ -342,7 +342,8 @@ fn pypi_release_timeline<'a>(
     package: &str,
 ) -> Result<&'a [Pep440Timestamp]> {
     if !cache.contains_key(package) {
-        let url = format!("https://pypi.org/pypi/{package}/json");
+        let base_url = pypi_base_url();
+        let url = format!("{base_url}/pypi/{package}/json");
         let body = pypi_client
             .get(&url)
             .send()
@@ -359,6 +360,10 @@ fn pypi_release_timeline<'a>(
     }
 
     Ok(cache.get(package).map_or(&[], Vec::as_slice))
+}
+
+fn pypi_base_url() -> String {
+    crate::util::http::env_base_url("UPNOW_UV_PYPI_BASE_URL", "https://pypi.org")
 }
 
 fn pypi_pep440_releases(package: &str, root: &PypiRoot) -> Result<Vec<Pep440Timestamp>> {

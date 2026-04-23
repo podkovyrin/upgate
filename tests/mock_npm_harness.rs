@@ -141,11 +141,11 @@ fn deterministic_apply_selective_path_runs_only_for_eligible_unpinned_packages()
     assert!(out.contains("- Skipped [npm] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
 
     let err = stderr(&output);
-    assert!(err.contains("$ npm -g update alpha-ready --min-release-age 7"));
-    assert!(err.contains("$ npm -g update beta-fresh-latest --min-release-age 7"));
+    assert!(err.contains("$ npm install -g alpha-ready@1.2.0 --min-release-age 7"));
+    assert!(err.contains("$ npm install -g beta-fresh-latest@1.0.5 --min-release-age 7"));
     assert!(!err.contains("$ npm -g update --min-release-age 7"));
-    assert!(!err.contains("$ npm -g update pinned-pkg --min-release-age 7"));
-    assert!(!err.contains("$ npm -g update gamma-delayed --min-release-age 7"));
+    assert!(!err.contains("$ npm install -g pinned-pkg@3.1.0 --min-release-age 7"));
+    assert!(!err.contains("$ npm install -g gamma-delayed@2.1.0 --min-release-age 7"));
 }
 
 #[test]

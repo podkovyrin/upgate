@@ -55,5 +55,12 @@ if [[ "$#" -ge 3 && "$1" == "-g" && "$2" == "update" ]]; then
   exit 0
 fi
 
+if [[ "$#" -ge 4 && "$1" == "install" && "$2" == "-g" ]]; then
+  # apply paths are skipped by default via SKIP_MUTATING_COMMANDS, but keep
+  # a harmless fallback for explicit local runs with that guard disabled.
+  echo '{}'
+  exit 0
+fi
+
 echo "fake npm: unsupported args: $*" >&2
 exit 64

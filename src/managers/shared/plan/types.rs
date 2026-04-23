@@ -21,6 +21,7 @@ pub struct DelayedLatest {
 pub struct VersionPolicyMeta {
     pub policy: String,
     pub latest_blocked_version: Option<String>,
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +32,7 @@ pub struct AgeResolvedTarget {
     pub current_blocked_by_policy: bool,
     pub version_policy: Option<String>,
     pub latest_blocked_by_policy_version: Option<String>,
+    pub version_policy_warning: Option<String>,
 }
 
 impl AgeResolvedTarget {
@@ -55,6 +57,7 @@ impl AgeResolvedTarget {
             current_blocked_by_policy,
             version_policy: None,
             latest_blocked_by_policy_version: None,
+            version_policy_warning: None,
         }
     }
 
@@ -76,7 +79,11 @@ impl From<SemverAgeResolution> for AgeResolvedTarget {
             value.latest_age_secs,
             value.current_blocked_by_policy,
         )
-        .with_policy_details(value.version_policy, value.latest_blocked_by_policy_version)
+        .with_policy_details(
+            value.version_policy,
+            value.latest_blocked_by_policy_version,
+            value.version_policy_warning,
+        )
     }
 }
 
@@ -88,7 +95,11 @@ impl From<Pep440AgeResolution> for AgeResolvedTarget {
             value.latest_age_secs,
             value.current_blocked_by_policy,
         )
-        .with_policy_details(value.version_policy, value.latest_blocked_by_policy_version)
+        .with_policy_details(
+            value.version_policy,
+            value.latest_blocked_by_policy_version,
+            value.version_policy_warning,
+        )
     }
 }
 
@@ -123,9 +134,11 @@ impl AgeResolvedTarget {
         mut self,
         version_policy: Option<String>,
         latest_blocked_by_policy_version: Option<String>,
+        version_policy_warning: Option<String>,
     ) -> Self {
         self.version_policy = version_policy;
         self.latest_blocked_by_policy_version = latest_blocked_by_policy_version;
+        self.version_policy_warning = version_policy_warning;
         self
     }
 }
@@ -188,6 +201,7 @@ impl PlannedUpdate {
         if let Some(policy) = &self.version_policy {
             outcome.version_policy = Some(policy.policy.clone());
             outcome.latest_blocked_by_policy_version = policy.latest_blocked_version.clone();
+            outcome.version_policy_warning = policy.warning.clone();
         }
 
         outcome
