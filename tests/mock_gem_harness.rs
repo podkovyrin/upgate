@@ -24,6 +24,14 @@ min_release_age = "7d"
 pinned = ["pinned-pkg"]
 "#;
 
+const DETERMINISTIC_STABLE_CONFIG: &str = r#"
+[gem]
+mode = "apply"
+min_release_age = "7d"
+version_policy = "stable"
+pinned = ["pinned-pkg"]
+"#;
+
 const HYBRID_CONFIG: &str = r#"
 [gem]
 mode = "apply"
@@ -174,6 +182,26 @@ fn deterministic_plan_covers_update_delayed_pinned_and_error_states() {
     assert!(err.contains("$ gem list"));
     assert!(err.contains("$ gem outdated"));
     assert!(err.contains("$ ruby -e print RUBY_VERSION"));
+}
+
+#[test]
+fn deterministic_plan_reports_prerelease_blocked_by_stable_policy() {
+    let sandbox = Sandbox::new(DETERMINISTIC_SCENARIO, DETERMINISTIC_STABLE_CONFIG, true);
+
+    let output = sandbox.run_upnow(&["plan", "--plain", "--verbose", "--managers", "gem"]);
+    assert_success(&output, "upnow plan deterministic gem with stable policy");
+
+    let out = stdout(&output);
+    assert!(
+        out.contains("= Current [gem] prerelease-blocked v1.0.0"),
+        "plan stdout:\n{out}\nplan stderr:\n{}",
+        stderr(&output)
+    );
+    assert!(
+        out.contains("(latest v1.1.0-beta.1 blocked by version policy: stable)"),
+        "plan stdout:\n{out}\nplan stderr:\n{}",
+        stderr(&output)
+    );
 }
 
 #[test]

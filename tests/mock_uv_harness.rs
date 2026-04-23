@@ -88,9 +88,14 @@ impl Sandbox {
         let uv_scenario_dir = scenario_path(uv_scenario_rel, "uv");
         let (pypi_base_url, pypi_server) = if local_pypi {
             let pypi_fixtures_dir = fixture_path(&uv_scenario_dir, "pypi", "uv PyPI");
-            let server = BackgroundTcpServer::start("fake PyPI server", move |listener, stop_flag| {
-                run_fake_pypi_server(&listener, pypi_fixtures_dir.as_path(), stop_flag.as_ref());
-            });
+            let server =
+                BackgroundTcpServer::start("fake PyPI server", move |listener, stop_flag| {
+                    run_fake_pypi_server(
+                        &listener,
+                        pypi_fixtures_dir.as_path(),
+                        stop_flag.as_ref(),
+                    );
+                });
             (server.base_url(), Some(server))
         } else {
             // Empty value falls back to the production default URL in manager code.

@@ -7,8 +7,7 @@ use semver::Version;
 
 use crate::config::is_pinned;
 use crate::managers::shared::versioning::policy::{
-    GateBypass, OrderedCandidate, PolicyWarning, RecommendedOutcome, VersionPolicy,
-    classify_semver_release, evaluate_candidates,
+    GateBypass, OrderedCandidate, VersionPolicy, classify_semver_release, evaluate_candidates,
 };
 #[allow(clippy::wildcard_imports)]
 use crate::managers::*;
@@ -57,7 +56,7 @@ enum GoDiscoveredTool {
 
 struct GoPlanItem {
     tool: GoManagedTool,
-    resolved: Result<AgeResolvedTarget, String>,
+    resolved: Result<VersionPolicyResolution, String>,
 }
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
@@ -468,7 +467,7 @@ fn go_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
     version_policy: VersionPolicy,
-) -> Result<AgeResolvedTarget> {
+) -> Result<VersionPolicyResolution> {
     let current_ver = parse_go_semver(current).with_context(|| {
         format!("failed to parse current go semver for {module_path}: {current}")
     })?;
@@ -505,34 +504,7 @@ fn go_resolve_target_with_min_age(
         GateBypass::NONE,
     );
 
-    let (selected_version, current_blocked_by_policy) = match resolution.recommendation {
-        RecommendedOutcome::Update { target_version } => (Some(target_version), false),
-        RecommendedOutcome::DelayedByAge => (None, false),
-        RecommendedOutcome::CurrentNoNewer => (Some(current.to_string()), false),
-        RecommendedOutcome::CurrentBlockedByPolicy => (Some(current.to_string()), true),
-    };
-    let latest_blocked_by_policy_version = resolution
-        .evaluations
-        .iter()
-        .find(|eval| !eval.policy_allowed)
-        .map(|eval| eval.version.clone());
-    let version_policy_warning = resolution
-        .evaluations
-        .iter()
-        .find_map(|eval| eval.policy_warning)
-        .map(PolicyWarning::as_note)
-        .map(str::to_string);
-
-    Ok(AgeResolvedTarget {
-        selected_version,
-        latest_version: resolution.latest_overall_version,
-        latest_age_secs: resolution.latest_overall_age_secs,
-        current_blocked_by_policy,
-        version_policy: (version_policy != VersionPolicy::Disabled)
-            .then(|| version_policy.as_str().to_string()),
-        latest_blocked_by_policy_version,
-        version_policy_warning,
-    })
+    Ok(resolution)
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -587,6 +559,31 @@ fn parse_go_semver(raw: &str) -> Option<Version> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::managers::shared::versioning::policy::{
+        RecommendedOutcome, delayed_candidate_for_test,
+    };
+
+    fn resolution_for_delayed_note(
+        selected: &str,
+        latest_policy_eligible: &str,
+        latest_age_secs: u64,
+    ) -> VersionPolicyResolution {
+        VersionPolicyResolution {
+            configured_policy: VersionPolicy::Disabled,
+            recommendation: RecommendedOutcome::Update {
+                target_version: selected.to_string(),
+            },
+            latest_overall_version: Some(latest_policy_eligible.to_string()),
+            latest_overall_age_secs: Some(latest_age_secs),
+            latest_policy_eligible_version: Some(latest_policy_eligible.to_string()),
+            latest_policy_eligible_age_secs: Some(latest_age_secs),
+            latest_age_eligible_version: None,
+            has_newer_versions: true,
+            blocked_by_policy_count: 0,
+            blocked_by_age_count: 1,
+            evaluations: Vec::new(),
+        }
+    }
 
     #[test]
     fn parse_go_version_m_with_path_and_mod() {
@@ -629,31 +626,19 @@ mod tests {
 
     #[test]
     fn delayed_latest_hidden_when_latest_is_old_enough() {
-        let target = AgeResolvedTarget::new(
-            Some("v0.1.5".to_string()),
-            Some("v0.1.5".to_string()),
-            Some(10 * 24 * 60 * 60),
-        );
+        let target = resolution_for_delayed_note("v0.1.5", "v0.1.5", 10 * 24 * 60 * 60);
 
         assert!(
-            target
-                .delayed_latest(Duration::from_secs(7 * 24 * 60 * 60))
-                .is_none()
+            delayed_candidate_for_test(&target, Duration::from_secs(7 * 24 * 60 * 60)).is_none()
         );
     }
 
     #[test]
     fn delayed_latest_present_when_latest_is_too_fresh_and_selected_is_older() {
-        let target = AgeResolvedTarget::new(
-            Some("v0.1.4".to_string()),
-            Some("v0.1.5".to_string()),
-            Some(2 * 24 * 60 * 60),
-        );
+        let target = resolution_for_delayed_note("v0.1.4", "v0.1.5", 2 * 24 * 60 * 60);
 
         assert!(
-            target
-                .delayed_latest(Duration::from_secs(7 * 24 * 60 * 60))
-                .is_some()
+            delayed_candidate_for_test(&target, Duration::from_secs(7 * 24 * 60 * 60)).is_some()
         );
     }
 }

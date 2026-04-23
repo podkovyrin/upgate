@@ -51,7 +51,7 @@ struct CargoInstallMeta {
     no_default_features: bool,
 }
 
-type CargoPlanItem = ResolvedPlanItem<AgeResolvedTarget>;
+type CargoPlanItem = ResolvedPlanItem<VersionPolicyResolution>;
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
     run_manager_pipeline(ctx, scan, run_plan_apply)
@@ -353,7 +353,7 @@ fn cargo_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
     version_policy: VersionPolicy,
-) -> Result<AgeResolvedTarget> {
+) -> Result<VersionPolicyResolution> {
     let output = run_cmd(
         "cargo",
         ["search", name, "--limit", "1"],
@@ -377,7 +377,7 @@ fn cargo_resolve_target_with_min_age(
     // Keep the parsed search latest in scope to validate semver hygiene and avoid stale data.
     let _ = latest;
 
-    Ok(resolved.into())
+    Ok(resolved)
 }
 
 fn parse_cargo_search_latest_version(crate_name: &str, stdout: &str) -> Result<Version> {

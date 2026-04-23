@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use pep440_rs::Version as Pep440Version;
 
 use super::policy::{
-    GateBypass, OrderedCandidate, PolicyWarning, RecommendedOutcome, VersionPolicy,
-    classify_pep440_release, evaluate_candidates,
+    GateBypass, OrderedCandidate, VersionPolicy, VersionPolicyResolution, classify_pep440_release,
+    evaluate_candidates,
 };
 use crate::util::time::parse_rfc3339_unix;
 
@@ -17,24 +17,13 @@ pub struct Pep440Timestamp {
     pub published_unix: u64,
 }
 
-#[derive(Debug, Clone)]
-pub struct Pep440AgeResolution {
-    pub selected_version: Option<String>,
-    pub latest_version: Option<String>,
-    pub latest_age_secs: Option<u64>,
-    pub current_blocked_by_policy: bool,
-    pub version_policy: Option<String>,
-    pub latest_blocked_by_policy_version: Option<String>,
-    pub version_policy_warning: Option<String>,
-}
-
 pub fn resolve_pep440_with_min_age(
     current: &str,
     releases: &[Pep440Timestamp],
     now_unix_secs: u64,
     min_age: Duration,
     version_policy: VersionPolicy,
-) -> Result<Pep440AgeResolution> {
+) -> Result<VersionPolicyResolution> {
     let current_ver = Pep440Version::from_str(current)
         .with_context(|| format!("failed to parse current PEP440 version: {current}"))?;
     let installed_class = classify_pep440_release(current);
@@ -62,35 +51,7 @@ pub fn resolve_pep440_with_min_age(
         GateBypass::NONE,
     );
 
-    let (selected_version, current_blocked_by_policy) = match resolution.recommendation {
-        RecommendedOutcome::Update { target_version } => (Some(target_version), false),
-        RecommendedOutcome::DelayedByAge => (None, false),
-        RecommendedOutcome::CurrentNoNewer => (Some(current.to_string()), false),
-        RecommendedOutcome::CurrentBlockedByPolicy => (Some(current.to_string()), true),
-    };
-    let version_policy =
-        (version_policy != VersionPolicy::Disabled).then(|| version_policy.as_str().to_string());
-    let latest_blocked_by_policy_version = resolution
-        .evaluations
-        .iter()
-        .find(|eval| !eval.policy_allowed)
-        .map(|eval| eval.version.clone());
-    let version_policy_warning = resolution
-        .evaluations
-        .iter()
-        .find_map(|eval| eval.policy_warning)
-        .map(PolicyWarning::as_note)
-        .map(str::to_string);
-
-    Ok(Pep440AgeResolution {
-        selected_version,
-        latest_version: resolution.latest_overall_version,
-        latest_age_secs: resolution.latest_overall_age_secs,
-        current_blocked_by_policy,
-        version_policy,
-        latest_blocked_by_policy_version,
-        version_policy_warning,
-    })
+    Ok(resolution)
 }
 
 pub fn release_age_secs_for_pep440_version(
@@ -145,6 +106,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::managers::shared::versioning::policy::RecommendedOutcome;
 
     #[test]
     fn keeps_current_when_installed_version_is_newer_than_registry_latest() {
@@ -163,12 +125,11 @@ mod tests {
         )
         .expect("resolution should succeed");
 
-        assert_eq!(resolved.selected_version.as_deref(), Some("2.0.0"));
-        assert_eq!(resolved.latest_version, None);
-        assert!(!resolved.current_blocked_by_policy);
-        assert_eq!(resolved.version_policy, None);
-        assert_eq!(resolved.latest_blocked_by_policy_version, None);
-        assert_eq!(resolved.version_policy_warning, None);
+        assert_eq!(resolved.recommendation, RecommendedOutcome::CurrentNoNewer);
+        assert_eq!(resolved.latest_policy_eligible_version, None);
+        assert_eq!(resolved.configured_policy(), None);
+        assert_eq!(resolved.latest_blocked_by_policy_version(), None);
+        assert_eq!(resolved.version_policy_warning(), None);
     }
 
     #[test]
@@ -188,12 +149,11 @@ mod tests {
         )
         .expect("resolution should succeed");
 
-        assert_eq!(resolved.selected_version.as_deref(), Some("1.0.0"));
-        assert_eq!(resolved.latest_version, None);
-        assert!(!resolved.current_blocked_by_policy);
-        assert_eq!(resolved.version_policy, None);
-        assert_eq!(resolved.latest_blocked_by_policy_version, None);
-        assert_eq!(resolved.version_policy_warning, None);
+        assert_eq!(resolved.recommendation, RecommendedOutcome::CurrentNoNewer);
+        assert_eq!(resolved.latest_policy_eligible_version, None);
+        assert_eq!(resolved.configured_policy(), None);
+        assert_eq!(resolved.latest_blocked_by_policy_version(), None);
+        assert_eq!(resolved.version_policy_warning(), None);
     }
 
     #[test]
@@ -219,15 +179,14 @@ mod tests {
         )
         .expect("resolution should succeed");
 
-        assert_eq!(resolved.selected_version, None);
-        assert_eq!(resolved.latest_version.as_deref(), Some("1.3.0b1"));
-        assert!(!resolved.current_blocked_by_policy);
-        assert_eq!(resolved.version_policy.as_deref(), Some("stable"));
+        assert_eq!(resolved.recommendation, RecommendedOutcome::DelayedByAge);
         assert_eq!(
-            resolved.latest_blocked_by_policy_version.as_deref(),
-            Some("1.3.0b1")
+            resolved.latest_policy_eligible_version.as_deref(),
+            Some("1.2.5")
         );
-        assert_eq!(resolved.version_policy_warning, None);
+        assert_eq!(resolved.configured_policy(), Some(VersionPolicy::Stable));
+        assert_eq!(resolved.latest_blocked_by_policy_version(), Some("1.3.0b1"));
+        assert_eq!(resolved.version_policy_warning(), None);
     }
 
     #[test]
@@ -247,14 +206,13 @@ mod tests {
         )
         .expect("resolution should succeed");
 
-        assert_eq!(resolved.selected_version.as_deref(), Some("1.2.0"));
-        assert_eq!(resolved.latest_version.as_deref(), Some("1.3.0b1"));
-        assert!(resolved.current_blocked_by_policy);
-        assert_eq!(resolved.version_policy.as_deref(), Some("stable"));
         assert_eq!(
-            resolved.latest_blocked_by_policy_version.as_deref(),
-            Some("1.3.0b1")
+            resolved.recommendation,
+            RecommendedOutcome::CurrentBlockedByPolicy
         );
-        assert_eq!(resolved.version_policy_warning, None);
+        assert_eq!(resolved.latest_policy_eligible_version, None);
+        assert_eq!(resolved.configured_policy(), Some(VersionPolicy::Stable));
+        assert_eq!(resolved.latest_blocked_by_policy_version(), Some("1.3.0b1"));
+        assert_eq!(resolved.version_policy_warning(), None);
     }
 }

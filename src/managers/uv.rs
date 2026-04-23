@@ -52,7 +52,7 @@ struct PypiReleaseFile {
     upload_time: Option<String>,
 }
 
-type UvPlanItem = ResolvedPlanItem<AgeResolvedTarget>;
+type UvPlanItem = ResolvedPlanItem<VersionPolicyResolution>;
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
     run_manager_pipeline(ctx, scan, run_plan_apply)
@@ -127,7 +127,7 @@ fn uv_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
     version_policy: VersionPolicy,
-) -> Result<AgeResolvedTarget> {
+) -> Result<VersionPolicyResolution> {
     let mut timeline_cache: HashMap<String, Vec<Pep440Timestamp>> = HashMap::new();
     let releases = pypi_release_timeline(pypi_client, &mut timeline_cache, package)?;
 
@@ -135,7 +135,7 @@ fn uv_resolve_target_with_min_age(
         resolve_pep440_with_min_age(current, releases, now_unix_secs, min_age, version_policy)
             .with_context(|| format!("failed to resolve eligible PEP440 target for {package}"))?;
 
-    Ok(resolved.into())
+    Ok(resolved)
 }
 
 fn apply_uv_updates(upgradable: Vec<crate::managers::PlannedUpdate>) {

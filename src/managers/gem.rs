@@ -7,8 +7,7 @@ use semver::Version;
 
 use crate::config::ManagerMode;
 use crate::managers::shared::versioning::policy::{
-    GateBypass, OrderedCandidate, PolicyWarning, RecommendedOutcome, VersionPolicy,
-    classify_semver_release, evaluate_candidates,
+    GateBypass, OrderedCandidate, VersionPolicy, classify_semver_release, evaluate_candidates,
 };
 #[allow(clippy::wildcard_imports)]
 use crate::managers::*;
@@ -60,7 +59,7 @@ enum GemDiscoveredItem {
     Managed { name: String, current: String },
 }
 
-type GemPlanItem = ResolvedPlanItem<AgeResolvedTarget>;
+type GemPlanItem = ResolvedPlanItem<VersionPolicyResolution>;
 
 #[derive(Debug, serde::Deserialize)]
 struct RubyGemsVersionItem {
@@ -343,17 +342,39 @@ fn rubygems_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
     version_policy: VersionPolicy,
-) -> Result<AgeResolvedTarget> {
+) -> Result<VersionPolicyResolution> {
     let current_ver = parse_version_for_compare(current).with_context(|| {
         format!("failed to parse current gem version for {gem_name}: {current}")
     })?;
     let installed_class = classify_semver_release(current);
 
     let versions = rubygems_versions(rubygems_client, gem_name)?;
+    let candidates =
+        rubygems_candidates_for_resolution(gem_name, versions, ruby_runtime, version_policy)?;
+
+    let resolution = evaluate_candidates(
+        &current_ver,
+        &candidates,
+        installed_class,
+        version_policy,
+        now_unix_secs,
+        min_age,
+        GateBypass::NONE,
+    );
+
+    Ok(resolution)
+}
+
+fn rubygems_candidates_for_resolution(
+    gem_name: &str,
+    versions: Vec<RubyGemsVersionItem>,
+    ruby_runtime: &Version,
+    version_policy: VersionPolicy,
+) -> Result<Vec<OrderedCandidate<Version>>> {
     let mut candidates: Vec<OrderedCandidate<Version>> = Vec::new();
 
     for item in versions {
-        if item.prerelease {
+        if version_policy == VersionPolicy::Disabled && item.prerelease {
             continue;
         }
 
@@ -380,44 +401,7 @@ fn rubygems_resolve_target_with_min_age(
         });
     }
 
-    let resolution = evaluate_candidates(
-        &current_ver,
-        &candidates,
-        installed_class,
-        version_policy,
-        now_unix_secs,
-        min_age,
-        GateBypass::NONE,
-    );
-
-    let (selected_version, current_blocked_by_policy) = match resolution.recommendation {
-        RecommendedOutcome::Update { target_version } => (Some(target_version), false),
-        RecommendedOutcome::DelayedByAge => (None, false),
-        RecommendedOutcome::CurrentNoNewer => (Some(current.to_string()), false),
-        RecommendedOutcome::CurrentBlockedByPolicy => (Some(current.to_string()), true),
-    };
-    let latest_blocked_by_policy_version = resolution
-        .evaluations
-        .iter()
-        .find(|eval| !eval.policy_allowed)
-        .map(|eval| eval.version.clone());
-    let version_policy_warning = resolution
-        .evaluations
-        .iter()
-        .find_map(|eval| eval.policy_warning)
-        .map(PolicyWarning::as_note)
-        .map(str::to_string);
-
-    Ok(AgeResolvedTarget {
-        selected_version,
-        latest_version: resolution.latest_overall_version,
-        latest_age_secs: resolution.latest_overall_age_secs,
-        current_blocked_by_policy,
-        version_policy: (version_policy != VersionPolicy::Disabled)
-            .then(|| version_policy.as_str().to_string()),
-        latest_blocked_by_policy_version,
-        version_policy_warning,
-    })
+    Ok(candidates)
 }
 
 fn rubygems_release_age_secs(
@@ -581,6 +565,31 @@ fn parse_version_for_compare(raw: &str) -> Option<Version> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::managers::shared::versioning::policy::{
+        RecommendedOutcome, delayed_candidate_for_test,
+    };
+
+    fn resolution_for_delayed_note(
+        selected: &str,
+        latest_policy_eligible: &str,
+        latest_age_secs: u64,
+    ) -> VersionPolicyResolution {
+        VersionPolicyResolution {
+            configured_policy: VersionPolicy::Disabled,
+            recommendation: RecommendedOutcome::Update {
+                target_version: selected.to_string(),
+            },
+            latest_overall_version: Some(latest_policy_eligible.to_string()),
+            latest_overall_age_secs: Some(latest_age_secs),
+            latest_policy_eligible_version: Some(latest_policy_eligible.to_string()),
+            latest_policy_eligible_age_secs: Some(latest_age_secs),
+            latest_age_eligible_version: None,
+            has_newer_versions: true,
+            blocked_by_policy_count: 0,
+            blocked_by_age_count: 1,
+            evaluations: Vec::new(),
+        }
+    }
 
     #[test]
     fn parse_gem_outdated_line() {
@@ -619,32 +628,115 @@ mod tests {
     }
 
     #[test]
-    fn delayed_latest_hidden_when_latest_not_delayed() {
-        let target = AgeResolvedTarget::new(
-            Some("13.3.1".to_string()),
-            Some("13.3.1".to_string()),
-            Some(10 * 24 * 60 * 60),
+    fn rubygems_candidates_keep_prereleases_for_policy_evaluation() {
+        let runtime = Version::new(3, 4, 9);
+        let versions = vec![RubyGemsVersionItem {
+            number: "1.1.0-beta.1".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            prerelease: true,
+            ruby_version: None,
+        }];
+
+        let candidates = rubygems_candidates_for_resolution(
+            "demo-gem",
+            versions,
+            &runtime,
+            VersionPolicy::Stable,
+        )
+        .expect("candidate extraction should succeed");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].version, "1.1.0-beta.1");
+        assert_eq!(candidates[0].release_class, classify_semver_release("1.1.0-beta.1"));
+    }
+
+    #[test]
+    fn stable_policy_reports_newest_prerelease_as_blocked() {
+        let runtime = Version::new(3, 4, 9);
+        let versions = vec![RubyGemsVersionItem {
+            number: "1.1.0-beta.1".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            prerelease: true,
+            ruby_version: None,
+        }];
+
+        let candidates = rubygems_candidates_for_resolution(
+            "demo-gem",
+            versions,
+            &runtime,
+            VersionPolicy::Stable,
+        )
+        .expect("candidate extraction should succeed");
+
+        let current = parse_version_for_compare("1.0.0").expect("current version should parse");
+        let resolved = evaluate_candidates(
+            &current,
+            &candidates,
+            classify_semver_release("1.0.0"),
+            VersionPolicy::Stable,
+            1_800_000_000,
+            Duration::from_secs(0),
+            GateBypass::NONE,
         );
 
+        assert_eq!(
+            resolved.recommendation,
+            RecommendedOutcome::CurrentBlockedByPolicy
+        );
+        assert_eq!(resolved.latest_overall_version.as_deref(), Some("1.1.0-beta.1"));
+        assert_eq!(resolved.latest_policy_eligible_version, None);
+        assert_eq!(
+            resolved.latest_blocked_by_policy_version(),
+            Some("1.1.0-beta.1")
+        );
+        assert_eq!(resolved.blocked_by_policy_count, 1);
+    }
+
+    #[test]
+    fn disabled_policy_keeps_rubygems_prereleases_filtered_for_legacy_behavior() {
+        let runtime = Version::new(3, 4, 9);
+        let versions = vec![
+            RubyGemsVersionItem {
+                number: "1.1.0-beta.1".to_string(),
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                prerelease: true,
+                ruby_version: None,
+            },
+            RubyGemsVersionItem {
+                number: "1.0.0".to_string(),
+                created_at: "2023-01-01T00:00:00Z".to_string(),
+                prerelease: false,
+                ruby_version: None,
+            },
+        ];
+
+        let candidates = rubygems_candidates_for_resolution(
+            "demo-gem",
+            versions,
+            &runtime,
+            VersionPolicy::Disabled,
+        )
+        .expect("candidate extraction should succeed");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].version, "1.0.0");
+    }
+
+    #[test]
+    fn delayed_latest_hidden_when_latest_not_delayed() {
+        let target = resolution_for_delayed_note("13.3.1", "13.3.1", 10 * 24 * 60 * 60);
+
         assert!(
-            target
-                .delayed_latest(Duration::from_secs(7 * 24 * 60 * 60))
-                .is_none()
+            delayed_candidate_for_test(&target, Duration::from_secs(7 * 24 * 60 * 60)).is_none()
         );
     }
 
     #[test]
     fn delayed_latest_present_when_latest_too_fresh() {
-        let target = AgeResolvedTarget::new(
-            Some("13.2.1".to_string()),
-            Some("13.3.1".to_string()),
-            Some(2 * 24 * 60 * 60),
-        );
+        let target = resolution_for_delayed_note("13.2.1", "13.3.1", 2 * 24 * 60 * 60);
 
         assert!(
-            target
-                .delayed_latest(Duration::from_secs(7 * 24 * 60 * 60))
-                .is_some()
+            delayed_candidate_for_test(&target, Duration::from_secs(7 * 24 * 60 * 60)).is_some()
         );
     }
 }

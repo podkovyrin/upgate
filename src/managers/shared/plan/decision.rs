@@ -1,53 +1,53 @@
 use std::time::Duration;
 
-use super::types::{AgeResolvedTarget, DelayedLatest, PlanDecision, VersionPolicyMeta};
+use super::types::{DelayedLatest, PlanDecision, VersionPolicyMeta};
+use crate::managers::shared::versioning::policy::{
+    PolicyWarning, RecommendedOutcome, VersionPolicy, VersionPolicyResolution,
+};
 use crate::util::time::human_age;
 
 pub trait ResolvedPlanTarget {
-    fn selected_version(&self) -> Option<&str>;
-    fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest>;
-    fn current_blocked_by_policy(&self) -> bool {
-        false
-    }
-    fn version_policy(&self) -> Option<&str> {
+    fn recommendation(&self) -> &RecommendedOutcome;
+    fn latest_version(&self) -> Option<&str>;
+    fn latest_age_secs(&self) -> Option<u64>;
+    fn version_policy(&self) -> Option<VersionPolicy> {
         None
     }
     fn latest_blocked_by_policy_version(&self) -> Option<&str> {
         None
     }
-    fn version_policy_warning(&self) -> Option<&str> {
+    fn version_policy_warning(&self) -> Option<PolicyWarning> {
         None
     }
 }
 
-impl ResolvedPlanTarget for AgeResolvedTarget {
-    fn selected_version(&self) -> Option<&str> {
-        self.selected_version.as_deref()
+impl ResolvedPlanTarget for VersionPolicyResolution {
+    fn recommendation(&self) -> &RecommendedOutcome {
+        &self.recommendation
     }
 
-    fn delayed_latest(&self, min_age: Duration) -> Option<DelayedLatest> {
-        Self::delayed_latest(self, min_age)
+    fn latest_version(&self) -> Option<&str> {
+        self.latest_policy_eligible_version.as_deref()
     }
 
-    fn current_blocked_by_policy(&self) -> bool {
-        self.current_blocked_by_policy
+    fn latest_age_secs(&self) -> Option<u64> {
+        self.latest_policy_eligible_age_secs
     }
 
-    fn version_policy(&self) -> Option<&str> {
-        self.version_policy.as_deref()
+    fn version_policy(&self) -> Option<VersionPolicy> {
+        VersionPolicyResolution::configured_policy(self)
     }
 
     fn latest_blocked_by_policy_version(&self) -> Option<&str> {
-        self.latest_blocked_by_policy_version.as_deref()
+        VersionPolicyResolution::latest_blocked_by_policy_version(self)
     }
 
-    fn version_policy_warning(&self) -> Option<&str> {
-        self.version_policy_warning.as_deref()
+    fn version_policy_warning(&self) -> Option<PolicyWarning> {
+        VersionPolicyResolution::version_policy_warning(self)
     }
 }
 
 pub fn plan_decision_from_resolution<T>(
-    current_version: &str,
     resolved: Result<T, String>,
     min_age: Duration,
 ) -> PlanDecision
@@ -55,32 +55,46 @@ where
     T: ResolvedPlanTarget,
 {
     match resolved {
-        Ok(target) => match target.selected_version() {
-            None => PlanDecision::DelayedNoEligible {
-                required_age: human_age(min_age.as_secs()),
-                delayed_latest: target.delayed_latest(min_age),
+        Ok(target) => match target.recommendation() {
+            RecommendedOutcome::Update { target_version } => PlanDecision::Update {
+                target: target_version.clone(),
+                delayed_latest: delayed_latest_for(&target, Some(target_version.as_str()), min_age),
                 version_policy: version_policy_meta(&target),
             },
-            Some(selected) if selected == current_version && target.current_blocked_by_policy() => {
-                PlanDecision::CurrentBlockedByPolicy {
-                    version_policy: version_policy_meta(&target).unwrap_or_else(|| {
-                        VersionPolicyMeta {
-                            policy: "unknown".to_string(),
-                            latest_blocked_version: None,
-                            warning: None,
-                        }
-                    }),
-                }
-            }
-            Some(selected) if selected == current_version => PlanDecision::NoChange,
-            Some(selected) => PlanDecision::Update {
-                target: selected.to_string(),
-                delayed_latest: target.delayed_latest(min_age),
+            RecommendedOutcome::DelayedByAge => PlanDecision::DelayedNoEligible {
+                required_age: human_age(min_age.as_secs()),
+                delayed_latest: delayed_latest_for(&target, None, min_age),
                 version_policy: version_policy_meta(&target),
+            },
+            RecommendedOutcome::CurrentNoNewer => PlanDecision::NoChange,
+            RecommendedOutcome::CurrentBlockedByPolicy => PlanDecision::CurrentBlockedByPolicy {
+                version_policy: version_policy_meta(&target).unwrap_or(VersionPolicyMeta {
+                    policy: VersionPolicy::Disabled,
+                    latest_blocked_version: None,
+                    warning: None,
+                }),
             },
         },
         Err(err) => PlanDecision::Error(err),
     }
+}
+
+fn delayed_latest_for<T>(
+    target: &T,
+    selected_version: Option<&str>,
+    min_age: Duration,
+) -> Option<DelayedLatest>
+where
+    T: ResolvedPlanTarget,
+{
+    let latest_version = target.latest_version()?;
+    let latest_age_secs = target.latest_age_secs()?;
+
+    if latest_age_secs >= min_age.as_secs() || selected_version == Some(latest_version) {
+        return None;
+    }
+
+    Some(DelayedLatest::new(latest_version, latest_age_secs, min_age))
 }
 
 fn version_policy_meta<T>(target: &T) -> Option<VersionPolicyMeta>
@@ -88,43 +102,42 @@ where
     T: ResolvedPlanTarget,
 {
     target.version_policy().map(|policy| VersionPolicyMeta {
-        policy: policy.to_string(),
+        policy,
         latest_blocked_version: target
             .latest_blocked_by_policy_version()
             .map(str::to_string),
-        warning: target.version_policy_warning().map(str::to_string),
+        warning: target.version_policy_warning(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::managers::shared::DelayedLatest;
 
     #[derive(Clone)]
     struct MockTarget {
-        selected: Option<&'static str>,
-        delayed_latest: Option<DelayedLatest>,
-        blocked_by_policy: bool,
-        version_policy: Option<&'static str>,
+        recommendation: RecommendedOutcome,
+        latest_version: Option<&'static str>,
+        latest_age_secs: Option<u64>,
+        version_policy: Option<VersionPolicy>,
         latest_blocked_by_policy_version: Option<&'static str>,
-        version_policy_warning: Option<&'static str>,
+        version_policy_warning: Option<PolicyWarning>,
     }
 
     impl ResolvedPlanTarget for MockTarget {
-        fn selected_version(&self) -> Option<&str> {
-            self.selected
+        fn recommendation(&self) -> &RecommendedOutcome {
+            &self.recommendation
         }
 
-        fn delayed_latest(&self, _min_age: Duration) -> Option<DelayedLatest> {
-            self.delayed_latest.clone()
+        fn latest_version(&self) -> Option<&str> {
+            self.latest_version
         }
 
-        fn current_blocked_by_policy(&self) -> bool {
-            self.blocked_by_policy
+        fn latest_age_secs(&self) -> Option<u64> {
+            self.latest_age_secs
         }
 
-        fn version_policy(&self) -> Option<&str> {
+        fn version_policy(&self) -> Option<VersionPolicy> {
             self.version_policy
         }
 
@@ -132,7 +145,7 @@ mod tests {
             self.latest_blocked_by_policy_version
         }
 
-        fn version_policy_warning(&self) -> Option<&str> {
+        fn version_policy_warning(&self) -> Option<PolicyWarning> {
             self.version_policy_warning
         }
     }
@@ -140,7 +153,6 @@ mod tests {
     #[test]
     fn returns_error_when_resolution_fails() {
         let decision = plan_decision_from_resolution::<MockTarget>(
-            "1.0.0",
             Err("resolver failed".to_string()),
             Duration::from_secs(7_200),
         );
@@ -154,15 +166,10 @@ mod tests {
     #[test]
     fn returns_delayed_no_eligible_when_target_missing() {
         let decision = plan_decision_from_resolution(
-            "1.0.0",
             Ok(MockTarget {
-                selected: None,
-                delayed_latest: Some(DelayedLatest {
-                    latest_version: "1.1.0".to_string(),
-                    latest_age: "1h".to_string(),
-                    required_age: "2h".to_string(),
-                }),
-                blocked_by_policy: false,
+                recommendation: RecommendedOutcome::DelayedByAge,
+                latest_version: Some("1.1.0"),
+                latest_age_secs: Some(3_600),
                 version_policy: None,
                 latest_blocked_by_policy_version: None,
                 version_policy_warning: None,
@@ -187,13 +194,12 @@ mod tests {
     }
 
     #[test]
-    fn returns_no_change_when_selected_matches_current() {
+    fn returns_no_change_when_recommendation_is_current_no_newer() {
         let decision = plan_decision_from_resolution(
-            "1.0.0",
             Ok(MockTarget {
-                selected: Some("1.0.0"),
-                delayed_latest: None,
-                blocked_by_policy: false,
+                recommendation: RecommendedOutcome::CurrentNoNewer,
+                latest_version: None,
+                latest_age_secs: None,
                 version_policy: None,
                 latest_blocked_by_policy_version: None,
                 version_policy_warning: None,
@@ -205,17 +211,14 @@ mod tests {
     }
 
     #[test]
-    fn returns_update_when_selected_differs() {
+    fn returns_update_when_recommendation_has_target() {
         let decision = plan_decision_from_resolution(
-            "1.0.0",
             Ok(MockTarget {
-                selected: Some("1.2.0"),
-                delayed_latest: Some(DelayedLatest {
-                    latest_version: "1.3.0".to_string(),
-                    latest_age: "1h".to_string(),
-                    required_age: "7d".to_string(),
-                }),
-                blocked_by_policy: false,
+                recommendation: RecommendedOutcome::Update {
+                    target_version: "1.2.0".to_string(),
+                },
+                latest_version: Some("1.3.0"),
+                latest_age_secs: Some(3_600),
                 version_policy: None,
                 latest_blocked_by_policy_version: None,
                 version_policy_warning: None,
@@ -239,35 +242,56 @@ mod tests {
     }
 
     #[test]
-    fn returns_current_blocked_by_policy_when_selected_matches_current_and_policy_blocks_newer() {
+    fn returns_current_blocked_by_policy_when_recommendation_blocks_current() {
         let decision = plan_decision_from_resolution(
-            "1.0.0",
             Ok(MockTarget {
-                selected: Some("1.0.0"),
-                delayed_latest: None,
-                blocked_by_policy: true,
-                version_policy: Some("stable"),
+                recommendation: RecommendedOutcome::CurrentBlockedByPolicy,
+                latest_version: None,
+                latest_age_secs: None,
+                version_policy: Some(VersionPolicy::Stable),
                 latest_blocked_by_policy_version: Some("1.3.0-beta.1"),
-                version_policy_warning: Some(
-                    "same-track fell back to stable because installed track is unknown",
-                ),
+                version_policy_warning: Some(PolicyWarning::InstalledTrackUnknownFallbackStable),
             }),
             Duration::from_secs(3_600),
         );
 
         match decision {
             PlanDecision::CurrentBlockedByPolicy { version_policy } => {
-                assert_eq!(version_policy.policy, "stable");
+                assert_eq!(version_policy.policy, VersionPolicy::Stable);
                 assert_eq!(
                     version_policy.latest_blocked_version.as_deref(),
                     Some("1.3.0-beta.1")
                 );
                 assert_eq!(
-                    version_policy.warning.as_deref(),
-                    Some("same-track fell back to stable because installed track is unknown")
+                    version_policy.warning,
+                    Some(PolicyWarning::InstalledTrackUnknownFallbackStable)
                 );
             }
             _ => panic!("expected PlanDecision::CurrentBlockedByPolicy"),
+        }
+    }
+
+    #[test]
+    fn update_without_fresher_latest_has_no_delayed_metadata() {
+        let decision = plan_decision_from_resolution(
+            Ok(MockTarget {
+                recommendation: RecommendedOutcome::Update {
+                    target_version: "1.2.0".to_string(),
+                },
+                latest_version: Some("1.2.0"),
+                latest_age_secs: Some(86_400 * 10),
+                version_policy: None,
+                latest_blocked_by_policy_version: None,
+                version_policy_warning: None,
+            }),
+            Duration::from_secs(86_400 * 7),
+        );
+
+        match decision {
+            PlanDecision::Update { delayed_latest, .. } => {
+                assert!(delayed_latest.is_none());
+            }
+            _ => panic!("expected PlanDecision::Update"),
         }
     }
 }

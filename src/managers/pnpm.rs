@@ -35,11 +35,6 @@ impl ManagerPlugin for PnpmPlugin {
 pub static PLUGIN: PnpmPlugin = PnpmPlugin;
 
 #[derive(Debug, Deserialize)]
-struct OutdatedEntry {
-    current: String,
-}
-
-#[derive(Debug, Deserialize)]
 struct PnpmListItem {
     #[serde(default)]
     dependencies: BTreeMap<String, PnpmDependency>,
@@ -57,7 +52,7 @@ struct PnpmOutdatedMapEntry {
 
 type PnpmTimeMap = BTreeMap<String, String>;
 
-type PnpmPlanItem = ResolvedPlanItem<AgeResolvedTarget>;
+type PnpmPlanItem = ResolvedPlanItem<VersionPolicyResolution>;
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
     run_manager_pipeline(ctx, scan, run_plan_apply)
@@ -68,11 +63,11 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
         ctx,
         PLUGIN.id(),
         PlanApplyFrameworkPolicy::SOFT_FETCH_STRICT_RESOLVE,
-        || pnpm_outdated_global().context("failed to query outdated pnpm packages"),
+        || pnpm_plan_seed(ctx.policy.version_policy),
         BTreeMap::is_empty,
-        |outdated, runtime| {
+        |plan_seed, runtime| {
             resolve_pnpm_plan(
-                outdated,
+                plan_seed,
                 runtime.now_unix_secs,
                 runtime.min_age,
                 runtime.max_parallel_checks,
@@ -80,7 +75,7 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
             )
             .context("planning execution failed")
         },
-        |_outdated, plan, runtime| {
+        |_plan_seed, plan, runtime| {
             Ok(collect_upgradable_from_resolved_plan(
                 PLUGIN.id(),
                 plan,
@@ -89,10 +84,18 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                 runtime.pinned,
             ))
         },
-        |ctx, _outdated, upgradable| {
+        |ctx, _plan_seed, upgradable| {
             run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, apply_pnpm_updates)
         },
     )
+}
+
+fn pnpm_plan_seed(version_policy: VersionPolicy) -> Result<BTreeMap<String, String>> {
+    if version_policy == VersionPolicy::Disabled {
+        return pnpm_outdated_global().context("failed to query outdated pnpm packages");
+    }
+
+    pnpm_installed_global().context("failed to query installed pnpm packages")
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {
@@ -122,15 +125,15 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
 }
 
 fn resolve_pnpm_plan(
-    outdated: &BTreeMap<String, OutdatedEntry>,
+    plan_seed: &BTreeMap<String, String>,
     now_unix_secs: u64,
     min_age: Duration,
     max_parallel_checks: usize,
     version_policy: VersionPolicy,
 ) -> Result<Vec<PnpmPlanItem>> {
-    let jobs: Vec<(String, String)> = outdated
+    let jobs = plan_seed
         .iter()
-        .map(|(name, entry)| (name.clone(), entry.current.clone()))
+        .map(|(name, current)| (name.clone(), current.clone()))
         .collect();
 
     let threads = effective_parallelism(max_parallel_checks, PNPM_MAX_PARALLEL_CHECKS);
@@ -184,7 +187,7 @@ fn pnpm_installed_global() -> Result<BTreeMap<String, String>> {
     Ok(out)
 }
 
-fn pnpm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
+fn pnpm_outdated_global() -> Result<BTreeMap<String, String>> {
     let output = run_cmd(
         "pnpm",
         ["outdated", "-g", "--json"],
@@ -216,7 +219,7 @@ fn is_no_importer_manifest_error(text: &str) -> bool {
     text.contains("ERR_PNPM_NO_IMPORTER_MANIFEST_FOUND")
 }
 
-fn parse_pnpm_outdated_json(stdout: &str) -> Result<BTreeMap<String, OutdatedEntry>> {
+fn parse_pnpm_outdated_json(stdout: &str) -> Result<BTreeMap<String, String>> {
     let entries: BTreeMap<String, PnpmOutdatedMapEntry> =
         serde_json::from_str(stdout).context("failed to parse pnpm outdated JSON")?;
 
@@ -226,7 +229,7 @@ fn parse_pnpm_outdated_json(stdout: &str) -> Result<BTreeMap<String, OutdatedEnt
             continue;
         };
 
-        out.insert(name, OutdatedEntry { current });
+        out.insert(name, current);
     }
 
     Ok(out)
@@ -238,7 +241,7 @@ fn pnpm_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
     version_policy: VersionPolicy,
-) -> Result<AgeResolvedTarget> {
+) -> Result<VersionPolicyResolution> {
     let timestamps_by_version: PnpmTimeMap =
         run_cmd("pnpm", ["view", name, "time", "--json"], CmdStatus::Success)
             .output()?
@@ -249,7 +252,7 @@ fn pnpm_resolve_target_with_min_age(
         resolve_semver_with_min_age(current, &releases, now_unix_secs, min_age, version_policy)
             .with_context(|| format!("failed to resolve eligible semver target for {name}"))?;
 
-    Ok(resolved.into())
+    Ok(resolved)
 }
 
 fn pnpm_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Result<Option<u64>> {
@@ -288,8 +291,8 @@ mod tests {
         }"#;
 
         let parsed = parse_pnpm_outdated_json(raw).expect("should parse");
-        assert_eq!(parsed.get("foo").map(|e| e.current.as_str()), Some("1.0.0"));
-        assert_eq!(parsed.get("bar").map(|e| e.current.as_str()), Some("2.0.0"));
+        assert_eq!(parsed.get("foo").map(String::as_str), Some("1.0.0"));
+        assert_eq!(parsed.get("bar").map(String::as_str), Some("2.0.0"));
     }
 
     #[test]
@@ -300,7 +303,7 @@ mod tests {
         }"#;
 
         let parsed = parse_pnpm_outdated_json(raw).expect("should parse");
-        assert_eq!(parsed.get("foo").map(|e| e.current.as_str()), Some("1.0.0"));
+        assert_eq!(parsed.get("foo").map(String::as_str), Some("1.0.0"));
         assert!(!parsed.contains_key("bar"));
     }
 

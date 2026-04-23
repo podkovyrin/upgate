@@ -36,7 +36,7 @@ impl ManagerPlugin for MisePlugin {
 pub static PLUGIN: MisePlugin = MisePlugin;
 
 type NpmTimeMap = BTreeMap<String, String>;
-type MisePlanItem = ResolvedPlanItem<AgeResolvedTarget>;
+type MisePlanItem = ResolvedPlanItem<VersionPolicyResolution>;
 
 #[derive(Debug, Deserialize)]
 struct MiseLsByToolEntry {
@@ -121,14 +121,14 @@ fn mise_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
     version_policy: VersionPolicy,
-) -> Result<AgeResolvedTarget> {
+) -> Result<VersionPolicyResolution> {
     let releases = mise_semver_releases(tool)?;
 
     let resolved =
         resolve_semver_with_min_age(current, &releases, now_unix_secs, min_age, version_policy)
             .with_context(|| format!("failed to resolve eligible semver target for {tool}"))?;
 
-    Ok(resolved.into())
+    Ok(resolved)
 }
 
 fn mise_semver_releases(tool: &str) -> Result<Vec<SemverTimestamp>> {

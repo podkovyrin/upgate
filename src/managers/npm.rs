@@ -35,7 +35,7 @@ impl ManagerPlugin for NpmPlugin {
 pub static PLUGIN: NpmPlugin = NpmPlugin;
 
 #[derive(Debug, Deserialize)]
-struct OutdatedEntry {
+struct NpmOutdatedMapEntry {
     current: String,
 }
 
@@ -52,7 +52,7 @@ struct NpmLsDependency {
 
 type NpmTimeMap = BTreeMap<String, String>;
 
-type NpmPlanItem = ResolvedPlanItem<AgeResolvedTarget>;
+type NpmPlanItem = ResolvedPlanItem<VersionPolicyResolution>;
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
     run_manager_pipeline(ctx, scan, run_plan_apply)
@@ -63,11 +63,11 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
         ctx,
         PLUGIN.id(),
         PlanApplyFrameworkPolicy::SOFT_FETCH_STRICT_RESOLVE,
-        || npm_outdated_global().context("failed to query outdated npm packages"),
+        || npm_plan_seed(ctx.policy.version_policy),
         BTreeMap::is_empty,
-        |outdated, runtime| {
+        |plan_seed, runtime| {
             resolve_npm_plan(
-                outdated,
+                plan_seed,
                 runtime.now_unix_secs,
                 runtime.min_age,
                 runtime.max_parallel_checks,
@@ -75,7 +75,7 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
             )
             .context("planning execution failed")
         },
-        |_outdated, plan, runtime| {
+        |_plan_seed, plan, runtime| {
             Ok(collect_upgradable_from_resolved_plan(
                 PLUGIN.id(),
                 plan,
@@ -84,7 +84,7 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                 runtime.pinned,
             ))
         },
-        |ctx, _outdated, upgradable| {
+        |ctx, _plan_seed, upgradable| {
             let min_age_days = ctx.policy.min_release_age.whole_days();
             run_selective_or_global_apply_flow(
                 ctx,
@@ -95,6 +95,14 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
             )
         },
     )
+}
+
+fn npm_plan_seed(version_policy: VersionPolicy) -> Result<BTreeMap<String, String>> {
+    if version_policy == VersionPolicy::Disabled {
+        return npm_outdated_global().context("failed to query outdated npm packages");
+    }
+
+    npm_installed_global().context("failed to query installed npm packages")
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {
@@ -124,15 +132,15 @@ fn scan(ctx: &ManagerCtx) -> Result<()> {
 }
 
 fn resolve_npm_plan(
-    outdated: &BTreeMap<String, OutdatedEntry>,
+    plan_seed: &BTreeMap<String, String>,
     now_unix_secs: u64,
     min_age: Duration,
     max_parallel_checks: usize,
     version_policy: VersionPolicy,
 ) -> Result<Vec<NpmPlanItem>> {
-    let jobs: Vec<(String, String)> = outdated
+    let jobs = plan_seed
         .iter()
-        .map(|(name, entry)| (name.clone(), entry.current.clone()))
+        .map(|(name, current)| (name.clone(), current.clone()))
         .collect();
 
     let threads = effective_parallelism(max_parallel_checks, NPM_MAX_PARALLEL_CHECKS);
@@ -208,10 +216,16 @@ fn npm_installed_global() -> Result<BTreeMap<String, String>> {
     Ok(out)
 }
 
-fn npm_outdated_global() -> Result<BTreeMap<String, OutdatedEntry>> {
-    run_cmd("npm", ["outdated", "-g", "--json"], CmdStatus::Allow(&[1]))
-        .output()?
-        .json()
+fn npm_outdated_global() -> Result<BTreeMap<String, String>> {
+    let entries: BTreeMap<String, NpmOutdatedMapEntry> =
+        run_cmd("npm", ["outdated", "-g", "--json"], CmdStatus::Allow(&[1]))
+            .output()?
+            .json()?;
+
+    Ok(entries
+        .into_iter()
+        .map(|(name, entry)| (name, entry.current))
+        .collect())
 }
 
 fn npm_resolve_target_with_min_age(
@@ -220,7 +234,7 @@ fn npm_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
     version_policy: VersionPolicy,
-) -> Result<AgeResolvedTarget> {
+) -> Result<VersionPolicyResolution> {
     let timestamps_by_version: NpmTimeMap =
         run_cmd("npm", ["view", name, "time", "--json"], CmdStatus::Success)
             .output()?
@@ -232,7 +246,7 @@ fn npm_resolve_target_with_min_age(
         resolve_semver_with_min_age(current, &releases, now_unix_secs, min_age, version_policy)
             .with_context(|| format!("failed to resolve eligible semver target for {name}"))?;
 
-    Ok(resolved.into())
+    Ok(resolved)
 }
 
 fn npm_release_age_secs(name: &str, version: &str, now_unix_secs: u64) -> Result<Option<u64>> {

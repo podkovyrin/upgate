@@ -18,8 +18,8 @@ pub use runtime::{
     resolve_selected_plugins, run_manager_pipeline,
 };
 pub use shared::{
-    AgeResolvedTarget, DelayedLatest, Pep440Timestamp, PlanApplyFrameworkPolicy, PlannedUpdate,
-    ResolvedPlanItem, ResolvedPlanTarget, SemverTimestamp, collect_upgradable_from_resolved_plan,
+    Pep440Timestamp, PlanApplyFrameworkPolicy, PlannedUpdate, ResolvedPlanItem, ResolvedPlanTarget,
+    SemverTimestamp, VersionPolicyResolution, collect_upgradable_from_resolved_plan,
     emit_apply_error, emit_manager_level_error_with, emit_scan_current, emit_version_scan_outcomes,
     parse_pep440_release_timestamps, parse_semver_time_releases,
     release_age_secs_for_pep440_version, release_age_secs_for_version, resolve_pep440_with_min_age,

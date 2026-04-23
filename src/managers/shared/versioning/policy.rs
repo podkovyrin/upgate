@@ -175,6 +175,8 @@ pub enum RecommendedOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionPolicyResolution {
+    /// Configured manager policy for this resolver run.
+    pub configured_policy: VersionPolicy,
     /// Resolver recommendation after applying policy and age gates.
     pub recommendation: RecommendedOutcome,
     /// Newest newer candidate regardless of policy/age eligibility.
@@ -183,6 +185,8 @@ pub struct VersionPolicyResolution {
     pub latest_overall_age_secs: Option<u64>,
     /// Newest candidate that passed the effective policy gate.
     pub latest_policy_eligible_version: Option<String>,
+    /// Age of `latest_policy_eligible_version` in seconds.
+    pub latest_policy_eligible_age_secs: Option<u64>,
     /// Newest candidate that passed both effective policy and effective age gates.
     pub latest_age_eligible_version: Option<String>,
     /// Whether at least one strictly newer candidate exists.
@@ -193,6 +197,53 @@ pub struct VersionPolicyResolution {
     pub blocked_by_age_count: usize,
     /// Per-candidate gate results for all newer candidates, sorted newest-first.
     pub evaluations: Vec<CandidateEvaluation>,
+}
+
+impl VersionPolicyResolution {
+    pub const fn configured_policy(&self) -> Option<VersionPolicy> {
+        match self.configured_policy {
+            VersionPolicy::Disabled => None,
+            policy => Some(policy),
+        }
+    }
+
+    pub const fn is_current_blocked_by_policy(&self) -> bool {
+        matches!(
+            self.recommendation,
+            RecommendedOutcome::CurrentBlockedByPolicy
+        )
+    }
+
+    pub fn latest_blocked_by_policy_version(&self) -> Option<&str> {
+        self.evaluations
+            .iter()
+            .find(|eval| !eval.policy_allowed)
+            .map(|eval| eval.version.as_str())
+    }
+
+    pub fn version_policy_warning(&self) -> Option<PolicyWarning> {
+        self.evaluations.iter().find_map(|eval| eval.policy_warning)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn delayed_candidate_for_test(
+    resolution: &VersionPolicyResolution,
+    min_age: Duration,
+) -> Option<(&str, u64)> {
+    let latest_version = resolution.latest_policy_eligible_version.as_deref()?;
+    let latest_age_secs = resolution.latest_policy_eligible_age_secs?;
+    if latest_age_secs >= min_age.as_secs() {
+        return None;
+    }
+
+    match &resolution.recommendation {
+        RecommendedOutcome::DelayedByAge => Some((latest_version, latest_age_secs)),
+        RecommendedOutcome::Update { target_version } if target_version != latest_version => {
+            Some((latest_version, latest_age_secs))
+        }
+        _ => None,
+    }
 }
 
 /// Evaluate policy eligibility for one candidate class.
@@ -258,7 +309,7 @@ where
 {
     let mut selected: Option<(T, String)> = None;
     let mut newest_overall: Option<(T, String, u64)> = None;
-    let mut newest_policy_eligible: Option<(T, String)> = None;
+    let mut newest_policy_eligible: Option<(T, String, u64)> = None;
     let mut newest_age_eligible: Option<(T, String)> = None;
     let mut has_effective_policy_eligible = false;
 
@@ -284,10 +335,11 @@ where
         }
 
         if effective_policy_allowed {
-            update_newest_pair(
+            update_newest_triplet(
                 &mut newest_policy_eligible,
                 &candidate.parsed,
                 &candidate.version,
+                age_secs,
             );
             if effective_age_allowed {
                 update_newest_pair(
@@ -344,6 +396,11 @@ where
         .map_or((None, None), |(_, version, age_secs)| {
             (Some(version.clone()), Some(*age_secs))
         });
+    let (latest_policy_eligible_version, latest_policy_eligible_age_secs) = newest_policy_eligible
+        .as_ref()
+        .map_or((None, None), |(_, version, age_secs)| {
+            (Some(version.clone()), Some(*age_secs))
+        });
     let recommendation = if let Some((_, target_version)) = selected {
         RecommendedOutcome::Update { target_version }
     } else if !has_newer_versions {
@@ -355,10 +412,12 @@ where
     };
 
     VersionPolicyResolution {
+        configured_policy: policy,
         recommendation,
         latest_overall_version,
         latest_overall_age_secs,
-        latest_policy_eligible_version: newest_policy_eligible.map(|(_, version)| version),
+        latest_policy_eligible_version,
+        latest_policy_eligible_age_secs,
         latest_age_eligible_version: newest_age_eligible.map(|(_, version)| version),
         has_newer_versions,
         blocked_by_policy_count,
@@ -699,6 +758,7 @@ mod tests {
             resolved.latest_policy_eligible_version.as_deref(),
             Some("1.2.5")
         );
+        assert_eq!(resolved.latest_policy_eligible_age_secs, Some(3));
         assert_eq!(resolved.latest_age_eligible_version, None);
         assert_eq!(resolved.blocked_by_policy_count, 1);
         assert_eq!(resolved.blocked_by_age_count, 1);
@@ -784,6 +844,7 @@ mod tests {
             resolved.latest_policy_eligible_version.as_deref(),
             Some("1.3.0-beta.1")
         );
+        assert_eq!(resolved.latest_policy_eligible_age_secs, Some(1));
         assert_eq!(
             resolved.latest_age_eligible_version.as_deref(),
             Some("1.3.0-beta.1")
@@ -820,6 +881,7 @@ mod tests {
             resolved.latest_policy_eligible_version.as_deref(),
             Some("1.3.0-beta.1")
         );
+        assert_eq!(resolved.latest_policy_eligible_age_secs, Some(1));
         assert_eq!(resolved.latest_age_eligible_version, None);
         assert_eq!(resolved.blocked_by_policy_count, 0);
         assert_eq!(resolved.blocked_by_age_count, 1);
@@ -851,6 +913,7 @@ mod tests {
         );
         assert_eq!(resolved.blocked_by_policy_count, 1);
         assert_eq!(resolved.latest_policy_eligible_version, None);
+        assert_eq!(resolved.latest_policy_eligible_age_secs, None);
     }
 
     #[test]

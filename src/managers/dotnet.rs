@@ -52,7 +52,7 @@ struct DotnetToolEntry {
     version: String,
 }
 
-type DotnetPlanItem = ResolvedPlanItem<AgeResolvedTarget>;
+type DotnetPlanItem = ResolvedPlanItem<VersionPolicyResolution>;
 
 #[derive(Debug, serde::Deserialize)]
 struct NugetRegistrationIndex {
@@ -287,7 +287,7 @@ fn nuget_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
     version_policy: VersionPolicy,
-) -> Result<AgeResolvedTarget> {
+) -> Result<VersionPolicyResolution> {
     let versions = nuget_versions_with_publish_times(nuget_client, package_id)?;
 
     let resolved =
@@ -296,7 +296,7 @@ fn nuget_resolve_target_with_min_age(
                 format!("failed to resolve eligible semver target for {package_id}")
             })?;
 
-    Ok(resolved.into())
+    Ok(resolved)
 }
 
 fn nuget_release_age_secs(
@@ -426,6 +426,31 @@ fn fetch_text(client: &Client, url: &str, gzipped: bool) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::managers::shared::versioning::policy::{
+        RecommendedOutcome, delayed_candidate_for_test,
+    };
+
+    fn resolution_for_delayed_note(
+        selected: &str,
+        latest_policy_eligible: &str,
+        latest_age_secs: u64,
+    ) -> VersionPolicyResolution {
+        VersionPolicyResolution {
+            configured_policy: VersionPolicy::Disabled,
+            recommendation: RecommendedOutcome::Update {
+                target_version: selected.to_string(),
+            },
+            latest_overall_version: Some(latest_policy_eligible.to_string()),
+            latest_overall_age_secs: Some(latest_age_secs),
+            latest_policy_eligible_version: Some(latest_policy_eligible.to_string()),
+            latest_policy_eligible_age_secs: Some(latest_age_secs),
+            latest_age_eligible_version: None,
+            has_newer_versions: true,
+            blocked_by_policy_count: 0,
+            blocked_by_age_count: 1,
+            evaluations: Vec::new(),
+        }
+    }
 
     #[test]
     fn parse_tool_list_json() {
@@ -443,31 +468,19 @@ mod tests {
 
     #[test]
     fn delayed_latest_hidden_when_latest_not_delayed() {
-        let target = AgeResolvedTarget::new(
-            Some("10.0.5".to_string()),
-            Some("10.0.5".to_string()),
-            Some(10 * 24 * 60 * 60),
-        );
+        let target = resolution_for_delayed_note("10.0.5", "10.0.5", 10 * 24 * 60 * 60);
 
         assert!(
-            target
-                .delayed_latest(Duration::from_secs(7 * 24 * 60 * 60))
-                .is_none()
+            delayed_candidate_for_test(&target, Duration::from_secs(7 * 24 * 60 * 60)).is_none()
         );
     }
 
     #[test]
     fn delayed_latest_present_when_latest_too_fresh() {
-        let target = AgeResolvedTarget::new(
-            Some("10.0.4".to_string()),
-            Some("10.0.5".to_string()),
-            Some(2 * 24 * 60 * 60),
-        );
+        let target = resolution_for_delayed_note("10.0.4", "10.0.5", 2 * 24 * 60 * 60);
 
         assert!(
-            target
-                .delayed_latest(Duration::from_secs(7 * 24 * 60 * 60))
-                .is_some()
+            delayed_candidate_for_test(&target, Duration::from_secs(7 * 24 * 60 * 60)).is_some()
         );
     }
 

@@ -58,7 +58,7 @@ struct BunPmDependency {
 
 type BunTimeMap = BTreeMap<String, String>;
 
-type BunPlanItem = ResolvedPlanItem<AgeResolvedTarget>;
+type BunPlanItem = ResolvedPlanItem<VersionPolicyResolution>;
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
     run_manager_pipeline(ctx, scan, run_plan_apply)
@@ -300,7 +300,7 @@ fn bun_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
     version_policy: VersionPolicy,
-) -> Result<AgeResolvedTarget> {
+) -> Result<VersionPolicyResolution> {
     let timestamps_by_version: BunTimeMap = run_cmd(
         bun,
         ["pm", "view", name, "time", "--json", "--cwd", global_cwd],
@@ -315,7 +315,7 @@ fn bun_resolve_target_with_min_age(
         resolve_semver_with_min_age(current, &releases, now_unix_secs, min_age, version_policy)
             .with_context(|| format!("failed to resolve eligible semver target for {name}"))?;
 
-    Ok(resolved.into())
+    Ok(resolved)
 }
 
 fn bun_global_cwd() -> Result<String> {

@@ -129,7 +129,7 @@ where
                 current,
                 resolved,
             } = item;
-            let decision = plan_decision_from_resolution(&current, resolved, min_age);
+            let decision = plan_decision_from_resolution(resolved, min_age);
 
             (
                 PlanMeta {
@@ -158,21 +158,25 @@ fn handle_step_error(manager: &'static str, err: Error, policy: StepFailurePolic
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::managers::shared::{DelayedLatest, ResolvedPlanTarget};
+    use crate::managers::shared::ResolvedPlanTarget;
+    use crate::managers::shared::versioning::policy::RecommendedOutcome;
 
     #[derive(Clone)]
     struct MockTarget {
-        selected: Option<&'static str>,
-        delayed_latest: Option<DelayedLatest>,
+        recommendation: RecommendedOutcome,
     }
 
     impl ResolvedPlanTarget for MockTarget {
-        fn selected_version(&self) -> Option<&str> {
-            self.selected
+        fn recommendation(&self) -> &RecommendedOutcome {
+            &self.recommendation
         }
 
-        fn delayed_latest(&self, _min_age: Duration) -> Option<DelayedLatest> {
-            self.delayed_latest.clone()
+        fn latest_version(&self) -> Option<&str> {
+            None
+        }
+
+        fn latest_age_secs(&self) -> Option<u64> {
+            None
         }
     }
 
@@ -185,16 +189,18 @@ mod tests {
                 "foo",
                 "1.0.0",
                 Ok(MockTarget {
-                    selected: Some("1.1.0"),
-                    delayed_latest: None,
+                    recommendation: RecommendedOutcome::Update {
+                        target_version: "1.1.0".to_string(),
+                    },
                 }),
             ),
             ResolvedPlanItem::new(
                 "bar",
                 "2.0.0",
                 Ok(MockTarget {
-                    selected: Some("2.1.0"),
-                    delayed_latest: None,
+                    recommendation: RecommendedOutcome::Update {
+                        target_version: "2.1.0".to_string(),
+                    },
                 }),
             ),
         ];
@@ -216,16 +222,18 @@ mod tests {
                 "foo",
                 "1.0.0",
                 Ok(MockTarget {
-                    selected: Some("1.1.0"),
-                    delayed_latest: None,
+                    recommendation: RecommendedOutcome::Update {
+                        target_version: "1.1.0".to_string(),
+                    },
                 }),
             ),
             ResolvedPlanItem::new(
                 "bar",
                 "2.0.0",
                 Ok(MockTarget {
-                    selected: Some("2.1.0"),
-                    delayed_latest: None,
+                    recommendation: RecommendedOutcome::Update {
+                        target_version: "2.1.0".to_string(),
+                    },
                 }),
             ),
         ];
@@ -247,8 +255,7 @@ mod tests {
                 "same",
                 "1.0.0",
                 Ok(MockTarget {
-                    selected: Some("1.0.0"),
-                    delayed_latest: None,
+                    recommendation: RecommendedOutcome::CurrentNoNewer,
                 }),
             ),
             ResolvedPlanItem::new("broken", "1.0.0", Err("boom".to_string())),

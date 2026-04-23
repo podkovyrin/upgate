@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use crate::config::is_pinned;
 use crate::managers::shared::versioning::policy::{
-    VersionPolicy, classify_semver_release, evaluate_version_policy,
+    PolicyWarning, VersionPolicy, classify_semver_release, evaluate_version_policy,
 };
 #[allow(clippy::wildcard_imports)]
 use crate::managers::*;
@@ -144,8 +144,9 @@ enum PlanAction {
         required: String,
     },
     CurrentBlockedByPolicy {
-        policy: String,
+        policy: VersionPolicy,
         blocked_version: String,
+        warning: Option<PolicyWarning>,
     },
     Skipped {
         reason: String,
@@ -870,11 +871,14 @@ fn item_to_outcome(item: &PlanItem) -> ItemOutcome {
         PlanAction::CurrentBlockedByPolicy {
             policy,
             blocked_version,
+            warning,
         } => {
             let mut outcome =
                 ItemOutcome::current(PLUGIN.id(), item.name.clone(), item.installed.clone());
-            outcome.version_policy = Some(policy.clone());
+            outcome.version_policy = Some(policy.as_str().to_string());
             outcome.latest_blocked_by_policy_version = Some(blocked_version.clone());
+            outcome.version_policy_warning =
+                warning.as_ref().map(|w| w.as_note().to_string());
             outcome
         }
         PlanAction::Skipped { reason } => {
@@ -929,8 +933,9 @@ fn policy_gate_action_for_brew(
     let decision = evaluate_version_policy(policy, installed_class, target_class);
 
     (!decision.allowed).then(|| PlanAction::CurrentBlockedByPolicy {
-        policy: decision.effective_policy.as_str().to_string(),
+        policy,
         blocked_version: target.to_string(),
+        warning: decision.warning,
     })
 }
 
@@ -1241,9 +1246,11 @@ mod tests {
             PlanAction::CurrentBlockedByPolicy {
                 policy,
                 blocked_version,
+                warning,
             } => {
-                assert_eq!(policy, "stable");
+                assert_eq!(policy, VersionPolicy::Stable);
                 assert_eq!(blocked_version, "1.3.0-beta.1");
+                assert_eq!(warning, None);
             }
             _ => panic!("expected CurrentBlockedByPolicy"),
         }
@@ -1265,12 +1272,43 @@ mod tests {
             PlanAction::CurrentBlockedByPolicy {
                 policy,
                 blocked_version,
+                warning,
             } => {
-                assert_eq!(policy, "stable");
+                assert_eq!(policy, VersionPolicy::SameTrack);
                 assert_eq!(blocked_version, "1.0.0-beta.1");
+                assert_eq!(
+                    warning,
+                    Some(PolicyWarning::InstalledTrackUnknownFallbackStable)
+                );
             }
             _ => panic!("expected CurrentBlockedByPolicy"),
         }
+    }
+
+    #[test]
+    fn item_to_outcome_preserves_same_track_context_with_fallback_warning() {
+        let action =
+            policy_gate_action_for_brew("latest", "1.0.0-beta.1", VersionPolicy::SameTrack)
+                .expect("fallback stable should block prerelease target");
+
+        let item = PlanItem {
+            name: "demo".to_string(),
+            installed: "latest".to_string(),
+            target: "1.0.0-beta.1".to_string(),
+            action,
+            is_formula: true,
+        };
+
+        let outcome = item_to_outcome(&item);
+        assert_eq!(outcome.version_policy.as_deref(), Some("same-track"));
+        assert_eq!(
+            outcome.latest_blocked_by_policy_version.as_deref(),
+            Some("1.0.0-beta.1")
+        );
+        assert_eq!(
+            outcome.version_policy_warning.as_deref(),
+            Some("same-track fell back to stable because installed track is unknown")
+        );
     }
 
     #[test]
@@ -1307,9 +1345,11 @@ mod tests {
             PlanAction::CurrentBlockedByPolicy {
                 policy,
                 blocked_version,
+                warning,
             } => {
-                assert_eq!(policy, "stable");
+                assert_eq!(policy, VersionPolicy::Stable);
                 assert_eq!(blocked_version, "1.3.0-beta.1,67890");
+                assert_eq!(warning, None);
             }
             _ => panic!("expected CurrentBlockedByPolicy"),
         }

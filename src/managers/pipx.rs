@@ -75,7 +75,7 @@ struct PypiReleaseFile {
     upload_time: Option<String>,
 }
 
-type PipxPlanItem = ResolvedPlanItem<AgeResolvedTarget>;
+type PipxPlanItem = ResolvedPlanItem<VersionPolicyResolution>;
 
 fn run(ctx: &ManagerCtx) -> Result<()> {
     run_manager_pipeline(ctx, scan, run_plan_apply)
@@ -213,7 +213,7 @@ fn pypi_resolve_target_with_min_age(
     now_unix_secs: u64,
     min_age: Duration,
     version_policy: VersionPolicy,
-) -> Result<AgeResolvedTarget> {
+) -> Result<VersionPolicyResolution> {
     let root = pypi_root(pypi_client, pkg)?;
     let releases = pypi_pep440_releases(pkg, &root)?;
 
@@ -222,7 +222,7 @@ fn pypi_resolve_target_with_min_age(
             .with_context(|| format!("failed to resolve eligible PEP440 target for {pkg}"))?;
 
     let _ = root.info.version;
-    Ok(resolved.into())
+    Ok(resolved)
 }
 
 fn pypi_release_age_secs(
