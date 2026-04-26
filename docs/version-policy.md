@@ -440,6 +440,11 @@ Some managers cannot safely combine this gate with their native target-selection
 so `upnow` must not replace that with its own exact-version resolver. Any configured
 `[mise].version_policy` value is rejected.
 
+`uv` is unsupported for version policy. It keeps its legacy behavior by delegating target
+selection to `uv pip install --dry-run --exclude-newer` and applying with
+`uv tool install --upgrade --exclude-newer`. Any configured `[uv].version_policy`
+value is rejected.
+
 ---
 
 # Interactive Apply

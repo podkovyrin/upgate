@@ -81,12 +81,12 @@ If unset, version policy filtering is disabled and legacy behavior is preserved.
 
 Supported by:
 
-- `brew`, `bun`, `cargo`, `dotnet`, `go`, `npm`, `pipx`, `pnpm`, `uv`, `yarn`
+- `brew`, `bun`, `cargo`, `dotnet`, `go`, `npm`, `pipx`, `pnpm`, `yarn`
 - `gem` supports `stable` only
 
 Not supported by:
 
-- `mise`
+- `mise`, `uv`
 
 ### `pinned`
 

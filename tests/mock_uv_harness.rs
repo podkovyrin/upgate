@@ -1,18 +1,12 @@
+use std::env;
 use std::fs;
-use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Output};
-use std::sync::atomic::AtomicBool;
 
 mod common;
 
-use common::http::{
-    BackgroundTcpServer, read_http_request_head, run_fake_http_server, write_http_response_text,
-};
 use common::{
-    SandboxEnv, assert_success, command_output, fixture_path, path_to_string,
-    require_real_executable, scenario_path, skip_hybrid_test_if_disabled, spawn_upnow, stderr,
-    stdout, write_executable,
+    SandboxEnv, assert_success, scenario_path, spawn_upnow, stderr, stdout, write_executable,
 };
 
 const DETERMINISTIC_UV_SCENARIO_DIR: &str = "tests/scenarios/uv/deterministic";
@@ -57,12 +51,10 @@ struct Sandbox {
     fake_uv: PathBuf,
     uv_scenario_dir: PathBuf,
     uv_tool_dir: PathBuf,
-    pypi_base_url: String,
-    pypi_server: Option<BackgroundTcpServer>,
 }
 
 impl Sandbox {
-    fn new(uv_scenario_rel: &str, config_toml: &str, tools: &[&str], local_pypi: bool) -> Self {
+    fn new(uv_scenario_rel: &str, config_toml: &str, tools: &[&str]) -> Self {
         let sandbox_env = SandboxEnv::new("mock-uv");
         let fake_bin_dir = sandbox_env.fake_bin_dir.clone();
         let uv_tool_dir = sandbox_env.root.join("uv-tools");
@@ -86,29 +78,12 @@ impl Sandbox {
         }
 
         let uv_scenario_dir = scenario_path(uv_scenario_rel, "uv");
-        let (pypi_base_url, pypi_server) = if local_pypi {
-            let pypi_fixtures_dir = fixture_path(&uv_scenario_dir, "pypi", "uv PyPI");
-            let server =
-                BackgroundTcpServer::start("fake PyPI server", move |listener, stop_flag| {
-                    run_fake_pypi_server(
-                        &listener,
-                        pypi_fixtures_dir.as_path(),
-                        stop_flag.as_ref(),
-                    );
-                });
-            (server.base_url(), Some(server))
-        } else {
-            // Empty value falls back to the production default URL in manager code.
-            (String::new(), None)
-        };
 
         Self {
             env: sandbox_env,
             fake_uv,
             uv_scenario_dir,
             uv_tool_dir,
-            pypi_base_url,
-            pypi_server,
         }
     }
 
@@ -127,7 +102,7 @@ impl Sandbox {
         cmd.args(args);
         self.apply_base_env(&mut cmd);
 
-        command_output(&mut cmd, "fake uv")
+        cmd.output().expect("failed to run fake uv")
     }
 
     fn find_real_uv(&self) -> Option<PathBuf> {
@@ -147,15 +122,6 @@ impl Sandbox {
         cmd.env_remove("UPNOW_FAKE_UV_KEEP_FAKE_TOOLS");
         cmd.env("UPNOW_FAKE_UV_SCENARIO_DIR", &self.uv_scenario_dir);
         cmd.env("UPNOW_FAKE_UV_TOOL_DIR", &self.uv_tool_dir);
-        cmd.env("UPNOW_UV_PYPI_BASE_URL", &self.pypi_base_url);
-    }
-}
-
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        if let Some(mut server) = self.pypi_server.take() {
-            server.shutdown();
-        }
     }
 }
 
@@ -165,7 +131,6 @@ fn fake_uv_harness_routes_commands_to_expected_fixtures() {
         DETERMINISTIC_UV_SCENARIO_DIR,
         DETERMINISTIC_CONFIG,
         &DETERMINISTIC_TOOLS,
-        true,
     );
 
     let tool_dir = sandbox.run_fake_uv(&["tool", "dir"]);
@@ -217,7 +182,6 @@ fn deterministic_plan_covers_update_delayed_pinned_and_error_states() {
         DETERMINISTIC_UV_SCENARIO_DIR,
         DETERMINISTIC_CONFIG,
         &DETERMINISTIC_TOOLS,
-        true,
     );
 
     let output = sandbox.run_upnow(&[
@@ -233,13 +197,14 @@ fn deterministic_plan_covers_update_delayed_pinned_and_error_states() {
     let out = stdout(&output);
     assert!(out.contains("+ Update [uv] alpha-ready v1.0.0 -> v1.2.0"));
     assert!(out.contains("+ Update [uv] beta-fresh-latest v1.0.0 -> v1.0.5"));
-    assert!(out.contains("~ Delayed [uv] gamma-delayed v2.0.0 -> v2.1.0"));
-    assert!(out.contains("- Skipped [uv] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
+    assert!(out.contains("~ Delayed [uv] gamma-delayed v2.0.0 -> v2.0.0"));
+    assert!(out.contains("- Skipped [uv] pinned-pkg v3.0.0 -> v3.0.0 (pinned)"));
     assert!(out.contains("! Error [uv] omega-error v0.1.0 -> v0.1.0"));
 
     let err = stderr(&output);
     assert!(err.contains("$ uv tool dir"));
     assert!(err.contains("$ uv tool list --show-version-specifiers"));
+    assert!(err.contains("$ uv pip install --dry-run"));
 }
 
 #[test]
@@ -248,7 +213,6 @@ fn deterministic_apply_selective_path_runs_updates_only_for_eligible_unpinned_it
         DETERMINISTIC_UV_SCENARIO_DIR,
         DETERMINISTIC_CONFIG,
         &DETERMINISTIC_TOOLS,
-        true,
     );
 
     let output = sandbox.run_upnow(&[
@@ -264,15 +228,15 @@ fn deterministic_apply_selective_path_runs_updates_only_for_eligible_unpinned_it
     let out = stdout(&output);
     assert!(out.contains("+ Update [uv] alpha-ready v1.0.0 -> v1.2.0"));
     assert!(out.contains("+ Update [uv] beta-fresh-latest v1.0.0 -> v1.0.5"));
-    assert!(out.contains("~ Delayed [uv] gamma-delayed v2.0.0 -> v2.1.0"));
-    assert!(out.contains("- Skipped [uv] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
+    assert!(out.contains("~ Delayed [uv] gamma-delayed v2.0.0 -> v2.0.0"));
+    assert!(out.contains("- Skipped [uv] pinned-pkg v3.0.0 -> v3.0.0 (pinned)"));
 
     let err = stderr(&output);
-    assert!(err.contains("$ uv tool install --upgrade alpha-ready==1.2.0"));
-    assert!(err.contains("$ uv tool install --upgrade beta-fresh-latest==1.0.5"));
-    assert!(!err.contains("$ uv tool install --upgrade pinned-pkg==3.1.0"));
-    assert!(!err.contains("$ uv tool install --upgrade gamma-delayed==2.1.0"));
-    assert!(!err.contains("$ uv tool install --upgrade omega-error==0.2.0"));
+    assert!(err.contains("$ uv tool install --upgrade --exclude-newer 7d alpha-ready"));
+    assert!(err.contains("$ uv tool install --upgrade --exclude-newer 7d beta-fresh-latest"));
+    assert!(!err.contains("$ uv tool install --upgrade --exclude-newer 7d pinned-pkg"));
+    assert!(!err.contains("$ uv tool install --upgrade --exclude-newer 7d gamma-delayed"));
+    assert!(!err.contains("$ uv tool install --upgrade --exclude-newer 7d omega-error"));
 }
 
 #[test]
@@ -281,7 +245,6 @@ fn deterministic_scan_reports_current_state_without_network_age_lookup() {
         DETERMINISTIC_UV_SCENARIO_DIR,
         DETERMINISTIC_CONFIG,
         &DETERMINISTIC_TOOLS,
-        true,
     );
 
     let output = sandbox.run_upnow(&["scan", "--plain", "--managers", "uv"]);
@@ -296,18 +259,47 @@ fn deterministic_scan_reports_current_state_without_network_age_lookup() {
 }
 
 #[test]
+fn configured_version_policy_is_rejected_for_uv() {
+    let config = r#"
+[uv]
+mode = "apply"
+version_policy = "any"
+"#;
+    let sandbox = Sandbox::new(DETERMINISTIC_UV_SCENARIO_DIR, config, &DETERMINISTIC_TOOLS);
+
+    let output = sandbox.run_upnow(&["plan", "--plain", "--managers", "uv"]);
+
+    assert!(
+        !output.status.success(),
+        "upnow should reject uv version_policy\nstdout:\n{}\nstderr:\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("version_policy \"any\" is not supported by this manager"),
+        "stderr:\n{}",
+        stderr(&output)
+    );
+}
+
+#[test]
 #[ignore = "requires real uv + python + network; run via scripts/test-hybrid.sh"]
 fn hybrid_apply_uses_real_pypi_resolution_with_fake_installed_state() {
-    if skip_hybrid_test_if_disabled() {
+    if env::var("UPNOW_RUN_HYBRID_TESTS").as_deref() != Ok("1") {
+        eprintln!("skipping hybrid test; set UPNOW_RUN_HYBRID_TESTS=1 to enable");
         return;
     }
 
-    let sandbox = Sandbox::new(HYBRID_UV_SCENARIO_DIR, HYBRID_CONFIG, &HYBRID_TOOLS, false);
-    let real_uv_path = require_real_executable(sandbox.find_real_uv(), "uv");
-    let real_python_path = require_real_executable(sandbox.find_real_python(), "python");
+    let sandbox = Sandbox::new(HYBRID_UV_SCENARIO_DIR, HYBRID_CONFIG, &HYBRID_TOOLS);
+    let Some(real_uv_path) = sandbox.find_real_uv() else {
+        panic!("hybrid test requires real uv in PATH");
+    };
+    let Some(real_python_path) = sandbox.find_real_python() else {
+        panic!("hybrid test requires real python in PATH");
+    };
 
-    let real_uv_path = path_to_string(&real_uv_path);
-    let real_python_path = path_to_string(&real_python_path);
+    let real_uv_path = real_uv_path.to_string_lossy().into_owned();
+    let real_python_path = real_python_path.to_string_lossy().into_owned();
     let output = sandbox.run_upnow_with_env(
         &[
             "apply",
@@ -333,11 +325,11 @@ fn hybrid_apply_uses_real_pypi_resolution_with_fake_installed_state() {
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("- Skipped [uv] ruff v0.1.0 -> v") && out.contains("(pinned)"),
+        out.contains("- Skipped [uv] ruff v0.1.0 -> v0.1.0 (pinned)"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("! Error [uv] gamma-delayed v2.0.0 -> v2.0.0"),
+        out.contains("~ Delayed [uv] gamma-delayed v2.0.0 -> v2.0.0"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
@@ -350,52 +342,10 @@ fn hybrid_apply_uses_real_pypi_resolution_with_fake_installed_state() {
             || err.contains("warning: apply runs with real mutating commands ENABLED"),
         "hybrid stderr:\n{err}"
     );
-    assert!(err.contains("$ uv tool install --upgrade httpie=="));
-    assert!(!err.contains("$ uv tool install --upgrade ruff=="));
-    assert!(!err.contains("$ uv tool install --upgrade gamma-delayed==2.1.0"));
-    assert!(!err.contains("$ uv tool install --upgrade zzzz-upnow-no-such-package-000000000000=="));
-}
-
-fn run_fake_pypi_server(listener: &TcpListener, fixtures_dir: &std::path::Path, stop: &AtomicBool) {
-    run_fake_http_server(listener, stop, |stream| {
-        handle_fake_pypi_connection(stream, fixtures_dir);
-    });
-}
-
-fn handle_fake_pypi_connection(stream: &mut TcpStream, fixtures_dir: &std::path::Path) {
-    let Some(request) = read_http_request_head(stream) else {
-        return;
-    };
-    let Some(first_line) = request.lines().next() else {
-        return;
-    };
-
-    let mut parts = first_line.split_whitespace();
-    let method = parts.next().unwrap_or_default();
-    let target = parts.next().unwrap_or_default();
-
-    if method != "GET" {
-        write_http_response_text(
-            stream,
-            "405 Method Not Allowed",
-            "text/plain",
-            "method not allowed",
-        );
-        return;
-    }
-
-    let Some(pkg) = target
-        .strip_prefix("/pypi/")
-        .and_then(|rest| rest.strip_suffix("/json"))
-        .filter(|name| !name.is_empty() && !name.contains('/'))
-    else {
-        write_http_response_text(stream, "404 Not Found", "text/plain", "not found");
-        return;
-    };
-
-    let fixture_path = fixtures_dir.join(format!("{pkg}.json"));
-    match fs::read_to_string(&fixture_path) {
-        Ok(body) => write_http_response_text(stream, "200 OK", "application/json", &body),
-        Err(_) => write_http_response_text(stream, "404 Not Found", "text/plain", "not found"),
-    }
+    assert!(err.contains("$ uv tool install --upgrade --exclude-newer 7d httpie"));
+    assert!(!err.contains("$ uv tool install --upgrade --exclude-newer 7d ruff"));
+    assert!(!err.contains("$ uv tool install --upgrade --exclude-newer 7d gamma-delayed"));
+    assert!(!err.contains(
+        "$ uv tool install --upgrade --exclude-newer 7d zzzz-upnow-no-such-package-000000000000"
+    ));
 }
