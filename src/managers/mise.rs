@@ -300,11 +300,11 @@ fn mise_plan_decision(
         }) => Some(DelayedLatest::new(version, age_secs, min_age)),
         Some(MiseDelayedLatestCheck {
             age_secs: Ok(None), ..
-        }) => None,
+        })
+        | None => None,
         Some(MiseDelayedLatestCheck {
             age_secs: Err(err), ..
         }) => return MisePlanDecision::Error(err),
-        None => None,
     };
 
     MisePlanDecision::Update { delayed_latest }
@@ -576,7 +576,7 @@ fn mise_upgrade_dry_run_with_before(before: &str) -> Result<Vec<MisePlanItem>> {
     )
     .output()?;
     let text = output.stdout()?;
-    parse_mise_upgrade_dry_run(&text)
+    parse_mise_upgrade_dry_run(text)
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1081,12 +1081,12 @@ mod tests {
     #[test]
     fn parses_upgrade_dry_run_pairs_strictly() {
         let parsed = parse_mise_upgrade_dry_run(
-            r#"
+            r"
 Would uninstall npm:alpha-ready@1.0.0
 Would install npm:alpha-ready@1.2.0
 Would uninstall npm:@scope/pkg@2.0.0
 Would install npm:@scope/pkg@2.1.0
-"#,
+",
         )
         .expect("should parse");
 

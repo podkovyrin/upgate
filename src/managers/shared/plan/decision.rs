@@ -35,15 +35,15 @@ impl ResolvedPlanTarget for VersionPolicyResolution {
     }
 
     fn version_policy(&self) -> Option<VersionPolicy> {
-        VersionPolicyResolution::configured_policy(self)
+        Self::configured_policy(self)
     }
 
     fn latest_blocked_by_policy_version(&self) -> Option<&str> {
-        VersionPolicyResolution::latest_blocked_by_policy_version(self)
+        Self::latest_blocked_by_policy_version(self)
     }
 
     fn version_policy_warning(&self) -> Option<PolicyWarning> {
-        VersionPolicyResolution::version_policy_warning(self)
+        Self::version_policy_warning(self)
     }
 }
 

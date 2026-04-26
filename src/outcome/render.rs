@@ -143,14 +143,18 @@ fn append_current_policy_note(line: &mut String, item: &ItemOutcome, theme: Outp
         return;
     };
 
-    let note = if let Some(latest) = item.latest_blocked_by_policy_version.as_deref() {
-        format!(
-            "(latest {} blocked by version policy: {policy})",
-            version_label(latest)
-        )
-    } else {
-        format!("(newer versions blocked by version policy: {policy})")
-    };
+    let note = item
+        .latest_blocked_by_policy_version
+        .as_deref()
+        .map_or_else(
+            || format!("(newer versions blocked by version policy: {policy})"),
+            |latest| {
+                format!(
+                    "(latest {} blocked by version policy: {policy})",
+                    version_label(latest)
+                )
+            },
+        );
 
     line.push(' ');
     line.push_str(&note_segment(&note, theme.color()));

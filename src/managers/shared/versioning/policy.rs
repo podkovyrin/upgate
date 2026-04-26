@@ -227,7 +227,7 @@ impl VersionPolicyResolution {
 }
 
 #[cfg(test)]
-pub(crate) fn delayed_candidate_for_test(
+pub fn delayed_candidate_for_test(
     resolution: &VersionPolicyResolution,
     min_age: Duration,
 ) -> Option<(&str, u64)> {
@@ -401,15 +401,11 @@ where
         .map_or((None, None), |(_, version, age_secs)| {
             (Some(version.clone()), Some(*age_secs))
         });
-    let recommendation = if let Some((_, target_version)) = selected {
-        RecommendedOutcome::Update { target_version }
-    } else if !has_newer_versions {
-        RecommendedOutcome::CurrentNoNewer
-    } else if has_effective_policy_eligible {
-        RecommendedOutcome::DelayedByAge
-    } else {
-        RecommendedOutcome::CurrentBlockedByPolicy
-    };
+    let recommendation = selected_recommendation(
+        selected.map(|(_, target_version)| target_version),
+        has_newer_versions,
+        has_effective_policy_eligible,
+    );
 
     VersionPolicyResolution {
         configured_policy: policy,
@@ -424,6 +420,23 @@ where
         blocked_by_age_count,
         evaluations,
     }
+}
+
+fn selected_recommendation(
+    selected_version: Option<String>,
+    has_newer_versions: bool,
+    has_effective_policy_eligible: bool,
+) -> RecommendedOutcome {
+    selected_version.map_or(
+        if !has_newer_versions {
+            RecommendedOutcome::CurrentNoNewer
+        } else if has_effective_policy_eligible {
+            RecommendedOutcome::DelayedByAge
+        } else {
+            RecommendedOutcome::CurrentBlockedByPolicy
+        },
+        |target_version| RecommendedOutcome::Update { target_version },
+    )
 }
 
 const fn evaluate_version_policy_fallback_stable(candidate_class: ReleaseClass) -> PolicyDecision {

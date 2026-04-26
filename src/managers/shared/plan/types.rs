@@ -39,7 +39,9 @@ impl VersionPolicyMeta {
         if self.policy != VersionPolicy::Disabled {
             outcome.version_policy = Some(self.policy.as_str().to_string());
         }
-        outcome.latest_blocked_by_policy_version = self.latest_blocked_version.clone();
+        outcome
+            .latest_blocked_by_policy_version
+            .clone_from(&self.latest_blocked_version);
         outcome.version_policy_warning =
             self.warning.map(PolicyWarning::as_note).map(str::to_string);
     }

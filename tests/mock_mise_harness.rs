@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::{fs, net::TcpListener};
 
@@ -120,14 +119,14 @@ fn start_mise_versions_server(mise_scenario_dir: &Path) -> (String, Option<Backg
     }
 
     let server = BackgroundTcpServer::start("mise versions host", move |listener, stop| {
-        serve_mise_versions_host(listener, stop, fixture_root);
+        serve_mise_versions_host(&listener, &stop, &fixture_root);
     });
 
     (server.base_url(), Some(server))
 }
 
-fn serve_mise_versions_host(listener: TcpListener, stop: Arc<AtomicBool>, fixture_root: PathBuf) {
-    run_fake_http_server(&listener, &stop, |stream| {
+fn serve_mise_versions_host(listener: &TcpListener, stop: &AtomicBool, fixture_root: &Path) {
+    run_fake_http_server(listener, stop, |stream| {
         let Some(request) = read_http_request_head(stream) else {
             return;
         };
