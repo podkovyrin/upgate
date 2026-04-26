@@ -6,3 +6,15 @@ Would uninstall npm:gamma-error@2.0.0
 Would install npm:gamma-error@2.0.1
 Would uninstall node@20.0.0
 Would install node@20.1.0
+Would uninstall swiftformat@0.59.1
+Would install swiftformat@0.61.0
+Would uninstall emsdk@5.0.4
+Would install emsdk@5.0.6
+Would uninstall fallbacktool@1.0.0
+Would install fallbacktool@1.1.0
+Would uninstall github:example/fullfallback@2.0.0
+Would install github:example/fullfallback@2.1.0
+Would uninstall fresh-tool@1.0.0
+Would install fresh-tool@1.1.0
+Would uninstall nometa-tool@1.0.0
+Would install nometa-tool@1.1.0

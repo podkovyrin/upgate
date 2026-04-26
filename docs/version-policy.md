@@ -70,9 +70,6 @@ version_policy = "stable"
 
 [pipx]
 version_policy = "same-track"
-
-[mise]
-version_policy = "any"
 ```
 
 ---
@@ -435,6 +432,14 @@ If a manager cannot safely implement `same-track`, it should:
 
 Recommended approach: support `stable` and `any` wherever possible, and enable `same-track` only where classification is good enough.
 
+### Unsupported
+
+Some managers cannot safely combine this gate with their native target-selection model.
+
+`mise` is unsupported for version policy. It owns target selection through `mise upgrade --before`,
+so `upnow` must not replace that with its own exact-version resolver. Any configured
+`[mise].version_policy` value is rejected.
+
 ---
 
 # Interactive Apply
@@ -611,7 +616,7 @@ Reason:
 Config:
 
 ```toml
-[mise]
+[npm]
 version_policy = "any"
 ```
 

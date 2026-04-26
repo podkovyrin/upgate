@@ -1,0 +1,6 @@
+{
+  "short": "nometa-tool",
+  "backends": [
+    "github:example/nometa-tool"
+  ]
+}

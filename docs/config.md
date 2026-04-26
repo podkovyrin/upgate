@@ -79,6 +79,15 @@ Supported values:
 
 If unset, version policy filtering is disabled and legacy behavior is preserved.
 
+Supported by:
+
+- `brew`, `bun`, `cargo`, `dotnet`, `go`, `npm`, `pipx`, `pnpm`, `uv`, `yarn`
+- `gem` supports `stable` only
+
+Not supported by:
+
+- `mise`
+
 ### `pinned`
 
 Optional list of package/tool names to skip for that manager.
