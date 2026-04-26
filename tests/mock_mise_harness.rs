@@ -198,7 +198,7 @@ fn fake_mise_harness_routes_commands_to_expected_fixtures() {
 }
 
 #[test]
-fn deterministic_plan_covers_updates_pinned_and_age_error_states() {
+fn deterministic_plan_covers_updates_pinned_and_metadata_states() {
     let sandbox = Sandbox::new(
         MISE_DETERMINISTIC_SCENARIO_DIR,
         NPM_DETERMINISTIC_SCENARIO_DIR,
@@ -224,14 +224,16 @@ fn deterministic_plan_covers_updates_pinned_and_age_error_states() {
     assert!(out.contains("+ Update [mise] emsdk v5.0.4 -> v5.0.6"));
     assert!(out.contains("+ Update [mise] fallbacktool v1.0.0 -> v1.1.0"));
     assert!(out.contains("+ Update [mise] github:example/fullfallback v2.0.0 -> v2.1.0"));
+    assert!(out.contains("+ Update [mise] npm:gamma-error v2.0.0 -> v2.0.1"));
     assert!(out.contains("~ Delayed [mise] fresh-tool v1.0.0 -> v1.1.0"));
     assert!(out.contains("- Skipped [mise] nometa-tool v1.0.0 -> v1.1.0"));
-    assert!(out.contains("! Error [mise] npm:gamma-error v2.0.0 -> v2.0.0"));
 
     assert!(err.contains("$ mise upgrade --dry-run --before 7d"));
     assert!(err.contains("$ mise outdated --json"));
     assert!(err.contains("$ npm view beta-fresh-latest@1.0.5 time --json"));
     assert!(err.contains("$ npm view beta-fresh-latest@1.1.0 time --json"));
+    assert!(err.contains("$ npm view gamma-error@2.0.1 time --json"));
+    assert!(err.contains("$ npm view gamma-error@2.1.0 time --json"));
     assert!(err.contains("$ mise registry fallbacktool --json"));
     assert!(err.contains("$ mise ls-remote --json github:example/fallbacktool"));
     assert!(err.contains("$ mise ls-remote --json github:example/fullfallback"));
@@ -264,10 +266,12 @@ fn deterministic_apply_selective_path_runs_only_for_unpinned_eligible_items() {
     assert!(out.contains("+ Update [mise] emsdk v5.0.4 -> v5.0.6"));
     assert!(out.contains("+ Update [mise] fallbacktool v1.0.0 -> v1.1.0"));
     assert!(out.contains("+ Update [mise] github:example/fullfallback v2.0.0 -> v2.1.0"));
+    assert!(out.contains("+ Update [mise] npm:gamma-error v2.0.0 -> v2.0.1"));
     assert!(out.contains("~ Delayed [mise] fresh-tool v1.0.0 -> v1.1.0"));
 
     assert!(err.contains("$ mise upgrade npm:alpha-ready@1.2.0"));
     assert!(err.contains("$ mise upgrade npm:beta-fresh-latest@1.0.5"));
+    assert!(err.contains("$ mise upgrade npm:gamma-error@2.0.1"));
     assert!(err.contains("$ mise upgrade swiftformat@0.61.0"));
     assert!(err.contains("$ mise upgrade emsdk@5.0.6"));
     assert!(err.contains("$ mise upgrade fallbacktool@1.1.0"));
@@ -302,16 +306,48 @@ min_release_age = "7d"
     assert!(out.contains("+ Update [mise] emsdk v5.0.4 -> v5.0.6"));
     assert!(out.contains("+ Update [mise] fallbacktool v1.0.0 -> v1.1.0"));
     assert!(out.contains("+ Update [mise] github:example/fullfallback v2.0.0 -> v2.1.0"));
+    assert!(out.contains("+ Update [mise] npm:gamma-error v2.0.0 -> v2.0.1"));
 
     let err = stderr(&output);
     assert!(err.contains("$ mise upgrade npm:alpha-ready@1.2.0"));
     assert!(err.contains("$ mise upgrade npm:beta-fresh-latest@1.0.5"));
+    assert!(err.contains("$ mise upgrade npm:gamma-error@2.0.1"));
     assert!(err.contains("$ mise upgrade node@20.1.0"));
     assert!(err.contains("$ mise upgrade swiftformat@0.61.0"));
     assert!(err.contains("$ mise upgrade emsdk@5.0.6"));
     assert!(err.contains("$ mise upgrade fallbacktool@1.1.0"));
     assert!(err.contains("$ mise upgrade github:example/fullfallback@2.1.0"));
     assert!(!err.contains("$ mise upgrade fresh-tool@1.1.0"));
+    assert!(!err.contains("$ mise upgrade\n"));
+}
+
+#[test]
+fn apply_still_runs_when_optional_delayed_latest_metadata_is_missing() {
+    let sandbox = Sandbox::new(
+        "tests/scenarios/mise/missing-delayed-latest",
+        "tests/scenarios/mise/missing-delayed-latest/npm",
+        HYBRID_CONFIG,
+    );
+
+    let output = sandbox.run_upnow(&["apply", "--plain", "--managers", "mise", "--show-commands"]);
+    assert_success(
+        &output,
+        "upnow apply mise with missing delayed-latest metadata",
+    );
+
+    let out = stdout(&output);
+    let err = stderr(&output);
+    assert!(
+        out.contains("+ Update [mise] npm:optional-latest-missing v1.0.0 -> v1.1.0"),
+        "stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        !out.contains("! Error [mise] npm:optional-latest-missing"),
+        "stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(err.contains("$ npm view optional-latest-missing@1.1.0 time --json"));
+    assert!(err.contains("$ npm view optional-latest-missing@1.2.0 time --json"));
+    assert!(err.contains("$ mise upgrade npm:optional-latest-missing@1.1.0"));
     assert!(!err.contains("$ mise upgrade\n"));
 }
 

@@ -301,10 +301,10 @@ fn mise_plan_decision(
         Some(MiseDelayedLatestCheck {
             age_secs: Ok(None), ..
         })
+        | Some(MiseDelayedLatestCheck {
+            age_secs: Err(_), ..
+        })
         | None => None,
-        Some(MiseDelayedLatestCheck {
-            age_secs: Err(err), ..
-        }) => return MisePlanDecision::Error(err),
     };
 
     MisePlanDecision::Update { delayed_latest }
@@ -1053,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    fn delayed_latest_annotation_emits_error_on_age_lookup_failure() {
+    fn delayed_latest_annotation_is_dropped_on_age_lookup_failure() {
         let mut checks = BTreeMap::from([(
             0,
             MisePlanCheck {
@@ -1073,8 +1073,8 @@ mod tests {
         let decision = mise_plan_decision(0, &item, &mut checks, Duration::from_secs(86_400 * 7));
 
         match decision {
-            MisePlanDecision::Error(err) => assert_eq!(err, "lookup failed"),
-            _ => panic!("expected error decision"),
+            MisePlanDecision::Update { delayed_latest } => assert!(delayed_latest.is_none()),
+            _ => panic!("expected update decision"),
         }
     }
 
