@@ -1,4 +1,7 @@
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+
 use owo_colors::OwoColorize;
+use unicode_width::UnicodeWidthStr;
 
 use super::item::ItemOutcome;
 use super::types::{
@@ -8,57 +11,10 @@ use super::types::{
 use crate::ui::{OutputTheme, output_theme, with_spinner_suspended};
 use crate::util::text::strip_v_prefix;
 
-impl ItemOutcome {
-    pub fn to_text_line(&self) -> Option<String> {
-        self.to_text_line_with_theme(output_theme())
-    }
-
-    pub(crate) fn to_text_line_with_theme(&self, theme: OutputTheme) -> Option<String> {
-        if should_skip_outcome_line(self, theme) {
-            return None;
-        }
-
-        let mut line = base_outcome_line(self, theme);
-        append_status_note(&mut line, self, theme);
-        append_current_age_note(&mut line, self, theme);
-
-        Some(line)
-    }
-}
+static OUTCOME_BUFFER: OnceLock<Mutex<Vec<ItemOutcome>>> = OnceLock::new();
 
 fn should_skip_outcome_line(item: &ItemOutcome, theme: OutputTheme) -> bool {
     item.visibility == OutcomeVisibility::VerboseOnly && !theme.verbose
-}
-
-fn base_outcome_line(item: &ItemOutcome, theme: OutputTheme) -> String {
-    let manager_rendered = render_manager(item.manager, theme.color());
-
-    let prefix = status_prefix(item.status, theme.color());
-    let subject = match item.subject {
-        OutcomeSubject::Manager => manager_rendered,
-        OutcomeSubject::Item => format!(
-            "{} {}",
-            manager_rendered,
-            render_name(&item.name, theme.color())
-        ),
-    };
-
-    match &item.versions {
-        OutcomeVersions::None => format!("{prefix} {subject}"),
-        OutcomeVersions::Current { version } => {
-            format!("{prefix} {subject} {}", version_label(version))
-        }
-        OutcomeVersions::Change { from, to } => {
-            let arrow = if theme.unicode() { "→" } else { "->" };
-            let from = version_label(from);
-            let to = version_label(to);
-            let pinned_skip = matches!(item.reason, OutcomeReason::Skipped(SkippedReason::Pinned));
-            let from_rendered = render_from_version(&from, theme.color(), pinned_skip);
-            let to_rendered = render_to_version(&from, &to, theme.color(), !pinned_skip);
-
-            format!("{prefix} {subject} {from_rendered} {arrow} {to_rendered}")
-        }
-    }
 }
 
 fn append_current_age_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme) {
@@ -435,12 +391,259 @@ fn note_segment(text: &str, color: bool) -> String {
     }
 }
 
-pub fn emit_text_outcome(outcome: &ItemOutcome) {
-    if let Some(line) = outcome.to_text_line() {
-        with_spinner_suspended(|| {
-            println!("{line}");
-        });
+#[derive(Debug, Clone)]
+struct TableCell {
+    rendered: String,
+    plain: String,
+}
+
+impl TableCell {
+    fn new(rendered: impl Into<String>) -> Self {
+        let rendered = rendered.into();
+        let plain = strip_ansi_codes(&rendered);
+        Self { rendered, plain }
     }
+
+    fn header(label: &'static str, color: bool) -> Self {
+        let rendered = if color {
+            label.magenta().bold().to_string()
+        } else {
+            label.to_string()
+        };
+
+        Self {
+            rendered,
+            plain: label.to_string(),
+        }
+    }
+
+    fn visible_width(&self) -> usize {
+        UnicodeWidthStr::width(self.plain.as_str())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct OutcomeTableRow {
+    status: TableCell,
+    manager: TableCell,
+    name: TableCell,
+    current: TableCell,
+    target: TableCell,
+    note: TableCell,
+}
+
+impl OutcomeTableRow {
+    const fn cell(&self, column: OutcomeTableColumn) -> &TableCell {
+        match column {
+            OutcomeTableColumn::Status => &self.status,
+            OutcomeTableColumn::Manager => &self.manager,
+            OutcomeTableColumn::Name => &self.name,
+            OutcomeTableColumn::Current => &self.current,
+            OutcomeTableColumn::Target => &self.target,
+            OutcomeTableColumn::Note => &self.note,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutcomeTableColumn {
+    Status,
+    Manager,
+    Name,
+    Current,
+    Target,
+    Note,
+}
+
+impl OutcomeTableColumn {
+    fn header(self, color: bool) -> TableCell {
+        match self {
+            Self::Status => TableCell::header("Status", color),
+            Self::Manager => TableCell::header("Manager", color),
+            Self::Name => TableCell::header("Name", color),
+            Self::Current => TableCell::header("Current", color),
+            Self::Target => TableCell::header("Target", color),
+            Self::Note => TableCell::header("Note", color),
+        }
+    }
+}
+
+pub fn emit_text_outcome(outcome: &ItemOutcome) {
+    lock_outcome_buffer().push(outcome.clone());
+}
+
+pub fn flush_text_outcomes() {
+    let outcomes = {
+        let mut buffer = lock_outcome_buffer();
+        if buffer.is_empty() {
+            return;
+        }
+        std::mem::take(&mut *buffer)
+    };
+
+    let theme = output_theme();
+    let rows: Vec<_> = outcomes
+        .iter()
+        .filter_map(|outcome| outcome_table_row(outcome, theme))
+        .collect();
+
+    if rows.is_empty() {
+        return;
+    }
+
+    with_spinner_suspended(|| {
+        for line in render_outcome_table(&rows, theme.color()) {
+            println!("{line}");
+        }
+    });
+}
+
+fn lock_outcome_buffer() -> MutexGuard<'static, Vec<ItemOutcome>> {
+    OUTCOME_BUFFER
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+fn outcome_table_row(item: &ItemOutcome, theme: OutputTheme) -> Option<OutcomeTableRow> {
+    if should_skip_outcome_line(item, theme) {
+        return None;
+    }
+
+    let status = TableCell::new(status_prefix(item.status, theme.color()));
+    let manager = TableCell::new(render_manager(item.manager, theme.color()));
+    let name = match item.subject {
+        OutcomeSubject::Manager => TableCell::new(String::new()),
+        OutcomeSubject::Item => TableCell::new(render_name(&item.name, theme.color())),
+    };
+
+    let (current, target) = version_cells(item, theme);
+
+    Some(OutcomeTableRow {
+        status,
+        manager,
+        name,
+        current,
+        target,
+        note: TableCell::new(outcome_note(item, theme)),
+    })
+}
+
+fn version_cells(item: &ItemOutcome, theme: OutputTheme) -> (TableCell, TableCell) {
+    match &item.versions {
+        OutcomeVersions::None => (TableCell::new(String::new()), TableCell::new(String::new())),
+        OutcomeVersions::Current { version } => (
+            TableCell::new(version_label(version)),
+            TableCell::new(String::new()),
+        ),
+        OutcomeVersions::Change { from, to } => {
+            let from = version_label(from);
+            let to = version_label(to);
+            let pinned_skip = matches!(item.reason, OutcomeReason::Skipped(SkippedReason::Pinned));
+            let from_rendered = render_from_version(&from, theme.color(), pinned_skip);
+            let to_rendered = render_to_version(&from, &to, theme.color(), !pinned_skip);
+            (TableCell::new(from_rendered), TableCell::new(to_rendered))
+        }
+    }
+}
+
+fn outcome_note(item: &ItemOutcome, theme: OutputTheme) -> String {
+    let mut note = String::new();
+    append_status_note(&mut note, item, theme);
+    append_current_age_note(&mut note, item, theme);
+    note.trim_start().to_string()
+}
+
+fn render_outcome_table(rows: &[OutcomeTableRow], color: bool) -> Vec<String> {
+    let columns = outcome_table_columns(rows);
+    let headers: Vec<_> = columns.iter().map(|column| column.header(color)).collect();
+    let widths = table_widths(rows, &headers, &columns);
+
+    std::iter::once(render_table_cells(headers.iter(), &widths))
+        .chain(rows.iter().map(|row| {
+            render_table_cells(columns.iter().map(|column| row.cell(*column)), &widths)
+        }))
+        .collect()
+}
+
+fn outcome_table_columns(rows: &[OutcomeTableRow]) -> Vec<OutcomeTableColumn> {
+    let mut columns = vec![OutcomeTableColumn::Status, OutcomeTableColumn::Manager];
+
+    if rows.iter().any(|row| !row.name.plain.is_empty()) {
+        columns.push(OutcomeTableColumn::Name);
+    }
+    if rows.iter().any(|row| !row.current.plain.is_empty()) {
+        columns.push(OutcomeTableColumn::Current);
+    }
+    if rows.iter().any(|row| !row.target.plain.is_empty()) {
+        columns.push(OutcomeTableColumn::Target);
+    }
+    if rows.iter().any(|row| !row.note.plain.is_empty()) {
+        columns.push(OutcomeTableColumn::Note);
+    }
+
+    columns
+}
+
+fn table_widths(
+    rows: &[OutcomeTableRow],
+    headers: &[TableCell],
+    columns: &[OutcomeTableColumn],
+) -> Vec<usize> {
+    columns
+        .iter()
+        .zip(headers)
+        .map(|(column, header)| {
+            rows.iter()
+                .map(|row| row.cell(*column).visible_width())
+                .max()
+                .unwrap_or(0)
+                .max(header.visible_width())
+        })
+        .collect()
+}
+
+fn render_table_cells<'a, I>(cells: I, widths: &[usize]) -> String
+where
+    I: IntoIterator<Item = &'a TableCell>,
+{
+    let mut line = String::new();
+
+    for (idx, (cell, width)) in cells.into_iter().zip(widths).enumerate() {
+        if idx > 0 {
+            line.push_str("  ");
+        }
+
+        line.push_str(&cell.rendered);
+
+        if idx + 1 < widths.len() {
+            let padding = width.saturating_sub(cell.visible_width());
+            line.push_str(&" ".repeat(padding));
+        }
+    }
+
+    line
+}
+
+fn strip_ansi_codes(text: &str) -> String {
+    let mut stripped = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            let _ = chars.next();
+            for code_ch in chars.by_ref() {
+                if code_ch.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        stripped.push(ch);
+    }
+
+    stripped
 }
 
 pub fn version_label(version: &str) -> String {
@@ -519,9 +722,9 @@ mod tests {
         let mut item = ItemOutcome::current("npm", "foo", "1.2.0");
         item.set_version_policy("stable", Some("1.3.0-beta.1".to_string()), None);
 
-        let rendered = item.to_text_line().expect("line should render");
-        assert!(rendered.contains("blocked by version policy: stable"));
-        assert!(rendered.contains("v1.3.0-beta.1"));
+        let note = outcome_note(&item, crate::ui::OutputTheme::test_plain(false));
+        assert!(note.contains("blocked by version policy: stable"));
+        assert!(note.contains("v1.3.0-beta.1"));
     }
 
     #[test]
@@ -529,8 +732,8 @@ mod tests {
         let mut item = ItemOutcome::current("pipx", "bar", "2.0.0rc1");
         item.set_version_policy("stable", None, None);
 
-        let rendered = item.to_text_line().expect("line should render");
-        assert!(rendered.contains("newer versions blocked by version policy: stable"));
+        let note = outcome_note(&item, crate::ui::OutputTheme::test_plain(false));
+        assert!(note.contains("newer versions blocked by version policy: stable"));
     }
 
     #[test]
@@ -538,9 +741,9 @@ mod tests {
         let mut item = ItemOutcome::update("npm", "baz", "1.2.0", "1.2.5");
         item.set_version_policy("stable", Some("1.3.0-beta.1".to_string()), None);
 
-        let rendered = item.to_text_line().expect("line should render");
-        assert!(rendered.contains("blocked by version policy: stable"));
-        assert!(rendered.contains("v1.3.0-beta.1"));
+        let note = outcome_note(&item, crate::ui::OutputTheme::test_plain(false));
+        assert!(note.contains("blocked by version policy: stable"));
+        assert!(note.contains("v1.3.0-beta.1"));
     }
 
     #[test]
@@ -548,10 +751,10 @@ mod tests {
         let mut item = ItemOutcome::delayed_too_fresh("npm", "qux", "3.1.0", "3.1.1", "3d", "7d");
         item.set_version_policy("stable", Some("4.0.0-beta.2".to_string()), None);
 
-        let rendered = item.to_text_line().expect("line should render");
-        assert!(rendered.contains("(too fresh: 3d < 7d)"));
-        assert!(rendered.contains("blocked by version policy: stable"));
-        assert!(rendered.contains("v4.0.0-beta.2"));
+        let note = outcome_note(&item, crate::ui::OutputTheme::test_plain(false));
+        assert!(note.contains("(too fresh: 3d < 7d)"));
+        assert!(note.contains("blocked by version policy: stable"));
+        assert!(note.contains("v4.0.0-beta.2"));
     }
 
     #[test]
@@ -563,9 +766,9 @@ mod tests {
             Some("same-track fell back to stable because installed track is unknown".to_string()),
         );
 
-        let rendered = item.to_text_line().expect("line should render");
-        assert!(rendered.contains("version policy warning"));
-        assert!(rendered.contains("same-track fell back to stable"));
+        let note = outcome_note(&item, crate::ui::OutputTheme::test_plain(false));
+        assert!(note.contains("version policy warning"));
+        assert!(note.contains("same-track fell back to stable"));
     }
 
     #[test]
@@ -579,9 +782,9 @@ mod tests {
             "no publish-date metadata",
         );
 
-        let rendered = item.to_text_line().expect("line should render");
-        assert!(rendered.contains("- Skipped [mise] nometa-tool v1.0.0 -> v1.1.0"));
-        assert!(rendered.contains("(no publish-date metadata)"));
+        let table = render_single_plain_table(&item, false);
+        assert!(table.contains("- Skipped  [mise]    nometa-tool  v1.0.0  v1.1.0"));
+        assert!(table.contains("(no publish-date metadata)"));
     }
 
     #[test]
@@ -590,17 +793,13 @@ mod tests {
             "npm", "foo", "1.2.0", "1.2.5", "1.3.0", "3d", "7d",
         );
 
-        let normal = item
-            .to_text_line_with_theme(crate::ui::OutputTheme::test_plain(false))
-            .expect("line should render");
-        assert!(normal.contains("+ Update [npm] foo v1.2.0 -> v1.2.5"));
+        let normal = render_single_plain_table(&item, false);
+        assert!(normal.contains("+ Update  [npm]    foo  v1.2.0  v1.2.5"));
         assert!(normal.contains("(latest v1.3.0 too fresh)"));
         assert!(!normal.contains("3d < 7d"));
 
-        let verbose = item
-            .to_text_line_with_theme(crate::ui::OutputTheme::test_plain(true))
-            .expect("line should render");
-        assert!(verbose.contains("(latest v1.3.0 too fresh: 3d < 7d)"));
+        let verbose_note = outcome_note(&item, crate::ui::OutputTheme::test_plain(true));
+        assert!(verbose_note.contains("(latest v1.3.0 too fresh: 3d < 7d)"));
     }
 
     #[test]
@@ -614,12 +813,10 @@ mod tests {
             "required command 'cargo' is not available",
         );
 
-        let rendered = item
-            .to_text_line_with_theme(crate::ui::OutputTheme::test_plain(false))
-            .expect("line should render");
+        let rendered = render_single_plain_table(&item, false);
         assert_eq!(
             rendered,
-            "- Skipped [cargo] (required command 'cargo' is not available)"
+            "Status     Manager  Note\n- Skipped  [cargo]  (required command 'cargo' is not available)"
         );
     }
 
@@ -629,32 +826,69 @@ mod tests {
             "npm", "foo", "1.2.0", "1.3.0", "3d", "7d",
         );
 
-        let normal = item
-            .to_text_line_with_theme(crate::ui::OutputTheme::test_plain(false))
-            .expect("line should render");
-        assert!(normal.contains("~ Delayed [npm] foo v1.2.0 -> v1.3.0"));
+        let normal = render_single_plain_table(&item, false);
+        assert!(normal.contains("~ Delayed  [npm]    foo  v1.2.0  v1.3.0"));
         assert!(normal.contains("(no eligible release yet; latest v1.3.0 too fresh)"));
         assert!(!normal.contains("3d < 7d"));
 
-        let verbose = item
-            .to_text_line_with_theme(crate::ui::OutputTheme::test_plain(true))
-            .expect("line should render");
-        assert!(verbose.contains("(no eligible release yet; latest v1.3.0 too fresh: 3d < 7d)"));
+        let verbose_note = outcome_note(&item, crate::ui::OutputTheme::test_plain(true));
+        assert!(
+            verbose_note.contains("(no eligible release yet; latest v1.3.0 too fresh: 3d < 7d)")
+        );
     }
 
     #[test]
     fn no_change_is_current_and_hidden_until_verbose() {
         let item = ItemOutcome::current_no_newer("npm", "foo", "1.2.0");
 
-        assert!(
-            item.to_text_line_with_theme(crate::ui::OutputTheme::test_plain(false))
-                .is_none()
-        );
+        assert!(outcome_table_row(&item, crate::ui::OutputTheme::test_plain(false)).is_none());
 
-        let rendered = item
-            .to_text_line_with_theme(crate::ui::OutputTheme::test_plain(true))
-            .expect("line should render");
-        assert!(rendered.contains("= Current [npm] foo v1.2.0"));
+        let rendered = render_single_plain_table(&item, true);
+        assert!(rendered.contains("= Current  [npm]    foo  v1.2.0"));
         assert!(rendered.contains("(no newer version found)"));
+    }
+
+    #[test]
+    fn outcome_table_aligns_columns_and_omits_version_arrows() {
+        let theme = crate::ui::OutputTheme::test_plain(false);
+        let items = [
+            ItemOutcome::update("npm", "short", "1.0.0", "1.2.0"),
+            ItemOutcome::update("npm", "much-longer-name", "2.0.0", "2.1.0"),
+        ];
+        let rows: Vec<_> = items
+            .iter()
+            .filter_map(|item| outcome_table_row(item, theme))
+            .collect();
+
+        let table = render_outcome_table(&rows, false);
+
+        assert_eq!(
+            table[0],
+            "Status    Manager  Name              Current  Target"
+        );
+        let ascii_arrow: String = ['-', '>'].iter().collect();
+        assert!(!table.join("\n").contains(&ascii_arrow));
+        assert_eq!(table[1].find("v1.0.0"), table[2].find("v2.0.0"));
+        assert_eq!(table[1].find("v1.2.0"), table[2].find("v2.1.0"));
+    }
+
+    #[test]
+    fn outcome_table_header_is_magenta_when_color_is_enabled() {
+        let theme = crate::ui::OutputTheme::test_plain(false);
+        let item = ItemOutcome::update("npm", "foo", "1.0.0", "1.2.0");
+        let rows = std::iter::once(&item)
+            .filter_map(|item| outcome_table_row(item, theme))
+            .collect::<Vec<_>>();
+
+        let table = render_outcome_table(&rows, true);
+
+        assert!(table[0].contains("\u{1b}[35m"));
+        assert!(table[0].contains("\u{1b}[1m"));
+    }
+
+    fn render_single_plain_table(item: &ItemOutcome, verbose: bool) -> String {
+        let theme = crate::ui::OutputTheme::test_plain(verbose);
+        let row = outcome_table_row(item, theme).expect("row should render");
+        render_outcome_table(&[row], false).join("\n")
     }
 }

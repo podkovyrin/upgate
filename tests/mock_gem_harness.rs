@@ -10,7 +10,7 @@ use common::http::{
     BackgroundTcpServer, read_http_request_head, run_fake_http_server, write_http_response_text,
 };
 use common::{
-    SandboxEnv, assert_success, command_output, fixture_path, scenario_path,
+    SandboxEnv, assert_success, command_output, compact_stdout, fixture_path, scenario_path,
     skip_hybrid_test_if_disabled, spawn_upnow, stderr, stdout, write_executable,
 };
 
@@ -171,13 +171,13 @@ fn deterministic_plan_covers_update_delayed_pinned_and_error_states() {
     ]);
     assert_success(&output, "upnow plan deterministic gem");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [gem] alpha-ready v1.0.0 -> v1.2.0"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [gem] alpha-ready v1.0.0 v1.2.0"));
     assert!(out.contains(
-        "~ Delayed [gem] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh: 0s < 7d)"
+        "~ Delayed [gem] gamma-delayed v2.0.0 v2.1.0 (no eligible release yet; latest v2.1.0 too fresh: 0s < 7d)"
     ));
-    assert!(out.contains("- Skipped [gem] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
-    assert!(out.contains("! Error [gem] omega-error v0.1.0 -> v0.1.0"));
+    assert!(out.contains("- Skipped [gem] pinned-pkg v3.0.0 v3.1.0 (pinned)"));
+    assert!(out.contains("! Error [gem] omega-error v0.1.0 v0.1.0"));
     assert!(!out.contains("default-skip"));
 
     let err = stderr(&output);
@@ -195,7 +195,7 @@ fn deterministic_plan_reports_prerelease_blocked_by_stable_policy() {
 
     // The fixture's `gem outdated` output explicitly lists this prerelease.
     // Gem stable reporting here is opportunistic, not an exhaustive prerelease search.
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     assert!(
         out.contains("= Current [gem] prerelease-blocked v1.0.0"),
         "plan stdout:\n{out}\nplan stderr:\n{}",
@@ -256,10 +256,10 @@ fn selected_gem_runs_when_config_mode_is_absent_or_off() {
             "selected gem should run even when config mode is absent or off",
         );
 
-        let out = stdout(&output);
+        let out = compact_stdout(&output);
         let err = stderr(&output);
         assert!(
-            out.contains("+ Update [gem] alpha-ready v1.0.0 -> v1.2.0"),
+            out.contains("+ Update [gem] alpha-ready v1.0.0 v1.2.0"),
             "selected gem should emit plan outcomes\nstdout:\n{out}\nstderr:\n{err}"
         );
         assert!(
@@ -289,7 +289,7 @@ fn set_mode_override_takes_precedence_for_selected_gem() {
     ]);
     assert_success(&output, "explicit mode override should be accepted");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     let err = stderr(&output);
     assert!(
         out.is_empty(),
@@ -315,12 +315,12 @@ fn deterministic_apply_selective_path_runs_updates_only_for_eligible_unpinned_it
     ]);
     assert_success(&output, "upnow apply deterministic gem");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [gem] alpha-ready v1.0.0 -> v1.2.0"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [gem] alpha-ready v1.0.0 v1.2.0"));
     assert!(out.contains(
-        "~ Delayed [gem] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh: 0s < 7d)"
+        "~ Delayed [gem] gamma-delayed v2.0.0 v2.1.0 (no eligible release yet; latest v2.1.0 too fresh: 0s < 7d)"
     ));
-    assert!(out.contains("- Skipped [gem] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
+    assert!(out.contains("- Skipped [gem] pinned-pkg v3.0.0 v3.1.0 (pinned)"));
 
     let err = stderr(&output);
     assert!(err.contains("$ gem install alpha-ready -v 1.2.0"));
@@ -336,7 +336,7 @@ fn deterministic_scan_reports_current_state_and_missing_age_fallback() {
     let output = sandbox.run_upnow(&["scan", "--plain", "--verbose", "--managers", "gem"]);
     assert_success(&output, "upnow scan deterministic gem");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     let err = stderr(&output);
     assert!(
         out.contains("= Current [gem] alpha-ready v1.0.0 (released:"),
@@ -367,15 +367,15 @@ fn hybrid_apply_uses_real_rubygems_data_with_fake_installed_state() {
     ]);
     assert_success(&output, "upnow apply hybrid gem");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [gem] rake v1.0.0 -> v"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [gem] rake v1.0.0 v"));
     assert!(
-        out.contains("- Skipped [gem] bundler v1.0.0 -> v") && out.contains("(pinned)"),
+        out.contains("- Skipped [gem] bundler v1.0.0 v") && out.contains("(pinned)"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{}",
         stderr(&output)
     );
-    assert!(!out.contains(" json v9999.0.0 -> v"));
-    assert!(out.contains("! Error [gem] zzzz-upnow-no-such-gem-000000000000 v1.0.0 -> v1.0.0"));
+    assert!(!out.contains(" json v9999.0.0 v"));
+    assert!(out.contains("! Error [gem] zzzz-upnow-no-such-gem-000000000000 v1.0.0 v1.0.0"));
 
     let err = stderr(&output);
     assert!(

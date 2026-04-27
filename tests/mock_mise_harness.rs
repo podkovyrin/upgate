@@ -9,8 +9,9 @@ use common::http::{
     BackgroundTcpServer, read_http_request_head, run_fake_http_server, write_http_response_text,
 };
 use common::{
-    SandboxEnv, assert_success, command_output, path_to_string, require_real_executable,
-    scenario_path, skip_hybrid_test_if_disabled, spawn_upnow, stderr, stdout, write_executable,
+    SandboxEnv, assert_success, command_output, compact_stdout, path_to_string,
+    require_real_executable, scenario_path, skip_hybrid_test_if_disabled, spawn_upnow, stderr,
+    stdout, write_executable,
 };
 
 const MISE_DETERMINISTIC_SCENARIO_DIR: &str = "tests/scenarios/mise/deterministic";
@@ -215,23 +216,23 @@ fn deterministic_plan_covers_updates_pinned_and_metadata_states() {
     ]);
     assert_success(&output, "upnow plan deterministic mise");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     let err = stderr(&output);
-    assert!(out.contains("+ Update [mise] npm:alpha-ready v1.0.0 -> v1.2.0"));
+    assert!(out.contains("+ Update [mise] npm:alpha-ready v1.0.0 v1.2.0"));
     assert!(out.contains(
-        "+ Update [mise] npm:beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh: 0s < 7d)"
+        "+ Update [mise] npm:beta-fresh-latest v1.0.0 v1.0.5 (latest v1.1.0 too fresh: 0s < 7d)"
     ));
-    assert!(out.contains("- Skipped [mise] node v20.0.0 -> v20.1.0 (pinned)"));
-    assert!(out.contains("+ Update [mise] swiftformat v0.59.1 -> v0.61.0"));
-    assert!(out.contains("+ Update [mise] emsdk v5.0.4 -> v5.0.6"));
-    assert!(out.contains("+ Update [mise] fallbacktool v1.0.0 -> v1.1.0"));
-    assert!(out.contains("+ Update [mise] github:example/fullfallback v2.0.0 -> v2.1.0"));
-    assert!(out.contains("+ Update [mise] github:example/pruned v1.0.0 -> v2.0.0"));
-    assert!(out.contains("+ Update [mise] npm:gamma-error v2.0.0 -> v2.0.1"));
-    assert!(out.contains("- Skipped [mise] wrongbackend v1.0.0 -> v2.0.0"));
-    assert!(out.contains("~ Delayed [mise] fresh-tool v1.0.0 -> v1.1.0 (too fresh: 0s < 7d)"));
-    assert!(out.contains("- Skipped [mise] nometa-tool v1.0.0 -> v1.1.0"));
-    assert!(!out.contains("- Skipped [mise] github:example/pruned v1.0.0 -> v2.0.0"));
+    assert!(out.contains("- Skipped [mise] node v20.0.0 v20.1.0 (pinned)"));
+    assert!(out.contains("+ Update [mise] swiftformat v0.59.1 v0.61.0"));
+    assert!(out.contains("+ Update [mise] emsdk v5.0.4 v5.0.6"));
+    assert!(out.contains("+ Update [mise] fallbacktool v1.0.0 v1.1.0"));
+    assert!(out.contains("+ Update [mise] github:example/fullfallback v2.0.0 v2.1.0"));
+    assert!(out.contains("+ Update [mise] github:example/pruned v1.0.0 v2.0.0"));
+    assert!(out.contains("+ Update [mise] npm:gamma-error v2.0.0 v2.0.1"));
+    assert!(out.contains("- Skipped [mise] wrongbackend v1.0.0 v2.0.0"));
+    assert!(out.contains("~ Delayed [mise] fresh-tool v1.0.0 v1.1.0 (too fresh: 0s < 7d)"));
+    assert!(out.contains("- Skipped [mise] nometa-tool v1.0.0 v1.1.0"));
+    assert!(!out.contains("- Skipped [mise] github:example/pruned v1.0.0 v2.0.0"));
 
     assert!(err.contains("$ mise upgrade --dry-run --before 7d"));
     assert!(err.contains("$ mise outdated --json"));
@@ -265,22 +266,24 @@ fn deterministic_apply_selective_path_runs_only_for_unpinned_eligible_items() {
     let output = sandbox.run_upnow(&["apply", "--plain", "--managers", "mise", "--show-commands"]);
     assert_success(&output, "upnow apply deterministic mise");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     let err = stderr(&output);
-    assert!(out.contains("+ Update [mise] npm:alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains(
-        "+ Update [mise] npm:beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh)"
-    ));
-    assert!(out.contains("+ Update [mise] swiftformat v0.59.1 -> v0.61.0"));
-    assert!(out.contains("- Skipped [mise] node v20.0.0 -> v20.1.0 (pinned)"));
-    assert!(out.contains("+ Update [mise] emsdk v5.0.4 -> v5.0.6"));
-    assert!(out.contains("+ Update [mise] fallbacktool v1.0.0 -> v1.1.0"));
-    assert!(out.contains("+ Update [mise] github:example/fullfallback v2.0.0 -> v2.1.0"));
-    assert!(out.contains("+ Update [mise] github:example/pruned v1.0.0 -> v2.0.0"));
-    assert!(out.contains("+ Update [mise] npm:gamma-error v2.0.0 -> v2.0.1"));
-    assert!(out.contains("- Skipped [mise] wrongbackend v1.0.0 -> v2.0.0"));
-    assert!(out.contains("~ Delayed [mise] fresh-tool v1.0.0 -> v1.1.0 (too fresh: 0s < 7d)"));
-    assert!(out.contains("- Skipped [mise] nometa-tool v1.0.0 -> v1.1.0"));
+    assert!(out.contains("+ Update [mise] npm:alpha-ready v1.0.0 v1.2.0"));
+    assert!(
+        out.contains(
+            "+ Update [mise] npm:beta-fresh-latest v1.0.0 v1.0.5 (latest v1.1.0 too fresh)"
+        )
+    );
+    assert!(out.contains("+ Update [mise] swiftformat v0.59.1 v0.61.0"));
+    assert!(out.contains("- Skipped [mise] node v20.0.0 v20.1.0 (pinned)"));
+    assert!(out.contains("+ Update [mise] emsdk v5.0.4 v5.0.6"));
+    assert!(out.contains("+ Update [mise] fallbacktool v1.0.0 v1.1.0"));
+    assert!(out.contains("+ Update [mise] github:example/fullfallback v2.0.0 v2.1.0"));
+    assert!(out.contains("+ Update [mise] github:example/pruned v1.0.0 v2.0.0"));
+    assert!(out.contains("+ Update [mise] npm:gamma-error v2.0.0 v2.0.1"));
+    assert!(out.contains("- Skipped [mise] wrongbackend v1.0.0 v2.0.0"));
+    assert!(out.contains("~ Delayed [mise] fresh-tool v1.0.0 v1.1.0 (too fresh: 0s < 7d)"));
+    assert!(out.contains("- Skipped [mise] nometa-tool v1.0.0 v1.1.0"));
 
     assert!(err.contains("$ mise upgrade --before 7d npm:alpha-ready"));
     assert!(err.contains("$ mise upgrade --before 7d npm:beta-fresh-latest"));
@@ -314,21 +317,23 @@ min_release_age = "7d"
     let output = sandbox.run_upnow(&["apply", "--plain", "--managers", "mise", "--show-commands"]);
     assert_success(&output, "upnow apply deterministic mise selective");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [mise] npm:alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains(
-        "+ Update [mise] npm:beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh)"
-    ));
-    assert!(out.contains("+ Update [mise] node v20.0.0 -> v20.1.0"));
-    assert!(out.contains("+ Update [mise] swiftformat v0.59.1 -> v0.61.0"));
-    assert!(out.contains("+ Update [mise] emsdk v5.0.4 -> v5.0.6"));
-    assert!(out.contains("+ Update [mise] fallbacktool v1.0.0 -> v1.1.0"));
-    assert!(out.contains("+ Update [mise] github:example/fullfallback v2.0.0 -> v2.1.0"));
-    assert!(out.contains("+ Update [mise] github:example/pruned v1.0.0 -> v2.0.0"));
-    assert!(out.contains("+ Update [mise] npm:gamma-error v2.0.0 -> v2.0.1"));
-    assert!(out.contains("- Skipped [mise] wrongbackend v1.0.0 -> v2.0.0"));
-    assert!(out.contains("~ Delayed [mise] fresh-tool v1.0.0 -> v1.1.0 (too fresh: 0s < 7d)"));
-    assert!(out.contains("- Skipped [mise] nometa-tool v1.0.0 -> v1.1.0"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [mise] npm:alpha-ready v1.0.0 v1.2.0"));
+    assert!(
+        out.contains(
+            "+ Update [mise] npm:beta-fresh-latest v1.0.0 v1.0.5 (latest v1.1.0 too fresh)"
+        )
+    );
+    assert!(out.contains("+ Update [mise] node v20.0.0 v20.1.0"));
+    assert!(out.contains("+ Update [mise] swiftformat v0.59.1 v0.61.0"));
+    assert!(out.contains("+ Update [mise] emsdk v5.0.4 v5.0.6"));
+    assert!(out.contains("+ Update [mise] fallbacktool v1.0.0 v1.1.0"));
+    assert!(out.contains("+ Update [mise] github:example/fullfallback v2.0.0 v2.1.0"));
+    assert!(out.contains("+ Update [mise] github:example/pruned v1.0.0 v2.0.0"));
+    assert!(out.contains("+ Update [mise] npm:gamma-error v2.0.0 v2.0.1"));
+    assert!(out.contains("- Skipped [mise] wrongbackend v1.0.0 v2.0.0"));
+    assert!(out.contains("~ Delayed [mise] fresh-tool v1.0.0 v1.1.0 (too fresh: 0s < 7d)"));
+    assert!(out.contains("- Skipped [mise] nometa-tool v1.0.0 v1.1.0"));
 
     let err = stderr(&output);
     assert!(err.contains("$ mise upgrade --before 7d npm:alpha-ready"));
@@ -362,10 +367,10 @@ fn apply_still_runs_when_optional_delayed_latest_metadata_is_missing() {
         "upnow apply mise with missing delayed-latest metadata",
     );
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     let err = stderr(&output);
     assert!(
-        out.contains("+ Update [mise] npm:optional-latest-missing v1.0.0 -> v1.1.0"),
+        out.contains("+ Update [mise] npm:optional-latest-missing v1.0.0 v1.1.0"),
         "stdout:\n{out}\nstderr:\n{err}"
     );
     assert!(
@@ -390,7 +395,7 @@ fn deterministic_scan_uses_installed_state_and_handles_missing_npm_age() {
     let output = sandbox.run_upnow(&["scan", "--plain", "--verbose", "--managers", "mise"]);
     assert_success(&output, "upnow scan deterministic mise");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     let err = stderr(&output);
     assert!(
         out.contains("= Current [mise] npm:alpha-ready v1.0.0 (released:"),
@@ -458,22 +463,22 @@ fn hybrid_apply_uses_real_npm_time_data_with_fake_mise_state() {
     );
     assert_success(&output, "upnow apply hybrid mise");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     let err = stderr(&output);
     assert!(
-        out.contains("+ Update [mise] npm:typescript v1.0.0 -> v5.9.3"),
+        out.contains("+ Update [mise] npm:typescript v1.0.0 v5.9.3"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("+ Update [mise] npm:react v1.0.0 -> v19.1.0"),
+        out.contains("+ Update [mise] npm:react v1.0.0 v19.1.0"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("+ Update [mise] npm:eslint v1.0.0 -> v9.39.1"),
+        out.contains("+ Update [mise] npm:eslint v1.0.0 v9.39.1"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("! Error [mise] npm:zzzz-upnow-no-such-package-000000000000 v1.0.0 -> v1.0.0"),
+        out.contains("! Error [mise] npm:zzzz-upnow-no-such-package-000000000000 v1.0.0 v1.0.0"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
 

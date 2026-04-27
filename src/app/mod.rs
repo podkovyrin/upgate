@@ -8,7 +8,7 @@ use crate::interactive;
 use crate::managers::{
     ManagerCtx, ManagerPlugin, RunMode, all_plugins, build_ctx_for_plugin, resolve_selected_plugins,
 };
-use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
+use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome, flush_text_outcomes};
 use crate::ui::{
     finish_manager_spinner, init_output_theme, start_manager_spinner, with_spinner_suspended,
 };
@@ -25,7 +25,10 @@ pub fn run() -> i32 {
         return exit_with_error(format!("failed to initialize logging: {err}"));
     }
 
-    match run_with_cli(&cli) {
+    let result = run_with_cli(&cli);
+    flush_text_outcomes();
+
+    match result {
         Ok(exit_code) => exit_code,
         Err(err) => exit_with_error(err),
     }

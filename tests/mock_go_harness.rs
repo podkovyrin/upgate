@@ -5,8 +5,9 @@ use std::process::{Command, Output};
 mod common;
 
 use common::{
-    SandboxEnv, assert_success, command_output, path_to_string, require_real_executable,
-    skip_hybrid_test_if_disabled, spawn_upnow, stderr, stdout, write_executable,
+    SandboxEnv, assert_success, command_output, compact_stdout, path_to_string,
+    require_real_executable, skip_hybrid_test_if_disabled, spawn_upnow, stderr, stdout,
+    write_executable,
 };
 
 const DETERMINISTIC_CONFIG: &str = r#"
@@ -135,17 +136,17 @@ fn deterministic_plan_covers_ready_delayed_pinned_skipped_and_error_states() {
     ]);
     assert_success(&output, "upnow plan deterministic go");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [go] alpha-ready v1.0.0 -> v1.2.0"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [go] alpha-ready v1.0.0 v1.2.0"));
     assert!(out.contains(
-        "+ Update [go] beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh: 0s < 7d)"
+        "+ Update [go] beta-fresh-latest v1.0.0 v1.0.5 (latest v1.1.0 too fresh: 0s < 7d)"
     ));
     assert!(out.contains(
-        "~ Delayed [go] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh: 0s < 7d)"
+        "~ Delayed [go] gamma-delayed v2.0.0 v2.1.0 (no eligible release yet; latest v2.1.0 too fresh: 0s < 7d)"
     ));
-    assert!(out.contains("- Skipped [go] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
-    assert!(out.contains("! Error [go] omega-error v0.1.0 -> v0.1.0"));
-    assert!(out.contains("- Skipped [go] skip-nometa * -> * (missing go build metadata)"));
+    assert!(out.contains("- Skipped [go] pinned-pkg v3.0.0 v3.1.0 (pinned)"));
+    assert!(out.contains("! Error [go] omega-error v0.1.0 v0.1.0"));
+    assert!(out.contains("- Skipped [go] skip-nometa * * (missing go build metadata)"));
 
     let err = stderr(&output);
     assert!(err.contains("$ go version -m"));
@@ -159,15 +160,15 @@ fn deterministic_apply_selective_path_runs_updates_only_for_eligible_unpinned_to
     let output = sandbox.run_upnow(&["apply", "--plain", "--managers", "go", "--show-commands"]);
     assert_success(&output, "upnow apply deterministic go");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [go] alpha-ready v1.0.0 -> v1.2.0"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [go] alpha-ready v1.0.0 v1.2.0"));
     assert!(
-        out.contains("+ Update [go] beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh)")
+        out.contains("+ Update [go] beta-fresh-latest v1.0.0 v1.0.5 (latest v1.1.0 too fresh)")
     );
     assert!(out.contains(
-        "~ Delayed [go] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh)"
+        "~ Delayed [go] gamma-delayed v2.0.0 v2.1.0 (no eligible release yet; latest v2.1.0 too fresh)"
     ));
-    assert!(out.contains("- Skipped [go] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
+    assert!(out.contains("- Skipped [go] pinned-pkg v3.0.0 v3.1.0 (pinned)"));
 
     let err = stderr(&output);
     assert!(err.contains("$ go install example.com/alpha/cmd/alpha-ready@v1.2.0"));
@@ -183,7 +184,7 @@ fn deterministic_scan_reports_current_items_without_forcing_release_age_for_miss
     let output = sandbox.run_upnow(&["scan", "--plain", "--verbose", "--managers", "go"]);
     assert_success(&output, "upnow scan deterministic go");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     let err = stderr(&output);
     assert!(
         out.contains("= Current [go] alpha-ready v1.0.0 (released:"),
@@ -194,7 +195,7 @@ fn deterministic_scan_reports_current_items_without_forcing_release_age_for_miss
         "scan stdout:\n{out}\nscan stderr:\n{err}"
     );
     assert!(
-        out.contains("- Skipped [go] skip-nometa * -> * (missing go build metadata)"),
+        out.contains("- Skipped [go] skip-nometa * * (missing go build metadata)"),
         "scan stdout:\n{out}\nscan stderr:\n{err}"
     );
 }
@@ -220,22 +221,22 @@ fn hybrid_apply_uses_real_module_data_with_fake_installed_state() {
     );
     assert_success(&output, "upnow apply hybrid go");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     let err = stderr(&output);
     assert!(
-        out.contains("+ Update [go] alpha-ready v1.0.0 -> v"),
+        out.contains("+ Update [go] alpha-ready v1.0.0 v"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("- Skipped [go] pinned-pkg v1.0.0 -> v") && out.contains("(pinned)"),
+        out.contains("- Skipped [go] pinned-pkg v1.0.0 v") && out.contains("(pinned)"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        !out.contains(" gamma-delayed v9999.0.0 -> v"),
+        !out.contains(" gamma-delayed v9999.0.0 v"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("! Error [go] omega-error v1.0.0 -> v1.0.0"),
+        out.contains("! Error [go] omega-error v1.0.0 v1.0.0"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
 

@@ -10,7 +10,7 @@ use common::http::{
     BackgroundTcpServer, read_http_request_head, run_fake_http_server, write_http_response_text,
 };
 use common::{
-    SandboxEnv, assert_success, command_output, fixture_path, scenario_path,
+    SandboxEnv, assert_success, command_output, compact_stdout, fixture_path, scenario_path,
     skip_hybrid_test_if_disabled, spawn_upnow, stderr, stdout, write_executable,
 };
 
@@ -173,26 +173,26 @@ fn deterministic_plan_covers_update_delayed_pinned_and_error_states() {
     ]);
     assert_success(&output, "upnow plan deterministic cargo");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     assert!(
-        out.contains("+ Update [cargo] alpha-ready v1.0.0 -> v1.2.0"),
+        out.contains("+ Update [cargo] alpha-ready v1.0.0 v1.2.0"),
         "plan stdout:\n{out}\nplan stderr:\n{}",
         stderr(&output)
     );
     assert!(
         out.contains(
-            "~ Delayed [cargo] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh: 0s < 7d)"
+            "~ Delayed [cargo] gamma-delayed v2.0.0 v2.1.0 (no eligible release yet; latest v2.1.0 too fresh: 0s < 7d)"
         ),
         "plan stdout:\n{out}\nplan stderr:\n{}",
         stderr(&output)
     );
     assert!(
-        out.contains("- Skipped [cargo] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"),
+        out.contains("- Skipped [cargo] pinned-pkg v3.0.0 v3.1.0 (pinned)"),
         "plan stdout:\n{out}\nplan stderr:\n{}",
         stderr(&output)
     );
     assert!(
-        out.contains("! Error [cargo] omega-error v0.1.0 -> v0.1.0"),
+        out.contains("! Error [cargo] omega-error v0.1.0 v0.1.0"),
         "plan stdout:\n{out}\nplan stderr:\n{}",
         stderr(&output)
     );
@@ -216,21 +216,21 @@ fn deterministic_apply_selective_path_runs_updates_only_for_eligible_unpinned_cr
     ]);
     assert_success(&output, "upnow apply deterministic cargo");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     assert!(
-        out.contains("+ Update [cargo] alpha-ready v1.0.0 -> v1.2.0"),
+        out.contains("+ Update [cargo] alpha-ready v1.0.0 v1.2.0"),
         "apply stdout:\n{out}\napply stderr:\n{}",
         stderr(&output)
     );
     assert!(
         out.contains(
-            "~ Delayed [cargo] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh: 0s < 7d)"
+            "~ Delayed [cargo] gamma-delayed v2.0.0 v2.1.0 (no eligible release yet; latest v2.1.0 too fresh: 0s < 7d)"
         ),
         "apply stdout:\n{out}\napply stderr:\n{}",
         stderr(&output)
     );
     assert!(
-        out.contains("- Skipped [cargo] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"),
+        out.contains("- Skipped [cargo] pinned-pkg v3.0.0 v3.1.0 (pinned)"),
         "apply stdout:\n{out}\napply stderr:\n{}",
         stderr(&output)
     );
@@ -249,7 +249,7 @@ fn deterministic_scan_reports_current_state_and_missing_age_fallback() {
     let output = sandbox.run_upnow(&["scan", "--plain", "--verbose", "--managers", "cargo"]);
     assert_success(&output, "upnow scan deterministic cargo");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     let err = stderr(&output);
     assert!(
         out.contains("= Current [cargo] alpha-ready v1.0.0 (released:"),
@@ -279,15 +279,15 @@ fn hybrid_apply_uses_real_crates_io_data_with_fake_installed_state() {
     ]);
     assert_success(&output, "upnow apply hybrid cargo");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [cargo] serde v1.0.0 -> v"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [cargo] serde v1.0.0 v"));
     assert!(
-        out.contains("- Skipped [cargo] clap v1.0.0 -> v") && out.contains("(pinned)"),
+        out.contains("- Skipped [cargo] clap v1.0.0 v") && out.contains("(pinned)"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{}",
         stderr(&output)
     );
-    assert!(!out.contains(" semver v9999.0.0 -> v"));
-    assert!(out.contains("! Error [cargo] zzzz-upnow-no-such-crate-000000000000 v1.0.0 -> v1.0.0"));
+    assert!(!out.contains(" semver v9999.0.0 v"));
+    assert!(out.contains("! Error [cargo] zzzz-upnow-no-such-crate-000000000000 v1.0.0 v1.0.0"));
 
     let err = stderr(&output);
     assert!(

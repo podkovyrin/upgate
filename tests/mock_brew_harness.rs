@@ -4,8 +4,9 @@ use std::process::{Command, Output};
 mod common;
 
 use common::{
-    SandboxEnv, assert_success, command_output, path_to_string, require_real_executable,
-    scenario_path, skip_hybrid_test_if_disabled, spawn_upnow, stderr, stdout, write_executable,
+    SandboxEnv, assert_success, command_output, compact_stdout, path_to_string,
+    require_real_executable, scenario_path, skip_hybrid_test_if_disabled, spawn_upnow, stderr,
+    stdout, write_executable,
 };
 
 const DETERMINISTIC_BREW_SCENARIO_DIR: &str = "tests/scenarios/brew/deterministic";
@@ -149,13 +150,11 @@ fn deterministic_plan_covers_update_delayed_pinned_and_age_check_error_states() 
     ]);
     assert_success(&output, "upnow plan deterministic brew");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [brew] alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(
-        out.contains("~ Delayed [brew] beta-fresh-latest v1.0.0 -> v1.1.0 (too fresh: 0s < 12h)")
-    );
-    assert!(out.contains("- Skipped [brew] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
-    assert!(out.contains("! Error [brew] omega-error v0.1.0 -> v0.2.0"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [brew] alpha-ready v1.0.0 v1.2.0"));
+    assert!(out.contains("~ Delayed [brew] beta-fresh-latest v1.0.0 v1.1.0 (too fresh: 0s < 12h)"));
+    assert!(out.contains("- Skipped [brew] pinned-pkg v3.0.0 v3.1.0 (pinned)"));
+    assert!(out.contains("! Error [brew] omega-error v0.1.0 v0.2.0"));
 
     let err = stderr(&output);
     assert!(err.contains("$ brew outdated --json=v2"));
@@ -178,12 +177,10 @@ fn deterministic_apply_selective_path_runs_formula_upgrade_for_only_unpinned_eli
     ]);
     assert_success(&output, "upnow apply deterministic brew");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [brew] alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(
-        out.contains("~ Delayed [brew] beta-fresh-latest v1.0.0 -> v1.1.0 (too fresh: 0s < 12h)")
-    );
-    assert!(out.contains("- Skipped [brew] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [brew] alpha-ready v1.0.0 v1.2.0"));
+    assert!(out.contains("~ Delayed [brew] beta-fresh-latest v1.0.0 v1.1.0 (too fresh: 0s < 12h)"));
+    assert!(out.contains("- Skipped [brew] pinned-pkg v3.0.0 v3.1.0 (pinned)"));
 
     let err = stderr(&output);
     assert!(err.contains("$ brew upgrade --formula alpha-ready"));
@@ -199,7 +196,7 @@ fn deterministic_scan_reports_current_installed_state() {
     let output = sandbox.run_upnow(&["scan", "--plain", "--managers", "brew"]);
     assert_success(&output, "upnow scan deterministic brew");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     assert!(out.contains("= Current [brew] alpha-ready v1.0.0"));
     assert!(out.contains("= Current [brew] pinned-pkg v3.0.0"));
 }
@@ -239,22 +236,22 @@ fn hybrid_apply_uses_real_tap_metadata_and_git_history_with_fake_outdated_state(
     );
     assert_success(&output, "upnow apply hybrid brew");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     let err = stderr(&output);
     assert!(
-        out.contains("+ Update [brew] wget v1.0.0 -> v1.2.0"),
+        out.contains("+ Update [brew] wget v1.0.0 v1.2.0"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("~ Delayed [brew] jq v1.0.0 -> v1.1.0 (too fresh:"),
+        out.contains("~ Delayed [brew] jq v1.0.0 v1.1.0 (too fresh:"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("- Skipped [brew] grep v1.0.0 -> v1.1.0 (pinned)"),
+        out.contains("- Skipped [brew] grep v1.0.0 v1.1.0 (pinned)"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("! Error [brew] curl v1.0.0 -> v1.1.0"),
+        out.contains("! Error [brew] curl v1.0.0 v1.1.0"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
 

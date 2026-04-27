@@ -23,6 +23,7 @@ struct Line {
 const DIALOG_TITLE_PREFIX: &str = "Select updates for";
 const PINNED_LABEL: &str = " (pinned)";
 const DIALOG_BOX_OVERHEAD: usize = 4;
+const INTERACTIVE_TABLE_GAP: &str = "  ";
 const ELLIPSIS: char = '…';
 
 const MULTI_SELECT_KEYBINDS: &[(&str, &str)] = &[
@@ -43,7 +44,34 @@ struct DialogStyle<'a> {
     footer: &'a Line,
     desired_inner_width: usize,
     color: bool,
-    arrow: &'a str,
+    table_widths: InteractiveTableWidths,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct InteractiveTableWidths {
+    prefix: usize,
+    name: usize,
+    current: usize,
+    target: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RenderedCell<'a> {
+    text: &'a str,
+    width: usize,
+}
+
+impl<'a> RenderedCell<'a> {
+    fn plain(text: &'a str) -> Self {
+        Self {
+            text,
+            width: width(text),
+        }
+    }
+
+    const fn styled(text: &'a str, width: usize) -> Self {
+        Self { text, width }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -95,11 +123,11 @@ fn run_multi_select_dialog(
 ) -> Result<Vec<bool>> {
     let theme = output_theme();
     let color = theme.color();
-    let arrow = version_arrow(theme.unicode());
     let title = title_line(manager, theme);
     let footer = key_footer_line(color, MULTI_SELECT_KEYBINDS);
+    let table_widths = interactive_table_widths(items);
     let desired_inner_width =
-        multi_select_desired_inner_width(&title.plain, &footer.plain, items, arrow);
+        multi_select_desired_inner_width(&title.plain, &footer.plain, table_widths);
 
     with_dialog_terminal(|out, last_height| {
         let mut state = MultiSelectState {
@@ -115,7 +143,7 @@ fn run_multi_select_dialog(
             footer: &footer,
             desired_inner_width,
             color,
-            arrow,
+            table_widths,
         };
 
         run_dialog_loop(out, last_height, &mut state, items, &style)
@@ -163,10 +191,15 @@ fn run_dialog_loop(
             let marker = selection_marker(state.selected[idx]);
             let pointer = if idx == state.cursor_idx { ">" } else { " " };
             let prefix = format!("{pointer} {marker}");
-            let mut line =
-                update_row_line(item, &prefix, state.selected[idx], style.color, style.arrow);
+            let mut line = update_row_line(
+                item,
+                &prefix,
+                state.selected[idx],
+                style.color,
+                style.table_widths,
+            );
             if style.color && idx == state.cursor_idx {
-                line.styled = line.plain.as_str().black().on_cyan().bold().to_string();
+                line.styled = line.styled.as_str().black().on_cyan().bold().to_string();
             }
 
             body.push(line);
@@ -359,27 +392,34 @@ fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
 fn multi_select_desired_inner_width(
     title: &str,
     footer: &str,
-    items: &[PlannedUpdate],
-    arrow: &str,
+    widths: InteractiveTableWidths,
 ) -> usize {
-    let mut desired_width = width(title).max(width(footer));
-
-    for item in items {
-        let from_label = version_label(&item.current);
-        let to_label = version_label(&item.target);
-        let row = update_row_text("> [x]", &item.name, &from_label, &to_label, arrow, true);
-        desired_width = desired_width.max(width(&row));
-    }
-
-    desired_width
+    width(title)
+        .max(width(footer))
+        .max(interactive_table_body_width(widths))
 }
 
 const fn selection_marker(selected: bool) -> &'static str {
     if selected { "[x]" } else { "[ ]" }
 }
 
-const fn version_arrow(unicode: bool) -> &'static str {
-    if unicode { "→" } else { "->" }
+fn interactive_table_widths(items: &[PlannedUpdate]) -> InteractiveTableWidths {
+    items
+        .iter()
+        .fold(
+            InteractiveTableWidths {
+                prefix: width("> [x]"),
+                name: 0,
+                current: 0,
+                target: 0,
+            },
+            |mut widths, item| {
+                widths.name = widths.name.max(width(&item.name));
+                widths.current = widths.current.max(width(&version_label(&item.current)));
+                widths.target = widths.target.max(width(&version_label(&item.target)));
+                widths
+            },
+        )
 }
 
 fn update_row_line(
@@ -387,38 +427,78 @@ fn update_row_line(
     prefix: &str,
     selected: bool,
     color: bool,
-    arrow: &str,
+    widths: InteractiveTableWidths,
 ) -> Line {
     let from_label = version_label(&item.current);
     let to_label = version_label(&item.target);
     let pinned = !selected;
 
-    let plain = update_row_text(prefix, &item.name, &from_label, &to_label, arrow, pinned);
+    let plain = update_row_text(
+        RenderedCell::plain(prefix),
+        RenderedCell::plain(&item.name),
+        RenderedCell::plain(&from_label),
+        RenderedCell::plain(&to_label),
+        pinned,
+        widths,
+    );
 
     let styled = if color && pinned {
         plain.as_str().dark_grey().to_string()
     } else {
+        let name_rendered = if color {
+            item.name.as_str().bold().to_string()
+        } else {
+            item.name.clone()
+        };
         let to_rendered = render_to_version(&from_label, &to_label, color, false);
-        update_row_text(prefix, &item.name, &from_label, &to_rendered, arrow, pinned)
+        update_row_text(
+            RenderedCell::plain(prefix),
+            RenderedCell::styled(&name_rendered, width(&item.name)),
+            RenderedCell::plain(&from_label),
+            RenderedCell::styled(&to_rendered, width(&to_label)),
+            pinned,
+            widths,
+        )
     };
 
     Line { plain, styled }
 }
 
 fn update_row_text(
-    prefix: &str,
-    name: &str,
-    from: &str,
-    to: &str,
-    arrow: &str,
+    prefix: RenderedCell<'_>,
+    name: RenderedCell<'_>,
+    from: RenderedCell<'_>,
+    to: RenderedCell<'_>,
     pinned: bool,
+    widths: InteractiveTableWidths,
 ) -> String {
-    let mut line = format!("{prefix} {name} {from} {arrow} {to}");
+    let mut line = format!(
+        "{}{gap}{}{gap}{}{gap}{}",
+        padded_cell(prefix, widths.prefix),
+        padded_cell(name, widths.name),
+        padded_cell(from, widths.current),
+        padded_cell(to, widths.target),
+        gap = INTERACTIVE_TABLE_GAP,
+    );
     if pinned {
         line.push_str(PINNED_LABEL);
     }
 
     line
+}
+
+fn interactive_table_body_width(widths: InteractiveTableWidths) -> usize {
+    widths.prefix
+        + widths.name
+        + widths.current
+        + widths.target
+        + (3 * width(INTERACTIVE_TABLE_GAP))
+        + width(PINNED_LABEL)
+}
+
+fn padded_cell(cell: RenderedCell<'_>, target_width: usize) -> String {
+    let padding = target_width.saturating_sub(cell.width);
+    format!("{}{}", cell.text, " ".repeat(padding))
 }
 
 fn title_line(manager: &str, theme: OutputTheme) -> Line {
@@ -505,4 +585,47 @@ fn cleanup_terminal(out: &mut io::Stdout, last_height: usize) -> Result<()> {
 
 fn width(s: &str) -> usize {
     UnicodeWidthStr::width(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn planned_update(name: &str, current: &str, target: &str) -> PlannedUpdate {
+        PlannedUpdate {
+            manager: "test",
+            name: name.to_string(),
+            current: current.to_string(),
+            target: target.to_string(),
+            delayed_latest: None,
+            version_policy: None,
+            apply_spec_base: None,
+        }
+    }
+
+    #[test]
+    fn interactive_rows_align_as_headerless_table() {
+        let items = [
+            planned_update("short", "1.0.0", "1.2.0"),
+            planned_update("much-longer-name", "2.0.0", "2.1.0"),
+        ];
+        let widths = interactive_table_widths(&items);
+
+        let first = update_row_line(&items[0], "> [x]", true, false, widths);
+        let second = update_row_line(&items[1], "  [x]", true, false, widths);
+
+        assert!(!first.plain.contains("Status"));
+        assert_eq!(first.plain.find("v1.0.0"), second.plain.find("v2.0.0"));
+        assert_eq!(first.plain.find("v1.2.0"), second.plain.find("v2.1.0"));
+    }
+
+    #[test]
+    fn interactive_rows_keep_name_bold_when_color_is_enabled() {
+        let item = planned_update("tool", "1.0.0", "1.2.0");
+        let widths = interactive_table_widths(std::slice::from_ref(&item));
+
+        let line = update_row_line(&item, "> [x]", true, true, widths);
+
+        assert!(line.styled.contains("\u{1b}[1m"));
+    }
 }

@@ -5,8 +5,9 @@ use std::process::{Command, Output};
 mod common;
 
 use common::{
-    SandboxEnv, assert_success, command_output, path_to_string, require_real_executable,
-    scenario_path, skip_hybrid_test_if_disabled, spawn_upnow, stderr, stdout, write_executable,
+    SandboxEnv, assert_success, command_output, compact_stdout, path_to_string,
+    require_real_executable, scenario_path, skip_hybrid_test_if_disabled, spawn_upnow, stderr,
+    stdout, write_executable,
 };
 
 const DETERMINISTIC_SCENARIO: &str = "tests/scenarios/bun/deterministic";
@@ -146,16 +147,16 @@ fn deterministic_plan_covers_ready_delayed_pinned_and_error_states() {
     let output = sandbox.run_upnow(&["plan", "--plain", "--managers", "bun", "--show-commands"]);
     assert_success(&output, "upnow plan deterministic bun");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [bun] alpha-ready v1.0.0 -> v1.2.0"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [bun] alpha-ready v1.0.0 v1.2.0"));
     assert!(
-        out.contains("+ Update [bun] beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh)")
+        out.contains("+ Update [bun] beta-fresh-latest v1.0.0 v1.0.5 (latest v1.1.0 too fresh)")
     );
     assert!(out.contains(
-        "~ Delayed [bun] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh)"
+        "~ Delayed [bun] gamma-delayed v2.0.0 v2.1.0 (no eligible release yet; latest v2.1.0 too fresh)"
     ));
-    assert!(out.contains("- Skipped [bun] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
-    assert!(out.contains("! Error [bun] omega-error v0.1.0 -> v0.1.0"));
+    assert!(out.contains("- Skipped [bun] pinned-pkg v3.0.0 v3.1.0 (pinned)"));
+    assert!(out.contains("! Error [bun] omega-error v0.1.0 v0.1.0"));
 
     let err = stderr(&output);
     assert!(err.contains("$ bun pm ls -g --json"));
@@ -169,15 +170,15 @@ fn deterministic_apply_selective_path_runs_only_for_eligible_unpinned_packages()
     let output = sandbox.run_upnow(&["apply", "--plain", "--managers", "bun", "--show-commands"]);
     assert_success(&output, "upnow apply deterministic bun");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [bun] alpha-ready v1.0.0 -> v1.2.0"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [bun] alpha-ready v1.0.0 v1.2.0"));
     assert!(
-        out.contains("+ Update [bun] beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh)")
+        out.contains("+ Update [bun] beta-fresh-latest v1.0.0 v1.0.5 (latest v1.1.0 too fresh)")
     );
     assert!(out.contains(
-        "~ Delayed [bun] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh)"
+        "~ Delayed [bun] gamma-delayed v2.0.0 v2.1.0 (no eligible release yet; latest v2.1.0 too fresh)"
     ));
-    assert!(out.contains("- Skipped [bun] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
+    assert!(out.contains("- Skipped [bun] pinned-pkg v3.0.0 v3.1.0 (pinned)"));
 
     let err = stderr(&output);
     assert!(err.contains("$ bun update -g alpha-ready@1.2.0 --minimum-release-age 604800"));
@@ -199,10 +200,10 @@ min_release_age = "7d"
     let output = sandbox.run_upnow(&["apply", "--plain", "--managers", "bun", "--show-commands"]);
     assert_success(&output, "upnow apply deterministic bun global");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [bun] alpha-ready v1.0.0 -> v1.2.0"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [bun] alpha-ready v1.0.0 v1.2.0"));
     assert!(
-        out.contains("+ Update [bun] beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh)")
+        out.contains("+ Update [bun] beta-fresh-latest v1.0.0 v1.0.5 (latest v1.1.0 too fresh)")
     );
 
     let err = stderr(&output);
@@ -218,7 +219,7 @@ fn deterministic_scan_uses_fake_installed_state_and_reports_release_age_metadata
     let output = sandbox.run_upnow(&["scan", "--plain", "--verbose", "--managers", "bun"]);
     assert_success(&output, "upnow scan deterministic bun");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     let err = stderr(&output);
     assert!(
         out.contains("= Current [bun] alpha-ready v1.0.0 (released:"),
@@ -254,22 +255,22 @@ fn hybrid_apply_uses_real_registry_time_data_with_fake_installed_state() {
     );
     assert_success(&output, "upnow apply hybrid bun");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     let err = stderr(&output);
     assert!(
-        out.contains("+ Update [bun] typescript v1.0.0 -> v"),
+        out.contains("+ Update [bun] typescript v1.0.0 v"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("+ Update [bun] eslint v1.0.0 -> v"),
+        out.contains("+ Update [bun] eslint v1.0.0 v"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        !out.contains(" react v9999.0.0 -> v"),
+        !out.contains(" react v9999.0.0 v"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("! Error [bun] zzzz-upnow-no-such-package-000000000000 v1.0.0 -> v1.0.0"),
+        out.contains("! Error [bun] zzzz-upnow-no-such-package-000000000000 v1.0.0 v1.0.0"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
 

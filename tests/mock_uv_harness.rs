@@ -6,7 +6,8 @@ use std::process::{Command, Output};
 mod common;
 
 use common::{
-    SandboxEnv, assert_success, scenario_path, spawn_upnow, stderr, stdout, write_executable,
+    SandboxEnv, assert_success, compact_stdout, scenario_path, spawn_upnow, stderr, stdout,
+    write_executable,
 };
 
 const DETERMINISTIC_UV_SCENARIO_DIR: &str = "tests/scenarios/uv/deterministic";
@@ -194,14 +195,14 @@ fn deterministic_plan_covers_update_delayed_pinned_and_error_states() {
     ]);
     assert_success(&output, "upnow plan deterministic uv");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [uv] alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains("+ Update [uv] beta-fresh-latest v1.0.0 -> v1.0.5"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [uv] alpha-ready v1.0.0 v1.2.0"));
+    assert!(out.contains("+ Update [uv] beta-fresh-latest v1.0.0 v1.0.5"));
     assert!(out.contains(
-        "~ Delayed [uv] gamma-delayed v2.0.0 -> v2.0.0 (no eligible release yet; required age 7d)"
+        "~ Delayed [uv] gamma-delayed v2.0.0 v2.0.0 (no eligible release yet; required age 7d)"
     ));
-    assert!(out.contains("- Skipped [uv] pinned-pkg v3.0.0 -> v3.0.0 (pinned)"));
-    assert!(out.contains("! Error [uv] omega-error v0.1.0 -> v0.1.0"));
+    assert!(out.contains("- Skipped [uv] pinned-pkg v3.0.0 v3.0.0 (pinned)"));
+    assert!(out.contains("! Error [uv] omega-error v0.1.0 v0.1.0"));
 
     let err = stderr(&output);
     assert!(err.contains("$ uv tool dir"));
@@ -227,13 +228,13 @@ fn deterministic_apply_selective_path_runs_updates_only_for_eligible_unpinned_it
     ]);
     assert_success(&output, "upnow apply deterministic uv");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [uv] alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains("+ Update [uv] beta-fresh-latest v1.0.0 -> v1.0.5"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [uv] alpha-ready v1.0.0 v1.2.0"));
+    assert!(out.contains("+ Update [uv] beta-fresh-latest v1.0.0 v1.0.5"));
     assert!(out.contains(
-        "~ Delayed [uv] gamma-delayed v2.0.0 -> v2.0.0 (no eligible release yet; required age 7d)"
+        "~ Delayed [uv] gamma-delayed v2.0.0 v2.0.0 (no eligible release yet; required age 7d)"
     ));
-    assert!(out.contains("- Skipped [uv] pinned-pkg v3.0.0 -> v3.0.0 (pinned)"));
+    assert!(out.contains("- Skipped [uv] pinned-pkg v3.0.0 v3.0.0 (pinned)"));
 
     let err = stderr(&output);
     assert!(err.contains("$ uv tool install --upgrade --exclude-newer 7d alpha-ready"));
@@ -254,7 +255,7 @@ fn deterministic_scan_reports_current_state_without_network_age_lookup() {
     let output = sandbox.run_upnow(&["scan", "--plain", "--managers", "uv"]);
     assert_success(&output, "upnow scan deterministic uv");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     assert!(out.contains("= Current [uv] alpha-ready v1.0.0"));
     assert!(out.contains("= Current [uv] beta-fresh-latest v1.0.0"));
     assert!(out.contains("= Current [uv] gamma-delayed v2.0.0"));
@@ -322,24 +323,24 @@ fn hybrid_apply_uses_real_pypi_resolution_with_fake_installed_state() {
     );
     assert_success(&output, "upnow apply hybrid uv");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     let err = stderr(&output);
     assert!(
-        out.contains("+ Update [uv] httpie v1.0.0 -> v"),
+        out.contains("+ Update [uv] httpie v1.0.0 v"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("- Skipped [uv] ruff v0.1.0 -> v0.1.0 (pinned)"),
+        out.contains("- Skipped [uv] ruff v0.1.0 v0.1.0 (pinned)"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
         out.contains(
-            "~ Delayed [uv] gamma-delayed v2.0.0 -> v2.0.0 (no eligible release yet; required age 7d)"
+            "~ Delayed [uv] gamma-delayed v2.0.0 v2.0.0 (no eligible release yet; required age 7d)"
         ),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("! Error [uv] zzzz-upnow-no-such-package-000000000000 v1.0.0 -> v1.0.0"),
+        out.contains("! Error [uv] zzzz-upnow-no-such-package-000000000000 v1.0.0 v1.0.0"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
 

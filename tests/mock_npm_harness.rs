@@ -4,8 +4,9 @@ use std::process::{Command, Output};
 mod common;
 
 use common::{
-    SandboxEnv, assert_success, command_output, path_to_string, require_real_executable,
-    scenario_path, skip_hybrid_test_if_disabled, spawn_upnow, stderr, stdout, write_executable,
+    SandboxEnv, assert_success, command_output, compact_stdout, path_to_string,
+    require_real_executable, scenario_path, skip_hybrid_test_if_disabled, spawn_upnow, stderr,
+    stdout, write_executable,
 };
 
 const DETERMINISTIC_SCENARIO: &str = "tests/scenarios/npm/deterministic";
@@ -116,16 +117,16 @@ fn deterministic_plan_covers_ready_delayed_pinned_and_error_states() {
     let output = sandbox.run_upnow(&["plan", "--plain", "--managers", "npm", "--show-commands"]);
     assert_success(&output, "upnow plan deterministic");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [npm] alpha-ready v1.0.0 -> v1.2.0"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [npm] alpha-ready v1.0.0 v1.2.0"));
     assert!(
-        out.contains("+ Update [npm] beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh)")
+        out.contains("+ Update [npm] beta-fresh-latest v1.0.0 v1.0.5 (latest v1.1.0 too fresh)")
     );
     assert!(out.contains(
-        "~ Delayed [npm] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh)"
+        "~ Delayed [npm] gamma-delayed v2.0.0 v2.1.0 (no eligible release yet; latest v2.1.0 too fresh)"
     ));
-    assert!(out.contains("- Skipped [npm] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
-    assert!(out.contains("! Error [npm] omega-error v0.1.0 -> v0.1.0"));
+    assert!(out.contains("- Skipped [npm] pinned-pkg v3.0.0 v3.1.0 (pinned)"));
+    assert!(out.contains("! Error [npm] omega-error v0.1.0 v0.1.0"));
 
     let err = stderr(&output);
     assert!(err.contains("$ npm outdated -g --json"));
@@ -139,15 +140,15 @@ fn deterministic_apply_selective_path_preserves_legacy_update_when_policy_disabl
     let output = sandbox.run_upnow(&["apply", "--plain", "--managers", "npm", "--show-commands"]);
     assert_success(&output, "upnow apply deterministic");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [npm] alpha-ready v1.0.0 -> v1.2.0"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [npm] alpha-ready v1.0.0 v1.2.0"));
     assert!(
-        out.contains("+ Update [npm] beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh)")
+        out.contains("+ Update [npm] beta-fresh-latest v1.0.0 v1.0.5 (latest v1.1.0 too fresh)")
     );
     assert!(out.contains(
-        "~ Delayed [npm] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh)"
+        "~ Delayed [npm] gamma-delayed v2.0.0 v2.1.0 (no eligible release yet; latest v2.1.0 too fresh)"
     ));
-    assert!(out.contains("- Skipped [npm] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
+    assert!(out.contains("- Skipped [npm] pinned-pkg v3.0.0 v3.1.0 (pinned)"));
 
     let err = stderr(&output);
     assert!(err.contains("$ npm -g update alpha-ready --min-release-age 7"));
@@ -173,10 +174,10 @@ version_policy = "any"
     let output = sandbox.run_upnow(&["apply", "--plain", "--managers", "npm", "--show-commands"]);
     assert_success(&output, "upnow apply deterministic npm version_policy any");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [npm] alpha-ready v1.0.0 -> v1.2.0"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [npm] alpha-ready v1.0.0 v1.2.0"));
     assert!(
-        out.contains("+ Update [npm] beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh)")
+        out.contains("+ Update [npm] beta-fresh-latest v1.0.0 v1.0.5 (latest v1.1.0 too fresh)")
     );
 
     let err = stderr(&output);
@@ -195,7 +196,7 @@ fn deterministic_scan_uses_fake_installed_state_and_reports_release_age_metadata
     let output = sandbox.run_upnow(&["scan", "--plain", "--verbose", "--managers", "npm"]);
     assert_success(&output, "upnow scan deterministic");
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     let err = stderr(&output);
     assert!(
         out.contains("= Current [npm] stale-tool v1.0.0 (released:"),
@@ -223,9 +224,9 @@ min_release_age = "7d"
     let output = sandbox.run_upnow(&["apply", "--plain", "--managers", "npm", "--show-commands"]);
     assert_success(&output, "upnow apply deterministic npm global");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [npm] alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains("+ Update [npm] beta-fresh-latest v1.0.0 -> v1.0.5"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [npm] alpha-ready v1.0.0 v1.2.0"));
+    assert!(out.contains("+ Update [npm] beta-fresh-latest v1.0.0 v1.0.5"));
 
     let err = stderr(&output);
     assert!(err.contains("$ npm -g update --min-release-age 7"));
@@ -254,10 +255,10 @@ fn hybrid_apply_uses_real_registry_time_data_with_fake_installed_state() {
 
     assert_success(&output, "upnow apply hybrid");
 
-    let out = stdout(&output);
-    assert!(out.contains("+ Update [npm] typescript v1.0.0 -> v"));
-    assert!(out.contains("+ Update [npm] eslint v1.0.0 -> v"));
-    assert!(!out.contains(" react v9999.0.0 -> v"));
+    let out = compact_stdout(&output);
+    assert!(out.contains("+ Update [npm] typescript v1.0.0 v"));
+    assert!(out.contains("+ Update [npm] eslint v1.0.0 v"));
+    assert!(!out.contains(" react v9999.0.0 v"));
 
     let err = stderr(&output);
     assert!(

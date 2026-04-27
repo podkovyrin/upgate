@@ -2,7 +2,7 @@ use std::fs;
 
 mod common;
 
-use common::{SandboxEnv, spawn_upnow, stderr, stdout};
+use common::{SandboxEnv, compact_stdout, spawn_upnow, stderr};
 
 #[test]
 fn missing_manager_command_is_skipped_without_failing_run() {
@@ -16,7 +16,7 @@ fn missing_manager_command_is_skipped_without_failing_run() {
         cmd.env("XDG_CONFIG_HOME", &sandbox.xdg_config_home);
     });
 
-    let out = stdout(&output);
+    let out = compact_stdout(&output);
     let err = stderr(&output);
     assert!(
         output.status.success(),
