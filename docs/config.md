@@ -10,6 +10,12 @@
 If the file is missing, built-in defaults are used.
 If the file exists but is invalid TOML, `upnow` exits with an error.
 
+Configuration precedence is:
+
+1. built-in defaults
+2. config file values
+3. CLI arguments
+
 ---
 
 ## Configuration shape
@@ -126,7 +132,10 @@ Notes:
 
 - Overrides take precedence over file config.
 - Unknown sections/keys or invalid values cause an error.
-- `--managers` selects managers, but does not bypass `mode`.
+- `--managers` selects managers and runs those explicit selections even when
+  their default or configured `mode` is `off`.
+- `--set <manager>.mode=...` is a direct CLI value override and takes
+  precedence over the implicit mode opt-in from `--managers`.
 
 ---
 

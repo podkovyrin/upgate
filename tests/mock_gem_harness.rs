@@ -239,6 +239,69 @@ version_policy = "{policy}"
 }
 
 #[test]
+fn selected_gem_runs_when_config_mode_is_absent_or_off() {
+    for config in ["", "[gem]\n", "[gem]\nmode = \"off\"\n"] {
+        let sandbox = Sandbox::new(DETERMINISTIC_SCENARIO, config, true);
+
+        let output = sandbox.run_upnow(&[
+            "plan",
+            "--plain",
+            "--verbose",
+            "--managers",
+            "gem",
+            "--show-commands",
+        ]);
+        assert_success(
+            &output,
+            "selected gem should run even when config mode is absent or off",
+        );
+
+        let out = stdout(&output);
+        let err = stderr(&output);
+        assert!(
+            out.contains("+ Update [gem] alpha-ready v1.0.0 -> v1.2.0"),
+            "selected gem should emit plan outcomes\nstdout:\n{out}\nstderr:\n{err}"
+        );
+        assert!(
+            err.contains("$ gem list"),
+            "selected gem should run gem commands\nstdout:\n{out}\nstderr:\n{err}"
+        );
+        assert!(
+            err.contains("$ ruby -e print RUBY_VERSION"),
+            "selected gem should run ruby command\nstdout:\n{out}\nstderr:\n{err}"
+        );
+    }
+}
+
+#[test]
+fn set_mode_override_takes_precedence_for_selected_gem() {
+    let sandbox = Sandbox::new(DETERMINISTIC_SCENARIO, "", true);
+
+    let output = sandbox.run_upnow(&[
+        "plan",
+        "--plain",
+        "--verbose",
+        "--managers",
+        "gem",
+        "--show-commands",
+        "-S",
+        "gem.mode=off",
+    ]);
+    assert_success(&output, "explicit mode override should be accepted");
+
+    let out = stdout(&output);
+    let err = stderr(&output);
+    assert!(
+        out.is_empty(),
+        "gem should not emit outcomes when explicit mode override disables it\nstdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        !err.contains("$ gem "),
+        "gem commands should not run when explicit mode override disables it\nstdout:\n{out}\nstderr:\n{err}"
+    );
+}
+
+#[test]
 fn deterministic_apply_selective_path_runs_updates_only_for_eligible_unpinned_items() {
     let sandbox = Sandbox::new(DETERMINISTIC_SCENARIO, DETERMINISTIC_CONFIG, true);
 

@@ -53,8 +53,10 @@ fn run_with_cli(cli: &cli::Cli) -> Result<i32> {
     validate_interactive_mode(cli.interactive, run_mode)?;
     maybe_emit_apply_mutation_mode_notice(run_mode)?;
 
-    let mut config = load_config_with_overrides(&cli.set)?;
+    let mut config = UpnowConfig::load()?;
     let selected_plugins = resolve_selected_plugins(&cli.managers)?;
+    config.apply_selected_managers_cli_override(&cli.managers);
+    apply_config_overrides(&mut config, &cli.set)?;
 
     Ok(run_selected_plugins(
         cli,
@@ -98,14 +100,13 @@ fn validate_interactive_mode(interactive: bool, run_mode: RunMode) -> Result<()>
     interactive::ensure_tty_available()
 }
 
-fn load_config_with_overrides<S: AsRef<str>>(overrides: &[S]) -> Result<UpnowConfig> {
-    let mut config = UpnowConfig::load()?;
+fn apply_config_overrides<S: AsRef<str>>(config: &mut UpnowConfig, overrides: &[S]) -> Result<()> {
     let known_manager_ids: Vec<&str> = all_plugins().iter().map(|p| p.id()).collect();
     for override_arg in overrides {
         config.apply_cli_override(override_arg.as_ref(), &known_manager_ids)?;
     }
 
-    Ok(config)
+    Ok(())
 }
 
 fn run_selected_plugins(

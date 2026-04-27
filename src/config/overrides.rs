@@ -4,6 +4,15 @@ use super::model::{ManagerMode, UpnowConfig};
 use crate::managers::shared::versioning::policy::VersionPolicy;
 
 impl UpnowConfig {
+    pub fn apply_selected_managers_cli_override<S: AsRef<str>>(&mut self, selected_ids: &[S]) {
+        for manager_id in selected_ids {
+            self.sections
+                .entry(manager_id.as_ref().to_string())
+                .or_default()
+                .mode = Some(ManagerMode::Apply.to_string());
+        }
+    }
+
     pub fn apply_cli_override(&mut self, raw: &str, known_manager_ids: &[&str]) -> Result<()> {
         let (path, value) = raw.split_once('=').with_context(|| {
             format!("invalid override '{raw}': expected <manager>.<key>=<value>")
@@ -120,5 +129,19 @@ mod tests {
             err.to_string(),
             "invalid override 'npm.version_policy=beta-only': value for npm.version_policy must be one of stable, same-track, any"
         );
+    }
+
+    #[test]
+    fn selected_managers_cli_override_wins_over_configured_mode() {
+        let mut config: UpnowConfig =
+            toml::from_str("[gem]\nmode = \"off\"\n").expect("valid config");
+
+        config.apply_selected_managers_cli_override(&["gem"]);
+
+        let mode = config
+            .sections
+            .get("gem")
+            .and_then(|section| section.mode.as_deref());
+        assert_eq!(mode, Some("apply"));
     }
 }
