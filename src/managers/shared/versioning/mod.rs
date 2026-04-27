@@ -3,6 +3,9 @@ mod pep440;
 pub mod policy;
 mod semver;
 
+pub(crate) use classification::{
+    DEV_LABELS, RC_LABELS, leading_alpha_prefix, matches_any_label, select_less_stable_class,
+};
 pub use pep440::{
     Pep440Timestamp, parse_pep440_release_timestamps, release_age_secs_for_pep440_version,
     resolve_pep440_with_min_age,

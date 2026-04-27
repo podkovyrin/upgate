@@ -219,7 +219,7 @@ fn is_numeric_alpha_suffix_segment(segment: &str) -> bool {
     saw_alpha_suffix
 }
 
-const fn select_less_stable_class(
+pub(crate) const fn select_less_stable_class(
     current: Option<ReleaseClass>,
     next: ReleaseClass,
 ) -> ReleaseClass {
@@ -261,11 +261,11 @@ fn classify_semver_fragment(fragment: &str) -> Option<ReleaseClass> {
     None
 }
 
-fn matches_any_label(label: &str, labels: &[&str]) -> bool {
+pub(crate) fn matches_any_label(label: &str, labels: &[&str]) -> bool {
     labels.contains(&label)
 }
 
-fn leading_alpha_prefix(token: &str) -> &str {
+pub(crate) fn leading_alpha_prefix(token: &str) -> &str {
     let end = token
         .char_indices()
         .find_map(|(idx, ch)| (!ch.is_ascii_alphabetic()).then_some(idx))
@@ -273,7 +273,7 @@ fn leading_alpha_prefix(token: &str) -> &str {
     &token[..end]
 }
 
-const DEV_LABELS: &[&str] = &[
+pub(crate) const DEV_LABELS: &[&str] = &[
     "canary",
     "nightly",
     "snapshot",
@@ -288,7 +288,7 @@ const DEV_LABELS: &[&str] = &[
 ];
 const ALPHA_LABELS: &[&str] = &["alpha", "a"];
 const BETA_LABELS: &[&str] = &["beta", "b"];
-const RC_LABELS: &[&str] = &["prerelease", "pre", "rc"];
+pub(crate) const RC_LABELS: &[&str] = &["prerelease", "pre", "rc"];
 
 #[cfg(test)]
 mod tests {

@@ -191,6 +191,8 @@ fn deterministic_plan_reports_prerelease_blocked_by_stable_policy() {
     let output = sandbox.run_upnow(&["plan", "--plain", "--verbose", "--managers", "gem"]);
     assert_success(&output, "upnow plan deterministic gem with stable policy");
 
+    // The fixture's `gem outdated` output explicitly lists this prerelease.
+    // Gem stable reporting here is opportunistic, not an exhaustive prerelease search.
     let out = stdout(&output);
     assert!(
         out.contains("= Current [gem] prerelease-blocked v1.0.0"),
@@ -202,6 +204,36 @@ fn deterministic_plan_reports_prerelease_blocked_by_stable_policy() {
         "plan stdout:\n{out}\nplan stderr:\n{}",
         stderr(&output)
     );
+}
+
+#[test]
+fn configured_unsupported_version_policies_are_rejected_for_gem() {
+    for policy in ["same-track", "any"] {
+        let config = format!(
+            r#"
+[gem]
+mode = "apply"
+version_policy = "{policy}"
+"#
+        );
+        let sandbox = Sandbox::new(DETERMINISTIC_SCENARIO, &config, false);
+
+        let output = sandbox.run_upnow(&["plan", "--plain", "--managers", "gem"]);
+
+        assert!(
+            !output.status.success(),
+            "upnow should reject gem version_policy={policy}\nstdout:\n{}\nstderr:\n{}",
+            stdout(&output),
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains(&format!(
+                "version_policy \"{policy}\" is not supported by this manager"
+            )),
+            "stderr:\n{}",
+            stderr(&output)
+        );
+    }
 }
 
 #[test]

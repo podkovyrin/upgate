@@ -7,6 +7,8 @@
   "emsdk": {"latest": "5.0.6"},
   "fallbacktool": {"latest": "1.1.0"},
   "github:example/fullfallback": {"latest": "2.1.0"},
+  "github:example/pruned": {"latest": "2.0.0"},
+  "wrongbackend": {"latest": "2.0.0"},
   "fresh-tool": {"latest": "1.1.0"},
   "nometa-tool": {"latest": "1.1.0"}
 }

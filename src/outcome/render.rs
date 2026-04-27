@@ -10,7 +10,7 @@ impl ItemOutcome {
     pub fn to_text_line(&self) -> Option<String> {
         let theme = output_theme();
 
-        if should_skip_outcome_line(self, theme) {
+        if should_skip_outcome_line(self) {
             return None;
         }
 
@@ -22,13 +22,12 @@ impl ItemOutcome {
     }
 }
 
-fn should_skip_outcome_line(item: &ItemOutcome, theme: OutputTheme) -> bool {
+fn should_skip_outcome_line(item: &ItemOutcome) -> bool {
     if item.status != OutcomeStatus::Skipped {
         return false;
     }
 
     item.reason_code == Some(ReasonCode::NoChange)
-        || (!theme.verbose && item.reason_code == Some(ReasonCode::MissingMetadata))
 }
 
 fn base_outcome_line(item: &ItemOutcome, theme: OutputTheme) -> String {
@@ -468,5 +467,21 @@ mod tests {
         let rendered = item.to_text_line().expect("line should render");
         assert!(rendered.contains("version policy warning"));
         assert!(rendered.contains("same-track fell back to stable"));
+    }
+
+    #[test]
+    fn skipped_missing_metadata_is_visible_without_verbose() {
+        let item = ItemOutcome::skipped(
+            "mise",
+            "nometa-tool",
+            "1.0.0",
+            "1.1.0",
+            ReasonCode::MissingMetadata,
+            "no publish-date metadata",
+        );
+
+        let rendered = item.to_text_line().expect("line should render");
+        assert!(rendered.contains("- Skipped [mise] nometa-tool v1.0.0 -> v1.1.0"));
+        assert!(rendered.contains("(no publish-date metadata)"));
     }
 }

@@ -61,13 +61,6 @@ if [[ "$#" -eq 3 && "$1" == "ls-remote" && "$2" == "--json" ]]; then
   exit 0
 fi
 
-if [[ "$#" -eq 2 && "$1" == "upgrade" ]]; then
-  # apply paths are skipped by default via SKIP_MUTATING_COMMANDS, but keep
-  # a harmless fallback for explicit local runs with that guard disabled.
-  echo '{}'
-  exit 0
-fi
-
 if [[ "$#" -ge 3 && "$1" == "upgrade" && "$2" == "--before" ]]; then
   # apply paths are skipped by default via SKIP_MUTATING_COMMANDS, but keep
   # a harmless fallback for explicit local runs with that guard disabled.

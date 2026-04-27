@@ -647,7 +647,10 @@ mod tests {
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].version, "1.1.0-beta.1");
-        assert_eq!(candidates[0].release_class, classify_semver_release("1.1.0-beta.1"));
+        assert_eq!(
+            candidates[0].release_class,
+            classify_semver_release("1.1.0-beta.1")
+        );
     }
 
     #[test]
@@ -683,7 +686,10 @@ mod tests {
             resolved.recommendation,
             RecommendedOutcome::CurrentBlockedByPolicy
         );
-        assert_eq!(resolved.latest_overall_version.as_deref(), Some("1.1.0-beta.1"));
+        assert_eq!(
+            resolved.latest_overall_version.as_deref(),
+            Some("1.1.0-beta.1")
+        );
         assert_eq!(resolved.latest_policy_eligible_version, None);
         assert_eq!(
             resolved.latest_blocked_by_policy_version(),

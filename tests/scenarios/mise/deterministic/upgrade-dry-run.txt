@@ -14,6 +14,10 @@ Would uninstall fallbacktool@1.0.0
 Would install fallbacktool@1.1.0
 Would uninstall github:example/fullfallback@2.0.0
 Would install github:example/fullfallback@2.1.0
+Would uninstall github:example/pruned@1.0.0
+Would install github:example/pruned@2.0.0
+Would uninstall wrongbackend@1.0.0
+Would install wrongbackend@2.0.0
 Would uninstall fresh-tool@1.0.0
 Would install fresh-tool@1.1.0
 Would uninstall nometa-tool@1.0.0

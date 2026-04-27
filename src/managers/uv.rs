@@ -65,6 +65,36 @@ struct RawUvPlanItem {
     target: Result<String, String>,
 }
 
+struct UvPlanParams<'a> {
+    now_unix_secs: u64,
+    min_age: Duration,
+    min_age_raw: &'a str,
+    max_parallel_checks: usize,
+    outdated_latest: &'a BTreeMap<String, String>,
+    pypi_client: Option<&'a reqwest::blocking::Client>,
+    suppress_update_outcomes: bool,
+    pinned: &'a BTreeSet<String>,
+}
+
+struct UvResolutionContext<'a> {
+    pypi_client: Option<&'a reqwest::blocking::Client>,
+    pypi_cache: &'a mut HashMap<String, Vec<Pep440Timestamp>>,
+    now_unix_secs: u64,
+    min_age: Duration,
+}
+
+impl UvResolutionContext<'_> {
+    fn age_secs(&mut self, package: &str, version: &str) -> Option<u64> {
+        resolve_pypi_age_secs(
+            self.pypi_client,
+            self.pypi_cache,
+            package,
+            version,
+            self.now_unix_secs,
+        )
+    }
+}
+
 #[derive(Clone)]
 struct UvResolvedTarget {
     recommendation: RecommendedOutcome,
@@ -128,14 +158,16 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
 
             resolve_uv_plan(
                 installed,
-                runtime.now_unix_secs,
-                runtime.min_age,
-                &min_age_raw,
-                runtime.max_parallel_checks,
-                &outdated_latest,
-                pypi_client.as_ref(),
-                runtime.suppress_update_outcomes,
-                runtime.pinned,
+                &UvPlanParams {
+                    now_unix_secs: runtime.now_unix_secs,
+                    min_age: runtime.min_age,
+                    min_age_raw: &min_age_raw,
+                    max_parallel_checks: runtime.max_parallel_checks,
+                    outdated_latest: &outdated_latest,
+                    pypi_client: pypi_client.as_ref(),
+                    suppress_update_outcomes: runtime.suppress_update_outcomes,
+                    pinned: runtime.pinned,
+                },
             )
             .context("planning execution failed")
         },
@@ -156,20 +188,11 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
     )
 }
 
-fn resolve_uv_plan(
-    installed: &[UvTool],
-    now_unix_secs: u64,
-    min_age: Duration,
-    min_age_raw: &str,
-    max_parallel_checks: usize,
-    outdated_latest: &BTreeMap<String, String>,
-    pypi_client: Option<&reqwest::blocking::Client>,
-    suppress_update_outcomes: bool,
-    pinned: &BTreeSet<String>,
-) -> Result<Vec<UvPlanItem>> {
+fn resolve_uv_plan(installed: &[UvTool], params: &UvPlanParams<'_>) -> Result<Vec<UvPlanItem>> {
     let jobs = installed.to_vec();
 
-    let threads = effective_parallelism(max_parallel_checks, UV_MAX_PARALLEL_CHECKS);
+    let threads = effective_parallelism(params.max_parallel_checks, UV_MAX_PARALLEL_CHECKS);
+    let min_age_raw = params.min_age_raw;
     let raw_plan = run_indexed_parallel(jobs, threads, PLUGIN.id(), move |tool| {
         let target =
             uv_resolve_target_with_exclude_newer(&tool, min_age_raw).map_err(|err| err.to_string());
@@ -183,28 +206,32 @@ fn resolve_uv_plan(
         .into_iter()
         .map(|item| {
             let RawUvPlanItem { tool, target } = item;
-            let resolved = if !suppress_update_outcomes && is_pinned(&tool.name, pinned) {
-                // Keep legacy uv output: pinned tools render as skipped at the
-                // installed version even though the dry-run resolver still ran.
-                target.map(|_target| UvResolvedTarget {
-                    recommendation: RecommendedOutcome::CurrentNoNewer,
-                    latest_version: None,
-                    latest_age_secs: None,
-                })
-            } else {
-                target.map(|target| {
-                    uv_resolution_from_exclude_newer_target(
-                        pypi_client,
-                        &mut pypi_cache,
-                        &tool.name,
-                        &tool.current,
-                        &target,
-                        outdated_latest.get(&tool.name).map(String::as_str),
-                        now_unix_secs,
-                        min_age,
-                    )
-                })
-            };
+            let resolved =
+                if !params.suppress_update_outcomes && is_pinned(&tool.name, params.pinned) {
+                    // Keep legacy uv output: pinned tools render as skipped at the
+                    // installed version even though the dry-run resolver still ran.
+                    target.map(|_target| UvResolvedTarget {
+                        recommendation: RecommendedOutcome::CurrentNoNewer,
+                        latest_version: None,
+                        latest_age_secs: None,
+                    })
+                } else {
+                    target.map(|target| {
+                        let mut resolution_ctx = UvResolutionContext {
+                            pypi_client: params.pypi_client,
+                            pypi_cache: &mut pypi_cache,
+                            now_unix_secs: params.now_unix_secs,
+                            min_age: params.min_age,
+                        };
+                        uv_resolution_from_exclude_newer_target(
+                            &mut resolution_ctx,
+                            &tool.name,
+                            &tool.current,
+                            &target,
+                            params.outdated_latest.get(&tool.name).map(String::as_str),
+                        )
+                    })
+                };
 
             UvPlanItem::new(tool.name, tool.current, resolved)
         })
@@ -212,19 +239,14 @@ fn resolve_uv_plan(
 }
 
 fn uv_resolution_from_exclude_newer_target(
-    pypi_client: Option<&reqwest::blocking::Client>,
-    pypi_cache: &mut HashMap<String, Vec<Pep440Timestamp>>,
+    ctx: &mut UvResolutionContext<'_>,
     package: &str,
     current: &str,
     target: &str,
     latest: Option<&str>,
-    now_unix_secs: u64,
-    min_age: Duration,
 ) -> UvResolvedTarget {
     if pep440_compare(target, current) == Some(Ordering::Less) {
-        let latest_age_secs = latest.and_then(|latest| {
-            resolve_pypi_age_secs(pypi_client, pypi_cache, package, latest, now_unix_secs)
-        });
+        let latest_age_secs = latest.and_then(|latest| ctx.age_secs(package, latest));
 
         return UvResolvedTarget {
             recommendation: RecommendedOutcome::DelayedByAge,
@@ -234,14 +256,11 @@ fn uv_resolution_from_exclude_newer_target(
     }
 
     if target == current {
-        if let Some(age_secs) =
-            resolve_pypi_age_secs(pypi_client, pypi_cache, package, current, now_unix_secs)
-            && age_secs < min_age.as_secs()
+        if let Some(age_secs) = ctx.age_secs(package, current)
+            && age_secs < ctx.min_age.as_secs()
         {
-            let latest_age_secs = latest.map(|latest| {
-                resolve_pypi_age_secs(pypi_client, pypi_cache, package, latest, now_unix_secs)
-                    .unwrap_or(age_secs)
-            });
+            let latest_age_secs =
+                latest.map(|latest| ctx.age_secs(package, latest).unwrap_or(age_secs));
 
             return UvResolvedTarget {
                 recommendation: RecommendedOutcome::DelayedByAge,
@@ -260,8 +279,7 @@ fn uv_resolution_from_exclude_newer_target(
     let delayed_latest = latest
         .filter(|latest| pep440_compare(latest, target) == Some(Ordering::Greater))
         .and_then(|latest| {
-            let age_secs =
-                resolve_pypi_age_secs(pypi_client, pypi_cache, package, latest, now_unix_secs)?;
+            let age_secs = ctx.age_secs(package, latest)?;
             Some((latest.to_string(), age_secs))
         });
 

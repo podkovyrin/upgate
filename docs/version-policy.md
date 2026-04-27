@@ -432,6 +432,13 @@ If a manager cannot safely implement `same-track`, it should:
 
 Recommended approach: support `stable` and `any` wherever possible, and enable `same-track` only where classification is good enough.
 
+### Gem
+
+`gem` supports only `version_policy = "stable"`. This follows RubyGems'
+native behavior: prereleases require explicit opt-in and are not selected by
+normal update flows. For Gem, stable policy is target-safety oriented and does
+not guarantee reporting prerelease-only newer versions as blocked.
+
 ### Unsupported
 
 Some managers cannot safely combine this gate with their native target-selection model.

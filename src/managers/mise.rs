@@ -176,20 +176,49 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                 runtime.pinned,
             ))
         },
-        |ctx, _discovered, upgradable| {
-            run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, apply_mise_updates)
+        |ctx, _discovered, collected| {
+            if collected.global_apply_allowed {
+                return run_selective_or_global_apply_flow(
+                    ctx,
+                    PLUGIN.id(),
+                    collected.upgradable,
+                    |selected| apply_mise_selected_updates(&min_age_raw, selected),
+                    || apply_mise_updates(&min_age_raw),
+                );
+            }
+
+            run_per_item_apply_flow(ctx, PLUGIN.id(), collected.upgradable, |selected| {
+                apply_mise_selected_updates(&min_age_raw, selected);
+            })
         },
     )
 }
 
-fn apply_mise_updates(upgradable: Vec<crate::managers::PlannedUpdate>) {
+fn apply_mise_updates(min_age_raw: &str) -> Result<()> {
+    run_cmd(
+        "mise",
+        ["upgrade", "--before", min_age_raw],
+        CmdStatus::Success,
+    )
+    .mutating()
+    .output()?;
+
+    Ok(())
+}
+
+fn apply_mise_selected_updates(min_age_raw: &str, upgradable: Vec<crate::managers::PlannedUpdate>) {
     for item in upgradable {
         let name = item.name;
         let current = item.current;
         let target = item.target;
-        let spec = format!("{name}@{target}");
+        let args = [
+            "upgrade".to_string(),
+            "--before".to_string(),
+            min_age_raw.to_string(),
+            name.clone(),
+        ];
 
-        if let Err(err) = run_cmd("mise", ["upgrade", &spec], CmdStatus::Success)
+        if let Err(err) = run_cmd("mise", &args, CmdStatus::Success)
             .mutating()
             .output()
         {
@@ -218,6 +247,10 @@ fn resolve_mise_plan_checks(
     now_unix_secs: u64,
     max_parallel_checks: usize,
 ) -> Result<BTreeMap<usize, MisePlanCheck>> {
+    // Mise owns target selection, but not every backend has reliable native
+    // publish-date filtering. We trust the dry-run target, then independently
+    // require date metadata for that target so `min_release_age` remains real.
+    // Delayed-latest metadata is only explanatory and must not block the plan.
     let mut age_jobs: Vec<(usize, String, String, String, Option<String>)> = Vec::new();
     for (idx, item) in plan_pairs.iter().enumerate() {
         let delayed_latest = latest_map
@@ -297,12 +330,10 @@ fn mise_plan_decision(
         Some(MiseDelayedLatestCheck {
             version,
             age_secs: Ok(Some(age_secs)),
-        }) => Some(DelayedLatest::new(version, age_secs, min_age)),
+        }) => DelayedLatest::new_if_fresh(version, age_secs, min_age),
         Some(MiseDelayedLatestCheck {
-            age_secs: Ok(None), ..
-        })
-        | Some(MiseDelayedLatestCheck {
-            age_secs: Err(_), ..
+            age_secs: Ok(None) | Err(_),
+            ..
         })
         | None => None,
     };
@@ -315,10 +346,14 @@ fn collect_mise_plan_and_upgradable(
     min_age: Duration,
     suppress_update_outcomes: bool,
     pinned: &BTreeSet<String>,
-) -> Vec<PlannedUpdate> {
+) -> MiseCollectedPlan {
     let mut upgradable = Vec::new();
+    let mut global_apply_allowed = true;
     for (idx, item) in resolved.plan_pairs.into_iter().enumerate() {
         let decision = mise_plan_decision(idx, &item, &mut resolved.check_by_index, min_age);
+        if !matches!(&decision, MisePlanDecision::Update { .. }) {
+            global_apply_allowed = false;
+        }
 
         if is_pinned(&item.tool, pinned) {
             handle_pinned_mise_decision(&mut upgradable, item, decision, suppress_update_outcomes);
@@ -334,7 +369,10 @@ fn collect_mise_plan_and_upgradable(
         );
     }
 
-    upgradable
+    MiseCollectedPlan {
+        upgradable,
+        global_apply_allowed,
+    }
 }
 
 fn handle_pinned_mise_decision(
@@ -439,7 +477,7 @@ fn mise_version_age_secs(
         return npm_version_age_secs(tool, version, now_unix_secs).map(Some);
     }
 
-    let Some(timeline) = mise_release_timeline(tool, current)? else {
+    let Some(timeline) = mise_release_timeline(tool, current, version, now_unix_secs)? else {
         return Ok(None);
     };
 
@@ -518,11 +556,16 @@ struct MiseResolved {
     check_by_index: BTreeMap<usize, MisePlanCheck>,
 }
 
+struct MiseCollectedPlan {
+    upgradable: Vec<PlannedUpdate>,
+    global_apply_allowed: bool,
+}
+
 fn parse_mise_upgrade_dry_run(text: &str) -> Result<Vec<MisePlanItem>> {
     let mut old_versions: BTreeMap<String, String> = BTreeMap::new();
     let mut result = Vec::new();
 
-    for (line_idx, line) in text.lines().enumerate() {
+    for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -546,13 +589,10 @@ fn parse_mise_upgrade_dry_run(text: &str) -> Result<Vec<MisePlanItem>> {
                 from_version: from,
                 to_version: to_ver.to_string(),
             });
-            continue;
+        } else {
+            // Ignore unrelated human-facing output from mise, but keep strict
+            // validation for recognized action lines and their pair structure.
         }
-
-        bail!(
-            "unexpected mise dry-run output at line {}: {trimmed}",
-            line_idx + 1
-        );
     }
 
     if let Some((tool, _from_ver)) = old_versions.into_iter().next() {
@@ -593,14 +633,25 @@ fn mise_outdated_latest_map() -> Result<BTreeMap<String, String>> {
     Ok(parsed.into_iter().map(|(k, v)| (k, v.latest)).collect())
 }
 
-fn mise_release_timeline(tool: &str, current: &str) -> Result<Option<MiseReleaseTimeline>> {
-    let candidates = if tool.contains(':') {
-        vec![tool.to_string()]
-    } else {
-        mise_registry_backends(tool)?
-    };
+fn mise_release_timeline(
+    tool: &str,
+    current: &str,
+    target: &str,
+    now_unix_secs: u64,
+) -> Result<Option<MiseReleaseTimeline>> {
+    if tool.contains(':') {
+        let probe = mise_ls_remote_probe(tool)?;
+        if !probe.releases.is_empty() {
+            let timeline = MiseReleaseTimeline::Semver(probe.releases);
+            if mise_release_timeline_age_secs(&timeline, target, now_unix_secs).is_some() {
+                return Ok(Some(timeline));
+            }
+        }
 
-    for candidate in candidates {
+        return mise_versions_host_release_timeline(tool, current);
+    }
+
+    for candidate in mise_registry_backends(tool)? {
         let probe = mise_ls_remote_probe(&candidate)?;
         if probe.releases.is_empty() {
             continue;
@@ -1079,6 +1130,32 @@ mod tests {
     }
 
     #[test]
+    fn delayed_latest_annotation_is_dropped_when_latest_is_old_enough() {
+        let mut checks = BTreeMap::from([(
+            0,
+            MisePlanCheck {
+                target_age: Ok(MiseTargetAge::Known(86_400 * 10)),
+                delayed_latest: Some(MiseDelayedLatestCheck {
+                    version: "9.0.0".to_string(),
+                    age_secs: Ok(Some(86_400 * 7)),
+                }),
+            },
+        )]);
+        let item = MisePlanItem {
+            tool: "npm:eslint".to_string(),
+            from_version: "1.0.0".to_string(),
+            to_version: "8.0.0".to_string(),
+        };
+
+        let decision = mise_plan_decision(0, &item, &mut checks, Duration::from_secs(86_400 * 7));
+
+        match decision {
+            MisePlanDecision::Update { delayed_latest } => assert!(delayed_latest.is_none()),
+            _ => panic!("expected update decision"),
+        }
+    }
+
+    #[test]
     fn parses_upgrade_dry_run_pairs_strictly() {
         let parsed = parse_mise_upgrade_dry_run(
             r"
@@ -1100,11 +1177,21 @@ Would install npm:@scope/pkg@2.1.0
     }
 
     #[test]
-    fn upgrade_dry_run_parse_rejects_unexpected_output() {
-        let err = parse_mise_upgrade_dry_run("Something changed\n")
-            .expect_err("should reject unexpected output");
+    fn upgrade_dry_run_parse_ignores_unrelated_output() {
+        let parsed = parse_mise_upgrade_dry_run(
+            r"
+mise WARN something changed
+Would uninstall node@20.0.0
+Would install node@20.1.0
+Done
+",
+        )
+        .expect("should parse recognized dry-run actions");
 
-        assert!(err.to_string().contains("unexpected mise dry-run output"));
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].tool, "node");
+        assert_eq!(parsed[0].from_version, "20.0.0");
+        assert_eq!(parsed[0].to_version, "20.1.0");
     }
 
     #[test]

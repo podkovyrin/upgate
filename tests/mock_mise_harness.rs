@@ -224,9 +224,12 @@ fn deterministic_plan_covers_updates_pinned_and_metadata_states() {
     assert!(out.contains("+ Update [mise] emsdk v5.0.4 -> v5.0.6"));
     assert!(out.contains("+ Update [mise] fallbacktool v1.0.0 -> v1.1.0"));
     assert!(out.contains("+ Update [mise] github:example/fullfallback v2.0.0 -> v2.1.0"));
+    assert!(out.contains("+ Update [mise] github:example/pruned v1.0.0 -> v2.0.0"));
     assert!(out.contains("+ Update [mise] npm:gamma-error v2.0.0 -> v2.0.1"));
+    assert!(out.contains("- Skipped [mise] wrongbackend v1.0.0 -> v2.0.0"));
     assert!(out.contains("~ Delayed [mise] fresh-tool v1.0.0 -> v1.1.0"));
     assert!(out.contains("- Skipped [mise] nometa-tool v1.0.0 -> v1.1.0"));
+    assert!(!out.contains("- Skipped [mise] github:example/pruned v1.0.0 -> v2.0.0"));
 
     assert!(err.contains("$ mise upgrade --dry-run --before 7d"));
     assert!(err.contains("$ mise outdated --json"));
@@ -237,6 +240,9 @@ fn deterministic_plan_covers_updates_pinned_and_metadata_states() {
     assert!(err.contains("$ mise registry fallbacktool --json"));
     assert!(err.contains("$ mise ls-remote --json github:example/fallbacktool"));
     assert!(err.contains("$ mise ls-remote --json github:example/fullfallback"));
+    assert!(err.contains("$ mise ls-remote --json github:example/pruned"));
+    assert!(err.contains("$ mise registry wrongbackend --json"));
+    assert!(err.contains("$ mise ls-remote --json github:example/wrongbackend"));
     assert!(err.contains("$ mise registry --json"));
     assert!(err.contains("$ mise registry node --json"));
     assert!(err.contains("$ mise ls-remote --json core:node"));
@@ -266,24 +272,30 @@ fn deterministic_apply_selective_path_runs_only_for_unpinned_eligible_items() {
     assert!(out.contains("+ Update [mise] emsdk v5.0.4 -> v5.0.6"));
     assert!(out.contains("+ Update [mise] fallbacktool v1.0.0 -> v1.1.0"));
     assert!(out.contains("+ Update [mise] github:example/fullfallback v2.0.0 -> v2.1.0"));
+    assert!(out.contains("+ Update [mise] github:example/pruned v1.0.0 -> v2.0.0"));
     assert!(out.contains("+ Update [mise] npm:gamma-error v2.0.0 -> v2.0.1"));
+    assert!(out.contains("- Skipped [mise] wrongbackend v1.0.0 -> v2.0.0"));
     assert!(out.contains("~ Delayed [mise] fresh-tool v1.0.0 -> v1.1.0"));
+    assert!(out.contains("- Skipped [mise] nometa-tool v1.0.0 -> v1.1.0"));
 
-    assert!(err.contains("$ mise upgrade npm:alpha-ready@1.2.0"));
-    assert!(err.contains("$ mise upgrade npm:beta-fresh-latest@1.0.5"));
-    assert!(err.contains("$ mise upgrade npm:gamma-error@2.0.1"));
-    assert!(err.contains("$ mise upgrade swiftformat@0.61.0"));
-    assert!(err.contains("$ mise upgrade emsdk@5.0.6"));
-    assert!(err.contains("$ mise upgrade fallbacktool@1.1.0"));
-    assert!(err.contains("$ mise upgrade github:example/fullfallback@2.1.0"));
-    assert!(!err.contains("$ mise upgrade node@20.1.0"));
-    assert!(!err.contains("$ mise upgrade fresh-tool@1.1.0"));
-    assert!(!err.contains("$ mise upgrade nometa-tool@1.1.0"));
-    assert!(!err.contains("$ mise upgrade\n"));
+    assert!(err.contains("$ mise upgrade --before 7d npm:alpha-ready"));
+    assert!(err.contains("$ mise upgrade --before 7d npm:beta-fresh-latest"));
+    assert!(err.contains("$ mise upgrade --before 7d npm:gamma-error"));
+    assert!(err.contains("$ mise upgrade --before 7d swiftformat"));
+    assert!(err.contains("$ mise upgrade --before 7d emsdk"));
+    assert!(err.contains("$ mise upgrade --before 7d fallbacktool"));
+    assert!(err.contains("$ mise upgrade --before 7d github:example/fullfallback"));
+    assert!(err.contains("$ mise upgrade --before 7d github:example/pruned"));
+    assert!(!err.contains("$ mise upgrade --before 7d node"));
+    assert!(!err.contains("$ mise upgrade --before 7d wrongbackend"));
+    assert!(!err.contains("$ mise upgrade --before 7d fresh-tool"));
+    assert!(!err.contains("$ mise upgrade --before 7d nometa-tool"));
+    assert!(!err.contains("$ mise upgrade npm:alpha-ready@1.2.0"));
+    assert!(!err.contains("$ mise upgrade --before 7d\n"));
 }
 
 #[test]
-fn deterministic_apply_runs_per_item_exact_targets_when_no_items_are_pinned() {
+fn deterministic_apply_without_pins_uses_selective_upgrade_when_plan_has_exclusions() {
     let config = r#"
 [mise]
 mode = "apply"
@@ -296,7 +308,7 @@ min_release_age = "7d"
     );
 
     let output = sandbox.run_upnow(&["apply", "--plain", "--managers", "mise", "--show-commands"]);
-    assert_success(&output, "upnow apply deterministic mise global");
+    assert_success(&output, "upnow apply deterministic mise selective");
 
     let out = stdout(&output);
     assert!(out.contains("+ Update [mise] npm:alpha-ready v1.0.0 -> v1.2.0"));
@@ -306,19 +318,28 @@ min_release_age = "7d"
     assert!(out.contains("+ Update [mise] emsdk v5.0.4 -> v5.0.6"));
     assert!(out.contains("+ Update [mise] fallbacktool v1.0.0 -> v1.1.0"));
     assert!(out.contains("+ Update [mise] github:example/fullfallback v2.0.0 -> v2.1.0"));
+    assert!(out.contains("+ Update [mise] github:example/pruned v1.0.0 -> v2.0.0"));
     assert!(out.contains("+ Update [mise] npm:gamma-error v2.0.0 -> v2.0.1"));
+    assert!(out.contains("- Skipped [mise] wrongbackend v1.0.0 -> v2.0.0"));
+    assert!(out.contains("~ Delayed [mise] fresh-tool v1.0.0 -> v1.1.0"));
+    assert!(out.contains("- Skipped [mise] nometa-tool v1.0.0 -> v1.1.0"));
 
     let err = stderr(&output);
-    assert!(err.contains("$ mise upgrade npm:alpha-ready@1.2.0"));
-    assert!(err.contains("$ mise upgrade npm:beta-fresh-latest@1.0.5"));
-    assert!(err.contains("$ mise upgrade npm:gamma-error@2.0.1"));
-    assert!(err.contains("$ mise upgrade node@20.1.0"));
-    assert!(err.contains("$ mise upgrade swiftformat@0.61.0"));
-    assert!(err.contains("$ mise upgrade emsdk@5.0.6"));
-    assert!(err.contains("$ mise upgrade fallbacktool@1.1.0"));
-    assert!(err.contains("$ mise upgrade github:example/fullfallback@2.1.0"));
-    assert!(!err.contains("$ mise upgrade fresh-tool@1.1.0"));
-    assert!(!err.contains("$ mise upgrade\n"));
+    assert!(err.contains("$ mise upgrade --before 7d npm:alpha-ready"));
+    assert!(err.contains("$ mise upgrade --before 7d npm:beta-fresh-latest"));
+    assert!(err.contains("$ mise upgrade --before 7d npm:gamma-error"));
+    assert!(err.contains("$ mise upgrade --before 7d node"));
+    assert!(err.contains("$ mise upgrade --before 7d swiftformat"));
+    assert!(err.contains("$ mise upgrade --before 7d emsdk"));
+    assert!(err.contains("$ mise upgrade --before 7d fallbacktool"));
+    assert!(err.contains("$ mise upgrade --before 7d github:example/fullfallback"));
+    assert!(err.contains("$ mise upgrade --before 7d github:example/pruned"));
+    assert!(!err.contains("$ mise upgrade --before 7d wrongbackend"));
+    assert!(!err.contains("$ mise upgrade --before 7d fresh-tool"));
+    assert!(!err.contains("$ mise upgrade --before 7d nometa-tool"));
+    assert!(!err.contains("$ mise upgrade --before 7d\n"));
+    assert!(!err.contains("$ mise upgrade npm:alpha-ready@1.2.0"));
+    assert!(!err.contains("$ mise upgrade node@20.1.0"));
 }
 
 #[test]
@@ -347,8 +368,9 @@ fn apply_still_runs_when_optional_delayed_latest_metadata_is_missing() {
     );
     assert!(err.contains("$ npm view optional-latest-missing@1.1.0 time --json"));
     assert!(err.contains("$ npm view optional-latest-missing@1.2.0 time --json"));
-    assert!(err.contains("$ mise upgrade npm:optional-latest-missing@1.1.0"));
-    assert!(!err.contains("$ mise upgrade\n"));
+    assert!(err.contains("$ mise upgrade --before 7d"));
+    assert!(!err.contains("$ mise upgrade --before 7d npm:optional-latest-missing"));
+    assert!(!err.contains("$ mise upgrade npm:optional-latest-missing@1.1.0"));
 }
 
 #[test]
@@ -454,9 +476,10 @@ fn hybrid_apply_uses_real_npm_time_data_with_fake_mise_state() {
             || err.contains("warning: apply runs with real mutating commands ENABLED"),
         "hybrid stderr:\n{err}"
     );
-    assert!(err.contains("$ mise upgrade npm:typescript@"));
-    assert!(err.contains("$ mise upgrade npm:react@"));
-    assert!(err.contains("$ mise upgrade npm:eslint@"));
-    assert!(!err.contains("$ mise upgrade\n"));
+    assert!(err.contains("$ mise upgrade --before 7d"));
+    assert!(!err.contains("$ mise upgrade --before 7d npm:typescript"));
+    assert!(!err.contains("$ mise upgrade --before 7d npm:react"));
+    assert!(!err.contains("$ mise upgrade --before 7d npm:eslint"));
+    assert!(!err.contains("$ mise upgrade npm:typescript@"));
     assert!(!err.contains("$ mise upgrade npm:zzzz-upnow-no-such-package-000000000000@"));
 }

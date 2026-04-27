@@ -90,11 +90,11 @@ where
     let latest_version = target.latest_version()?;
     let latest_age_secs = target.latest_age_secs()?;
 
-    if latest_age_secs >= min_age.as_secs() || selected_version == Some(latest_version) {
+    if selected_version == Some(latest_version) {
         return None;
     }
 
-    Some(DelayedLatest::new(latest_version, latest_age_secs, min_age))
+    DelayedLatest::new_if_fresh(latest_version, latest_age_secs, min_age)
 }
 
 fn version_policy_meta<T>(target: &T) -> Option<VersionPolicyMeta>

@@ -9,6 +9,7 @@ use common::{
 };
 
 const DETERMINISTIC_SCENARIO: &str = "tests/scenarios/npm/deterministic";
+const VERSION_POLICY_SCENARIO: &str = "tests/scenarios/npm/version-policy";
 const HYBRID_SCENARIO: &str = "tests/scenarios/npm/hybrid";
 
 const DETERMINISTIC_CONFIG: &str = r#"
@@ -128,7 +129,7 @@ fn deterministic_plan_covers_ready_delayed_pinned_and_error_states() {
 }
 
 #[test]
-fn deterministic_apply_selective_path_runs_only_for_eligible_unpinned_packages() {
+fn deterministic_apply_selective_path_preserves_legacy_update_when_policy_disabled() {
     let sandbox = Sandbox::new(DETERMINISTIC_SCENARIO, DETERMINISTIC_CONFIG);
 
     let output = sandbox.run_upnow(&["apply", "--plain", "--managers", "npm", "--show-commands"]);
@@ -141,11 +142,40 @@ fn deterministic_apply_selective_path_runs_only_for_eligible_unpinned_packages()
     assert!(out.contains("- Skipped [npm] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
 
     let err = stderr(&output);
-    assert!(err.contains("$ npm install -g alpha-ready@1.2.0 --min-release-age 7"));
-    assert!(err.contains("$ npm install -g beta-fresh-latest@1.0.5 --min-release-age 7"));
+    assert!(err.contains("$ npm -g update alpha-ready --min-release-age 7"));
+    assert!(err.contains("$ npm -g update beta-fresh-latest --min-release-age 7"));
     assert!(!err.contains("$ npm -g update --min-release-age 7"));
+    assert!(!err.contains("$ npm install -g alpha-ready@1.2.0 --min-release-age 7"));
+    assert!(!err.contains("$ npm install -g beta-fresh-latest@1.0.5 --min-release-age 7"));
+    assert!(!err.contains("$ npm -g update pinned-pkg --min-release-age 7"));
     assert!(!err.contains("$ npm install -g pinned-pkg@3.1.0 --min-release-age 7"));
     assert!(!err.contains("$ npm install -g gamma-delayed@2.1.0 --min-release-age 7"));
+}
+
+#[test]
+fn configured_any_version_policy_uses_exact_selected_targets() {
+    let config = r#"
+[npm]
+mode = "apply"
+min_release_age = "7d"
+version_policy = "any"
+"#;
+    let sandbox = Sandbox::new(VERSION_POLICY_SCENARIO, config);
+
+    let output = sandbox.run_upnow(&["apply", "--plain", "--managers", "npm", "--show-commands"]);
+    assert_success(&output, "upnow apply deterministic npm version_policy any");
+
+    let out = stdout(&output);
+    assert!(out.contains("+ Update [npm] alpha-ready v1.0.0 -> v1.2.0"));
+    assert!(out.contains("+ Update [npm] beta-fresh-latest v1.0.0 -> v1.0.5"));
+
+    let err = stderr(&output);
+    assert!(err.contains("$ npm ls -g --depth=0 --json"));
+    assert!(err.contains("$ npm install -g alpha-ready@1.2.0 --min-release-age 7"));
+    assert!(err.contains("$ npm install -g beta-fresh-latest@1.0.5 --min-release-age 7"));
+    assert!(!err.contains("$ npm -g update alpha-ready --min-release-age 7"));
+    assert!(!err.contains("$ npm -g update beta-fresh-latest --min-release-age 7"));
+    assert!(!err.contains("$ npm -g update --min-release-age 7"));
 }
 
 #[test]

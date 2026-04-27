@@ -84,6 +84,11 @@ Supported by:
 - `brew`, `bun`, `cargo`, `dotnet`, `go`, `npm`, `pipx`, `pnpm`, `yarn`
 - `gem` supports `stable` only
 
+`gem` supports only `version_policy = "stable"`. This follows RubyGems'
+native behavior: prereleases require explicit opt-in and are not selected by
+normal update flows. For Gem, stable policy is target-safety oriented and does
+not guarantee reporting prerelease-only newer versions as blocked.
+
 Not supported by:
 
 - `mise`, `uv`

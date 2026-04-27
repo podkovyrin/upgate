@@ -90,7 +90,9 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                 ctx,
                 PLUGIN.id(),
                 upgradable,
-                |selected| apply_npm_selected_updates(min_age_days, selected),
+                |selected| {
+                    apply_npm_selected_updates(min_age_days, ctx.policy.version_policy, selected);
+                },
                 || apply_npm_updates(min_age_days),
             )
         },
@@ -171,7 +173,50 @@ fn apply_npm_updates(min_age_days: u64) -> Result<()> {
     Ok(())
 }
 
-fn apply_npm_selected_updates(min_age_days: u64, upgradable: Vec<crate::managers::PlannedUpdate>) {
+fn apply_npm_selected_updates(
+    min_age_days: u64,
+    version_policy: VersionPolicy,
+    upgradable: Vec<crate::managers::PlannedUpdate>,
+) {
+    if version_policy == VersionPolicy::Disabled {
+        apply_npm_selected_legacy_updates(min_age_days, upgradable);
+    } else {
+        apply_npm_selected_exact_updates(min_age_days, upgradable);
+    }
+}
+
+fn apply_npm_selected_legacy_updates(
+    min_age_days: u64,
+    upgradable: Vec<crate::managers::PlannedUpdate>,
+) {
+    let min_age_days = min_age_days.to_string();
+
+    for item in upgradable {
+        let name = item.name;
+        let current = item.current;
+        let target = item.target;
+
+        let args = [
+            "-g".to_string(),
+            "update".to_string(),
+            name.clone(),
+            "--min-release-age".to_string(),
+            min_age_days.clone(),
+        ];
+
+        if let Err(err) = run_cmd("npm", &args, CmdStatus::Success)
+            .mutating()
+            .output()
+        {
+            emit_apply_error(PLUGIN.id(), name, current, target, err);
+        }
+    }
+}
+
+fn apply_npm_selected_exact_updates(
+    min_age_days: u64,
+    upgradable: Vec<crate::managers::PlannedUpdate>,
+) {
     let min_age_days = min_age_days.to_string();
 
     for item in upgradable {

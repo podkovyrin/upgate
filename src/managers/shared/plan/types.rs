@@ -25,6 +25,18 @@ impl DelayedLatest {
             required_age: human_age(min_age.as_secs()),
         }
     }
+
+    pub fn new_if_fresh(
+        latest_version: impl Into<String>,
+        latest_age_secs: u64,
+        min_age: Duration,
+    ) -> Option<Self> {
+        if latest_age_secs >= min_age.as_secs() {
+            return None;
+        }
+
+        Some(Self::new(latest_version, latest_age_secs, min_age))
+    }
 }
 
 #[derive(Debug, Clone)]
