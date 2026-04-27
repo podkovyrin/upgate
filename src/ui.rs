@@ -53,6 +53,14 @@ impl OutputTheme {
     pub const fn unicode(self) -> bool {
         !self.plain()
     }
+
+    #[cfg(test)]
+    pub(crate) const fn test_plain(verbose: bool) -> Self {
+        Self {
+            mode: OutputMode::Plain,
+            verbose,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

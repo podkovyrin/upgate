@@ -218,7 +218,9 @@ fn deterministic_plan_covers_updates_pinned_and_metadata_states() {
     let out = stdout(&output);
     let err = stderr(&output);
     assert!(out.contains("+ Update [mise] npm:alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains("+ Update [mise] npm:beta-fresh-latest v1.0.0 -> v1.0.5"));
+    assert!(out.contains(
+        "+ Update [mise] npm:beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh: 0s < 7d)"
+    ));
     assert!(out.contains("- Skipped [mise] node v20.0.0 -> v20.1.0 (pinned)"));
     assert!(out.contains("+ Update [mise] swiftformat v0.59.1 -> v0.61.0"));
     assert!(out.contains("+ Update [mise] emsdk v5.0.4 -> v5.0.6"));
@@ -227,7 +229,7 @@ fn deterministic_plan_covers_updates_pinned_and_metadata_states() {
     assert!(out.contains("+ Update [mise] github:example/pruned v1.0.0 -> v2.0.0"));
     assert!(out.contains("+ Update [mise] npm:gamma-error v2.0.0 -> v2.0.1"));
     assert!(out.contains("- Skipped [mise] wrongbackend v1.0.0 -> v2.0.0"));
-    assert!(out.contains("~ Delayed [mise] fresh-tool v1.0.0 -> v1.1.0"));
+    assert!(out.contains("~ Delayed [mise] fresh-tool v1.0.0 -> v1.1.0 (too fresh: 0s < 7d)"));
     assert!(out.contains("- Skipped [mise] nometa-tool v1.0.0 -> v1.1.0"));
     assert!(!out.contains("- Skipped [mise] github:example/pruned v1.0.0 -> v2.0.0"));
 
@@ -266,7 +268,9 @@ fn deterministic_apply_selective_path_runs_only_for_unpinned_eligible_items() {
     let out = stdout(&output);
     let err = stderr(&output);
     assert!(out.contains("+ Update [mise] npm:alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains("+ Update [mise] npm:beta-fresh-latest v1.0.0 -> v1.0.5"));
+    assert!(out.contains(
+        "+ Update [mise] npm:beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh)"
+    ));
     assert!(out.contains("+ Update [mise] swiftformat v0.59.1 -> v0.61.0"));
     assert!(out.contains("- Skipped [mise] node v20.0.0 -> v20.1.0 (pinned)"));
     assert!(out.contains("+ Update [mise] emsdk v5.0.4 -> v5.0.6"));
@@ -275,7 +279,7 @@ fn deterministic_apply_selective_path_runs_only_for_unpinned_eligible_items() {
     assert!(out.contains("+ Update [mise] github:example/pruned v1.0.0 -> v2.0.0"));
     assert!(out.contains("+ Update [mise] npm:gamma-error v2.0.0 -> v2.0.1"));
     assert!(out.contains("- Skipped [mise] wrongbackend v1.0.0 -> v2.0.0"));
-    assert!(out.contains("~ Delayed [mise] fresh-tool v1.0.0 -> v1.1.0"));
+    assert!(out.contains("~ Delayed [mise] fresh-tool v1.0.0 -> v1.1.0 (too fresh: 0s < 7d)"));
     assert!(out.contains("- Skipped [mise] nometa-tool v1.0.0 -> v1.1.0"));
 
     assert!(err.contains("$ mise upgrade --before 7d npm:alpha-ready"));
@@ -312,7 +316,9 @@ min_release_age = "7d"
 
     let out = stdout(&output);
     assert!(out.contains("+ Update [mise] npm:alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains("+ Update [mise] npm:beta-fresh-latest v1.0.0 -> v1.0.5"));
+    assert!(out.contains(
+        "+ Update [mise] npm:beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh)"
+    ));
     assert!(out.contains("+ Update [mise] node v20.0.0 -> v20.1.0"));
     assert!(out.contains("+ Update [mise] swiftformat v0.59.1 -> v0.61.0"));
     assert!(out.contains("+ Update [mise] emsdk v5.0.4 -> v5.0.6"));
@@ -321,7 +327,7 @@ min_release_age = "7d"
     assert!(out.contains("+ Update [mise] github:example/pruned v1.0.0 -> v2.0.0"));
     assert!(out.contains("+ Update [mise] npm:gamma-error v2.0.0 -> v2.0.1"));
     assert!(out.contains("- Skipped [mise] wrongbackend v1.0.0 -> v2.0.0"));
-    assert!(out.contains("~ Delayed [mise] fresh-tool v1.0.0 -> v1.1.0"));
+    assert!(out.contains("~ Delayed [mise] fresh-tool v1.0.0 -> v1.1.0 (too fresh: 0s < 7d)"));
     assert!(out.contains("- Skipped [mise] nometa-tool v1.0.0 -> v1.1.0"));
 
     let err = stderr(&output);

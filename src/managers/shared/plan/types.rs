@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use crate::managers::shared::versioning::policy::{PolicyWarning, VersionPolicy};
+use crate::outcome::DelayedReason;
 use crate::outcome::ItemOutcome;
 use crate::util::time::human_age;
 
@@ -48,14 +49,15 @@ pub struct VersionPolicyMeta {
 
 impl VersionPolicyMeta {
     pub fn apply_to_outcome(&self, outcome: &mut ItemOutcome) {
-        if self.policy != VersionPolicy::Disabled {
-            outcome.version_policy = Some(self.policy.as_str().to_string());
+        if self.policy == VersionPolicy::Disabled {
+            return;
         }
-        outcome
-            .latest_blocked_by_policy_version
-            .clone_from(&self.latest_blocked_version);
-        outcome.version_policy_warning =
-            self.warning.map(PolicyWarning::as_note).map(str::to_string);
+
+        outcome.set_version_policy(
+            self.policy.as_str(),
+            self.latest_blocked_version.clone(),
+            self.warning.map(PolicyWarning::as_note).map(str::to_string),
+        );
     }
 }
 
@@ -64,6 +66,7 @@ pub enum PlanDecision {
     DelayedNoEligible {
         required_age: String,
         delayed_latest: Option<DelayedLatest>,
+        delayed_reason: DelayedReason,
         version_policy: Option<VersionPolicyMeta>,
     },
     CurrentBlockedByPolicy {

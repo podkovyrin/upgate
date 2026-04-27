@@ -17,7 +17,7 @@ use crate::managers::shared::versioning::{
 };
 #[allow(clippy::wildcard_imports)]
 use crate::managers::*;
-use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
+use crate::outcome::{ItemOutcome, emit_text_outcome};
 use crate::ui::output_theme;
 use crate::util::http::{HTTP_TIMEOUT_SECS, HTTP_USER_AGENT};
 use crate::util::process::{CmdStatus, run_cmd};
@@ -266,13 +266,11 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                 let outcome = if matches!(item.action, PlanAction::Upgrade)
                     && is_pinned(&item.name, &ctx.policy.pinned)
                 {
-                    ItemOutcome::skipped(
+                    ItemOutcome::skipped_pinned(
                         PLUGIN.id(),
                         item.name.clone(),
                         item.installed.clone(),
                         item.target.clone(),
-                        ReasonCode::Pinned,
-                        "pinned",
                     )
                 } else {
                     item_to_outcome(item)
@@ -884,30 +882,31 @@ fn item_to_outcome(item: &PlanItem) -> ItemOutcome {
         }
         PlanAction::Skipped { reason } => {
             if reason.contains("failed age check") {
-                return ItemOutcome::error(
+                return ItemOutcome::resolver_error(
                     PLUGIN.id(),
                     item.name.clone(),
                     item.installed.clone(),
                     item.target.clone(),
-                    ReasonCode::CommandFailed,
                     reason.clone(),
                 );
             }
 
-            let reason_code = if reason.starts_with("pinned") {
-                ReasonCode::Pinned
+            if reason.starts_with("pinned") {
+                ItemOutcome::skipped_pinned(
+                    PLUGIN.id(),
+                    item.name.clone(),
+                    item.installed.clone(),
+                    item.target.clone(),
+                )
             } else {
-                ReasonCode::MissingMetadata
-            };
-
-            ItemOutcome::skipped(
-                PLUGIN.id(),
-                item.name.clone(),
-                item.installed.clone(),
-                item.target.clone(),
-                reason_code,
-                reason.clone(),
-            )
+                ItemOutcome::skipped_missing_metadata(
+                    PLUGIN.id(),
+                    item.name.clone(),
+                    item.installed.clone(),
+                    item.target.clone(),
+                    reason.clone(),
+                )
+            }
         }
     };
 
@@ -1484,13 +1483,18 @@ mod tests {
         };
 
         let outcome = item_to_outcome(&item);
-        assert_eq!(outcome.version_policy.as_deref(), Some("same-track"));
+        let policy = outcome
+            .diagnostics
+            .version_policy
+            .as_ref()
+            .expect("version policy diagnostic should be present");
+        assert_eq!(policy.policy, "same-track");
         assert_eq!(
-            outcome.latest_blocked_by_policy_version.as_deref(),
+            policy.latest_blocked_version.as_deref(),
             Some("1.0.0-beta.1")
         );
         assert_eq!(
-            outcome.version_policy_warning.as_deref(),
+            policy.warning.as_deref(),
             Some("same-track fell back to stable because installed track is unknown")
         );
     }
@@ -1510,10 +1514,15 @@ mod tests {
         };
 
         let outcome = item_to_outcome(&item);
-        assert_eq!(outcome.version_policy.as_deref(), Some("same-track"));
-        assert_eq!(outcome.latest_blocked_by_policy_version, None);
+        let policy = outcome
+            .diagnostics
+            .version_policy
+            .as_ref()
+            .expect("version policy diagnostic should be present");
+        assert_eq!(policy.policy, "same-track");
+        assert_eq!(policy.latest_blocked_version, None);
         assert_eq!(
-            outcome.version_policy_warning.as_deref(),
+            policy.warning.as_deref(),
             Some("same-track fell back to stable because installed track is unknown")
         );
     }
@@ -1536,10 +1545,15 @@ mod tests {
         };
 
         let outcome = item_to_outcome(&item);
-        assert_eq!(outcome.version_policy.as_deref(), Some("same-track"));
-        assert_eq!(outcome.latest_blocked_by_policy_version, None);
+        let policy = outcome
+            .diagnostics
+            .version_policy
+            .as_ref()
+            .expect("version policy diagnostic should be present");
+        assert_eq!(policy.policy, "same-track");
+        assert_eq!(policy.latest_blocked_version, None);
         assert_eq!(
-            outcome.version_policy_warning.as_deref(),
+            policy.warning.as_deref(),
             Some("same-track fell back to stable because installed track is unknown")
         );
     }

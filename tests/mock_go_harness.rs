@@ -137,8 +137,12 @@ fn deterministic_plan_covers_ready_delayed_pinned_skipped_and_error_states() {
 
     let out = stdout(&output);
     assert!(out.contains("+ Update [go] alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains("+ Update [go] beta-fresh-latest v1.0.0 -> v1.0.5"));
-    assert!(out.contains("~ Delayed [go] gamma-delayed v2.0.0 -> v2.1.0"));
+    assert!(out.contains(
+        "+ Update [go] beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh: 0s < 7d)"
+    ));
+    assert!(out.contains(
+        "~ Delayed [go] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh: 0s < 7d)"
+    ));
     assert!(out.contains("- Skipped [go] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
     assert!(out.contains("! Error [go] omega-error v0.1.0 -> v0.1.0"));
     assert!(out.contains("- Skipped [go] skip-nometa * -> * (missing go build metadata)"));
@@ -157,8 +161,12 @@ fn deterministic_apply_selective_path_runs_updates_only_for_eligible_unpinned_to
 
     let out = stdout(&output);
     assert!(out.contains("+ Update [go] alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains("+ Update [go] beta-fresh-latest v1.0.0 -> v1.0.5"));
-    assert!(out.contains("~ Delayed [go] gamma-delayed v2.0.0 -> v2.1.0"));
+    assert!(
+        out.contains("+ Update [go] beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh)")
+    );
+    assert!(out.contains(
+        "~ Delayed [go] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh)"
+    ));
     assert!(out.contains("- Skipped [go] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
 
     let err = stderr(&output);

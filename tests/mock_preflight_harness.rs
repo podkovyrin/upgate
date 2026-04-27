@@ -24,7 +24,7 @@ fn missing_manager_command_is_skipped_without_failing_run() {
     );
 
     assert!(
-        out.contains("- Skipped [npm] * * -> * (required command 'npm' is not available)"),
+        out.contains("- Skipped [npm] (required command 'npm' is not available)"),
         "expected skipped outcome for missing npm command\nstdout:\n{out}\nstderr:\n{err}"
     );
 }

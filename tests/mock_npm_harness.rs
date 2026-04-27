@@ -118,8 +118,12 @@ fn deterministic_plan_covers_ready_delayed_pinned_and_error_states() {
 
     let out = stdout(&output);
     assert!(out.contains("+ Update [npm] alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains("+ Update [npm] beta-fresh-latest v1.0.0 -> v1.0.5"));
-    assert!(out.contains("~ Delayed [npm] gamma-delayed v2.0.0 -> v2.1.0"));
+    assert!(
+        out.contains("+ Update [npm] beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh)")
+    );
+    assert!(out.contains(
+        "~ Delayed [npm] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh)"
+    ));
     assert!(out.contains("- Skipped [npm] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
     assert!(out.contains("! Error [npm] omega-error v0.1.0 -> v0.1.0"));
 
@@ -137,8 +141,12 @@ fn deterministic_apply_selective_path_preserves_legacy_update_when_policy_disabl
 
     let out = stdout(&output);
     assert!(out.contains("+ Update [npm] alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains("+ Update [npm] beta-fresh-latest v1.0.0 -> v1.0.5"));
-    assert!(out.contains("~ Delayed [npm] gamma-delayed v2.0.0 -> v2.1.0"));
+    assert!(
+        out.contains("+ Update [npm] beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh)")
+    );
+    assert!(out.contains(
+        "~ Delayed [npm] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh)"
+    ));
     assert!(out.contains("- Skipped [npm] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
 
     let err = stderr(&output);
@@ -167,7 +175,9 @@ version_policy = "any"
 
     let out = stdout(&output);
     assert!(out.contains("+ Update [npm] alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains("+ Update [npm] beta-fresh-latest v1.0.0 -> v1.0.5"));
+    assert!(
+        out.contains("+ Update [npm] beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh)")
+    );
 
     let err = stderr(&output);
     assert!(err.contains("$ npm ls -g --depth=0 --json"));

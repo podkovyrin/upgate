@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use super::types::{DelayedLatest, PlanDecision, PlanMeta, PlannedUpdate, VersionPolicyMeta};
 use crate::config::is_pinned;
-use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
+use crate::outcome::{DelayedReason, ItemOutcome, ReasonCode, emit_text_outcome};
 
 pub fn emit_plan_and_collect_upgradable<T, A>(
     items: Vec<T>,
@@ -97,19 +97,13 @@ fn handle_regular_decision(
 ) {
     match decision {
         PlanDecision::Error(err) => {
-            let outcome = ItemOutcome::error(
-                manager,
-                name,
-                current.clone(),
-                current,
-                ReasonCode::CommandFailed,
-                err,
-            );
+            let outcome = ItemOutcome::resolver_error(manager, name, current.clone(), current, err);
             emit_text_outcome(&outcome);
         }
         PlanDecision::DelayedNoEligible {
             required_age,
             delayed_latest,
+            delayed_reason,
             version_policy,
         } => {
             let outcome = delayed_outcome(
@@ -118,6 +112,7 @@ fn handle_regular_decision(
                 current,
                 required_age,
                 delayed_latest,
+                delayed_reason,
                 version_policy,
             );
             emit_text_outcome(&outcome);
@@ -128,7 +123,7 @@ fn handle_regular_decision(
             emit_text_outcome(&outcome);
         }
         PlanDecision::NoChange => {
-            let outcome = ItemOutcome::skipped_no_change(manager, name, current);
+            let outcome = ItemOutcome::current_no_newer(manager, name, current);
             emit_text_outcome(&outcome);
         }
         PlanDecision::Update {
@@ -159,6 +154,7 @@ fn delayed_outcome(
     current: String,
     required_age: String,
     delayed_latest: Option<DelayedLatest>,
+    delayed_reason: DelayedReason,
     version_policy: Option<VersionPolicyMeta>,
 ) -> ItemOutcome {
     let mut outcome = if let Some(DelayedLatest {
@@ -178,6 +174,8 @@ fn delayed_outcome(
     } else {
         ItemOutcome::delayed_no_eligible(manager, name, current, required_age)
     };
+
+    outcome.set_delayed_reason(delayed_reason);
 
     if let Some(policy) = version_policy {
         policy.apply_to_outcome(&mut outcome);

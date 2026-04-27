@@ -304,20 +304,22 @@ Version policy alone should not produce `skipped`.
 
 ## Default output
 
-Policy effects should appear as concise explanations where relevant.
+Policy effects should appear as concise explanations where relevant. This
+section extends the general output contract in `docs/spec.md`; it should not
+expose raw resolver internals in normal output.
 
 Examples:
 
 ```text
-+ Update [npm] foo v1.2.0 → v1.2.5 (latest v1.3.0-beta.1 blocked by version policy)
++ Update [npm] foo v1.2.0 -> v1.2.5 (latest v1.3.0-beta.1 blocked by version policy: stable)
 ```
 
 ```text
-= Current [pipx] bar v2.0.0rc1 (newer prereleases blocked by version policy: stable)
+= Current [pipx] bar v2.0.0rc1 (newer versions blocked by version policy: stable)
 ```
 
 ```text
-~ Delayed [npm] baz v3.1.0 → v3.1.1 (3d < 7d; latest v4.0.0-beta.2 blocked by version policy)
+~ Delayed [npm] baz v3.1.0 -> v3.1.1 (too fresh: 3d < 7d) (latest v4.0.0-beta.2 blocked by version policy: stable)
 ```
 
 Exact symbols may follow existing style.
@@ -326,7 +328,8 @@ Exact symbols may follow existing style.
 
 ## Verbose output
 
-`--verbose` may include:
+`--verbose` may include policy evidence that is useful for debugging or
+auditing a decision:
 
 * installed release class
 * chosen policy
@@ -334,6 +337,7 @@ Exact symbols may follow existing style.
 * latest policy-eligible version
 * latest age-eligible version
 * exclusion reason counts
+* per-candidate policy and age eligibility, when available
 
 Example:
 
@@ -543,13 +547,13 @@ If a manager does not support the configured policy safely:
 
 Recommended behavior:
 
-* show a manager-local error or warning
-* crash the whole run, validate on startup
+* report a clear manager-local error
+* validate before running that manager
 
 Example:
 
 ```text
-- Error [manager] foo: version_policy "same-track" is not supported by this manager
+! Error [manager] foo (version_policy "same-track" is not supported by this manager)
 ```
 
 Prefer a clear explicit error over silently ignoring the policy.

@@ -197,7 +197,9 @@ fn deterministic_plan_covers_update_delayed_pinned_and_error_states() {
     let out = stdout(&output);
     assert!(out.contains("+ Update [uv] alpha-ready v1.0.0 -> v1.2.0"));
     assert!(out.contains("+ Update [uv] beta-fresh-latest v1.0.0 -> v1.0.5"));
-    assert!(out.contains("~ Delayed [uv] gamma-delayed v2.0.0 -> v2.0.0"));
+    assert!(out.contains(
+        "~ Delayed [uv] gamma-delayed v2.0.0 -> v2.0.0 (no eligible release yet; required age 7d)"
+    ));
     assert!(out.contains("- Skipped [uv] pinned-pkg v3.0.0 -> v3.0.0 (pinned)"));
     assert!(out.contains("! Error [uv] omega-error v0.1.0 -> v0.1.0"));
 
@@ -228,7 +230,9 @@ fn deterministic_apply_selective_path_runs_updates_only_for_eligible_unpinned_it
     let out = stdout(&output);
     assert!(out.contains("+ Update [uv] alpha-ready v1.0.0 -> v1.2.0"));
     assert!(out.contains("+ Update [uv] beta-fresh-latest v1.0.0 -> v1.0.5"));
-    assert!(out.contains("~ Delayed [uv] gamma-delayed v2.0.0 -> v2.0.0"));
+    assert!(out.contains(
+        "~ Delayed [uv] gamma-delayed v2.0.0 -> v2.0.0 (no eligible release yet; required age 7d)"
+    ));
     assert!(out.contains("- Skipped [uv] pinned-pkg v3.0.0 -> v3.0.0 (pinned)"));
 
     let err = stderr(&output);
@@ -329,7 +333,9 @@ fn hybrid_apply_uses_real_pypi_resolution_with_fake_installed_state() {
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("~ Delayed [uv] gamma-delayed v2.0.0 -> v2.0.0"),
+        out.contains(
+            "~ Delayed [uv] gamma-delayed v2.0.0 -> v2.0.0 (no eligible release yet; required age 7d)"
+        ),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(

@@ -173,7 +173,9 @@ fn deterministic_plan_covers_update_delayed_pinned_and_error_states() {
 
     let out = stdout(&output);
     assert!(out.contains("+ Update [gem] alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains("~ Delayed [gem] gamma-delayed v2.0.0 -> v2.1.0"));
+    assert!(out.contains(
+        "~ Delayed [gem] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh: 0s < 7d)"
+    ));
     assert!(out.contains("- Skipped [gem] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
     assert!(out.contains("! Error [gem] omega-error v0.1.0 -> v0.1.0"));
     assert!(!out.contains("default-skip"));
@@ -252,7 +254,9 @@ fn deterministic_apply_selective_path_runs_updates_only_for_eligible_unpinned_it
 
     let out = stdout(&output);
     assert!(out.contains("+ Update [gem] alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains("~ Delayed [gem] gamma-delayed v2.0.0 -> v2.1.0"));
+    assert!(out.contains(
+        "~ Delayed [gem] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh: 0s < 7d)"
+    ));
     assert!(out.contains("- Skipped [gem] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
 
     let err = stderr(&output);

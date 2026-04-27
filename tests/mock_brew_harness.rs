@@ -151,7 +151,9 @@ fn deterministic_plan_covers_update_delayed_pinned_and_age_check_error_states() 
 
     let out = stdout(&output);
     assert!(out.contains("+ Update [brew] alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains("~ Delayed [brew] beta-fresh-latest v1.0.0 -> v1.1.0"));
+    assert!(
+        out.contains("~ Delayed [brew] beta-fresh-latest v1.0.0 -> v1.1.0 (too fresh: 0s < 12h)")
+    );
     assert!(out.contains("- Skipped [brew] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
     assert!(out.contains("! Error [brew] omega-error v0.1.0 -> v0.2.0"));
 
@@ -178,7 +180,9 @@ fn deterministic_apply_selective_path_runs_formula_upgrade_for_only_unpinned_eli
 
     let out = stdout(&output);
     assert!(out.contains("+ Update [brew] alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains("~ Delayed [brew] beta-fresh-latest v1.0.0 -> v1.1.0"));
+    assert!(
+        out.contains("~ Delayed [brew] beta-fresh-latest v1.0.0 -> v1.1.0 (too fresh: 0s < 12h)")
+    );
     assert!(out.contains("- Skipped [brew] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
 
     let err = stderr(&output);
@@ -242,7 +246,7 @@ fn hybrid_apply_uses_real_tap_metadata_and_git_history_with_fake_outdated_state(
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(
-        out.contains("~ Delayed [brew] jq v1.0.0 -> v1.1.0"),
+        out.contains("~ Delayed [brew] jq v1.0.0 -> v1.1.0 (too fresh:"),
         "hybrid stdout:\n{out}\nhybrid stderr:\n{err}"
     );
     assert!(

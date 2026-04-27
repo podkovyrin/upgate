@@ -180,7 +180,9 @@ fn deterministic_plan_covers_update_delayed_pinned_and_error_states() {
         stderr(&output)
     );
     assert!(
-        out.contains("~ Delayed [cargo] gamma-delayed v2.0.0 -> v2.1.0"),
+        out.contains(
+            "~ Delayed [cargo] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh: 0s < 7d)"
+        ),
         "plan stdout:\n{out}\nplan stderr:\n{}",
         stderr(&output)
     );
@@ -221,7 +223,9 @@ fn deterministic_apply_selective_path_runs_updates_only_for_eligible_unpinned_cr
         stderr(&output)
     );
     assert!(
-        out.contains("~ Delayed [cargo] gamma-delayed v2.0.0 -> v2.1.0"),
+        out.contains(
+            "~ Delayed [cargo] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh: 0s < 7d)"
+        ),
         "apply stdout:\n{out}\napply stderr:\n{}",
         stderr(&output)
     );

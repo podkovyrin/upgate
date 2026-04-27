@@ -4,6 +4,7 @@ use super::types::{DelayedLatest, PlanDecision, VersionPolicyMeta};
 use crate::managers::shared::versioning::policy::{
     PolicyWarning, RecommendedOutcome, VersionPolicy, VersionPolicyResolution,
 };
+use crate::outcome::DelayedReason;
 use crate::util::time::human_age;
 
 pub trait ResolvedPlanTarget {
@@ -18,6 +19,12 @@ pub trait ResolvedPlanTarget {
     }
     fn version_policy_warning(&self) -> Option<PolicyWarning> {
         None
+    }
+    fn blocked_by_policy_count(&self) -> usize {
+        0
+    }
+    fn blocked_by_age_count(&self) -> usize {
+        0
     }
 }
 
@@ -45,6 +52,14 @@ impl ResolvedPlanTarget for VersionPolicyResolution {
     fn version_policy_warning(&self) -> Option<PolicyWarning> {
         Self::version_policy_warning(self)
     }
+
+    fn blocked_by_policy_count(&self) -> usize {
+        self.blocked_by_policy_count
+    }
+
+    fn blocked_by_age_count(&self) -> usize {
+        self.blocked_by_age_count
+    }
 }
 
 pub fn plan_decision_from_resolution<T>(
@@ -64,6 +79,7 @@ where
             RecommendedOutcome::DelayedByAge => PlanDecision::DelayedNoEligible {
                 required_age: human_age(min_age.as_secs()),
                 delayed_latest: delayed_latest_for(&target, None, min_age),
+                delayed_reason: delayed_reason_for(&target),
                 version_policy: version_policy_meta(&target),
             },
             RecommendedOutcome::CurrentNoNewer => PlanDecision::NoChange,
@@ -110,6 +126,17 @@ where
     })
 }
 
+fn delayed_reason_for<T>(target: &T) -> DelayedReason
+where
+    T: ResolvedPlanTarget,
+{
+    if target.blocked_by_policy_count() > 0 && target.blocked_by_age_count() > 0 {
+        DelayedReason::NoPolicyAndAgeEligibleRelease
+    } else {
+        DelayedReason::NoAgeEligibleRelease
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +177,37 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct CountedMockTarget {
+        recommendation: RecommendedOutcome,
+        latest_version: Option<&'static str>,
+        latest_age_secs: Option<u64>,
+        blocked_by_policy_count: usize,
+        blocked_by_age_count: usize,
+    }
+
+    impl ResolvedPlanTarget for CountedMockTarget {
+        fn recommendation(&self) -> &RecommendedOutcome {
+            &self.recommendation
+        }
+
+        fn latest_version(&self) -> Option<&str> {
+            self.latest_version
+        }
+
+        fn latest_age_secs(&self) -> Option<u64> {
+            self.latest_age_secs
+        }
+
+        fn blocked_by_policy_count(&self) -> usize {
+            self.blocked_by_policy_count
+        }
+
+        fn blocked_by_age_count(&self) -> usize {
+            self.blocked_by_age_count
+        }
+    }
+
     #[test]
     fn returns_error_when_resolution_fails() {
         let decision = plan_decision_from_resolution::<MockTarget>(
@@ -181,13 +239,36 @@ mod tests {
             PlanDecision::DelayedNoEligible {
                 required_age,
                 delayed_latest,
+                delayed_reason,
                 version_policy,
             } => {
                 assert_eq!(required_age, "2h");
+                assert_eq!(delayed_reason, DelayedReason::NoAgeEligibleRelease);
                 let delayed = delayed_latest.expect("expected delayed latest metadata");
                 assert_eq!(delayed.latest_version, "1.1.0");
                 assert_eq!(delayed.latest_age, "1h");
                 assert!(version_policy.is_none());
+            }
+            _ => panic!("expected PlanDecision::DelayedNoEligible"),
+        }
+    }
+
+    #[test]
+    fn delayed_reason_tracks_combined_policy_and_age_blocks() {
+        let decision = plan_decision_from_resolution(
+            Ok(CountedMockTarget {
+                recommendation: RecommendedOutcome::DelayedByAge,
+                latest_version: Some("1.1.0"),
+                latest_age_secs: Some(3_600),
+                blocked_by_policy_count: 1,
+                blocked_by_age_count: 1,
+            }),
+            Duration::from_secs(7_200),
+        );
+
+        match decision {
+            PlanDecision::DelayedNoEligible { delayed_reason, .. } => {
+                assert_eq!(delayed_reason, DelayedReason::NoPolicyAndAgeEligibleRelease);
             }
             _ => panic!("expected PlanDecision::DelayedNoEligible"),
         }

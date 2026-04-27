@@ -100,6 +100,7 @@ struct UvResolvedTarget {
     recommendation: RecommendedOutcome,
     latest_version: Option<String>,
     latest_age_secs: Option<u64>,
+    blocked_by_age_count: usize,
 }
 
 impl ResolvedPlanTarget for UvResolvedTarget {
@@ -113,6 +114,10 @@ impl ResolvedPlanTarget for UvResolvedTarget {
 
     fn latest_age_secs(&self) -> Option<u64> {
         self.latest_age_secs
+    }
+
+    fn blocked_by_age_count(&self) -> usize {
+        self.blocked_by_age_count
     }
 }
 
@@ -214,6 +219,7 @@ fn resolve_uv_plan(installed: &[UvTool], params: &UvPlanParams<'_>) -> Result<Ve
                         recommendation: RecommendedOutcome::CurrentNoNewer,
                         latest_version: None,
                         latest_age_secs: None,
+                        blocked_by_age_count: 0,
                     })
                 } else {
                     target.map(|target| {
@@ -252,6 +258,7 @@ fn uv_resolution_from_exclude_newer_target(
             recommendation: RecommendedOutcome::DelayedByAge,
             latest_version: latest.map(str::to_string),
             latest_age_secs,
+            blocked_by_age_count: usize::from(latest_age_secs.is_some()),
         };
     }
 
@@ -266,6 +273,7 @@ fn uv_resolution_from_exclude_newer_target(
                 recommendation: RecommendedOutcome::DelayedByAge,
                 latest_version: latest.map(str::to_string),
                 latest_age_secs,
+                blocked_by_age_count: 1,
             };
         }
 
@@ -273,6 +281,7 @@ fn uv_resolution_from_exclude_newer_target(
             recommendation: RecommendedOutcome::CurrentNoNewer,
             latest_version: None,
             latest_age_secs: None,
+            blocked_by_age_count: 0,
         };
     }
 
@@ -290,7 +299,8 @@ fn uv_resolution_from_exclude_newer_target(
         latest_version: delayed_latest
             .as_ref()
             .map(|(version, _age)| version.clone()),
-        latest_age_secs: delayed_latest.map(|(_version, age)| age),
+        latest_age_secs: delayed_latest.as_ref().map(|(_version, age)| *age),
+        blocked_by_age_count: usize::from(delayed_latest.is_some()),
     }
 }
 

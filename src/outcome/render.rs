@@ -1,16 +1,20 @@
 use owo_colors::OwoColorize;
 
-use super::ReasonCode;
 use super::item::ItemOutcome;
-use super::types::OutcomeStatus;
+use super::types::{
+    AgeGateDiagnostic, DelayedReason, OutcomeReason, OutcomeStatus, OutcomeSubject,
+    OutcomeVersions, OutcomeVisibility, SkippedReason,
+};
 use crate::ui::{OutputTheme, output_theme, with_spinner_suspended};
 use crate::util::text::strip_v_prefix;
 
 impl ItemOutcome {
     pub fn to_text_line(&self) -> Option<String> {
-        let theme = output_theme();
+        self.to_text_line_with_theme(output_theme())
+    }
 
-        if should_skip_outcome_line(self) {
+    pub(crate) fn to_text_line_with_theme(&self, theme: OutputTheme) -> Option<String> {
+        if should_skip_outcome_line(self, theme) {
             return None;
         }
 
@@ -22,44 +26,39 @@ impl ItemOutcome {
     }
 }
 
-fn should_skip_outcome_line(item: &ItemOutcome) -> bool {
-    if item.status != OutcomeStatus::Skipped {
-        return false;
-    }
-
-    item.reason_code == Some(ReasonCode::NoChange)
+fn should_skip_outcome_line(item: &ItemOutcome, theme: OutputTheme) -> bool {
+    item.visibility == OutcomeVisibility::VerboseOnly && !theme.verbose
 }
 
 fn base_outcome_line(item: &ItemOutcome, theme: OutputTheme) -> String {
     let manager_rendered = render_manager(item.manager, theme.color());
-    let name_rendered = render_name(&item.name, theme.color());
-    let from = version_label(&item.from_version);
 
-    if item.status == OutcomeStatus::Current {
-        return format!(
-            "{} {} {} {}",
-            status_prefix(item.status, theme.color()),
+    let prefix = status_prefix(item.status, theme.color());
+    let subject = match item.subject {
+        OutcomeSubject::Manager => manager_rendered,
+        OutcomeSubject::Item => format!(
+            "{} {}",
             manager_rendered,
-            name_rendered,
-            from
-        );
+            render_name(&item.name, theme.color())
+        ),
+    };
+
+    match &item.versions {
+        OutcomeVersions::None => format!("{prefix} {subject}"),
+        OutcomeVersions::Current { version } => {
+            format!("{prefix} {subject} {}", version_label(version))
+        }
+        OutcomeVersions::Change { from, to } => {
+            let arrow = if theme.unicode() { "→" } else { "->" };
+            let from = version_label(from);
+            let to = version_label(to);
+            let pinned_skip = matches!(item.reason, OutcomeReason::Skipped(SkippedReason::Pinned));
+            let from_rendered = render_from_version(&from, theme.color(), pinned_skip);
+            let to_rendered = render_to_version(&from, &to, theme.color(), !pinned_skip);
+
+            format!("{prefix} {subject} {from_rendered} {arrow} {to_rendered}")
+        }
     }
-
-    let arrow = if theme.unicode() { "→" } else { "->" };
-    let to = version_label(&item.to_version);
-    let pinned_skip =
-        item.status == OutcomeStatus::Skipped && item.reason_code == Some(ReasonCode::Pinned);
-    let from_rendered = render_from_version(&from, theme.color(), pinned_skip);
-    let to_rendered = render_to_version(&from, &to, theme.color(), !pinned_skip);
-
-    format!(
-        "{} {} {} {} {arrow} {}",
-        status_prefix(item.status, theme.color()),
-        manager_rendered,
-        name_rendered,
-        from_rendered,
-        to_rendered
-    )
 }
 
 fn append_current_age_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme) {
@@ -67,9 +66,15 @@ fn append_current_age_note(line: &mut String, item: &ItemOutcome, theme: OutputT
         return;
     }
 
-    if let Some(age) = item.scan_age.as_deref() {
+    let age = item
+        .diagnostics
+        .release_age
+        .as_ref()
+        .map(|release_age| (release_age.age.as_str(), release_age.is_old));
+
+    if let Some((age, is_old)) = age {
         line.push(' ');
-        line.push_str(&current_age_segment(age, item.scan_is_old, theme.color()));
+        line.push_str(&current_age_segment(age, is_old, theme.color()));
     }
 }
 
@@ -94,6 +99,7 @@ fn append_status_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme)
         OutcomeStatus::Current => {
             append_current_policy_note(line, item, theme);
             append_policy_warning_note(line, item, theme);
+            append_verbose_detail_note(line, item, theme);
         }
         OutcomeStatus::Update => {
             append_update_note(line, item, theme);
@@ -101,14 +107,14 @@ fn append_status_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme)
             append_policy_warning_note(line, item, theme);
         }
         OutcomeStatus::Delayed => {
-            let note = delayed_note(item);
+            let note = delayed_note(item, theme);
             line.push(' ');
             line.push_str(&note_segment(&note, theme.color()));
             append_policy_block_note(line, item, theme);
             append_policy_warning_note(line, item, theme);
         }
         OutcomeStatus::Skipped | OutcomeStatus::Error => {
-            if let Some(reason) = &item.reason_detail {
+            if let Some(reason) = item.diagnostics.detail.as_deref() {
                 line.push(' ');
                 line.push_str(&note_segment(&format!("({reason})"), theme.color()));
             }
@@ -117,53 +123,55 @@ fn append_status_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme)
 }
 
 fn append_update_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme) {
-    if !theme.verbose {
-        return;
-    }
-
-    if let (Some(latest), Some(latest_age), Some(required_age)) = (
-        item.latest_version.as_deref(),
-        item.latest_age.as_deref(),
-        item.required_age.as_deref(),
-    ) {
-        let latest_note = format!(
-            "(latest {} delayed: {} < {})",
-            version_label(latest),
-            latest_age,
-            required_age
-        );
+    if let Some(latest) = latest_too_fresh(item) {
+        let version = latest.version.as_deref().map(version_label);
+        let latest_note = if theme.verbose {
+            version.map_or_else(
+                || {
+                    format!(
+                        "(latest too fresh: {} < {})",
+                        latest.age, latest.required_age
+                    )
+                },
+                |version| {
+                    format!(
+                        "(latest {version} too fresh: {} < {})",
+                        latest.age, latest.required_age
+                    )
+                },
+            )
+        } else {
+            version.map_or_else(
+                || "(latest too fresh)".to_string(),
+                |version| format!("(latest {version} too fresh)"),
+            )
+        };
         line.push(' ');
         line.push_str(&meta_segment(&latest_note, theme.color()));
     }
 }
 
 fn append_current_policy_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme) {
-    let Some(policy) = item.version_policy.as_deref() else {
+    let Some((policy, latest, _warning)) = version_policy_note_parts(item) else {
         return;
     };
 
-    let note = item
-        .latest_blocked_by_policy_version
-        .as_deref()
-        .map_or_else(
-            || format!("(newer versions blocked by version policy: {policy})"),
-            |latest| {
-                format!(
-                    "(latest {} blocked by version policy: {policy})",
-                    version_label(latest)
-                )
-            },
-        );
+    let note = latest.map_or_else(
+        || format!("(newer versions blocked by version policy: {policy})"),
+        |latest| {
+            format!(
+                "(latest {} blocked by version policy: {policy})",
+                version_label(latest)
+            )
+        },
+    );
 
     line.push(' ');
     line.push_str(&note_segment(&note, theme.color()));
 }
 
 fn append_policy_block_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme) {
-    let Some(policy) = item.version_policy.as_deref() else {
-        return;
-    };
-    let Some(latest) = item.latest_blocked_by_policy_version.as_deref() else {
+    let Some((policy, Some(latest), _warning)) = version_policy_note_parts(item) else {
         return;
     };
 
@@ -176,7 +184,7 @@ fn append_policy_block_note(line: &mut String, item: &ItemOutcome, theme: Output
 }
 
 fn append_policy_warning_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme) {
-    let Some(warning) = item.version_policy_warning.as_deref() else {
+    let Some((_policy, _latest, Some(warning))) = version_policy_note_parts(item) else {
         return;
     };
 
@@ -185,21 +193,112 @@ fn append_policy_warning_note(line: &mut String, item: &ItemOutcome, theme: Outp
     line.push_str(&note_segment(&note, theme.color()));
 }
 
-fn delayed_note(item: &ItemOutcome) -> String {
-    if item.reason_code == Some(ReasonCode::NoEligibleRelease) {
-        let required_age = item.required_age.as_deref().unwrap_or("unknown");
-        if let Some(latest_age) = item.latest_age.as_deref() {
-            return format!("(latest too fresh: {latest_age} < {required_age})");
+fn delayed_note(item: &ItemOutcome, theme: OutputTheme) -> String {
+    match item.reason {
+        OutcomeReason::Delayed(DelayedReason::NoAgeEligibleRelease) => {
+            if let Some(latest) = latest_too_fresh(item) {
+                if theme.verbose {
+                    return latest.version.as_deref().map_or_else(
+                        || {
+                            format!(
+                                "(no eligible release yet; latest too fresh: {} < {})",
+                                latest.age, latest.required_age
+                            )
+                        },
+                        |version| {
+                            format!(
+                                "(no eligible release yet; latest {} too fresh: {} < {})",
+                                version_label(version),
+                                latest.age,
+                                latest.required_age
+                            )
+                        },
+                    );
+                }
+
+                if let Some(version) = latest.version.as_deref() {
+                    return format!(
+                        "(no eligible release yet; latest {} too fresh)",
+                        version_label(version)
+                    );
+                }
+                return "(no eligible release yet; latest too fresh)".to_string();
+            }
+
+            let required_age = item
+                .diagnostics
+                .required_age
+                .as_deref()
+                .unwrap_or("unknown");
+            format!("(no eligible release yet; required age {required_age})")
         }
+        OutcomeReason::Delayed(DelayedReason::NoPolicyAndAgeEligibleRelease) => {
+            if let Some(latest) = latest_too_fresh(item) {
+                if theme.verbose {
+                    return latest.version.as_deref().map_or_else(
+                        || {
+                            format!(
+                                "(no eligible release yet; latest too fresh: {} < {})",
+                                latest.age, latest.required_age
+                            )
+                        },
+                        |version| {
+                            format!(
+                                "(no eligible release yet; latest {} too fresh: {} < {})",
+                                version_label(version),
+                                latest.age,
+                                latest.required_age
+                            )
+                        },
+                    );
+                }
 
-        return format!("(no eligible release >= current within {required_age} window)");
+                if let Some(version) = latest.version.as_deref() {
+                    return format!(
+                        "(no eligible release yet; latest {} too fresh)",
+                        version_label(version)
+                    );
+                }
+            }
+
+            "(no eligible release yet)".to_string()
+        }
+        OutcomeReason::Delayed(DelayedReason::TargetTooFresh) => target_too_fresh(item)
+            .map_or_else(
+                || "(too fresh)".to_string(),
+                |target| format!("(too fresh: {} < {})", target.age, target.required_age),
+            ),
+        _ => "(delayed)".to_string(),
+    }
+}
+
+fn append_verbose_detail_note(line: &mut String, item: &ItemOutcome, theme: OutputTheme) {
+    if !theme.verbose {
+        return;
     }
 
-    if let (Some(age), Some(required_age)) = (item.age.as_deref(), item.required_age.as_deref()) {
-        return format!("({age} < {required_age})");
+    if let Some(detail) = item.diagnostics.detail.as_deref() {
+        line.push(' ');
+        line.push_str(&meta_segment(&format!("({detail})"), theme.color()));
     }
+}
 
-    "(delayed)".to_string()
+const fn latest_too_fresh(item: &ItemOutcome) -> Option<&AgeGateDiagnostic> {
+    item.diagnostics.latest_too_fresh.as_ref()
+}
+
+const fn target_too_fresh(item: &ItemOutcome) -> Option<&AgeGateDiagnostic> {
+    item.diagnostics.target_too_fresh.as_ref()
+}
+
+fn version_policy_note_parts(item: &ItemOutcome) -> Option<(&str, Option<&str>, Option<&str>)> {
+    item.diagnostics.version_policy.as_ref().map(|policy| {
+        (
+            policy.policy.as_str(),
+            policy.latest_blocked_version.as_deref(),
+            policy.warning.as_deref(),
+        )
+    })
 }
 
 fn render_from_version(version: &str, color: bool, emphasize: bool) -> String {
@@ -358,6 +457,7 @@ pub fn version_label(version: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outcome::ReasonCode;
 
     #[test]
     fn changed_part_index_none_when_equal() {
@@ -417,8 +517,7 @@ mod tests {
     #[test]
     fn current_with_policy_note_includes_blocked_latest() {
         let mut item = ItemOutcome::current("npm", "foo", "1.2.0");
-        item.version_policy = Some("stable".to_string());
-        item.latest_blocked_by_policy_version = Some("1.3.0-beta.1".to_string());
+        item.set_version_policy("stable", Some("1.3.0-beta.1".to_string()), None);
 
         let rendered = item.to_text_line().expect("line should render");
         assert!(rendered.contains("blocked by version policy: stable"));
@@ -428,7 +527,7 @@ mod tests {
     #[test]
     fn current_with_policy_note_without_blocked_latest_uses_generic_text() {
         let mut item = ItemOutcome::current("pipx", "bar", "2.0.0rc1");
-        item.version_policy = Some("stable".to_string());
+        item.set_version_policy("stable", None, None);
 
         let rendered = item.to_text_line().expect("line should render");
         assert!(rendered.contains("newer versions blocked by version policy: stable"));
@@ -437,8 +536,7 @@ mod tests {
     #[test]
     fn update_with_policy_note_includes_blocked_latest() {
         let mut item = ItemOutcome::update("npm", "baz", "1.2.0", "1.2.5");
-        item.version_policy = Some("stable".to_string());
-        item.latest_blocked_by_policy_version = Some("1.3.0-beta.1".to_string());
+        item.set_version_policy("stable", Some("1.3.0-beta.1".to_string()), None);
 
         let rendered = item.to_text_line().expect("line should render");
         assert!(rendered.contains("blocked by version policy: stable"));
@@ -448,11 +546,10 @@ mod tests {
     #[test]
     fn delayed_with_policy_note_includes_blocked_latest() {
         let mut item = ItemOutcome::delayed_too_fresh("npm", "qux", "3.1.0", "3.1.1", "3d", "7d");
-        item.version_policy = Some("stable".to_string());
-        item.latest_blocked_by_policy_version = Some("4.0.0-beta.2".to_string());
+        item.set_version_policy("stable", Some("4.0.0-beta.2".to_string()), None);
 
         let rendered = item.to_text_line().expect("line should render");
-        assert!(rendered.contains("(3d < 7d)"));
+        assert!(rendered.contains("(too fresh: 3d < 7d)"));
         assert!(rendered.contains("blocked by version policy: stable"));
         assert!(rendered.contains("v4.0.0-beta.2"));
     }
@@ -460,9 +557,11 @@ mod tests {
     #[test]
     fn policy_warning_note_is_rendered_when_present() {
         let mut item = ItemOutcome::current("npm", "foo", "1.2.0");
-        item.version_policy = Some("same-track".to_string());
-        item.version_policy_warning =
-            Some("same-track fell back to stable because installed track is unknown".to_string());
+        item.set_version_policy(
+            "same-track",
+            None,
+            Some("same-track fell back to stable because installed track is unknown".to_string()),
+        );
 
         let rendered = item.to_text_line().expect("line should render");
         assert!(rendered.contains("version policy warning"));
@@ -483,5 +582,79 @@ mod tests {
         let rendered = item.to_text_line().expect("line should render");
         assert!(rendered.contains("- Skipped [mise] nometa-tool v1.0.0 -> v1.1.0"));
         assert!(rendered.contains("(no publish-date metadata)"));
+    }
+
+    #[test]
+    fn update_with_delayed_latest_shows_short_normal_note_and_verbose_age_evidence() {
+        let item = ItemOutcome::update_with_delayed_latest(
+            "npm", "foo", "1.2.0", "1.2.5", "1.3.0", "3d", "7d",
+        );
+
+        let normal = item
+            .to_text_line_with_theme(crate::ui::OutputTheme::test_plain(false))
+            .expect("line should render");
+        assert!(normal.contains("+ Update [npm] foo v1.2.0 -> v1.2.5"));
+        assert!(normal.contains("(latest v1.3.0 too fresh)"));
+        assert!(!normal.contains("3d < 7d"));
+
+        let verbose = item
+            .to_text_line_with_theme(crate::ui::OutputTheme::test_plain(true))
+            .expect("line should render");
+        assert!(verbose.contains("(latest v1.3.0 too fresh: 3d < 7d)"));
+    }
+
+    #[test]
+    fn manager_level_skip_omits_placeholder_versions() {
+        let item = ItemOutcome::skipped(
+            "cargo",
+            "*",
+            "*",
+            "*",
+            ReasonCode::MissingCommand,
+            "required command 'cargo' is not available",
+        );
+
+        let rendered = item
+            .to_text_line_with_theme(crate::ui::OutputTheme::test_plain(false))
+            .expect("line should render");
+        assert_eq!(
+            rendered,
+            "- Skipped [cargo] (required command 'cargo' is not available)"
+        );
+    }
+
+    #[test]
+    fn delayed_no_eligible_hides_age_evidence_until_verbose() {
+        let item = ItemOutcome::delayed_no_eligible_with_latest(
+            "npm", "foo", "1.2.0", "1.3.0", "3d", "7d",
+        );
+
+        let normal = item
+            .to_text_line_with_theme(crate::ui::OutputTheme::test_plain(false))
+            .expect("line should render");
+        assert!(normal.contains("~ Delayed [npm] foo v1.2.0 -> v1.3.0"));
+        assert!(normal.contains("(no eligible release yet; latest v1.3.0 too fresh)"));
+        assert!(!normal.contains("3d < 7d"));
+
+        let verbose = item
+            .to_text_line_with_theme(crate::ui::OutputTheme::test_plain(true))
+            .expect("line should render");
+        assert!(verbose.contains("(no eligible release yet; latest v1.3.0 too fresh: 3d < 7d)"));
+    }
+
+    #[test]
+    fn no_change_is_current_and_hidden_until_verbose() {
+        let item = ItemOutcome::current_no_newer("npm", "foo", "1.2.0");
+
+        assert!(
+            item.to_text_line_with_theme(crate::ui::OutputTheme::test_plain(false))
+                .is_none()
+        );
+
+        let rendered = item
+            .to_text_line_with_theme(crate::ui::OutputTheme::test_plain(true))
+            .expect("line should render");
+        assert!(rendered.contains("= Current [npm] foo v1.2.0"));
+        assert!(rendered.contains("(no newer version found)"));
     }
 }

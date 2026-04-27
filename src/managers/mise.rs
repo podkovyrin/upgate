@@ -14,7 +14,7 @@ use crate::managers::shared::plan::DelayedLatest;
 use crate::managers::shared::versioning::policy::VersionPolicy;
 #[allow(clippy::wildcard_imports)]
 use crate::managers::*;
-use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
+use crate::outcome::{ItemOutcome, emit_text_outcome};
 use crate::util::parallel::{effective_parallelism, run_indexed_parallel};
 use crate::util::process::{CmdStatus, run_cmd};
 use crate::util::text::strip_v_prefix;
@@ -396,14 +396,8 @@ fn handle_pinned_mise_decision(
         return;
     }
 
-    let outcome = ItemOutcome::skipped(
-        PLUGIN.id(),
-        item.tool,
-        item.from_version,
-        item.to_version,
-        ReasonCode::Pinned,
-        "pinned",
-    );
+    let outcome =
+        ItemOutcome::skipped_pinned(PLUGIN.id(), item.tool, item.from_version, item.to_version);
     emit_text_outcome(&outcome);
 }
 
@@ -443,23 +437,21 @@ fn handle_regular_mise_decision(
             emit_text_outcome(&outcome);
         }
         MisePlanDecision::MissingMetadata { reason } => {
-            let outcome = ItemOutcome::skipped(
+            let outcome = ItemOutcome::skipped_missing_metadata(
                 PLUGIN.id(),
                 item.tool,
                 item.from_version,
                 item.to_version,
-                ReasonCode::MissingMetadata,
                 reason,
             );
             emit_text_outcome(&outcome);
         }
         MisePlanDecision::Error(err) => {
-            let outcome = ItemOutcome::error(
+            let outcome = ItemOutcome::resolver_error(
                 PLUGIN.id(),
                 item.tool,
                 item.from_version.clone(),
                 item.from_version,
-                ReasonCode::CommandFailed,
                 err,
             );
             emit_text_outcome(&outcome);

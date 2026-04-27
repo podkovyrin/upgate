@@ -119,8 +119,14 @@ fn deterministic_plan_covers_ready_delayed_pinned_and_error_states() {
 
     let out = stdout(&output);
     assert!(out.contains("+ Update [yarn] alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains("+ Update [yarn] beta-fresh-latest v1.0.0 -> v1.0.5"));
-    assert!(out.contains("~ Delayed [yarn] gamma-delayed v2.0.0 -> v2.1.0"));
+    assert!(
+        out.contains(
+            "+ Update [yarn] beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh)"
+        )
+    );
+    assert!(out.contains(
+        "~ Delayed [yarn] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh)"
+    ));
     assert!(out.contains("- Skipped [yarn] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
     assert!(out.contains("! Error [yarn] omega-error v0.1.0 -> v0.1.0"));
 
@@ -139,8 +145,14 @@ fn deterministic_apply_selective_path_runs_only_for_eligible_unpinned_packages()
 
     let out = stdout(&output);
     assert!(out.contains("+ Update [yarn] alpha-ready v1.0.0 -> v1.2.0"));
-    assert!(out.contains("+ Update [yarn] beta-fresh-latest v1.0.0 -> v1.0.5"));
-    assert!(out.contains("~ Delayed [yarn] gamma-delayed v2.0.0 -> v2.1.0"));
+    assert!(
+        out.contains(
+            "+ Update [yarn] beta-fresh-latest v1.0.0 -> v1.0.5 (latest v1.1.0 too fresh)"
+        )
+    );
+    assert!(out.contains(
+        "~ Delayed [yarn] gamma-delayed v2.0.0 -> v2.1.0 (no eligible release yet; latest v2.1.0 too fresh)"
+    ));
     assert!(out.contains("- Skipped [yarn] pinned-pkg v3.0.0 -> v3.1.0 (pinned)"));
 
     let err = stderr(&output);

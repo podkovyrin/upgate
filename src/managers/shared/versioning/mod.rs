@@ -3,7 +3,7 @@ mod pep440;
 pub mod policy;
 mod semver;
 
-pub(crate) use classification::{
+pub use classification::{
     DEV_LABELS, RC_LABELS, leading_alpha_prefix, matches_any_label, select_less_stable_class,
 };
 pub use pep440::{
