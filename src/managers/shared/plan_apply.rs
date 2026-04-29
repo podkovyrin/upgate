@@ -4,8 +4,8 @@ use std::time::Duration;
 use anyhow::{Error, Result};
 
 use super::{
-    PlanMeta, PlannedUpdate, ResolvedPlanTarget, emit_manager_level_error,
-    emit_plan_and_collect_upgradable, plan_decision_from_resolution,
+    ApplyCandidate, PlanMeta, ResolvedPlanTarget, emit_manager_level_error,
+    emit_plan_and_collect_apply_candidates, plan_decision_from_resolution,
 };
 use crate::managers::runtime::ManagerCtx;
 use crate::util::time::now_unix_secs;
@@ -111,17 +111,18 @@ where
     apply_updates(ctx, &discovered, collected)
 }
 
-pub fn collect_upgradable_from_resolved_plan<T>(
+pub fn collect_apply_candidates_from_resolved_plan<T>(
     manager: &'static str,
     plan: Vec<ResolvedPlanItem<T>>,
     min_age: Duration,
     suppress_update_outcomes: bool,
     pinned: &BTreeSet<String>,
-) -> Vec<PlannedUpdate>
+    supports_exact_versions: bool,
+) -> Vec<ApplyCandidate>
 where
     T: ResolvedPlanTarget,
 {
-    emit_plan_and_collect_upgradable(
+    emit_plan_and_collect_apply_candidates(
         plan,
         |item| {
             let ResolvedPlanItem {
@@ -142,6 +143,7 @@ where
         },
         suppress_update_outcomes,
         Some(pinned),
+        supports_exact_versions,
     )
 }
 
@@ -180,6 +182,26 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct ForceMockTarget {
+        recommendation: RecommendedOutcome,
+        latest_version: Option<&'static str>,
+    }
+
+    impl ResolvedPlanTarget for ForceMockTarget {
+        fn recommendation(&self) -> &RecommendedOutcome {
+            &self.recommendation
+        }
+
+        fn latest_version(&self) -> Option<&str> {
+            self.latest_version
+        }
+
+        fn latest_age_secs(&self) -> Option<u64> {
+            Some(0)
+        }
+    }
+
     #[test]
     fn collects_updates_and_skips_pinned_when_not_suppressed() {
         let min_age = Duration::from_secs(3_600);
@@ -205,8 +227,13 @@ mod tests {
             ),
         ];
 
-        let upgradable =
-            collect_upgradable_from_resolved_plan("mock", plan, min_age, false, &pinned);
+        let upgradable: Vec<_> = collect_apply_candidates_from_resolved_plan(
+            "mock", plan, min_age, false, &pinned, true,
+        )
+        .into_iter()
+        .filter(ApplyCandidate::is_visible_by_default)
+        .map(ApplyCandidate::into_update)
+        .collect();
 
         assert_eq!(upgradable.len(), 1);
         assert_eq!(upgradable[0].name, "foo");
@@ -238,8 +265,12 @@ mod tests {
             ),
         ];
 
-        let upgradable =
-            collect_upgradable_from_resolved_plan("mock", plan, min_age, true, &pinned);
+        let upgradable: Vec<_> =
+            collect_apply_candidates_from_resolved_plan("mock", plan, min_age, true, &pinned, true)
+                .into_iter()
+                .filter(ApplyCandidate::is_visible_by_default)
+                .map(ApplyCandidate::into_update)
+                .collect();
 
         assert_eq!(upgradable.len(), 2);
         assert_eq!(upgradable[0].name, "foo");
@@ -261,9 +292,58 @@ mod tests {
             ResolvedPlanItem::new("broken", "1.0.0", Err("boom".to_string())),
         ];
 
-        let upgradable =
-            collect_upgradable_from_resolved_plan("mock", plan, min_age, false, &pinned);
+        let upgradable: Vec<_> = collect_apply_candidates_from_resolved_plan(
+            "mock", plan, min_age, false, &pinned, true,
+        )
+        .into_iter()
+        .filter(ApplyCandidate::is_visible_by_default)
+        .map(ApplyCandidate::into_update)
+        .collect();
 
         assert!(upgradable.is_empty());
+    }
+
+    #[test]
+    fn collects_delayed_force_candidate_as_hidden() {
+        let min_age = Duration::from_secs(3_600);
+        let pinned = BTreeSet::new();
+        let plan = vec![ResolvedPlanItem::new(
+            "fresh",
+            "1.0.0",
+            Ok(ForceMockTarget {
+                recommendation: RecommendedOutcome::DelayedByAge,
+                latest_version: Some("1.1.0"),
+            }),
+        )];
+
+        let candidates = collect_apply_candidates_from_resolved_plan(
+            "mock", plan, min_age, false, &pinned, true,
+        );
+
+        assert_eq!(candidates.len(), 1);
+        assert!(!candidates[0].is_visible_by_default());
+        let update = candidates.into_iter().next().unwrap().into_update();
+        assert_eq!(update.name, "fresh");
+        assert_eq!(update.target, "1.1.0");
+    }
+
+    #[test]
+    fn skips_force_candidate_when_target_is_unknown() {
+        let min_age = Duration::from_secs(3_600);
+        let pinned = BTreeSet::new();
+        let plan = vec![ResolvedPlanItem::new(
+            "unknown",
+            "1.0.0",
+            Ok(ForceMockTarget {
+                recommendation: RecommendedOutcome::DelayedByAge,
+                latest_version: None,
+            }),
+        )];
+
+        let candidates = collect_apply_candidates_from_resolved_plan(
+            "mock", plan, min_age, false, &pinned, true,
+        );
+
+        assert!(candidates.is_empty());
     }
 }

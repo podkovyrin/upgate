@@ -95,19 +95,20 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
             .context("planning execution failed")
         },
         |_installed, plan, runtime| {
-            Ok(collect_upgradable_from_resolved_plan(
+            Ok(collect_apply_candidates_from_resolved_plan(
                 PLUGIN.id(),
                 plan,
                 runtime.min_age,
                 runtime.suppress_update_outcomes,
                 runtime.pinned,
+                true,
             ))
         },
-        |ctx, _installed, upgradable| {
-            run_selective_or_global_apply_flow(
+        |ctx, _installed, candidates| {
+            run_selective_or_global_apply_candidate_flow(
                 ctx,
                 PLUGIN.id(),
-                upgradable,
+                candidates,
                 |selected| apply_bun_selected_updates(&bun, min_age, selected),
                 || apply_bun_updates(&bun, min_age),
             )
@@ -206,20 +207,35 @@ fn apply_bun_selected_updates(
         let name = item.name;
         let current = item.current;
         let target = item.target;
-
-        let package_spec = format!("{name}@{target}");
-        let args = [
-            "update".to_string(),
-            "-g".to_string(),
-            package_spec,
-            "--minimum-release-age".to_string(),
-            min_age_secs.clone(),
-        ];
+        let args = bun_selected_update_args(
+            &name,
+            &target,
+            &min_age_secs,
+            item.gate_bypass.min_release_age,
+        );
 
         if let Err(err) = run_cmd(bun, &args, CmdStatus::Success).mutating().output() {
             emit_apply_error(PLUGIN.id(), name, current, target, err);
         }
     }
+}
+
+fn bun_selected_update_args(
+    name: &str,
+    target: &str,
+    min_age_secs: &str,
+    bypass_min_release_age: bool,
+) -> Vec<String> {
+    let mut args = vec![
+        "update".to_string(),
+        "-g".to_string(),
+        format!("{name}@{target}"),
+    ];
+    if !bypass_min_release_age {
+        args.push("--minimum-release-age".to_string());
+        args.push(min_age_secs.to_string());
+    }
+    args
 }
 
 fn emit_bun_scan_outcomes(
@@ -452,5 +468,31 @@ mod tests {
             "error: missing lockfile, nothing outdated"
         ));
         assert!(is_missing_global_manifest("error: Lockfile not found"));
+    }
+
+    #[test]
+    fn selected_update_args_keep_min_age_by_default() {
+        assert_eq!(
+            bun_selected_update_args("typescript", "5.9.3", "604800", false),
+            vec![
+                "update".to_string(),
+                "-g".to_string(),
+                "typescript@5.9.3".to_string(),
+                "--minimum-release-age".to_string(),
+                "604800".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn selected_update_args_omit_min_age_when_bypassed() {
+        assert_eq!(
+            bun_selected_update_args("typescript", "5.9.3", "604800", true),
+            vec![
+                "update".to_string(),
+                "-g".to_string(),
+                "typescript@5.9.3".to_string(),
+            ]
+        );
     }
 }

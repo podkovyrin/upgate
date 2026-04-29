@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use super::types::{DelayedLatest, PlanDecision, VersionPolicyMeta};
+use super::types::{CandidateVersionMeta, DelayedLatest, PlanDecision, VersionPolicyMeta};
 use crate::managers::shared::versioning::policy::{
-    PolicyWarning, RecommendedOutcome, VersionPolicy, VersionPolicyResolution,
+    CandidateEvaluation, PolicyWarning, RecommendedOutcome, VersionPolicy, VersionPolicyResolution,
 };
 use crate::outcome::DelayedReason;
 use crate::util::time::human_age;
@@ -11,6 +11,12 @@ pub trait ResolvedPlanTarget {
     fn recommendation(&self) -> &RecommendedOutcome;
     fn latest_version(&self) -> Option<&str>;
     fn latest_age_secs(&self) -> Option<u64>;
+    fn force_candidate_version(&self) -> Option<&str> {
+        self.latest_version()
+    }
+    fn candidate_evaluations(&self) -> &[CandidateEvaluation] {
+        &[]
+    }
     fn version_policy(&self) -> Option<VersionPolicy> {
         None
     }
@@ -39,6 +45,14 @@ impl ResolvedPlanTarget for VersionPolicyResolution {
 
     fn latest_age_secs(&self) -> Option<u64> {
         self.latest_policy_eligible_age_secs
+    }
+
+    fn force_candidate_version(&self) -> Option<&str> {
+        self.latest_overall_version.as_deref()
+    }
+
+    fn candidate_evaluations(&self) -> &[CandidateEvaluation] {
+        &self.evaluations
     }
 
     fn version_policy(&self) -> Option<VersionPolicy> {
@@ -75,12 +89,15 @@ where
                 target: target_version.clone(),
                 delayed_latest: delayed_latest_for(&target, Some(target_version.as_str()), min_age),
                 version_policy: version_policy_meta(&target),
+                candidate_versions: candidate_versions_for(&target),
             },
             RecommendedOutcome::DelayedByAge => PlanDecision::DelayedNoEligible {
                 required_age: human_age(min_age.as_secs()),
                 delayed_latest: delayed_latest_for(&target, None, min_age),
                 delayed_reason: delayed_reason_for(&target),
                 version_policy: version_policy_meta(&target),
+                force_target: target.force_candidate_version().map(str::to_string),
+                candidate_versions: candidate_versions_for(&target),
             },
             RecommendedOutcome::CurrentNoNewer => PlanDecision::NoChange,
             RecommendedOutcome::CurrentBlockedByPolicy => PlanDecision::CurrentBlockedByPolicy {
@@ -89,10 +106,30 @@ where
                     latest_blocked_version: None,
                     warning: None,
                 }),
+                force_target: target.force_candidate_version().map(str::to_string),
+                candidate_versions: candidate_versions_for(&target),
             },
         },
         Err(err) => PlanDecision::Error(err),
     }
+}
+
+fn candidate_versions_for<T>(target: &T) -> Vec<CandidateVersionMeta>
+where
+    T: ResolvedPlanTarget,
+{
+    target
+        .candidate_evaluations()
+        .iter()
+        .map(|candidate| CandidateVersionMeta {
+            version: candidate.version.clone(),
+            age: human_age(candidate.age_secs),
+            policy_allowed: candidate.policy_allowed,
+            age_allowed: candidate.age_allowed,
+            policy_block_reason: candidate.policy_block_reason,
+            policy_warning: candidate.policy_warning,
+        })
+        .collect()
 }
 
 fn delayed_latest_for<T>(
@@ -241,6 +278,8 @@ mod tests {
                 delayed_latest,
                 delayed_reason,
                 version_policy,
+                force_target,
+                candidate_versions,
             } => {
                 assert_eq!(required_age, "2h");
                 assert_eq!(delayed_reason, DelayedReason::NoAgeEligibleRelease);
@@ -248,6 +287,8 @@ mod tests {
                 assert_eq!(delayed.latest_version, "1.1.0");
                 assert_eq!(delayed.latest_age, "1h");
                 assert!(version_policy.is_none());
+                assert_eq!(force_target.as_deref(), Some("1.1.0"));
+                assert!(candidate_versions.is_empty());
             }
             _ => panic!("expected PlanDecision::DelayedNoEligible"),
         }
@@ -312,11 +353,13 @@ mod tests {
                 target,
                 delayed_latest,
                 version_policy,
+                candidate_versions,
             } => {
                 assert_eq!(target, "1.2.0");
                 let delayed = delayed_latest.expect("expected delayed latest metadata");
                 assert_eq!(delayed.latest_version, "1.3.0");
                 assert!(version_policy.is_none());
+                assert!(candidate_versions.is_empty());
             }
             _ => panic!("expected PlanDecision::Update"),
         }
@@ -337,7 +380,11 @@ mod tests {
         );
 
         match decision {
-            PlanDecision::CurrentBlockedByPolicy { version_policy } => {
+            PlanDecision::CurrentBlockedByPolicy {
+                version_policy,
+                force_target,
+                candidate_versions,
+            } => {
                 assert_eq!(version_policy.policy, VersionPolicy::Stable);
                 assert_eq!(
                     version_policy.latest_blocked_version.as_deref(),
@@ -347,6 +394,8 @@ mod tests {
                     version_policy.warning,
                     Some(PolicyWarning::InstalledTrackUnknownFallbackStable)
                 );
+                assert!(force_target.is_none());
+                assert!(candidate_versions.is_empty());
             }
             _ => panic!("expected PlanDecision::CurrentBlockedByPolicy"),
         }

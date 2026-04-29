@@ -89,8 +89,8 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                 runtime.pinned,
             )
         },
-        |ctx, _discovered, upgradable| {
-            run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, apply_go_updates)
+        |ctx, _discovered, candidates| {
+            run_per_item_apply_candidate_flow(ctx, PLUGIN.id(), candidates, apply_go_updates)
         },
     )
 }
@@ -150,7 +150,7 @@ fn collect_go_plan_and_upgradable(
     min_age: Duration,
     suppress_update_outcomes: bool,
     pinned: &BTreeSet<String>,
-) -> Result<Vec<PlannedUpdate>> {
+) -> Result<Vec<ApplyCandidate>> {
     emit_go_discovery_skip_outcomes(discovered);
 
     let managed_count = discovered
@@ -182,23 +182,27 @@ fn collect_go_plan_and_upgradable(
         ));
     }
 
-    let mut upgradable = collect_upgradable_from_resolved_plan(
+    let mut candidates = collect_apply_candidates_from_resolved_plan(
         PLUGIN.id(),
         resolved_plan,
         min_age,
         suppress_update_outcomes,
         pinned,
+        true,
     );
 
-    for item in &mut upgradable {
-        item.apply_spec_base = install_path_by_name.get(&item.name).cloned();
+    for candidate in &mut candidates {
+        let install_path = install_path_by_name.get(&candidate.update().name).cloned();
+        candidate.update_tree_mut(|item| {
+            item.apply_spec_base = install_path.clone();
 
-        if suppress_update_outcomes && is_pinned(&item.name, pinned) {
-            item.delayed_latest = None;
-        }
+            if suppress_update_outcomes && is_pinned(&item.name, pinned) {
+                item.delayed_latest = None;
+            }
+        });
     }
 
-    Ok(upgradable)
+    Ok(candidates)
 }
 
 fn emit_go_discovery_skip_outcomes(discovered: &[GoDiscoveredTool]) {
@@ -560,7 +564,7 @@ fn parse_go_semver(raw: &str) -> Option<Version> {
 mod tests {
     use super::*;
     use crate::managers::shared::versioning::policy::{
-        RecommendedOutcome, delayed_candidate_for_test,
+        CandidateEvaluation, RecommendedOutcome, ReleaseClass, delayed_candidate_for_test,
     };
 
     fn resolution_for_delayed_note(
@@ -582,6 +586,58 @@ mod tests {
             blocked_by_policy_count: 0,
             blocked_by_age_count: 1,
             evaluations: Vec::new(),
+        }
+    }
+
+    fn candidate_evaluation(version: &str) -> CandidateEvaluation {
+        CandidateEvaluation {
+            version: version.to_string(),
+            release_class: ReleaseClass::Final,
+            age_secs: 10 * 24 * 60 * 60,
+            policy_allowed: true,
+            age_allowed: true,
+            effective_allowed: true,
+            policy_block_reason: None,
+            policy_warning: None,
+        }
+    }
+
+    fn resolution_with_candidates(selected: &str, candidates: &[&str]) -> VersionPolicyResolution {
+        VersionPolicyResolution {
+            configured_policy: VersionPolicy::Disabled,
+            recommendation: RecommendedOutcome::Update {
+                target_version: selected.to_string(),
+            },
+            latest_overall_version: candidates.first().map(|version| (*version).to_string()),
+            latest_overall_age_secs: Some(10 * 24 * 60 * 60),
+            latest_policy_eligible_version: candidates
+                .first()
+                .map(|version| (*version).to_string()),
+            latest_policy_eligible_age_secs: Some(10 * 24 * 60 * 60),
+            latest_age_eligible_version: candidates.first().map(|version| (*version).to_string()),
+            has_newer_versions: !candidates.is_empty(),
+            blocked_by_policy_count: 0,
+            blocked_by_age_count: 0,
+            evaluations: candidates
+                .iter()
+                .map(|version| candidate_evaluation(version))
+                .collect(),
+        }
+    }
+
+    fn managed_tool(binary_name: &str, install_path: &str) -> GoManagedTool {
+        GoManagedTool {
+            binary_name: binary_name.to_string(),
+            install_path: install_path.to_string(),
+            module_path: install_path.to_string(),
+            current_version: "v1.0.0".to_string(),
+        }
+    }
+
+    fn plan_item(tool: GoManagedTool, selected: &str, candidates: &[&str]) -> GoPlanItem {
+        GoPlanItem {
+            tool,
+            resolved: Ok(resolution_with_candidates(selected, candidates)),
         }
     }
 
@@ -639,6 +695,35 @@ mod tests {
 
         assert!(
             delayed_candidate_for_test(&target, Duration::from_secs(7 * 24 * 60 * 60)).is_some()
+        );
+    }
+
+    #[test]
+    fn exact_version_candidates_keep_go_install_path() {
+        let install_path = "example.com/tools/cmd/tool";
+        let tool = managed_tool("tool", install_path);
+        let discovered = vec![GoDiscoveredTool::Managed(tool.clone())];
+        let plan = vec![plan_item(tool, "v1.1.0", &["v1.2.0", "v1.1.0"])];
+
+        let candidates = collect_go_plan_and_upgradable(
+            &discovered,
+            plan,
+            Duration::ZERO,
+            true,
+            &BTreeSet::new(),
+        )
+        .expect("collect go candidates");
+
+        let selected_alternate = candidates[0]
+            .versions()
+            .iter()
+            .position(|version| version.update().target == "v1.2.0")
+            .map(|idx| candidates[0].clone_selected_update(idx))
+            .expect("alternate candidate version");
+
+        assert_eq!(
+            selected_alternate.apply_spec_base.as_deref(),
+            Some(install_path)
         );
     }
 }

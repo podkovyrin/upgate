@@ -76,16 +76,17 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
             .context("planning execution failed")
         },
         |_plan_seed, plan, runtime| {
-            Ok(collect_upgradable_from_resolved_plan(
+            Ok(collect_apply_candidates_from_resolved_plan(
                 PLUGIN.id(),
                 plan,
                 runtime.min_age,
                 runtime.suppress_update_outcomes,
                 runtime.pinned,
+                true,
             ))
         },
-        |ctx, _plan_seed, upgradable| {
-            run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, apply_pnpm_updates)
+        |ctx, _plan_seed, candidates| {
+            run_per_item_apply_candidate_flow(ctx, PLUGIN.id(), candidates, apply_pnpm_updates)
         },
     )
 }

@@ -547,7 +547,7 @@ fn version_cells(item: &ItemOutcome, theme: OutputTheme) -> (TableCell, TableCel
     }
 }
 
-fn outcome_note(item: &ItemOutcome, theme: OutputTheme) -> String {
+pub(crate) fn outcome_note(item: &ItemOutcome, theme: OutputTheme) -> String {
     let mut note = String::new();
     append_status_note(&mut note, item, theme);
     append_current_age_note(&mut note, item, theme);
@@ -560,9 +560,11 @@ fn render_outcome_table(rows: &[OutcomeTableRow], color: bool) -> Vec<String> {
     let widths = table_widths(rows, &headers, &columns);
 
     std::iter::once(render_table_cells(headers.iter(), &widths))
-        .chain(rows.iter().map(|row| {
-            render_table_cells(columns.iter().map(|column| row.cell(*column)), &widths)
-        }))
+        .chain(
+            rows.iter().map(|row| {
+                render_table_cells(columns.iter().map(|column| row.cell(*column)), &widths)
+            }),
+        )
         .collect()
 }
 

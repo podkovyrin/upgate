@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use super::PlannedUpdate;
+use super::{ApplyCandidate, PlannedUpdate};
 use crate::managers::runtime::ManagerCtx;
 use crate::managers::shared::versioning::policy::VersionPolicy;
 use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
@@ -14,7 +14,23 @@ pub fn run_per_item_apply_flow<F>(
 where
     F: FnOnce(Vec<PlannedUpdate>),
 {
-    let Some(selection) = resolve_apply_selection(ctx, manager_id, upgradable)? else {
+    let candidates = upgradable
+        .into_iter()
+        .map(ApplyCandidate::recommended)
+        .collect();
+    run_per_item_apply_candidate_flow(ctx, manager_id, candidates, apply_selected)
+}
+
+pub fn run_per_item_apply_candidate_flow<F>(
+    ctx: &ManagerCtx,
+    manager_id: &'static str,
+    candidates: Vec<ApplyCandidate>,
+    apply_selected: F,
+) -> Result<()>
+where
+    F: FnOnce(Vec<PlannedUpdate>),
+{
+    let Some(selection) = resolve_apply_selection(ctx, manager_id, candidates)? else {
         return Ok(());
     };
 
@@ -34,7 +50,32 @@ where
     G: FnOnce() -> std::result::Result<(), E>,
     E: std::fmt::Display,
 {
-    let Some(selection) = resolve_apply_selection(ctx, manager_id, upgradable)? else {
+    let candidates = upgradable
+        .into_iter()
+        .map(ApplyCandidate::recommended)
+        .collect();
+    run_selective_or_global_apply_candidate_flow(
+        ctx,
+        manager_id,
+        candidates,
+        apply_selected,
+        apply_all,
+    )
+}
+
+pub fn run_selective_or_global_apply_candidate_flow<F, G, E>(
+    ctx: &ManagerCtx,
+    manager_id: &'static str,
+    candidates: Vec<ApplyCandidate>,
+    apply_selected: F,
+    apply_all: G,
+) -> Result<()>
+where
+    F: FnOnce(Vec<PlannedUpdate>),
+    G: FnOnce() -> std::result::Result<(), E>,
+    E: std::fmt::Display,
+{
+    let Some(selection) = resolve_apply_selection(ctx, manager_id, candidates)? else {
         return Ok(());
     };
 
@@ -64,10 +105,10 @@ fn should_apply_all(
 fn resolve_apply_selection(
     ctx: &ManagerCtx,
     manager_id: &'static str,
-    upgradable: Vec<PlannedUpdate>,
+    candidates: Vec<ApplyCandidate>,
 ) -> Result<Option<crate::interactive::apply::ApplySelection>> {
     let selection =
-        crate::interactive::apply::select_upgradable_items_with_meta(ctx, manager_id, upgradable)?;
+        crate::interactive::apply::select_apply_candidates_with_meta(ctx, manager_id, candidates)?;
 
     if selection.selected.is_empty() || ctx.is_dry_run() {
         return Ok(None);

@@ -11,9 +11,10 @@ use crossterm::{cursor, execute, queue};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::config::is_pinned;
-use crate::managers::PlannedUpdate;
+use crate::managers::{ApplyCandidate, PlannedUpdate};
 use crate::outcome::{render_to_version, version_label};
 use crate::ui::{OutputTheme, output_theme, with_spinner_suspended};
+use crate::util::text::strip_v_prefix;
 
 struct Line {
     plain: String,
@@ -21,7 +22,8 @@ struct Line {
 }
 
 const DIALOG_TITLE_PREFIX: &str = "Select updates for";
-const PINNED_LABEL: &str = " (pinned)";
+const PINNED_LABEL: &str = "(pinned)";
+const FORCED_LABEL: &str = "forced";
 const DIALOG_BOX_OVERHEAD: usize = 4;
 const INTERACTIVE_TABLE_GAP: &str = "  ";
 const ELLIPSIS: char = '…';
@@ -34,9 +36,20 @@ const MULTI_SELECT_KEYBINDS: &[(&str, &str)] = &[
     ("enter", "confirm"),
 ];
 
+const ADVANCED_KEYBINDS: &[(&str, &str)] = &[("v", "tree"), ("←/h", "collapse"), ("→/l", "expand")];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DialogView {
+    List,
+    Tree,
+}
+
 struct MultiSelectState {
     selected: Vec<bool>,
+    selected_version_idx: Vec<usize>,
+    expanded: Vec<bool>,
     cursor_idx: usize,
+    view: DialogView,
 }
 
 struct DialogStyle<'a> {
@@ -50,9 +63,12 @@ struct DialogStyle<'a> {
 #[derive(Debug, Clone, Copy)]
 struct InteractiveTableWidths {
     prefix: usize,
+    tree: usize,
     name: usize,
     current: usize,
     target: usize,
+    status: usize,
+    note: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -79,6 +95,18 @@ enum SelectionAction {
     Toggle,
     SelectAll,
     SelectNone,
+    ToggleView,
+    Expand,
+    Collapse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisibleRow {
+    Parent(usize),
+    Version {
+        parent_idx: usize,
+        version_idx: usize,
+    },
 }
 
 #[derive(Debug)]
@@ -104,38 +132,45 @@ pub fn ensure_tty_available() -> Result<()> {
     Ok(())
 }
 
-pub fn choose_items_for_manager(
+pub fn choose_apply_candidates_for_manager(
     manager: &str,
-    items: &[PlannedUpdate],
+    candidates: &[ApplyCandidate],
     pinned: &BTreeSet<String>,
-) -> Result<Vec<bool>> {
-    if items.is_empty() {
+) -> Result<Vec<Option<PlannedUpdate>>> {
+    if candidates.is_empty() {
         return Ok(Vec::new());
     }
 
-    with_spinner_suspended(|| run_multi_select_dialog(manager, items, pinned))
+    with_spinner_suspended(|| run_multi_select_dialog(manager, candidates, pinned))
 }
 
 fn run_multi_select_dialog(
     manager: &str,
-    items: &[PlannedUpdate],
+    candidates: &[ApplyCandidate],
     pinned: &BTreeSet<String>,
-) -> Result<Vec<bool>> {
+) -> Result<Vec<Option<PlannedUpdate>>> {
     let theme = output_theme();
     let color = theme.color();
     let title = title_line(manager, theme);
-    let footer = key_footer_line(color, MULTI_SELECT_KEYBINDS);
-    let table_widths = interactive_table_widths(items);
+    let has_advanced = has_advanced_view(candidates);
+    let footer = footer_line(color, has_advanced);
+    let table_widths = interactive_table_widths(candidates);
     let desired_inner_width =
         multi_select_desired_inner_width(&title.plain, &footer.plain, table_widths);
 
     with_dialog_terminal(|out, last_height| {
         let mut state = MultiSelectState {
-            selected: items
+            selected: candidates
                 .iter()
-                .map(|item| !is_pinned(&item.name, pinned))
+                .map(|candidate| {
+                    candidate.is_selected_by_default()
+                        && !is_pinned(&candidate.update().name, pinned)
+                })
                 .collect(),
+            selected_version_idx: default_selected_version_indices(candidates),
+            expanded: vec![false; candidates.len()],
             cursor_idx: 0,
+            view: DialogView::List,
         };
 
         let style = DialogStyle {
@@ -146,7 +181,7 @@ fn run_multi_select_dialog(
             table_widths,
         };
 
-        run_dialog_loop(out, last_height, &mut state, items, &style)
+        run_dialog_loop(out, last_height, &mut state, candidates, &style)
     })
 }
 
@@ -181,26 +216,28 @@ fn run_dialog_loop(
     out: &mut io::Stdout,
     last_height: &mut usize,
     state: &mut MultiSelectState,
-    items: &[PlannedUpdate],
+    candidates: &[ApplyCandidate],
     style: &DialogStyle<'_>,
-) -> Result<Vec<bool>> {
+) -> Result<Vec<Option<PlannedUpdate>>> {
     loop {
-        let mut body = Vec::with_capacity(items.len());
+        let visible_rows = visible_rows(candidates, state);
+        clamp_cursor(state, visible_rows.len());
+        let mut body = Vec::with_capacity(visible_rows.len());
 
-        for (idx, item) in items.iter().enumerate() {
-            let marker = selection_marker(state.selected[idx]);
-            let pointer = if idx == state.cursor_idx { ">" } else { " " };
-            let prefix = format!("{pointer} {marker}");
-            let mut line = update_row_line(
-                item,
-                &prefix,
-                state.selected[idx],
-                style.color,
-                style.table_widths,
+        for (visible_idx, row) in visible_rows.iter().copied().enumerate() {
+            let pointer = if visible_idx == state.cursor_idx {
+                ">"
+            } else {
+                " "
+            };
+            let line = row_line(
+                candidates,
+                state,
+                row,
+                pointer,
+                visible_idx == state.cursor_idx,
+                style,
             );
-            if style.color && idx == state.cursor_idx {
-                line.styled = line.styled.as_str().black().on_cyan().bold().to_string();
-            }
 
             body.push(line);
         }
@@ -220,28 +257,74 @@ fn run_dialog_loop(
 
         match key_code {
             KeyCode::Up | KeyCode::Char('k') => {
+                if visible_rows.is_empty() {
+                    continue;
+                }
                 state.cursor_idx = if state.cursor_idx == 0 {
-                    items.len() - 1
+                    visible_rows.len() - 1
                 } else {
                     state.cursor_idx - 1
                 };
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                state.cursor_idx = if state.cursor_idx + 1 >= items.len() {
+                if visible_rows.is_empty() {
+                    continue;
+                }
+                state.cursor_idx = if state.cursor_idx + 1 >= visible_rows.len() {
                     0
                 } else {
                     state.cursor_idx + 1
                 };
             }
             KeyCode::Enter => {
-                return Ok(std::mem::take(&mut state.selected));
+                return Ok(selected_updates(candidates, state));
             }
             _ => {
                 if let Some(action) = selection_action_for_key(key_code) {
-                    apply_selection_action_to_list(&mut state.selected, state.cursor_idx, action);
+                    apply_selection_action_to_list(state, candidates, &visible_rows, action);
                 }
             }
         }
+    }
+}
+
+fn visible_rows(candidates: &[ApplyCandidate], state: &MultiSelectState) -> Vec<VisibleRow> {
+    let mut rows = Vec::new();
+    for (idx, candidate) in candidates.iter().enumerate() {
+        let visible = candidate.is_visible_by_default()
+            || state.view == DialogView::Tree
+            || state.selected[idx];
+        if !visible {
+            continue;
+        }
+
+        rows.push(VisibleRow::Parent(idx));
+
+        if state.view == DialogView::Tree
+            && state.expanded[idx]
+            && candidate.has_selectable_versions()
+        {
+            rows.extend(
+                candidate
+                    .versions()
+                    .iter()
+                    .enumerate()
+                    .map(|(version_idx, _)| VisibleRow::Version {
+                        parent_idx: idx,
+                        version_idx,
+                    }),
+            );
+        }
+    }
+
+    rows
+}
+
+fn clamp_cursor(state: &mut MultiSelectState, visible_len: usize) {
+    if visible_len == 0 {
+        state.cursor_idx = 0;
+    } else if state.cursor_idx >= visible_len {
+        state.cursor_idx = visible_len - 1;
     }
 }
 
@@ -271,21 +354,198 @@ const fn selection_action_for_key(code: KeyCode) -> Option<SelectionAction> {
         KeyCode::Char(' ' | 'x') => Some(SelectionAction::Toggle),
         KeyCode::Char('a') => Some(SelectionAction::SelectAll),
         KeyCode::Char('n') => Some(SelectionAction::SelectNone),
+        KeyCode::Char('v') => Some(SelectionAction::ToggleView),
+        KeyCode::Right | KeyCode::Char('l') => Some(SelectionAction::Expand),
+        KeyCode::Left | KeyCode::Char('h') => Some(SelectionAction::Collapse),
         _ => None,
     }
 }
 
 fn apply_selection_action_to_list(
-    selected: &mut [bool],
-    cursor_idx: usize,
+    state: &mut MultiSelectState,
+    candidates: &[ApplyCandidate],
+    rows: &[VisibleRow],
     action: SelectionAction,
 ) {
     match action {
         SelectionAction::Toggle => {
-            selected[cursor_idx] = !selected[cursor_idx];
+            toggle_current_row(state, candidates, rows);
         }
-        SelectionAction::SelectAll => selected.fill(true),
-        SelectionAction::SelectNone => selected.fill(false),
+        SelectionAction::SelectAll => {
+            for row in rows {
+                if let VisibleRow::Parent(idx) = *row {
+                    state.selected[idx] = true;
+                }
+            }
+        }
+        SelectionAction::SelectNone => {
+            for row in rows {
+                if let VisibleRow::Parent(idx) = *row {
+                    state.selected[idx] = false;
+                }
+            }
+        }
+        SelectionAction::ToggleView => {
+            if has_advanced_view(candidates) {
+                state.view = match state.view {
+                    DialogView::List => DialogView::Tree,
+                    DialogView::Tree => DialogView::List,
+                };
+                let visible_len = visible_rows(candidates, state).len();
+                clamp_cursor(state, visible_len);
+            }
+        }
+        SelectionAction::Expand => {
+            if let Some(parent_idx) = current_parent_index(rows, state.cursor_idx)
+                && candidates[parent_idx].has_selectable_versions()
+            {
+                state.expanded[parent_idx] = true;
+            }
+        }
+        SelectionAction::Collapse => {
+            if let Some(parent_idx) = current_parent_index(rows, state.cursor_idx) {
+                state.expanded[parent_idx] = false;
+            }
+        }
+    }
+}
+
+fn toggle_current_row(
+    state: &mut MultiSelectState,
+    candidates: &[ApplyCandidate],
+    visible_rows: &[VisibleRow],
+) {
+    match visible_rows.get(state.cursor_idx).copied() {
+        Some(VisibleRow::Parent(idx)) => {
+            state.selected[idx] = !state.selected[idx];
+        }
+        Some(VisibleRow::Version {
+            parent_idx,
+            version_idx,
+        }) => {
+            state.selected[parent_idx] = true;
+            state.selected_version_idx[parent_idx] = version_idx;
+            if !candidates[parent_idx].is_visible_by_default() {
+                state.expanded[parent_idx] = true;
+            }
+        }
+        None => {}
+    }
+}
+
+fn current_parent_index(visible_rows: &[VisibleRow], cursor_idx: usize) -> Option<usize> {
+    match visible_rows.get(cursor_idx).copied()? {
+        VisibleRow::Parent(idx) => Some(idx),
+        VisibleRow::Version { parent_idx, .. } => Some(parent_idx),
+    }
+}
+
+fn selected_updates(
+    candidates: &[ApplyCandidate],
+    state: &MultiSelectState,
+) -> Vec<Option<PlannedUpdate>> {
+    candidates
+        .iter()
+        .enumerate()
+        .map(|(idx, candidate)| {
+            state
+                .selected
+                .get(idx)
+                .copied()
+                .unwrap_or(false)
+                .then(|| candidate.clone_selected_update(state.selected_version_idx[idx]))
+        })
+        .collect()
+}
+
+fn default_selected_version_indices(candidates: &[ApplyCandidate]) -> Vec<usize> {
+    candidates
+        .iter()
+        .map(|candidate| {
+            candidate
+                .versions()
+                .iter()
+                .position(|version| version.update().target == candidate.update().target)
+                .unwrap_or(0)
+        })
+        .collect()
+}
+
+fn has_advanced_view(candidates: &[ApplyCandidate]) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| !candidate.is_visible_by_default() || candidate.has_selectable_versions())
+}
+
+fn row_line(
+    candidates: &[ApplyCandidate],
+    state: &MultiSelectState,
+    row: VisibleRow,
+    pointer: &str,
+    highlighted: bool,
+    style: &DialogStyle<'_>,
+) -> Line {
+    match row {
+        VisibleRow::Parent(idx) => {
+            let candidate = &candidates[idx];
+            let item = candidate.clone_selected_update(state.selected_version_idx[idx]);
+            let selected = state.selected[idx];
+            let tree_marker = tree_marker(candidate, state, idx, style.color);
+            let prefix = format!("{pointer} {}", selection_marker(selected));
+            update_row_line(
+                &item,
+                &prefix,
+                tree_marker,
+                candidate.note(),
+                selected,
+                candidate.is_force_candidate(),
+                style.color,
+                style.table_widths,
+                highlighted,
+                RowContent::Full,
+            )
+        }
+        VisibleRow::Version {
+            parent_idx,
+            version_idx,
+        } => {
+            let candidate = &candidates[parent_idx];
+            let version = &candidate.versions()[version_idx];
+            let selected =
+                state.selected[parent_idx] && state.selected_version_idx[parent_idx] == version_idx;
+            let prefix = format!("{pointer} {}", selection_marker(selected));
+            update_row_line(
+                version.update(),
+                &prefix,
+                "  ",
+                version.note(),
+                selected,
+                version.is_force(),
+                style.color,
+                style.table_widths,
+                highlighted,
+                RowContent::TargetOnly,
+            )
+        }
+    }
+}
+
+fn tree_marker(
+    candidate: &ApplyCandidate,
+    state: &MultiSelectState,
+    idx: usize,
+    color: bool,
+) -> &'static str {
+    if state.view != DialogView::Tree || !candidate.has_selectable_versions() {
+        return "  ";
+    }
+
+    if state.expanded[idx] {
+        if color { "▼" } else { "v" }
+    } else if color {
+        "▶"
+    } else {
+        ">"
     }
 }
 
@@ -403,102 +663,249 @@ const fn selection_marker(selected: bool) -> &'static str {
     if selected { "[x]" } else { "[ ]" }
 }
 
-fn interactive_table_widths(items: &[PlannedUpdate]) -> InteractiveTableWidths {
-    items
-        .iter()
-        .fold(
-            InteractiveTableWidths {
-                prefix: width("> [x]"),
-                name: 0,
-                current: 0,
-                target: 0,
-            },
-            |mut widths, item| {
-                widths.name = widths.name.max(width(&item.name));
+fn interactive_table_widths(candidates: &[ApplyCandidate]) -> InteractiveTableWidths {
+    candidates.iter().fold(
+        InteractiveTableWidths {
+            prefix: width("> [x]"),
+            tree: width("  "),
+            name: 0,
+            current: 0,
+            target: 0,
+            status: width(PINNED_LABEL).max(width(FORCED_LABEL)),
+            note: 0,
+        },
+        |mut widths, candidate| {
+            let item = candidate.update();
+            widths.name = widths.name.max(width(&item.name));
+            widths.current = widths.current.max(width(&version_label(&item.current)));
+            widths.target = widths.target.max(width(&version_label(&item.target)));
+            widths.note = widths.note.max(width(candidate.note()));
+            for version in candidate.versions() {
+                let item = version.update();
                 widths.current = widths.current.max(width(&version_label(&item.current)));
                 widths.target = widths.target.max(width(&version_label(&item.target)));
-                widths
-            },
-        )
+                widths.note = widths.note.max(width(version.note()));
+            }
+            widths
+        },
+    )
 }
 
 fn update_row_line(
     item: &PlannedUpdate,
     prefix: &str,
+    tree: &str,
+    note: &str,
     selected: bool,
+    force_candidate: bool,
     color: bool,
     widths: InteractiveTableWidths,
+    highlighted: bool,
+    content: RowContent,
 ) -> Line {
     let from_label = version_label(&item.current);
     let to_label = version_label(&item.target);
-    let pinned = !selected;
+    let name = match content {
+        RowContent::Full => item.name.as_str(),
+        RowContent::TargetOnly => "",
+    };
+    let from_display = match content {
+        RowContent::Full => from_label.as_str(),
+        RowContent::TargetOnly => "",
+    };
+    let status = match content {
+        RowContent::Full => row_status(selected, force_candidate),
+        RowContent::TargetOnly => "",
+    };
 
     let plain = update_row_text(
         RenderedCell::plain(prefix),
-        RenderedCell::plain(&item.name),
-        RenderedCell::plain(&from_label),
+        RenderedCell::plain(tree),
+        RenderedCell::plain(name),
+        RenderedCell::plain(from_display),
         RenderedCell::plain(&to_label),
-        pinned,
+        RenderedCell::plain(status),
+        RenderedCell::plain(note),
         widths,
+        false,
     );
 
-    let styled = if color && pinned {
+    let styled = if color && highlighted {
+        let prefix_rendered = selected_text(prefix);
+        let tree_rendered = selected_text(tree);
+        let name_rendered = selected_text(name);
+        let from_rendered = selected_text(from_display);
+        let to_rendered = selected_to_version(&from_label, &to_label);
+        let status_rendered = selected_status_text(status);
+        let note_rendered = selected_text(note);
+        update_row_text(
+            RenderedCell::styled(&prefix_rendered, width(prefix)),
+            RenderedCell::styled(&tree_rendered, width(tree)),
+            RenderedCell::styled(&name_rendered, width(name)),
+            RenderedCell::styled(&from_rendered, width(from_display)),
+            RenderedCell::styled(&to_rendered, width(&to_label)),
+            RenderedCell::styled(&status_rendered, width(status)),
+            RenderedCell::styled(&note_rendered, width(note)),
+            widths,
+            true,
+        )
+    } else if color && status == PINNED_LABEL {
         plain.as_str().dark_grey().to_string()
     } else {
         let name_rendered = if color {
-            item.name.as_str().bold().to_string()
+            name.bold().to_string()
         } else {
-            item.name.clone()
+            name.to_string()
         };
         let to_rendered = render_to_version(&from_label, &to_label, color, false);
+        let status_rendered = if color && status == FORCED_LABEL {
+            status.red().bold().to_string()
+        } else {
+            status.to_string()
+        };
         update_row_text(
             RenderedCell::plain(prefix),
-            RenderedCell::styled(&name_rendered, width(&item.name)),
-            RenderedCell::plain(&from_label),
+            RenderedCell::plain(tree),
+            RenderedCell::styled(&name_rendered, width(name)),
+            RenderedCell::plain(from_display),
             RenderedCell::styled(&to_rendered, width(&to_label)),
-            pinned,
+            RenderedCell::styled(&status_rendered, width(status)),
+            RenderedCell::plain(note),
             widths,
+            false,
         )
     };
 
     Line { plain, styled }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum RowContent {
+    Full,
+    TargetOnly,
+}
+
+fn row_status(selected: bool, force_candidate: bool) -> &'static str {
+    if selected && force_candidate {
+        FORCED_LABEL
+    } else if selected || force_candidate {
+        ""
+    } else {
+        PINNED_LABEL
+    }
+}
+
 fn update_row_text(
     prefix: RenderedCell<'_>,
+    tree: RenderedCell<'_>,
     name: RenderedCell<'_>,
     from: RenderedCell<'_>,
     to: RenderedCell<'_>,
-    pinned: bool,
+    status: RenderedCell<'_>,
+    note: RenderedCell<'_>,
     widths: InteractiveTableWidths,
+    highlighted: bool,
 ) -> String {
-    let mut line = format!(
-        "{}{gap}{}{gap}{}{gap}{}",
-        padded_cell(prefix, widths.prefix),
-        padded_cell(name, widths.name),
-        padded_cell(from, widths.current),
-        padded_cell(to, widths.target),
-        gap = INTERACTIVE_TABLE_GAP,
-    );
-    if pinned {
-        line.push_str(PINNED_LABEL);
-    }
+    let gap = if highlighted {
+        selected_text(INTERACTIVE_TABLE_GAP)
+    } else {
+        INTERACTIVE_TABLE_GAP.to_string()
+    };
 
-    line
+    format!(
+        "{}{}{}{}{}{}{}{}{}{}{}{}{}",
+        padded_cell(prefix, widths.prefix, highlighted),
+        gap,
+        padded_cell(tree, widths.tree, highlighted),
+        gap,
+        padded_cell(name, widths.name, highlighted),
+        gap,
+        padded_cell(from, widths.current, highlighted),
+        gap,
+        padded_cell(to, widths.target, highlighted),
+        gap,
+        padded_cell(status, widths.status, highlighted),
+        gap,
+        padded_cell(note, widths.note, highlighted),
+    )
 }
 
 fn interactive_table_body_width(widths: InteractiveTableWidths) -> usize {
     widths.prefix
+        + widths.tree
         + widths.name
         + widths.current
         + widths.target
-        + (3 * width(INTERACTIVE_TABLE_GAP))
-        + width(PINNED_LABEL)
+        + widths.status
+        + widths.note
+        + (6 * width(INTERACTIVE_TABLE_GAP))
 }
 
-fn padded_cell(cell: RenderedCell<'_>, target_width: usize) -> String {
+fn padded_cell(cell: RenderedCell<'_>, target_width: usize, highlighted: bool) -> String {
     let padding = target_width.saturating_sub(cell.width);
-    format!("{}{}", cell.text, " ".repeat(padding))
+    let pad = " ".repeat(padding);
+    if highlighted {
+        format!("{}{}", cell.text, selected_text(&pad))
+    } else {
+        format!("{}{}", cell.text, pad)
+    }
+}
+
+fn selected_text(text: &str) -> String {
+    text.black().on_cyan().bold().to_string()
+}
+
+fn selected_status_text(text: &str) -> String {
+    if text == FORCED_LABEL {
+        text.red().on_cyan().bold().to_string()
+    } else {
+        selected_text(text)
+    }
+}
+
+fn selected_to_version(from: &str, to: &str) -> String {
+    let from_core = strip_v_prefix(from);
+    let to_core = strip_v_prefix(to);
+    let from_parts: Vec<&str> = from_core.split('.').collect();
+    let to_parts: Vec<&str> = to_core.split('.').collect();
+    let changed_from = first_changed_part_index(&from_parts, &to_parts);
+
+    let mut out = String::new();
+    if to.starts_with('v') {
+        out.push_str(&selected_version_part("v", false));
+    }
+
+    for (idx, part) in to_parts.iter().enumerate() {
+        if idx > 0 {
+            out.push_str(&selected_text("."));
+        }
+
+        let changed = changed_from.is_some_and(|first| idx >= first);
+        out.push_str(&selected_version_part(part, changed));
+    }
+
+    out
+}
+
+fn selected_version_part(part: &str, changed: bool) -> String {
+    if changed {
+        part.blue().on_cyan().bold().to_string()
+    } else {
+        selected_text(part)
+    }
+}
+
+fn first_changed_part_index(from_parts: &[&str], to_parts: &[&str]) -> Option<usize> {
+    let max_len = from_parts.len().max(to_parts.len());
+    for idx in 0..max_len {
+        let a = from_parts.get(idx).copied();
+        let b = to_parts.get(idx).copied();
+        if a != b {
+            return Some(idx);
+        }
+    }
+
+    None
 }
 
 fn title_line(manager: &str, theme: OutputTheme) -> Line {
@@ -510,6 +917,19 @@ fn title_line(manager: &str, theme: OutputTheme) -> Line {
     };
 
     Line { plain, styled }
+}
+
+fn footer_line(color: bool, has_advanced: bool) -> Line {
+    if !has_advanced {
+        return key_footer_line(color, MULTI_SELECT_KEYBINDS);
+    }
+
+    let labels = MULTI_SELECT_KEYBINDS
+        .iter()
+        .chain(ADVANCED_KEYBINDS.iter())
+        .copied()
+        .collect::<Vec<_>>();
+    key_footer_line(color, &labels)
 }
 
 fn key_footer_line(color: bool, labels: &[(&str, &str)]) -> Line {
@@ -600,7 +1020,16 @@ mod tests {
             delayed_latest: None,
             version_policy: None,
             apply_spec_base: None,
+            gate_bypass: Default::default(),
         }
+    }
+
+    fn recommended_candidates(items: &[PlannedUpdate]) -> Vec<ApplyCandidate> {
+        items
+            .iter()
+            .cloned()
+            .map(ApplyCandidate::recommended)
+            .collect()
     }
 
     #[test]
@@ -609,10 +1038,33 @@ mod tests {
             planned_update("short", "1.0.0", "1.2.0"),
             planned_update("much-longer-name", "2.0.0", "2.1.0"),
         ];
-        let widths = interactive_table_widths(&items);
+        let candidates = recommended_candidates(&items);
+        let widths = interactive_table_widths(&candidates);
 
-        let first = update_row_line(&items[0], "> [x]", true, false, widths);
-        let second = update_row_line(&items[1], "  [x]", true, false, widths);
+        let first = update_row_line(
+            &items[0],
+            "> [x]",
+            "  ",
+            "",
+            true,
+            false,
+            false,
+            widths,
+            false,
+            RowContent::Full,
+        );
+        let second = update_row_line(
+            &items[1],
+            "  [x]",
+            "  ",
+            "",
+            true,
+            false,
+            false,
+            widths,
+            false,
+            RowContent::Full,
+        );
 
         assert!(!first.plain.contains("Status"));
         assert_eq!(first.plain.find("v1.0.0"), second.plain.find("v2.0.0"));
@@ -622,10 +1074,181 @@ mod tests {
     #[test]
     fn interactive_rows_keep_name_bold_when_color_is_enabled() {
         let item = planned_update("tool", "1.0.0", "1.2.0");
-        let widths = interactive_table_widths(std::slice::from_ref(&item));
+        let candidates = recommended_candidates(std::slice::from_ref(&item));
+        let widths = interactive_table_widths(&candidates);
 
-        let line = update_row_line(&item, "> [x]", true, true, widths);
+        let line = update_row_line(
+            &item,
+            "> [x]",
+            "  ",
+            "",
+            true,
+            false,
+            true,
+            widths,
+            false,
+            RowContent::Full,
+        );
 
         assert!(line.styled.contains("\u{1b}[1m"));
+    }
+
+    #[test]
+    fn highlighted_rows_keep_cell_formatting_and_cover_notes() {
+        let item = planned_update("tool", "1.0.0", "1.2.0");
+        let candidates = recommended_candidates(std::slice::from_ref(&item));
+        let widths = interactive_table_widths(&candidates);
+
+        let line = update_row_line(
+            &item,
+            "> [x]",
+            "  ",
+            "latest v1.3.0 too fresh",
+            true,
+            false,
+            true,
+            widths,
+            true,
+            RowContent::Full,
+        );
+
+        assert!(line.styled.contains(&selected_text("tool")));
+        assert!(
+            line.styled
+                .contains(&selected_to_version("v1.0.0", "v1.2.0"))
+        );
+        assert!(
+            line.styled
+                .contains(&selected_text("latest v1.3.0 too fresh"))
+        );
+        assert!(line.styled.contains(&selected_text(INTERACTIVE_TABLE_GAP)));
+    }
+
+    #[test]
+    fn target_only_rows_hide_name_current_and_status() {
+        let item = planned_update("tool", "1.0.0", "1.2.0");
+        let candidates = recommended_candidates(std::slice::from_ref(&item));
+        let widths = interactive_table_widths(&candidates);
+
+        let line = update_row_line(
+            &item,
+            "  [ ]",
+            "  ",
+            "released: 2d",
+            false,
+            false,
+            false,
+            widths,
+            false,
+            RowContent::TargetOnly,
+        );
+
+        assert!(!line.plain.contains("tool"));
+        assert!(!line.plain.contains("v1.0.0"));
+        assert!(!line.plain.contains(PINNED_LABEL));
+        assert!(line.plain.contains("v1.2.0"));
+        assert!(line.plain.contains("released: 2d"));
+    }
+
+    #[test]
+    fn tree_marker_column_keeps_names_aligned() {
+        let items = [
+            planned_update("expandable", "1.0.0", "1.2.0"),
+            planned_update("plain", "2.0.0", "2.1.0"),
+        ];
+        let candidates = recommended_candidates(&items);
+        let widths = interactive_table_widths(&candidates);
+
+        let expandable = update_row_line(
+            &items[0],
+            "> [x]",
+            "▶",
+            "",
+            true,
+            false,
+            false,
+            widths,
+            false,
+            RowContent::Full,
+        );
+        let plain = update_row_line(
+            &items[1],
+            "  [x]",
+            "  ",
+            "",
+            true,
+            false,
+            false,
+            widths,
+            false,
+            RowContent::Full,
+        );
+
+        let expandable_col =
+            width(&expandable.plain[..expandable.plain.find("expandable").unwrap()]);
+        let plain_col = width(&plain.plain[..plain.plain.find("plain").unwrap()]);
+
+        assert_eq!(expandable_col, plain_col);
+    }
+
+    #[test]
+    fn forced_rows_render_forced_status_in_red() {
+        let item = planned_update("tool", "1.0.0", "1.2.0");
+        let candidates = vec![ApplyCandidate::force_candidate(item.clone())];
+        let widths = interactive_table_widths(&candidates);
+
+        let line = update_row_line(
+            &item,
+            "> [x]",
+            "  ",
+            "",
+            true,
+            true,
+            true,
+            widths,
+            false,
+            RowContent::Full,
+        );
+
+        assert!(line.plain.contains(FORCED_LABEL));
+        assert!(line.styled.contains("\u{1b}["));
+    }
+
+    #[test]
+    fn unselected_force_rows_do_not_render_as_pinned() {
+        assert_eq!(row_status(false, true), "");
+    }
+
+    #[test]
+    fn hidden_force_candidate_stays_visible_only_when_selected() {
+        let items = [planned_update("tool", "1.0.0", "1.2.0")];
+        let candidates = vec![ApplyCandidate::force_candidate(items[0].clone())];
+        let mut state = MultiSelectState {
+            selected: vec![false],
+            selected_version_idx: vec![0],
+            expanded: vec![false],
+            cursor_idx: 0,
+            view: DialogView::List,
+        };
+
+        assert!(visible_rows(&candidates, &state).is_empty());
+
+        state.view = DialogView::Tree;
+        assert_eq!(
+            visible_rows(&candidates, &state),
+            vec![VisibleRow::Parent(0)]
+        );
+
+        state.selected[0] = true;
+        state.view = DialogView::List;
+        assert_eq!(
+            visible_rows(&candidates, &state),
+            vec![VisibleRow::Parent(0)]
+        );
+
+        state.view = DialogView::Tree;
+        state.selected[0] = false;
+        state.view = DialogView::List;
+        assert!(visible_rows(&candidates, &state).is_empty());
     }
 }

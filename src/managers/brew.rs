@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::config::is_pinned;
 use crate::managers::shared::plan::VersionPolicyMeta;
 use crate::managers::shared::versioning::policy::{
-    ReleaseClass, VersionPolicy, evaluate_version_policy,
+    GateBypass, ReleaseClass, VersionPolicy, evaluate_version_policy,
 };
 use crate::managers::shared::versioning::{
     DEV_LABELS, RC_LABELS, leading_alpha_prefix, matches_any_label, select_less_stable_class,
@@ -290,6 +290,7 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                         delayed_latest: None,
                         version_policy: item.version_policy.clone(),
                         apply_spec_base: Some(idx.to_string()),
+                        gate_bypass: GateBypass::NONE,
                     }),
                     PlanAction::Delayed { .. }
                     | PlanAction::CurrentBlockedByPolicy

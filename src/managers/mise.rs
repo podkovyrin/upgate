@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use crate::config::is_pinned;
 use crate::managers::shared::plan::DelayedLatest;
-use crate::managers::shared::versioning::policy::VersionPolicy;
+use crate::managers::shared::versioning::policy::{GateBypass, VersionPolicy};
 #[allow(clippy::wildcard_imports)]
 use crate::managers::*;
 use crate::outcome::{ItemOutcome, emit_text_outcome};
@@ -391,6 +391,7 @@ fn handle_pinned_mise_decision(
                 delayed_latest,
                 version_policy: None,
                 apply_spec_base: None,
+                gate_bypass: GateBypass::NONE,
             });
         }
         return;
@@ -418,6 +419,7 @@ fn handle_regular_mise_decision(
                 delayed_latest,
                 version_policy: None,
                 apply_spec_base: None,
+                gate_bypass: GateBypass::NONE,
             };
 
             if !suppress_update_outcomes {

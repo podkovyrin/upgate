@@ -76,22 +76,23 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
             .context("planning execution failed")
         },
         |_plan_seed, plan, runtime| {
-            Ok(collect_upgradable_from_resolved_plan(
+            Ok(collect_apply_candidates_from_resolved_plan(
                 PLUGIN.id(),
                 plan,
                 runtime.min_age,
                 runtime.suppress_update_outcomes,
                 runtime.pinned,
+                true,
             ))
         },
-        |ctx, _plan_seed, upgradable| {
+        |ctx, _plan_seed, candidates| {
             let min_age_days = ctx.policy.min_release_age.whole_days();
-            run_selective_or_global_apply_flow(
+            run_selective_or_global_apply_candidate_flow(
                 ctx,
                 PLUGIN.id(),
-                upgradable,
+                candidates,
                 |selected| {
-                    apply_npm_selected_updates(min_age_days, ctx.policy.version_policy, selected);
+                    apply_npm_selected_updates(min_age_days, selected);
                 },
                 || apply_npm_updates(min_age_days),
             )
@@ -173,36 +174,19 @@ fn apply_npm_updates(min_age_days: u64) -> Result<()> {
     Ok(())
 }
 
-fn apply_npm_selected_updates(
-    min_age_days: u64,
-    version_policy: VersionPolicy,
-    upgradable: Vec<crate::managers::PlannedUpdate>,
-) {
-    if version_policy == VersionPolicy::Disabled {
-        apply_npm_selected_legacy_updates(min_age_days, upgradable);
-    } else {
-        apply_npm_selected_exact_updates(min_age_days, upgradable);
-    }
-}
-
-fn apply_npm_selected_legacy_updates(
-    min_age_days: u64,
-    upgradable: Vec<crate::managers::PlannedUpdate>,
-) {
+fn apply_npm_selected_updates(min_age_days: u64, upgradable: Vec<crate::managers::PlannedUpdate>) {
     let min_age_days = min_age_days.to_string();
 
     for item in upgradable {
         let name = item.name;
         let current = item.current;
         let target = item.target;
-
-        let args = [
-            "-g".to_string(),
-            "update".to_string(),
-            name.clone(),
-            "--min-release-age".to_string(),
-            min_age_days.clone(),
-        ];
+        let args = npm_selected_update_args(
+            &name,
+            &target,
+            &min_age_days,
+            item.gate_bypass.min_release_age,
+        );
 
         if let Err(err) = run_cmd("npm", &args, CmdStatus::Success)
             .mutating()
@@ -213,33 +197,22 @@ fn apply_npm_selected_legacy_updates(
     }
 }
 
-fn apply_npm_selected_exact_updates(
-    min_age_days: u64,
-    upgradable: Vec<crate::managers::PlannedUpdate>,
-) {
-    let min_age_days = min_age_days.to_string();
-
-    for item in upgradable {
-        let name = item.name;
-        let current = item.current;
-        let target = item.target;
-        let package_spec = format!("{name}@{target}");
-
-        let args = [
-            "install".to_string(),
-            "-g".to_string(),
-            package_spec,
-            "--min-release-age".to_string(),
-            min_age_days.clone(),
-        ];
-
-        if let Err(err) = run_cmd("npm", &args, CmdStatus::Success)
-            .mutating()
-            .output()
-        {
-            emit_apply_error(PLUGIN.id(), name, current, target, err);
-        }
+fn npm_selected_update_args(
+    name: &str,
+    target: &str,
+    min_age_days: &str,
+    bypass_min_release_age: bool,
+) -> Vec<String> {
+    let mut args = vec![
+        "install".to_string(),
+        "-g".to_string(),
+        format!("{name}@{target}"),
+    ];
+    if !bypass_min_release_age {
+        args.push("--min-release-age".to_string());
+        args.push(min_age_days.to_string());
     }
+    args
 }
 
 fn npm_installed_global() -> Result<BTreeMap<String, String>> {
@@ -317,4 +290,35 @@ fn npm_semver_time_releases(
     }
 
     parse_semver_time_releases(PLUGIN.id(), name, timestamps_by_version)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selected_update_args_use_exact_target() {
+        assert_eq!(
+            npm_selected_update_args("typescript", "5.9.3", "7", false),
+            vec![
+                "install".to_string(),
+                "-g".to_string(),
+                "typescript@5.9.3".to_string(),
+                "--min-release-age".to_string(),
+                "7".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn selected_update_args_omit_min_age_when_bypassed() {
+        assert_eq!(
+            npm_selected_update_args("typescript", "5.9.3", "7", true),
+            vec![
+                "install".to_string(),
+                "-g".to_string(),
+                "typescript@5.9.3".to_string(),
+            ]
+        );
+    }
 }

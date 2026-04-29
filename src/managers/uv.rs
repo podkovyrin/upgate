@@ -177,16 +177,17 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
             .context("planning execution failed")
         },
         |_installed, plan, runtime| {
-            Ok(collect_upgradable_from_resolved_plan(
+            Ok(collect_apply_candidates_from_resolved_plan(
                 PLUGIN.id(),
                 plan,
                 runtime.min_age,
                 runtime.suppress_update_outcomes,
                 runtime.pinned,
+                false,
             ))
         },
-        |ctx, _installed, upgradable| {
-            run_per_item_apply_flow(ctx, PLUGIN.id(), upgradable, move |selected| {
+        |ctx, _installed, candidates| {
+            run_per_item_apply_candidate_flow(ctx, PLUGIN.id(), candidates, move |selected| {
                 apply_uv_updates(&apply_min_age_raw, selected);
             })
         },
@@ -309,19 +310,30 @@ fn apply_uv_updates(min_age_raw: &str, upgradable: Vec<crate::managers::PlannedU
         let tool = item.name;
         let current = item.current;
         let target = item.target;
-        let args = vec![
-            "tool".to_string(),
-            "install".to_string(),
-            "--upgrade".to_string(),
-            "--exclude-newer".to_string(),
-            min_age_raw.to_string(),
-            tool.clone(),
-        ];
+        let args = uv_tool_install_args(&tool, min_age_raw, item.gate_bypass.min_release_age);
 
         if let Err(err) = run_cmd("uv", &args, CmdStatus::Success).mutating().output() {
             emit_apply_error(PLUGIN.id(), tool, current, target, err);
         }
     }
+}
+
+fn uv_tool_install_args(
+    tool: &str,
+    min_age_raw: &str,
+    bypass_min_release_age: bool,
+) -> Vec<String> {
+    let mut args = vec![
+        "tool".to_string(),
+        "install".to_string(),
+        "--upgrade".to_string(),
+    ];
+    if !bypass_min_release_age {
+        args.push("--exclude-newer".to_string());
+        args.push(min_age_raw.to_string());
+    }
+    args.push(tool.to_string());
+    args
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {
@@ -724,6 +736,34 @@ mod tests {
     #[test]
     fn normalize_package_name_collapses_separators() {
         assert_eq!(normalize_package_name("My_Pkg.Name"), "my-pkg-name");
+    }
+
+    #[test]
+    fn tool_install_args_keep_exclude_newer_by_default() {
+        assert_eq!(
+            uv_tool_install_args("ruff", "7d", false),
+            vec![
+                "tool".to_string(),
+                "install".to_string(),
+                "--upgrade".to_string(),
+                "--exclude-newer".to_string(),
+                "7d".to_string(),
+                "ruff".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn tool_install_args_omit_exclude_newer_when_bypassed() {
+        assert_eq!(
+            uv_tool_install_args("ruff", "7d", true),
+            vec![
+                "tool".to_string(),
+                "install".to_string(),
+                "--upgrade".to_string(),
+                "ruff".to_string(),
+            ]
+        );
     }
 
     #[test]
