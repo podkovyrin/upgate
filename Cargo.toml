@@ -26,5 +26,6 @@ toml_edit = "0.25"
 indicatif = "0.18"
 owo-colors = "4.1"
 crossterm = "0.29"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 unicode-width = "0.2"
 flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }

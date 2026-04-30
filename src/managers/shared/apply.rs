@@ -1,97 +1,45 @@
-use anyhow::Result;
-
-use super::{ApplyCandidate, PlannedUpdate};
+use super::PlannedUpdate;
+use crate::interactive::apply::ApplySelection;
 use crate::managers::runtime::ManagerCtx;
 use crate::managers::shared::versioning::policy::VersionPolicy;
 use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome};
 
-pub fn run_per_item_apply_flow<F>(
-    ctx: &ManagerCtx,
-    manager_id: &'static str,
-    upgradable: Vec<PlannedUpdate>,
-    apply_selected: F,
-) -> Result<()>
+pub fn apply_per_item_selection<F>(ctx: &ManagerCtx, selection: ApplySelection, apply_selected: F)
 where
     F: FnOnce(Vec<PlannedUpdate>),
 {
-    let candidates = upgradable
-        .into_iter()
-        .map(ApplyCandidate::recommended)
-        .collect();
-    run_per_item_apply_candidate_flow(ctx, manager_id, candidates, apply_selected)
-}
-
-pub fn run_per_item_apply_candidate_flow<F>(
-    ctx: &ManagerCtx,
-    manager_id: &'static str,
-    candidates: Vec<ApplyCandidate>,
-    apply_selected: F,
-) -> Result<()>
-where
-    F: FnOnce(Vec<PlannedUpdate>),
-{
-    let Some(selection) = resolve_apply_selection(ctx, manager_id, candidates)? else {
-        return Ok(());
-    };
+    if selection.selected.is_empty() || ctx.is_dry_run() {
+        return;
+    }
 
     apply_selected(selection.selected);
-    Ok(())
 }
 
-pub fn run_selective_or_global_apply_flow<F, G, E>(
+pub fn apply_selective_or_global_selection<F, G, E>(
     ctx: &ManagerCtx,
     manager_id: &'static str,
-    upgradable: Vec<PlannedUpdate>,
+    selection: ApplySelection,
     apply_selected: F,
     apply_all: G,
-) -> Result<()>
-where
+) where
     F: FnOnce(Vec<PlannedUpdate>),
     G: FnOnce() -> std::result::Result<(), E>,
     E: std::fmt::Display,
 {
-    let candidates = upgradable
-        .into_iter()
-        .map(ApplyCandidate::recommended)
-        .collect();
-    run_selective_or_global_apply_candidate_flow(
-        ctx,
-        manager_id,
-        candidates,
-        apply_selected,
-        apply_all,
-    )
-}
+    if selection.selected.is_empty() || ctx.is_dry_run() {
+        return;
+    }
 
-pub fn run_selective_or_global_apply_candidate_flow<F, G, E>(
-    ctx: &ManagerCtx,
-    manager_id: &'static str,
-    candidates: Vec<ApplyCandidate>,
-    apply_selected: F,
-    apply_all: G,
-) -> Result<()>
-where
-    F: FnOnce(Vec<PlannedUpdate>),
-    G: FnOnce() -> std::result::Result<(), E>,
-    E: std::fmt::Display,
-{
-    let Some(selection) = resolve_apply_selection(ctx, manager_id, candidates)? else {
-        return Ok(());
-    };
-
-    // When version-policy filtering is enabled, prefer per-item apply so the
-    // exact selected target is honored and cannot widen via manager-global logic.
     if should_apply_all(
         ctx.policy.version_policy,
         selection.all_selected,
         selection.pinned_after_selection.is_empty(),
     ) {
         apply_all_with_error_outcome(manager_id, apply_all);
-        return Ok(());
+        return;
     }
 
     apply_selected(selection.selected);
-    Ok(())
 }
 
 fn should_apply_all(
@@ -100,21 +48,6 @@ fn should_apply_all(
     has_no_pins_after_selection: bool,
 ) -> bool {
     version_policy == VersionPolicy::Disabled && all_selected && has_no_pins_after_selection
-}
-
-fn resolve_apply_selection(
-    ctx: &ManagerCtx,
-    manager_id: &'static str,
-    candidates: Vec<ApplyCandidate>,
-) -> Result<Option<crate::interactive::apply::ApplySelection>> {
-    let selection =
-        crate::interactive::apply::select_apply_candidates_with_meta(ctx, manager_id, candidates)?;
-
-    if selection.selected.is_empty() || ctx.is_dry_run() {
-        return Ok(None);
-    }
-
-    Ok(Some(selection))
 }
 
 fn apply_all_with_error_outcome<F, E>(manager_id: &'static str, apply_all: F)

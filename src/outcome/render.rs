@@ -8,7 +8,7 @@ use super::types::{
     AgeGateDiagnostic, DelayedReason, OutcomeReason, OutcomeStatus, OutcomeSubject,
     OutcomeVersions, OutcomeVisibility, SkippedReason,
 };
-use crate::ui::{OutputTheme, output_theme, with_spinner_suspended};
+use crate::ui::{OutputTheme, output_theme, terminal_output_suppressed, with_spinner_suspended};
 use crate::util::text::strip_v_prefix;
 
 static OUTCOME_BUFFER: OnceLock<Mutex<Vec<ItemOutcome>>> = OnceLock::new();
@@ -472,14 +472,20 @@ pub fn emit_text_outcome(outcome: &ItemOutcome) {
     lock_outcome_buffer().push(outcome.clone());
 }
 
+pub fn drain_text_outcomes() -> Vec<ItemOutcome> {
+    let mut buffer = lock_outcome_buffer();
+    std::mem::take(&mut *buffer)
+}
+
 pub fn flush_text_outcomes() {
-    let outcomes = {
-        let mut buffer = lock_outcome_buffer();
-        if buffer.is_empty() {
-            return;
-        }
-        std::mem::take(&mut *buffer)
-    };
+    let outcomes = drain_text_outcomes();
+    if outcomes.is_empty() {
+        return;
+    }
+
+    if terminal_output_suppressed() {
+        return;
+    }
 
     let theme = output_theme();
     let rows: Vec<_> = outcomes
@@ -785,7 +791,10 @@ mod tests {
         );
 
         let table = render_single_plain_table(&item, false);
-        assert!(table.contains("- Skipped  [mise]    nometa-tool  v1.0.0  v1.1.0"));
+        assert_table_contains_cells(
+            &table,
+            &["- Skipped", "[mise]", "nometa-tool", "v1.0.0", "v1.1.0"],
+        );
         assert!(table.contains("(no publish-date metadata)"));
     }
 
@@ -796,7 +805,7 @@ mod tests {
         );
 
         let normal = render_single_plain_table(&item, false);
-        assert!(normal.contains("+ Update  [npm]    foo  v1.2.0  v1.2.5"));
+        assert_table_contains_cells(&normal, &["+ Update", "[npm]", "foo", "v1.2.0", "v1.2.5"]);
         assert!(normal.contains("(latest v1.3.0 too fresh)"));
         assert!(!normal.contains("3d < 7d"));
 
@@ -829,7 +838,7 @@ mod tests {
         );
 
         let normal = render_single_plain_table(&item, false);
-        assert!(normal.contains("~ Delayed  [npm]    foo  v1.2.0  v1.3.0"));
+        assert_table_contains_cells(&normal, &["~ Delayed", "[npm]", "foo", "v1.2.0", "v1.3.0"]);
         assert!(normal.contains("(no eligible release yet; latest v1.3.0 too fresh)"));
         assert!(!normal.contains("3d < 7d"));
 
@@ -846,7 +855,7 @@ mod tests {
         assert!(outcome_table_row(&item, crate::ui::OutputTheme::test_plain(false)).is_none());
 
         let rendered = render_single_plain_table(&item, true);
-        assert!(rendered.contains("= Current  [npm]    foo  v1.2.0"));
+        assert_table_contains_cells(&rendered, &["= Current", "[npm]", "foo", "v1.2.0"]);
         assert!(rendered.contains("(no newer version found)"));
     }
 
@@ -892,5 +901,15 @@ mod tests {
         let theme = crate::ui::OutputTheme::test_plain(verbose);
         let row = outcome_table_row(item, theme).expect("row should render");
         render_outcome_table(&[row], false).join("\n")
+    }
+
+    fn assert_table_contains_cells(table: &str, cells: &[&str]) {
+        let mut rest = table;
+        for cell in cells {
+            let Some(idx) = rest.find(cell) else {
+                panic!("expected rendered table to contain cell {cell:?}: {table}");
+            };
+            rest = &rest[idx + cell.len()..];
+        }
     }
 }

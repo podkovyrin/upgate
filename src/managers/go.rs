@@ -33,9 +33,7 @@ impl ManagerPlugin for GoPlugin {
         true
     }
 
-    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
-        run(ctx)
-    }
+    crate::impl_manager_pipeline!();
 }
 
 pub static PLUGIN: GoPlugin = GoPlugin;
@@ -59,11 +57,11 @@ struct GoPlanItem {
     resolved: Result<VersionPolicyResolution, String>,
 }
 
-fn run(ctx: &ManagerCtx) -> Result<()> {
-    run_manager_pipeline(ctx, scan, run_plan_apply)
+fn apply(ctx: &ManagerCtx) -> Result<()> {
+    run_planned_apply(ctx, plan_apply(ctx)?, apply_planned_updates)
 }
 
-fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
+fn plan_apply(ctx: &ManagerCtx) -> Result<Option<PlannedApply<()>>> {
     run_plan_apply_framework(
         ctx,
         PLUGIN.id(),
@@ -81,18 +79,33 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
             .context("planning execution failed")
         },
         |discovered, plan, runtime| {
-            collect_go_plan_and_upgradable(
-                discovered,
+            let candidates = collect_go_plan_and_upgradable(
+                &discovered,
                 plan,
                 runtime.min_age,
                 runtime.suppress_update_outcomes,
                 runtime.pinned,
-            )
-        },
-        |ctx, _discovered, candidates| {
-            run_per_item_apply_candidate_flow(ctx, PLUGIN.id(), candidates, apply_go_updates)
+            )?;
+            Ok(PlannedApplyPayload::new((), candidates))
         },
     )
+}
+
+fn interactive_apply(
+    ctx: &ManagerCtx,
+) -> Result<Option<crate::interactive::apply::InteractiveApplyPlan>> {
+    Ok(plan_interactive_apply_from_planned(
+        plan_apply(ctx)?,
+        apply_planned_updates,
+    ))
+}
+
+fn apply_planned_updates(
+    ctx: &ManagerCtx,
+    (): (),
+    selection: crate::interactive::apply::ApplySelection,
+) {
+    apply_per_item_selection(ctx, selection, apply_go_updates);
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {
@@ -194,7 +207,7 @@ fn collect_go_plan_and_upgradable(
     for candidate in &mut candidates {
         let install_path = install_path_by_name.get(&candidate.update().name).cloned();
         candidate.update_tree_mut(|item| {
-            item.apply_spec_base = install_path.clone();
+            item.apply_spec_base.clone_from(&install_path);
 
             if suppress_update_outcomes && is_pinned(&item.name, pinned) {
                 item.delayed_latest = None;
@@ -718,7 +731,7 @@ mod tests {
             .versions()
             .iter()
             .position(|version| version.update().target == "v1.2.0")
-            .map(|idx| candidates[0].clone_selected_update(idx))
+            .map(|idx| candidates[0].selected_update(idx).clone())
             .expect("alternate candidate version");
 
         assert_eq!(

@@ -1,4 +1,5 @@
 use std::io::IsTerminal;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
@@ -68,6 +69,7 @@ struct ThemeOptions {
 
 static OUTPUT_THEME: OnceLock<OutputTheme> = OnceLock::new();
 static ACTIVE_SPINNER: OnceLock<Mutex<Option<ProgressBar>>> = OnceLock::new();
+static TERMINAL_OUTPUT_SUPPRESSED: AtomicBool = AtomicBool::new(false);
 
 pub fn init_output_theme(plain_flag: bool, no_color_flag: bool, verbose_flag: bool) {
     let options = ThemeOptions {
@@ -103,7 +105,7 @@ fn lock_active_spinner() -> MutexGuard<'static, Option<ProgressBar>> {
 
 pub fn start_manager_spinner(manager: &str, run_mode: RunMode) -> ManagerSpinner {
     let theme = output_theme();
-    if theme.plain() || !std::io::stderr().is_terminal() {
+    if terminal_output_suppressed() || theme.plain() || !std::io::stderr().is_terminal() {
         return ManagerSpinner(None);
     }
 
@@ -149,5 +151,26 @@ pub fn finish_manager_spinner(spinner: ManagerSpinner) {
     if let Some(pb) = spinner.0 {
         *lock_active_spinner() = None;
         pb.finish_and_clear();
+    }
+}
+
+pub fn terminal_output_suppressed() -> bool {
+    TERMINAL_OUTPUT_SUPPRESSED.load(Ordering::Relaxed)
+}
+
+pub struct TerminalOutputSuppression {
+    previous: bool,
+}
+
+impl TerminalOutputSuppression {
+    pub fn enter() -> Self {
+        let previous = TERMINAL_OUTPUT_SUPPRESSED.swap(true, Ordering::Relaxed);
+        Self { previous }
+    }
+}
+
+impl Drop for TerminalOutputSuppression {
+    fn drop(&mut self) {
+        TERMINAL_OUTPUT_SUPPRESSED.store(self.previous, Ordering::Relaxed);
     }
 }

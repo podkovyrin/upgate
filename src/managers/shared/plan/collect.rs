@@ -93,7 +93,7 @@ fn handle_pinned_decision(
                     version_policy,
                 );
                 candidates.push(recommended_candidate(
-                    planned,
+                    &planned,
                     candidate_versions,
                     supports_exact_versions,
                 ));
@@ -247,7 +247,7 @@ fn handle_regular_decision(
                 emit_text_outcome(&planned.to_update_outcome());
             }
             candidates.push(recommended_candidate(
-                planned,
+                &planned,
                 candidate_versions,
                 supports_exact_versions,
             ));
@@ -256,7 +256,7 @@ fn handle_regular_decision(
 }
 
 fn recommended_candidate(
-    planned: PlannedUpdate,
+    planned: &PlannedUpdate,
     candidate_versions: Vec<CandidateVersionMeta>,
     supports_exact_versions: bool,
 ) -> ApplyCandidate {
@@ -264,7 +264,7 @@ fn recommended_candidate(
     ApplyCandidate::recommended(planned.clone())
         .with_note(note)
         .with_versions(apply_candidate_versions(
-            &planned,
+            planned,
             candidate_versions,
             supports_exact_versions,
         ))
@@ -301,7 +301,7 @@ fn apply_candidate_versions(
         .into_iter()
         .map(|candidate| {
             let mut update = planned.clone();
-            update.target = candidate.version.clone();
+            update.target.clone_from(&candidate.version);
             update.gate_bypass = gate_bypass_for_candidate(&candidate);
             let note = candidate_note(planned.version_policy.as_ref(), &candidate);
             let force = !candidate.policy_allowed || !candidate.age_allowed;
@@ -340,8 +340,7 @@ fn candidate_note(policy: Option<&VersionPolicyMeta>, candidate: &CandidateVersi
         });
         let reason = candidate
             .policy_block_reason
-            .map(policy_block_reason_note)
-            .unwrap_or("blocked");
+            .map_or("blocked", policy_block_reason_note);
         parts.push(format!("version policy: {policy_name} {reason}"));
     }
 

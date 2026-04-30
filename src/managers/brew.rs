@@ -45,9 +45,7 @@ impl ManagerPlugin for BrewPlugin {
         true
     }
 
-    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
-        run(ctx)
-    }
+    crate::impl_manager_pipeline!();
 }
 
 pub static PLUGIN: BrewPlugin = BrewPlugin;
@@ -173,11 +171,6 @@ struct ScanItem {
     tap_and_source: Option<(Option<String>, Option<String>)>,
 }
 
-struct BrewCollected {
-    plan: Vec<PlanItem>,
-    upgradable: Vec<PlannedUpdate>,
-}
-
 #[derive(Clone)]
 struct ApiJob {
     index: usize,
@@ -213,11 +206,11 @@ struct GitHubCommitPerson {
     date: String,
 }
 
-fn run(ctx: &ManagerCtx) -> Result<()> {
-    run_manager_pipeline(ctx, scan, run_plan_apply)
+fn apply(ctx: &ManagerCtx) -> Result<()> {
+    run_planned_apply(ctx, plan_apply(ctx)?, apply_planned_updates)
 }
 
-fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
+fn plan_apply(ctx: &ManagerCtx) -> Result<Option<PlannedApply<Vec<PlanItem>>>> {
     maybe_refresh_brew_metadata(ctx.policy.no_update);
 
     run_plan_apply_framework(
@@ -298,14 +291,32 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                 })
                 .collect();
 
-            Ok(BrewCollected { plan, upgradable })
-        },
-        |ctx, _outdated, collected| {
-            run_per_item_apply_flow(ctx, PLUGIN.id(), collected.upgradable, move |selected| {
-                apply_brew_selected_plan(collected.plan, selected);
-            })
+            let candidates = upgradable
+                .into_iter()
+                .map(ApplyCandidate::recommended)
+                .collect();
+            Ok(PlannedApplyPayload::new(plan, candidates))
         },
     )
+}
+
+fn interactive_apply(
+    ctx: &ManagerCtx,
+) -> Result<Option<crate::interactive::apply::InteractiveApplyPlan>> {
+    Ok(plan_interactive_apply_from_planned(
+        plan_apply(ctx)?,
+        apply_planned_updates,
+    ))
+}
+
+fn apply_planned_updates(
+    ctx: &ManagerCtx,
+    plan: Vec<PlanItem>,
+    selection: crate::interactive::apply::ApplySelection,
+) {
+    apply_per_item_selection(ctx, selection, |selected| {
+        apply_brew_selected_plan(plan, selected);
+    });
 }
 
 fn apply_brew_selected_plan(plan: Vec<PlanItem>, selected: Vec<PlannedUpdate>) {

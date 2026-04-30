@@ -4,5 +4,5 @@ mod types;
 
 pub use item::ItemOutcome;
 pub(crate) use render::outcome_note;
-pub use render::{emit_text_outcome, flush_text_outcomes, render_to_version, version_label};
-pub use types::{DelayedReason, ReasonCode};
+pub use render::{drain_text_outcomes, emit_text_outcome, flush_text_outcomes, version_label};
+pub use types::{DelayedReason, OutcomeStatus, OutcomeVersions, ReasonCode};

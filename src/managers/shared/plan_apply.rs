@@ -7,6 +7,9 @@ use super::{
     ApplyCandidate, PlanMeta, ResolvedPlanTarget, emit_manager_level_error,
     emit_plan_and_collect_apply_candidates, plan_decision_from_resolution,
 };
+use crate::interactive::apply::{
+    ApplySelection, InteractiveApplyPlan, default_apply_selection_with_meta,
+};
 use crate::managers::runtime::ManagerCtx;
 use crate::util::time::now_unix_secs;
 
@@ -29,6 +32,25 @@ pub struct PlanApplyRuntime<'a> {
     pub max_parallel_checks: usize,
     pub suppress_update_outcomes: bool,
     pub pinned: &'a BTreeSet<String>,
+}
+
+#[derive(Debug)]
+pub struct PlannedApply<State> {
+    pub manager_id: &'static str,
+    pub state: State,
+    pub candidates: Vec<ApplyCandidate>,
+}
+
+#[derive(Debug)]
+pub struct PlannedApplyPayload<State> {
+    pub state: State,
+    pub candidates: Vec<ApplyCandidate>,
+}
+
+impl<State> PlannedApplyPayload<State> {
+    pub fn new(state: State, candidates: Vec<ApplyCandidate>) -> Self {
+        Self { state, candidates }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -69,28 +91,33 @@ impl PlanApplyFrameworkPolicy {
     };
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn run_plan_apply_framework<Discovered, Resolved, Collected, Fetch, IsEmpty>(
+pub fn run_plan_apply_framework<Discovered, Resolved, State, Fetch, IsEmpty>(
     ctx: &ManagerCtx,
     manager: &'static str,
     policy: PlanApplyFrameworkPolicy,
     fetch_discovered: Fetch,
     is_empty: IsEmpty,
     resolve_plan: impl FnOnce(&Discovered, &PlanApplyRuntime<'_>) -> Result<Resolved>,
-    collect_result: impl FnOnce(&Discovered, Resolved, &PlanApplyRuntime<'_>) -> Result<Collected>,
-    apply_updates: impl FnOnce(&ManagerCtx, &Discovered, Collected) -> Result<()>,
-) -> Result<()>
+    collect_result: impl FnOnce(
+        Discovered,
+        Resolved,
+        &PlanApplyRuntime<'_>,
+    ) -> Result<PlannedApplyPayload<State>>,
+) -> Result<Option<PlannedApply<State>>>
 where
     Fetch: FnOnce() -> Result<Discovered>,
     IsEmpty: Fn(&Discovered) -> bool,
 {
     let discovered = match fetch_discovered() {
         Ok(discovered) => discovered,
-        Err(detail) => return handle_step_error(manager, detail, policy.fetch_failure),
+        Err(detail) => {
+            handle_step_error(manager, detail, policy.fetch_failure)?;
+            return Ok(None);
+        }
     };
 
     if is_empty(&discovered) {
-        return Ok(());
+        return Ok(None);
     }
 
     let runtime = PlanApplyRuntime {
@@ -103,12 +130,60 @@ where
 
     let resolved = match resolve_plan(&discovered, &runtime) {
         Ok(resolved) => resolved,
-        Err(detail) => return handle_step_error(manager, detail, policy.resolve_failure),
+        Err(detail) => {
+            handle_step_error(manager, detail, policy.resolve_failure)?;
+            return Ok(None);
+        }
     };
 
-    let collected = collect_result(&discovered, resolved, &runtime)?;
+    let payload = collect_result(discovered, resolved, &runtime)?;
+    Ok(Some(PlannedApply {
+        manager_id: manager,
+        state: payload.state,
+        candidates: payload.candidates,
+    }))
+}
 
-    apply_updates(ctx, &discovered, collected)
+pub fn run_planned_apply<State>(
+    ctx: &ManagerCtx,
+    planned: Option<PlannedApply<State>>,
+    apply_updates: impl FnOnce(&ManagerCtx, State, ApplySelection),
+) -> Result<()> {
+    let Some(planned) = planned else {
+        return Ok(());
+    };
+
+    let selection = default_apply_selection_with_meta(ctx, planned.candidates)?;
+    if selection.selected.is_empty() || ctx.is_dry_run() {
+        return Ok(());
+    }
+
+    apply_updates(ctx, planned.state, selection);
+    Ok(())
+}
+
+pub fn plan_interactive_apply_from_planned<State, Apply>(
+    planned: Option<PlannedApply<State>>,
+    apply_updates: Apply,
+) -> Option<InteractiveApplyPlan>
+where
+    State: Send + 'static,
+    Apply: FnOnce(&ManagerCtx, State, ApplySelection) + Send + 'static,
+{
+    let planned = planned?;
+
+    if planned.candidates.is_empty() {
+        return None;
+    }
+
+    Some(InteractiveApplyPlan::new(
+        planned.manager_id,
+        planned.candidates,
+        Box::new(move |ctx, selection| {
+            apply_updates(ctx, planned.state, selection);
+            Ok(())
+        }),
+    ))
 }
 
 pub fn collect_apply_candidates_from_resolved_plan<T>(

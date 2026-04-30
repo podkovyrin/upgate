@@ -9,4 +9,7 @@ pub use emit::{
     emit_manager_level_error, emit_manager_level_error_with, emit_scan_current,
     emit_version_scan_outcomes, soft_fail, soft_fail_or, verbose_now_unix_secs,
 };
-pub use types::{ApplyCandidate, DelayedLatest, PlanMeta, PlannedUpdate, VersionPolicyMeta};
+pub use types::{
+    ApplyCandidate, ApplyCandidateDisplayNote, ApplyCandidateNotePart, DelayedLatest, PlanMeta,
+    PlannedUpdate, VersionPolicyMeta,
+};

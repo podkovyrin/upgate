@@ -8,11 +8,16 @@ use crate::interactive;
 use crate::managers::{
     ManagerCtx, ManagerPlugin, RunMode, all_plugins, build_ctx_for_plugin, resolve_selected_plugins,
 };
-use crate::outcome::{ItemOutcome, ReasonCode, emit_text_outcome, flush_text_outcomes};
-use crate::ui::{
-    finish_manager_spinner, init_output_theme, start_manager_spinner, with_spinner_suspended,
+use crate::outcome::{
+    ItemOutcome, ReasonCode, drain_text_outcomes, emit_text_outcome, flush_text_outcomes,
 };
-use crate::util::logging::{LoggingOptions, init_logging, session_dir, set_current_manager};
+use crate::ui::{
+    TerminalOutputSuppression, finish_manager_spinner, init_output_theme, start_manager_spinner,
+    terminal_output_suppressed, with_spinner_suspended,
+};
+use crate::util::logging::{
+    LoggingOptions, init_logging, log_warning, session_dir, set_current_manager,
+};
 use crate::util::process::{
     self, CommandFailedError, MUTATION_ENABLE_NOTICE, MUTATION_SKIP_NOTICE,
 };
@@ -25,8 +30,17 @@ pub fn run() -> i32 {
         return exit_with_error(format!("failed to initialize logging: {err}"));
     }
 
-    let result = run_with_cli(&cli);
-    flush_text_outcomes();
+    let interactive_apply = cli.interactive && cli.run_mode().is_apply();
+    let result = if interactive_apply {
+        let _terminal_output_suppression = TerminalOutputSuppression::enter();
+        let result = run_with_cli(&cli);
+        let _ = drain_text_outcomes();
+        result
+    } else {
+        let result = run_with_cli(&cli);
+        flush_text_outcomes();
+        result
+    };
 
     match result {
         Ok(exit_code) => exit_code,
@@ -41,6 +55,7 @@ fn init_command_logging(cli: &cli::Cli) -> Result<()> {
     })?;
 
     if cli.debug_commands
+        && !(cli.interactive && cli.run_mode().is_apply())
         && let Some(path) = session_dir()
     {
         eprintln!("debug logs: {}", path.display());
@@ -76,7 +91,7 @@ fn maybe_emit_apply_mutation_mode_notice(run_mode: RunMode) -> Result<()> {
 
     process::validate_required_mutation_mode()?;
 
-    if !process::mutation_mode_notice_enabled() {
+    if !process::mutation_mode_notice_enabled() || terminal_output_suppressed() {
         return Ok(());
     }
 
@@ -118,6 +133,10 @@ fn run_selected_plugins(
     config: &mut UpnowConfig,
     selected_plugins: Vec<&'static dyn ManagerPlugin>,
 ) -> i32 {
+    if cli.interactive && run_mode.is_apply() {
+        return run_interactive_apply_selected_plugins(cli, run_mode, config, selected_plugins);
+    }
+
     let mut had_manager_failure = false;
 
     for plugin in selected_plugins {
@@ -184,6 +203,167 @@ fn run_selected_plugins(
     i32::from(had_manager_failure)
 }
 
+fn run_interactive_apply_selected_plugins(
+    cli: &cli::Cli,
+    run_mode: RunMode,
+    config: &mut UpnowConfig,
+    selected_plugins: Vec<&'static dyn ManagerPlugin>,
+) -> i32 {
+    let planning_tasks = interactive_apply_planning_tasks(cli, run_mode, config, selected_plugins);
+
+    let selection_output = match interactive::tui::run_lazy_selection(planning_tasks) {
+        Ok(output) => output,
+        Err(err) => {
+            if is_signal_termination(&err) {
+                set_current_manager(None);
+                return 130;
+            }
+            log_suppressed_terminal_error(format!("interactive selection failed: {err}"));
+            return 1;
+        }
+    };
+
+    if selection_output.interrupted {
+        set_current_manager(None);
+        return 130;
+    }
+
+    set_current_manager(None);
+
+    let mut had_manager_failure = selection_output.had_manager_failure;
+    let mut apply_tasks = Vec::new();
+    for (mut planned, result) in std::iter::zip(selection_output.planned, selection_output.results)
+    {
+        let manager_id = planned.plan.manager_id;
+        debug_assert_eq!(manager_id, result.manager_id);
+        let selection = interactive::apply::apply_chosen_candidates_with_meta(
+            &planned.ctx,
+            manager_id,
+            planned.plan.take_candidates(),
+            result.chosen_versions,
+            planned.ctx.policy.pinned.clone(),
+        );
+
+        had_manager_failure |= persist_interactive_pins(config, manager_id, &planned.ctx);
+
+        if selection.selected.is_empty() || planned.ctx.is_dry_run() {
+            continue;
+        }
+
+        let selected = selection.selected.clone();
+        apply_tasks.push(interactive::tui::ApplyProgressTask::new(
+            manager_id,
+            selected,
+            Box::new(move || {
+                set_current_manager(Some(manager_id));
+                planned.plan.apply(&planned.ctx, selection)
+            }),
+        ));
+    }
+
+    let _ = drain_text_outcomes();
+
+    if !apply_tasks.is_empty() {
+        match interactive::tui::run_apply_progress(apply_tasks) {
+            Ok(summary) => {
+                had_manager_failure |= summary.had_failure;
+                if summary.interrupted {
+                    set_current_manager(None);
+                    return 130;
+                }
+            }
+            Err(err) => {
+                if is_signal_termination(&err) {
+                    set_current_manager(None);
+                    return 130;
+                }
+                log_suppressed_terminal_error(format!("interactive apply failed: {err}"));
+                return 1;
+            }
+        }
+    }
+
+    set_current_manager(None);
+    i32::from(had_manager_failure)
+}
+
+fn interactive_apply_planning_tasks(
+    cli: &cli::Cli,
+    run_mode: RunMode,
+    config: &UpnowConfig,
+    selected_plugins: Vec<&'static dyn ManagerPlugin>,
+) -> Vec<interactive::tui::SelectionPlanningTask> {
+    let max_parallel_checks = cli.max_parallel_checks;
+    let interactive = cli.interactive;
+
+    selected_plugins
+        .into_iter()
+        .map(|plugin| {
+            let config = config.clone();
+            interactive::tui::SelectionPlanningTask::new(
+                plugin.id(),
+                Box::new(move || {
+                    set_current_manager(Some(plugin.id()));
+
+                    let manager_ctx = build_ctx_for_plugin(
+                        plugin,
+                        run_mode,
+                        max_parallel_checks,
+                        &config,
+                        interactive,
+                    )?;
+
+                    if !manager_ctx.policy.mode.allows_run(run_mode.is_apply()) {
+                        return Ok(None);
+                    }
+
+                    if !interactive_manager_preflight(plugin) {
+                        return Ok(None);
+                    }
+
+                    let spinner = start_manager_spinner(plugin.id(), RunMode::Plan);
+                    let plan_result = plugin.interactive_apply(&manager_ctx);
+                    finish_manager_spinner(spinner);
+                    let _ = drain_text_outcomes();
+
+                    plan_result.map(|plan| {
+                        plan.map(|plan| interactive::tui::SelectionPlan {
+                            ctx: manager_ctx,
+                            plan,
+                        })
+                    })
+                }),
+            )
+        })
+        .collect()
+}
+
+fn interactive_manager_preflight(plugin: &'static dyn ManagerPlugin) -> bool {
+    if !plugin.supports_current_platform() {
+        emit_manager_preflight_skip(
+            plugin.id(),
+            ReasonCode::UnsupportedPlatform,
+            plugin.unsupported_platform_reason(),
+        );
+        let _ = drain_text_outcomes();
+        return false;
+    }
+
+    if let Some(command) = plugin.probe_command()
+        && !process::command_exists(&command)
+    {
+        emit_manager_preflight_skip(
+            plugin.id(),
+            ReasonCode::MissingCommand,
+            format!("required command '{command}' is not available"),
+        );
+        let _ = drain_text_outcomes();
+        return false;
+    }
+
+    true
+}
+
 fn is_signal_termination(err: &Error) -> bool {
     err.chain().any(|cause| {
         cause
@@ -220,11 +400,20 @@ fn persist_interactive_pins(
 
     config.set_manager_pins(manager_id, new_pins);
     if let Err(err) = config.persist_manager_pins(manager_id) {
-        eprintln!(
-            "error: failed to persist interactive pin updates after manager '{manager_id}': {err}"
+        let message = format!(
+            "failed to persist interactive pin updates after manager '{manager_id}': {err}"
         );
+        if terminal_output_suppressed() {
+            log_suppressed_terminal_error(message);
+        } else {
+            eprintln!("error: {message}");
+        }
         return true;
     }
 
     false
+}
+
+fn log_suppressed_terminal_error(message: impl AsRef<str>) {
+    log_warning(format!("error: {}", message.as_ref()));
 }

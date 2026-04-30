@@ -27,9 +27,7 @@ impl ManagerPlugin for NpmPlugin {
         true
     }
 
-    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
-        run(ctx)
-    }
+    crate::impl_manager_pipeline!();
 }
 
 pub static PLUGIN: NpmPlugin = NpmPlugin;
@@ -54,11 +52,11 @@ type NpmTimeMap = BTreeMap<String, String>;
 
 type NpmPlanItem = ResolvedPlanItem<VersionPolicyResolution>;
 
-fn run(ctx: &ManagerCtx) -> Result<()> {
-    run_manager_pipeline(ctx, scan, run_plan_apply)
+fn apply(ctx: &ManagerCtx) -> Result<()> {
+    run_planned_apply(ctx, plan_apply(ctx)?, apply_planned_updates)
 }
 
-fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
+fn plan_apply(ctx: &ManagerCtx) -> Result<Option<PlannedApply<()>>> {
     run_plan_apply_framework(
         ctx,
         PLUGIN.id(),
@@ -76,28 +74,43 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
             .context("planning execution failed")
         },
         |_plan_seed, plan, runtime| {
-            Ok(collect_apply_candidates_from_resolved_plan(
+            let candidates = collect_apply_candidates_from_resolved_plan(
                 PLUGIN.id(),
                 plan,
                 runtime.min_age,
                 runtime.suppress_update_outcomes,
                 runtime.pinned,
                 true,
-            ))
-        },
-        |ctx, _plan_seed, candidates| {
-            let min_age_days = ctx.policy.min_release_age.whole_days();
-            run_selective_or_global_apply_candidate_flow(
-                ctx,
-                PLUGIN.id(),
-                candidates,
-                |selected| {
-                    apply_npm_selected_updates(min_age_days, selected);
-                },
-                || apply_npm_updates(min_age_days),
-            )
+            );
+            Ok(PlannedApplyPayload::new((), candidates))
         },
     )
+}
+
+fn interactive_apply(
+    ctx: &ManagerCtx,
+) -> Result<Option<crate::interactive::apply::InteractiveApplyPlan>> {
+    Ok(plan_interactive_apply_from_planned(
+        plan_apply(ctx)?,
+        apply_planned_updates,
+    ))
+}
+
+fn apply_planned_updates(
+    ctx: &ManagerCtx,
+    (): (),
+    selection: crate::interactive::apply::ApplySelection,
+) {
+    let min_age_days = ctx.policy.min_release_age.whole_days();
+    let selected_update_mode =
+        selected_update_mode(ctx.policy.version_policy, selection.requires_exact_targets);
+    apply_selective_or_global_selection(
+        ctx,
+        PLUGIN.id(),
+        selection,
+        |selected| apply_npm_selected_updates(min_age_days, selected_update_mode, selected),
+        || apply_npm_updates(min_age_days),
+    );
 }
 
 fn npm_plan_seed(version_policy: VersionPolicy) -> Result<BTreeMap<String, String>> {
@@ -174,7 +187,28 @@ fn apply_npm_updates(min_age_days: u64) -> Result<()> {
     Ok(())
 }
 
-fn apply_npm_selected_updates(min_age_days: u64, upgradable: Vec<crate::managers::PlannedUpdate>) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NpmSelectedUpdateMode {
+    LegacyUpdate,
+    ExactInstall,
+}
+
+fn selected_update_mode(
+    version_policy: VersionPolicy,
+    requires_exact_targets: bool,
+) -> NpmSelectedUpdateMode {
+    if version_policy == VersionPolicy::Disabled && !requires_exact_targets {
+        NpmSelectedUpdateMode::LegacyUpdate
+    } else {
+        NpmSelectedUpdateMode::ExactInstall
+    }
+}
+
+fn apply_npm_selected_updates(
+    min_age_days: u64,
+    mode: NpmSelectedUpdateMode,
+    upgradable: Vec<crate::managers::PlannedUpdate>,
+) {
     let min_age_days = min_age_days.to_string();
 
     for item in upgradable {
@@ -185,6 +219,7 @@ fn apply_npm_selected_updates(min_age_days: u64, upgradable: Vec<crate::managers
             &name,
             &target,
             &min_age_days,
+            mode,
             item.gate_bypass.min_release_age,
         );
 
@@ -201,8 +236,19 @@ fn npm_selected_update_args(
     name: &str,
     target: &str,
     min_age_days: &str,
+    mode: NpmSelectedUpdateMode,
     bypass_min_release_age: bool,
 ) -> Vec<String> {
+    if mode == NpmSelectedUpdateMode::LegacyUpdate && !bypass_min_release_age {
+        return vec![
+            "-g".to_string(),
+            "update".to_string(),
+            name.to_string(),
+            "--min-release-age".to_string(),
+            min_age_days.to_string(),
+        ];
+    }
+
     let mut args = vec![
         "install".to_string(),
         "-g".to_string(),
@@ -299,7 +345,13 @@ mod tests {
     #[test]
     fn selected_update_args_use_exact_target() {
         assert_eq!(
-            npm_selected_update_args("typescript", "5.9.3", "7", false),
+            npm_selected_update_args(
+                "typescript",
+                "5.9.3",
+                "7",
+                NpmSelectedUpdateMode::ExactInstall,
+                false
+            ),
             vec![
                 "install".to_string(),
                 "-g".to_string(),
@@ -313,7 +365,13 @@ mod tests {
     #[test]
     fn selected_update_args_omit_min_age_when_bypassed() {
         assert_eq!(
-            npm_selected_update_args("typescript", "5.9.3", "7", true),
+            npm_selected_update_args(
+                "typescript",
+                "5.9.3",
+                "7",
+                NpmSelectedUpdateMode::ExactInstall,
+                true
+            ),
             vec![
                 "install".to_string(),
                 "-g".to_string(),

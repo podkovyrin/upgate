@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 
-use crate::ui::{output_theme, with_spinner_suspended};
+use crate::ui::{output_theme, terminal_output_suppressed, with_spinner_suspended};
 use crate::util::env::{home_dir, non_empty_path_var};
 use crate::util::text::is_blank;
 
@@ -86,7 +86,7 @@ pub fn on_command_start(command_display: &str, is_mutation: bool) {
 
     let manager = current_manager(logger);
 
-    if logger.options.show_commands {
+    if logger.options.show_commands && !terminal_output_suppressed() {
         with_spinner_suspended(|| {
             if output_theme().color() {
                 if is_mutation {

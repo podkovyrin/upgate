@@ -30,9 +30,7 @@ impl ManagerPlugin for CargoPlugin {
         true
     }
 
-    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
-        run(ctx)
-    }
+    crate::impl_manager_pipeline!();
 }
 
 pub static PLUGIN: CargoPlugin = CargoPlugin;
@@ -53,11 +51,11 @@ struct CargoInstallMeta {
 
 type CargoPlanItem = ResolvedPlanItem<VersionPolicyResolution>;
 
-fn run(ctx: &ManagerCtx) -> Result<()> {
-    run_manager_pipeline(ctx, scan, run_plan_apply)
+fn apply(ctx: &ManagerCtx) -> Result<()> {
+    run_planned_apply(ctx, plan_apply(ctx)?, apply_planned_updates)
 }
 
-fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
+fn plan_apply(ctx: &ManagerCtx) -> Result<Option<PlannedApply<BTreeMap<String, InstalledCrate>>>> {
     run_plan_apply_framework(
         ctx,
         PLUGIN.id(),
@@ -74,22 +72,38 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
             )
             .context("planning execution failed")
         },
-        |_installed, plan, runtime| {
-            Ok(collect_apply_candidates_from_resolved_plan(
+        |installed, plan, runtime| {
+            let candidates = collect_apply_candidates_from_resolved_plan(
                 PLUGIN.id(),
                 plan,
                 runtime.min_age,
                 runtime.suppress_update_outcomes,
                 runtime.pinned,
                 true,
-            ))
-        },
-        |ctx, installed, candidates| {
-            run_per_item_apply_candidate_flow(ctx, PLUGIN.id(), candidates, |selected| {
-                apply_cargo_updates(installed, selected);
-            })
+            );
+            Ok(PlannedApplyPayload::new(installed, candidates))
         },
     )
+}
+
+fn interactive_apply(
+    ctx: &ManagerCtx,
+) -> Result<Option<crate::interactive::apply::InteractiveApplyPlan>> {
+    Ok(plan_interactive_apply_from_planned(
+        plan_apply(ctx)?,
+        apply_planned_updates,
+    ))
+}
+
+fn apply_planned_updates(
+    ctx: &ManagerCtx,
+    installed: BTreeMap<String, InstalledCrate>,
+    selection: crate::interactive::apply::ApplySelection,
+) {
+    apply_per_item_selection(ctx, selection, |selected| {
+        apply_cargo_updates(&installed, selected);
+    });
+    drop(installed);
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {

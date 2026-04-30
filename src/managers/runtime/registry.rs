@@ -91,8 +91,19 @@ mod tests {
             "7d"
         }
 
-        fn run(&self, _ctx: &ManagerCtx) -> Result<()> {
+        fn scan(&self, _ctx: &ManagerCtx) -> Result<()> {
             Ok(())
+        }
+
+        fn apply(&self, _ctx: &ManagerCtx) -> Result<()> {
+            Ok(())
+        }
+
+        fn interactive_apply(
+            &self,
+            _ctx: &ManagerCtx,
+        ) -> Result<Option<crate::interactive::apply::InteractiveApplyPlan>> {
+            Ok(None)
         }
     }
 
@@ -118,8 +129,19 @@ mod tests {
             )
         }
 
-        fn run(&self, _ctx: &ManagerCtx) -> Result<()> {
+        fn scan(&self, _ctx: &ManagerCtx) -> Result<()> {
             Ok(())
+        }
+
+        fn apply(&self, _ctx: &ManagerCtx) -> Result<()> {
+            Ok(())
+        }
+
+        fn interactive_apply(
+            &self,
+            _ctx: &ManagerCtx,
+        ) -> Result<Option<crate::interactive::apply::InteractiveApplyPlan>> {
+            Ok(None)
         }
     }
 

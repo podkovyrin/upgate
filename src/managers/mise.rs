@@ -39,9 +39,7 @@ impl ManagerPlugin for MisePlugin {
         policy == VersionPolicy::Disabled
     }
 
-    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
-        run(ctx)
-    }
+    crate::impl_manager_pipeline!();
 }
 
 pub static PLUGIN: MisePlugin = MisePlugin;
@@ -142,18 +140,24 @@ struct MiseVersionTimestamp {
     published_unix: u64,
 }
 
-fn run(ctx: &ManagerCtx) -> Result<()> {
-    run_manager_pipeline(ctx, scan, run_plan_apply)
+struct MiseApplyState {
+    min_age_raw: String,
+    global_apply_allowed: bool,
 }
 
-fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
+fn apply(ctx: &ManagerCtx) -> Result<()> {
+    run_planned_apply(ctx, plan_apply(ctx)?, apply_planned_updates)
+}
+
+fn plan_apply(ctx: &ManagerCtx) -> Result<Option<PlannedApply<MiseApplyState>>> {
     let min_age_raw = ctx.policy.min_release_age.cli_arg().to_string();
+    let discover_min_age_raw = min_age_raw.clone();
 
     run_plan_apply_framework(
         ctx,
         PLUGIN.id(),
         PlanApplyFrameworkPolicy::SOFT_FETCH_STRICT_RESOLVE,
-        || collect_mise_plan_inputs(&min_age_raw),
+        || collect_mise_plan_inputs(&discover_min_age_raw),
         |(plan_pairs, _latest_map)| plan_pairs.is_empty(),
         |(plan_pairs, latest_map), runtime| {
             let check_by_index = resolve_mise_plan_checks(
@@ -168,30 +172,57 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                 check_by_index,
             })
         },
-        |_discovered, resolved, runtime| {
-            Ok(collect_mise_plan_and_upgradable(
+        move |_discovered, resolved, runtime| {
+            let collected = collect_mise_plan_and_upgradable(
                 resolved,
                 runtime.min_age,
                 runtime.suppress_update_outcomes,
                 runtime.pinned,
+            );
+            let candidates = collected
+                .upgradable
+                .into_iter()
+                .map(ApplyCandidate::recommended)
+                .collect();
+            Ok(PlannedApplyPayload::new(
+                MiseApplyState {
+                    min_age_raw,
+                    global_apply_allowed: collected.global_apply_allowed,
+                },
+                candidates,
             ))
         },
-        |ctx, _discovered, collected| {
-            if collected.global_apply_allowed {
-                return run_selective_or_global_apply_flow(
-                    ctx,
-                    PLUGIN.id(),
-                    collected.upgradable,
-                    |selected| apply_mise_selected_updates(&min_age_raw, selected),
-                    || apply_mise_updates(&min_age_raw),
-                );
-            }
-
-            run_per_item_apply_flow(ctx, PLUGIN.id(), collected.upgradable, |selected| {
-                apply_mise_selected_updates(&min_age_raw, selected);
-            })
-        },
     )
+}
+
+fn interactive_apply(
+    ctx: &ManagerCtx,
+) -> Result<Option<crate::interactive::apply::InteractiveApplyPlan>> {
+    Ok(plan_interactive_apply_from_planned(
+        plan_apply(ctx)?,
+        apply_planned_updates,
+    ))
+}
+
+fn apply_planned_updates(
+    ctx: &ManagerCtx,
+    state: MiseApplyState,
+    selection: crate::interactive::apply::ApplySelection,
+) {
+    if state.global_apply_allowed {
+        apply_selective_or_global_selection(
+            ctx,
+            PLUGIN.id(),
+            selection,
+            |selected| apply_mise_selected_updates(&state.min_age_raw, selected),
+            || apply_mise_updates(&state.min_age_raw),
+        );
+    } else {
+        apply_per_item_selection(ctx, selection, |selected| {
+            apply_mise_selected_updates(&state.min_age_raw, selected);
+        });
+    }
+    drop(state);
 }
 
 fn apply_mise_updates(min_age_raw: &str) -> Result<()> {

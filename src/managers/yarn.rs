@@ -28,9 +28,7 @@ impl ManagerPlugin for YarnPlugin {
         true
     }
 
-    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
-        run(ctx)
-    }
+    crate::impl_manager_pipeline!();
 }
 
 pub static PLUGIN: YarnPlugin = YarnPlugin;
@@ -72,17 +70,17 @@ type YarnTimeMap = BTreeMap<String, String>;
 
 type YarnPlanItem = ResolvedPlanItem<VersionPolicyResolution>;
 
-fn run(ctx: &ManagerCtx) -> Result<()> {
-    run_manager_pipeline(ctx, scan, run_plan_apply)
+fn apply(ctx: &ManagerCtx) -> Result<()> {
+    run_planned_apply(ctx, plan_apply(ctx)?, apply_planned_updates)
 }
 
-fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
+fn plan_apply(ctx: &ManagerCtx) -> Result<Option<PlannedApply<()>>> {
     let Some(yarn_major) = soft_fail(
         yarn_major_version(),
         PLUGIN.id(),
         "failed to detect Yarn major version",
     ) else {
-        return Ok(());
+        return Ok(None);
     };
 
     if yarn_major >= 2 {
@@ -95,7 +93,7 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
             "global upgrades are not supported for Yarn 2+; skipping manager",
         );
         emit_text_outcome(&outcome);
-        return Ok(());
+        return Ok(None);
     }
 
     run_plan_apply_framework(
@@ -115,19 +113,34 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
             .context("planning execution failed")
         },
         |_installed, plan, runtime| {
-            Ok(collect_apply_candidates_from_resolved_plan(
+            let candidates = collect_apply_candidates_from_resolved_plan(
                 PLUGIN.id(),
                 plan,
                 runtime.min_age,
                 runtime.suppress_update_outcomes,
                 runtime.pinned,
                 true,
-            ))
-        },
-        |ctx, _installed, candidates| {
-            run_per_item_apply_candidate_flow(ctx, PLUGIN.id(), candidates, apply_yarn_updates)
+            );
+            Ok(PlannedApplyPayload::new((), candidates))
         },
     )
+}
+
+fn interactive_apply(
+    ctx: &ManagerCtx,
+) -> Result<Option<crate::interactive::apply::InteractiveApplyPlan>> {
+    Ok(plan_interactive_apply_from_planned(
+        plan_apply(ctx)?,
+        apply_planned_updates,
+    ))
+}
+
+fn apply_planned_updates(
+    ctx: &ManagerCtx,
+    (): (),
+    selection: crate::interactive::apply::ApplySelection,
+) {
+    apply_per_item_selection(ctx, selection, apply_yarn_updates);
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {

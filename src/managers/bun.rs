@@ -31,9 +31,7 @@ impl ManagerPlugin for BunPlugin {
         true
     }
 
-    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
-        run(ctx)
-    }
+    crate::impl_manager_pipeline!();
 }
 
 pub static PLUGIN: BunPlugin = BunPlugin;
@@ -60,19 +58,20 @@ type BunTimeMap = BTreeMap<String, String>;
 
 type BunPlanItem = ResolvedPlanItem<VersionPolicyResolution>;
 
-fn run(ctx: &ManagerCtx) -> Result<()> {
-    run_manager_pipeline(ctx, scan, run_plan_apply)
+fn apply(ctx: &ManagerCtx) -> Result<()> {
+    run_planned_apply(ctx, plan_apply(ctx)?, apply_planned_updates)
 }
 
-fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
-    let min_age = ctx.policy.min_release_age.duration();
+fn plan_apply(ctx: &ManagerCtx) -> Result<Option<PlannedApply<String>>> {
     let bun = bun_executable();
+    let fetch_bun = bun.clone();
+    let resolve_bun = bun.clone();
 
     run_plan_apply_framework(
         ctx,
         PLUGIN.id(),
         PlanApplyFrameworkPolicy::SOFT_FETCH_STRICT_RESOLVE,
-        || bun_installed_global(&bun).context("failed to query global Bun packages"),
+        || bun_installed_global(&fetch_bun).context("failed to query global Bun packages"),
         BTreeMap::is_empty,
         |installed, runtime| {
             let Some(global_cwd) = soft_fail(
@@ -84,7 +83,7 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
             };
 
             resolve_bun_plan(
-                &bun,
+                &resolve_bun,
                 global_cwd.as_str(),
                 installed,
                 runtime.now_unix_secs,
@@ -94,26 +93,43 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
             )
             .context("planning execution failed")
         },
-        |_installed, plan, runtime| {
-            Ok(collect_apply_candidates_from_resolved_plan(
+        move |_installed, plan, runtime| {
+            let candidates = collect_apply_candidates_from_resolved_plan(
                 PLUGIN.id(),
                 plan,
                 runtime.min_age,
                 runtime.suppress_update_outcomes,
                 runtime.pinned,
                 true,
-            ))
-        },
-        |ctx, _installed, candidates| {
-            run_selective_or_global_apply_candidate_flow(
-                ctx,
-                PLUGIN.id(),
-                candidates,
-                |selected| apply_bun_selected_updates(&bun, min_age, selected),
-                || apply_bun_updates(&bun, min_age),
-            )
+            );
+            Ok(PlannedApplyPayload::new(bun, candidates))
         },
     )
+}
+
+fn interactive_apply(
+    ctx: &ManagerCtx,
+) -> Result<Option<crate::interactive::apply::InteractiveApplyPlan>> {
+    Ok(plan_interactive_apply_from_planned(
+        plan_apply(ctx)?,
+        apply_planned_updates,
+    ))
+}
+
+fn apply_planned_updates(
+    ctx: &ManagerCtx,
+    bun: String,
+    selection: crate::interactive::apply::ApplySelection,
+) {
+    let min_age = ctx.policy.min_release_age.duration();
+    apply_selective_or_global_selection(
+        ctx,
+        PLUGIN.id(),
+        selection,
+        |selected| apply_bun_selected_updates(&bun, min_age, selected),
+        || apply_bun_updates(&bun, min_age),
+    );
+    drop(bun);
 }
 
 fn scan(ctx: &ManagerCtx) -> Result<()> {

@@ -39,9 +39,7 @@ impl ManagerPlugin for UvPlugin {
         policy == VersionPolicy::Disabled
     }
 
-    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
-        run(ctx)
-    }
+    crate::impl_manager_pipeline!();
 }
 
 pub static PLUGIN: UvPlugin = UvPlugin;
@@ -121,13 +119,13 @@ impl ResolvedPlanTarget for UvResolvedTarget {
     }
 }
 
-fn run(ctx: &ManagerCtx) -> Result<()> {
-    run_manager_pipeline(ctx, scan, run_plan_apply)
+fn apply(ctx: &ManagerCtx) -> Result<()> {
+    run_planned_apply(ctx, plan_apply(ctx)?, apply_planned_updates)
 }
 
-fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
+fn plan_apply(ctx: &ManagerCtx) -> Result<Option<PlannedApply<String>>> {
     let min_age_raw = ctx.policy.min_release_age.cli_arg().to_string();
-    let apply_min_age_raw = min_age_raw.clone();
+    let resolve_min_age_raw = min_age_raw.clone();
 
     run_plan_apply_framework(
         ctx,
@@ -166,7 +164,7 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
                 &UvPlanParams {
                     now_unix_secs: runtime.now_unix_secs,
                     min_age: runtime.min_age,
-                    min_age_raw: &min_age_raw,
+                    min_age_raw: &resolve_min_age_raw,
                     max_parallel_checks: runtime.max_parallel_checks,
                     outdated_latest: &outdated_latest,
                     pypi_client: pypi_client.as_ref(),
@@ -176,22 +174,38 @@ fn run_plan_apply(ctx: &ManagerCtx) -> Result<()> {
             )
             .context("planning execution failed")
         },
-        |_installed, plan, runtime| {
-            Ok(collect_apply_candidates_from_resolved_plan(
+        move |_installed, plan, runtime| {
+            let candidates = collect_apply_candidates_from_resolved_plan(
                 PLUGIN.id(),
                 plan,
                 runtime.min_age,
                 runtime.suppress_update_outcomes,
                 runtime.pinned,
                 false,
-            ))
-        },
-        |ctx, _installed, candidates| {
-            run_per_item_apply_candidate_flow(ctx, PLUGIN.id(), candidates, move |selected| {
-                apply_uv_updates(&apply_min_age_raw, selected);
-            })
+            );
+            Ok(PlannedApplyPayload::new(min_age_raw, candidates))
         },
     )
+}
+
+fn interactive_apply(
+    ctx: &ManagerCtx,
+) -> Result<Option<crate::interactive::apply::InteractiveApplyPlan>> {
+    Ok(plan_interactive_apply_from_planned(
+        plan_apply(ctx)?,
+        apply_planned_updates,
+    ))
+}
+
+fn apply_planned_updates(
+    ctx: &ManagerCtx,
+    min_age_raw: String,
+    selection: crate::interactive::apply::ApplySelection,
+) {
+    apply_per_item_selection(ctx, selection, |selected| {
+        apply_uv_updates(&min_age_raw, selected);
+    });
+    drop(min_age_raw);
 }
 
 fn resolve_uv_plan(installed: &[UvTool], params: &UvPlanParams<'_>) -> Result<Vec<UvPlanItem>> {

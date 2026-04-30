@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 
 use super::context::ManagerCtx;
 use crate::config::ManagerMode;
+use crate::interactive::apply::InteractiveApplyPlan;
 use crate::managers::shared::versioning::policy::VersionPolicy;
 
 pub trait ManagerPlugin: Sync {
@@ -35,5 +36,34 @@ pub trait ManagerPlugin: Sync {
             policy.as_str()
         )
     }
-    fn run(&self, ctx: &ManagerCtx) -> Result<()>;
+    fn scan(&self, ctx: &ManagerCtx) -> Result<()>;
+    fn apply(&self, ctx: &ManagerCtx) -> Result<()>;
+    fn interactive_apply(&self, ctx: &ManagerCtx) -> Result<Option<InteractiveApplyPlan>>;
+    fn run(&self, ctx: &ManagerCtx) -> Result<()> {
+        if ctx.is_scan() {
+            return self.scan(ctx);
+        }
+
+        self.apply(ctx)
+    }
+}
+
+#[macro_export]
+macro_rules! impl_manager_pipeline {
+    () => {
+        fn scan(&self, ctx: &$crate::managers::ManagerCtx) -> anyhow::Result<()> {
+            scan(ctx)
+        }
+
+        fn apply(&self, ctx: &$crate::managers::ManagerCtx) -> anyhow::Result<()> {
+            apply(ctx)
+        }
+
+        fn interactive_apply(
+            &self,
+            ctx: &$crate::managers::ManagerCtx,
+        ) -> anyhow::Result<Option<$crate::interactive::apply::InteractiveApplyPlan>> {
+            interactive_apply(ctx)
+        }
+    };
 }

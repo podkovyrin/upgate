@@ -9,7 +9,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 
-use crate::ui::with_spinner_suspended;
+use crate::ui::{terminal_output_suppressed, with_spinner_suspended};
 use crate::util::env::non_empty_var;
 use crate::util::logging;
 
@@ -227,7 +227,7 @@ pub fn validate_required_mutation_mode() -> Result<()> {
 }
 
 fn maybe_emit_mutation_mode_notice(skipping: bool) {
-    if !mutation_mode_notice_enabled() {
+    if !mutation_mode_notice_enabled() || terminal_output_suppressed() {
         return;
     }
 

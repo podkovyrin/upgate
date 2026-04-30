@@ -5,6 +5,7 @@ use crate::managers::shared::versioning::policy::{
 };
 use crate::outcome::DelayedReason;
 use crate::outcome::ItemOutcome;
+use crate::util::text::strip_ansi_codes;
 use crate::util::time::human_age;
 
 pub struct PlanMeta {
@@ -116,6 +117,18 @@ pub struct ApplyCandidateVersion {
     force: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyCandidateDisplayNote {
+    Normal(String),
+    Forced(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplyCandidateNotePart {
+    pub text: String,
+    pub violation: bool,
+}
+
 impl ApplyCandidateVersion {
     pub fn new(update: PlannedUpdate, note: String, force: bool) -> Self {
         Self {
@@ -133,12 +146,16 @@ impl ApplyCandidateVersion {
         &self.note
     }
 
+    pub fn note_parts(&self) -> Vec<ApplyCandidateNotePart> {
+        note_parts(&self.note)
+    }
+
     pub const fn is_force(&self) -> bool {
         self.force
     }
 
-    pub fn clone_update(&self) -> PlannedUpdate {
-        self.update.clone()
+    pub fn into_update(self) -> PlannedUpdate {
+        self.update
     }
 }
 
@@ -226,23 +243,126 @@ impl ApplyCandidate {
         self.update
     }
 
-    pub fn note(&self) -> &str {
-        &self.note
+    pub fn selected_update(&self, version_idx: usize) -> &PlannedUpdate {
+        self.versions
+            .get(version_idx)
+            .map_or(&self.update, ApplyCandidateVersion::update)
+    }
+
+    pub fn into_selected_update(self, version_idx: usize) -> PlannedUpdate {
+        self.versions
+            .into_iter()
+            .nth(version_idx)
+            .map_or(self.update, ApplyCandidateVersion::into_update)
+    }
+
+    pub fn display_note(
+        &self,
+        selected_version_idx: usize,
+        selected: bool,
+    ) -> ApplyCandidateDisplayNote {
+        if let Some(explanation) = self.selected_force_explanation(selected_version_idx) {
+            return ApplyCandidateDisplayNote::Forced(explanation);
+        }
+
+        if !selected && self.is_visible_by_default() {
+            return ApplyCandidateDisplayNote::Normal(pinned_note(&self.note));
+        }
+
+        ApplyCandidateDisplayNote::Normal(strip_ansi_codes(&self.note))
+    }
+
+    fn selected_force_explanation(&self, selected_version_idx: usize) -> Option<String> {
+        if let Some(version) = self.versions.get(selected_version_idx)
+            && version.is_force()
+        {
+            return Some(force_explanation_from_note(version.note()));
+        }
+
+        self.is_force_candidate()
+            .then(|| force_explanation_from_note(&self.note))
+    }
+
+    pub fn note_parts(&self) -> Vec<ApplyCandidateNotePart> {
+        note_parts(&self.note)
     }
 
     pub fn versions(&self) -> &[ApplyCandidateVersion] {
         &self.versions
     }
+}
 
-    pub fn has_selectable_versions(&self) -> bool {
-        self.versions.len() > 1
+fn force_explanation_from_note(note: &str) -> String {
+    let note = strip_ansi_codes(note);
+    let parts = note
+        .split("; ")
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+
+    let released = parts
+        .iter()
+        .copied()
+        .find(|part| is_release_age_note_part(part));
+    let has_age_violation = parts.iter().any(|part| is_release_age_violation_part(part));
+    let mut explanation = Vec::new();
+
+    if has_age_violation && let Some(released) = released {
+        explanation.push(released.to_string());
     }
 
-    pub fn clone_selected_update(&self, version_idx: usize) -> PlannedUpdate {
-        self.versions
-            .get(version_idx)
-            .map_or_else(|| self.update.clone(), ApplyCandidateVersion::clone_update)
+    explanation.extend(
+        parts
+            .iter()
+            .copied()
+            .filter(|part| is_force_explanation_part(part))
+            .map(str::to_string),
+    );
+
+    if explanation.is_empty() {
+        note
+    } else {
+        explanation.join("; ")
     }
+}
+
+fn pinned_note(note: &str) -> String {
+    let note = strip_ansi_codes(note);
+    if note.is_empty() {
+        "pinned".to_string()
+    } else {
+        format!("pinned, {note}")
+    }
+}
+
+fn note_parts(note: &str) -> Vec<ApplyCandidateNotePart> {
+    strip_ansi_codes(note)
+        .split("; ")
+        .filter(|part| !part.is_empty())
+        .map(|part| ApplyCandidateNotePart {
+            text: part.to_string(),
+            violation: is_violation_note_part(part),
+        })
+        .collect()
+}
+
+fn is_release_age_note_part(part: &str) -> bool {
+    part.starts_with("released:")
+}
+
+fn is_release_age_violation_part(part: &str) -> bool {
+    part == "too fresh" || part.starts_with("too fresh:")
+}
+
+fn is_policy_violation_note_part(part: &str) -> bool {
+    part.starts_with("version policy:")
+}
+
+fn is_violation_note_part(part: &str) -> bool {
+    is_release_age_violation_part(part) || is_policy_violation_note_part(part)
+}
+
+fn is_force_explanation_part(part: &str) -> bool {
+    is_release_age_violation_part(part) || is_policy_violation_note_part(part)
 }
 
 impl PlannedUpdate {
@@ -308,7 +428,7 @@ mod tests {
             ApplyCandidateVersion::new(forced, String::new(), true),
         ]);
 
-        let selected = candidate.clone_selected_update(1);
+        let selected = candidate.selected_update(1);
 
         assert_eq!(selected.target, "2.0.0");
         assert_eq!(
@@ -332,11 +452,65 @@ mod tests {
             update.apply_spec_base = Some("example.com/tool/cmd/tool".to_string());
         });
 
-        let selected = candidate.clone_selected_update(1);
+        let selected = candidate.selected_update(1);
 
         assert_eq!(
             selected.apply_spec_base.as_deref(),
             Some("example.com/tool/cmd/tool")
         );
+    }
+
+    #[test]
+    fn display_note_marks_forced_selected_version_with_policy_explanation() {
+        let candidate = ApplyCandidate::recommended(planned_update("1.1.0")).with_versions(vec![
+            ApplyCandidateVersion::new(
+                planned_update("2.0.0"),
+                "released: 1d; too fresh; version policy: stable blocks non-final release"
+                    .to_string(),
+                true,
+            ),
+        ]);
+
+        assert_eq!(
+            candidate.display_note(0, true),
+            ApplyCandidateDisplayNote::Forced(
+                "released: 1d; too fresh; version policy: stable blocks non-final release"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn display_note_marks_unselected_recommended_candidate_as_pinned() {
+        let candidate =
+            ApplyCandidate::recommended(planned_update("1.1.0")).with_note("released: 9d");
+
+        assert_eq!(
+            candidate.display_note(0, false),
+            ApplyCandidateDisplayNote::Normal("pinned, released: 9d".to_string())
+        );
+    }
+
+    #[test]
+    fn note_parts_identify_policy_and_age_violations() {
+        let version = ApplyCandidateVersion::new(
+            planned_update("2.0.0"),
+            "released: 1d; too fresh; version policy: stable blocks non-final release; version policy warning: fallback".to_string(),
+            true,
+        );
+
+        let parts = version.note_parts();
+
+        assert_eq!(parts[0].text, "released: 1d");
+        assert!(!parts[0].violation);
+        assert_eq!(parts[1].text, "too fresh");
+        assert!(parts[1].violation);
+        assert_eq!(
+            parts[2].text,
+            "version policy: stable blocks non-final release"
+        );
+        assert!(parts[2].violation);
+        assert_eq!(parts[3].text, "version policy warning: fallback");
+        assert!(!parts[3].violation);
     }
 }
