@@ -1,0 +1,6 @@
+{
+  "npm:typescript": [{"version": "1.0.0"}],
+  "npm:react": [{"version": "1.0.0"}],
+  "npm:eslint": [{"version": "1.0.0"}],
+  "npm:zzzz-upnow-no-such-package-000000000000": [{"version": "1.0.0"}]
+}

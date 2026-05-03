@@ -1,0 +1,25 @@
+[upnow]
+scan_old_age_threshold = "30d"
+
+[brew]
+mode = "apply"
+min_release_age = "12h"
+version_policy = "stable"
+no_update = true
+pinned = ["aom", "docker"]
+
+[npm]
+mode = "scan"
+min_release_age = "7d"
+version_policy = "same-track"
+pinned = ["npm"]
+
+[gem]
+mode = "off"
+min_release_age = "7d"
+pinned = ["bundler"]
+
+[dotnet]
+mode = "off"
+min_release_age = "7d"
+pinned = ["serilog"]

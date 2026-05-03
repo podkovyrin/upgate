@@ -1,0 +1,10 @@
+alpha-ready v1.0.0:
+    alpha-ready
+beta-fresh-latest v1.1.0:
+    beta-fresh-latest
+gamma-delayed v2.0.0:
+    gamma-delayed
+omega-error v0.1.0:
+    omega-error
+pinned-pkg v3.0.0:
+    pinned-pkg

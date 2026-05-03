@@ -1,0 +1,2 @@
+path	example.com/alpha/cmd/alpha-ready
+mod	example.com/alpha	v1.0.0	h1:alpha

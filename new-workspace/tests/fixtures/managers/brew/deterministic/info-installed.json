@@ -1,0 +1,17 @@
+{
+  "formulae": [
+    {
+      "full_name": "alpha-ready",
+      "tap": "local/tap",
+      "ruby_source_path": "Formula/alpha-ready.rb",
+      "installed": [{"version": "1.0.0", "installed_on_request": true, "installed_as_dependency": false}]
+    },
+    {
+      "full_name": "pinned-pkg",
+      "tap": "local/tap",
+      "ruby_source_path": "Formula/pinned-pkg.rb",
+      "installed": [{"version": "3.0.0", "installed_on_request": true, "installed_as_dependency": false}]
+    }
+  ],
+  "casks": []
+}

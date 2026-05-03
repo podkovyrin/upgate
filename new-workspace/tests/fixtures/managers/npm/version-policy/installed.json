@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "alpha-ready": {"version": "1.0.0"},
+    "beta-fresh-latest": {"version": "1.0.0"}
+  }
+}

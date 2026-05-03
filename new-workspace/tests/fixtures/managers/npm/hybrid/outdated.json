@@ -1,0 +1,5 @@
+{
+  "eslint": {"current": "1.0.0"},
+  "react": {"current": "9999.0.0"},
+  "typescript": {"current": "1.0.0"}
+}

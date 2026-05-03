@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "typescript": {"version": "1.0.0"},
+    "eslint": {"version": "1.0.0"},
+    "react": {"version": "9999.0.0"},
+    "zzzz-upnow-no-such-package-000000000000": {"version": "1.0.0"}
+  }
+}

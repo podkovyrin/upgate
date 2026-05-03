@@ -1,0 +1,16 @@
+{
+  "installs": {
+    "alpha-ready 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)": {
+      "bins": ["alpha-ready"],
+      "features": ["fast-mode", "vendored-ssl"],
+      "all_features": false,
+      "no_default_features": true
+    },
+    "beta-fresh-latest 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)": {
+      "bins": ["beta-fresh-latest"],
+      "features": [],
+      "all_features": false,
+      "no_default_features": false
+    }
+  }
+}

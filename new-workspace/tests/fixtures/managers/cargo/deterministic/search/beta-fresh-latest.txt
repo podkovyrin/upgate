@@ -1,0 +1,2 @@
+beta-fresh-latest = "1.1.0"    # fake latest
+... and 1 crate more

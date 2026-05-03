@@ -1,0 +1,17 @@
+{
+  "info": {
+    "version": "0.2.0"
+  },
+  "releases": {
+    "0.1.0": [
+      {
+        "upload_time_iso_8601": "2020-01-01T00:00:00Z"
+      }
+    ],
+    "0.2.0": [
+      {
+        "upload_time_iso_8601": "not-a-timestamp"
+      }
+    ]
+  }
+}

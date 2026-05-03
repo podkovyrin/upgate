@@ -1,0 +1,52 @@
+{
+  "venvs": {
+    "alpha-ready": {
+      "metadata": {
+        "main_package": {
+          "package": "alpha-ready",
+          "package_version": "1.0.0"
+        }
+      }
+    },
+    "beta-fresh-latest": {
+      "metadata": {
+        "main_package": {
+          "package": "beta-fresh-latest",
+          "package_version": "1.1.0"
+        }
+      }
+    },
+    "gamma-delayed": {
+      "metadata": {
+        "main_package": {
+          "package": "gamma-delayed",
+          "package_version": "2.0.0"
+        }
+      }
+    },
+    "omega-error": {
+      "metadata": {
+        "main_package": {
+          "package": "omega-error",
+          "package_version": "0.1.0"
+        }
+      }
+    },
+    "pinned-pkg": {
+      "metadata": {
+        "main_package": {
+          "package": "pinned-pkg",
+          "package_version": "3.0.0"
+        }
+      }
+    },
+    "scan-noage": {
+      "metadata": {
+        "main_package": {
+          "package": "scan-noage",
+          "package_version": "5.0.0"
+        }
+      }
+    }
+  }
+}

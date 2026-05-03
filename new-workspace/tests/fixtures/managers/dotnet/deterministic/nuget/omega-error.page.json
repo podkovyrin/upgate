@@ -1,0 +1,18 @@
+{
+  "items": [
+    {
+      "catalogEntry": {
+        "version": "0.1.0",
+        "published": "2020-01-01T00:00:00Z",
+        "listed": true
+      }
+    },
+    {
+      "catalogEntry": {
+        "version": "0.2.0",
+        "published": "not-a-timestamp",
+        "listed": true
+      }
+    }
+  ]
+}

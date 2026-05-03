@@ -1,0 +1,8 @@
+alpha-ready (1.0.0)
+beta-fresh-latest (1.1.0)
+gamma-delayed (2.0.0)
+omega-error (0.1.0)
+pinned-pkg (3.0.0)
+prerelease-blocked (1.0.0)
+scan-noage (5.0.0)
+default-skip (default: 9.9.9)

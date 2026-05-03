@@ -1,0 +1,8 @@
+[
+  {
+    "name": "local/tap",
+    "path": "/tmp/local-tap",
+    "remote": null,
+    "branch": "main"
+  }
+]

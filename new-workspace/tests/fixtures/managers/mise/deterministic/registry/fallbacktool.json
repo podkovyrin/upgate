@@ -1,0 +1,6 @@
+{
+  "short": "fallbacktool",
+  "backends": [
+    "github:example/fallbacktool"
+  ]
+}

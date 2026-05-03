@@ -1,0 +1,6 @@
+{
+  "npm:typescript": {"latest": "5.9.3"},
+  "npm:react": {"latest": "19.2.0"},
+  "npm:eslint": {"latest": "9.39.1"},
+  "npm:zzzz-upnow-no-such-package-000000000000": {"latest": "1.1.0"}
+}

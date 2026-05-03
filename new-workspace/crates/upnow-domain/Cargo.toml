@@ -9,3 +9,6 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+toml = "0.9"

@@ -1,0 +1,4 @@
+httpie v1.0.0 [required: ==1.0.0] [CPython 3.14.3]
+ruff v0.1.0 [required: ==0.1.0] [CPython 3.14.3]
+gamma-delayed v2.0.0 [required: ==2.0.0] [CPython 3.14.3]
+zzzz-upnow-no-such-package-000000000000 v1.0.0 [required: ==1.0.0] [CPython 3.14.3]
