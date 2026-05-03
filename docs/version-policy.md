@@ -10,9 +10,8 @@ The goal is to let users choose between:
 
 * updating only to stable releases
 * following the stability track of an already installed prerelease
-* allowing any newer version, including prereleases
 
-This feature is configured **per manager** in `config.toml` and may later support package-level overrides.
+This feature is configured **per manager** in `config.toml`.
 
 ---
 
@@ -50,9 +49,8 @@ Supported values:
 
 * `"stable"`
 * `"same-track"`
-* `"any"`
 
-If `version_policy` is not set, the version policy gate is **disabled** for that manager and current behavior is preserved.
+If `version_policy` is not set, no version policy filtering is applied.
 
 ---
 
@@ -71,22 +69,6 @@ version_policy = "stable"
 [pipx]
 version_policy = "same-track"
 ```
-
----
-
-## Future-compatible extension
-
-The config shape should allow nested overrides later, for example:
-
-```toml
-[npm]
-version_policy = "stable"
-
-[npm.packages."typescript-nightly"]
-version_policy = "any"
-```
-
-Package-level overrides are not required for the first version.
 
 ---
 
@@ -153,14 +135,6 @@ Rule by installed version class:
 * installed `dev` → eligible targets: `dev`, `alpha`, `beta`, `rc`, `final`
 
 This policy is intended for users already on prereleases who want to continue forward without widening to less stable lanes.
-
----
-
-### `any`
-
-Any newer version is eligible, including prereleases.
-
-This is the least restrictive policy.
 
 ---
 
@@ -256,13 +230,12 @@ Reason:
 
 # Status Model
 
-No new top-level statuses are required.
-
-Existing statuses remain:
+Plan item statuses include:
 
 * `current`
 * `update`
 * `delayed`
+* `blocked`
 * `skipped`
 * `error`
 
@@ -287,13 +260,16 @@ Either:
 * installed version is effectively current under policy, or
 * newer versions exist but all are blocked by version policy
 
+### `blocked`
+
+Used when the item cannot be safely resolved, such as missing release metadata.
+
 ### `skipped`
 
 Used for other pre-existing skip reasons such as:
 
 * pinned
 * disabled manager
-* missing metadata
 * unsupported environment
 
 Version policy alone should not produce `skipped`.
@@ -382,7 +358,7 @@ Recommended handling:
 * known labels map normally
 * unknown non-final labels are treated as prereleases
 * under `stable`, exclude them
-* under `any`, allow them
+* with no configured policy, do not filter them by version policy
 * under `same-track`, allow only when classification is not less stable than the installed version, or conservatively exclude if relative ordering cannot be determined
 
 This avoids accidentally treating custom prerelease labels as stable.
@@ -428,13 +404,12 @@ Final vs prerelease distinction is reliable, but subclassification (`alpha` vs `
 Version policy may only reliably support:
 
 * `stable`
-* `any`
 
 If a manager cannot safely implement `same-track`, it should:
 
 * reject that config value for the manager
 
-Recommended approach: support `stable` and `any` wherever possible, and enable `same-track` only where classification is good enough.
+Recommended approach: support `stable` wherever possible, and enable `same-track` only where classification is good enough.
 
 ### Gem
 
@@ -470,57 +445,6 @@ In `apply --interactive`:
 
 ---
 
-## Override-ready design
-
-One-run override is still a future UX capability, but the resolver model is intentionally designed so it can be added without redesign.
-
-### Recommendation vs final decision
-
-Resolver output is a recommendation, not the final apply decision.
-
-Recommended states:
-
-* `Update { target_version }`
-* `DelayedByAge`
-* `CurrentNoNewer`
-* `CurrentBlockedByPolicy`
-
-The final decision is made by controller/apply flow after user interaction.
-
-### Candidate list for manual selection
-
-Resolver must include evaluation metadata for **all newer candidates**, including ineligible ones.
-
-This lets the UI/controller support the flow:
-
-1. show resolver recommendation
-2. let user inspect all newer candidates and reasons
-3. allow manual selection of a specific ineligible candidate
-4. execute the user-selected target exactly
-
-The selected manual target should not be replaced by a recomputed “newest eligible” value.
-
-### Gate bypass model
-
-Bypass is one-run and gate-specific:
-
-* `version_policy` bypass flag
-* `min_release_age` bypass flag
-
-These flags are independent so override can bypass one gate or both gates.
-
-Resolver metadata semantics with bypass:
-
-* top-level summary fields and counts (`latest_*_eligible`, blocked counters, recommendation) use **effective gates** after bypass is applied
-* raw non-bypassed gate outcomes remain available per candidate in `evaluations` (`policy_allowed`, `age_allowed`, block reasons/warnings)
-* the configured `version_policy` is a run-level input; exposing a duplicated per-candidate `effective_policy` field is optional
-
-Fallback context note:
-
-* when `same-track` degrades to conservative stable fallback, fallback context is surfaced by per-candidate warnings (`InstalledTrackUnknownFallbackStable`) rather than a dedicated run-level fallback field
-
----
-
 # CLI and Validation
 
 ## Config validation
@@ -529,14 +453,14 @@ Accepted values for `version_policy`:
 
 * `stable`
 * `same-track`
-* `any`
 
-Any other value is a config error.
+Unset means no policy filtering. External migration behavior for older `any`
+configuration is not decided in this document.
 
 Example error:
 
 ```text
-Invalid version_policy for [npm]: expected one of "stable", "same-track", "any", got "beta-only"
+Invalid version_policy for [npm]: expected one of "stable", "same-track", got "beta-only"
 ```
 
 ---
@@ -627,30 +551,7 @@ Reason:
 
 ---
 
-## Example 3: `any`
-
-Config:
-
-```toml
-[npm]
-version_policy = "any"
-```
-
-Installed:
-
-* `1.0.0`
-
-Available:
-
-* `1.1.0-alpha.1`
-
-Result:
-
-* update eligible, subject to age gate
-
----
-
-## Example 4: no policy configured
+## Example 3: no policy configured
 
 Config:
 
@@ -674,10 +575,9 @@ Use an internal enum such as:
 
 ```text
 VersionPolicy:
-- Disabled
+- NoPolicy
 - Stable
 - SameTrack
-- Any
 ```
 
 And a normalized release class enum:
@@ -695,22 +595,13 @@ ReleaseClass:
 
 `UnknownPrerelease` is useful because it is safer than collapsing into `Unknown`.
 
-Use a recommendation enum for resolver output:
+Policy evaluation feeds typed plan items such as:
 
 ```text
-RecommendedOutcome:
-- Update { target_version }
-- DelayedByAge
-- CurrentNoNewer
-- CurrentBlockedByPolicy
-```
-
-And independent one-run gate bypass flags:
-
-```text
-GateBypass:
-- version_policy: bool
-- min_release_age: bool
+- Update
+- Delayed
+- Current
+- Blocked
 ```
 
 Classifier API should be conservative and non-fallible at this boundary:
@@ -718,7 +609,7 @@ Classifier API should be conservative and non-fallible at this boundary:
 * parse/classify success -> return `ReleaseClass`
 * parse/classify failure -> return `Unknown`
 
-This avoids accidentally bypassing conservative fallback via error propagation.
+This avoids accidentally defeating conservative fallback via error propagation.
 
 ---
 
@@ -732,9 +623,8 @@ is_candidate_allowed(installed_class, candidate_class, policy) -> decision
 
 Semantics:
 
-* `Disabled` → true
+* `NoPolicy` → true
 * `Stable` → candidate_class == Final
-* `Any` → true
 * `SameTrack` → candidate must be same or more stable than installed
   using ladder: Dev < Alpha < Beta < Rc < Final
 
@@ -773,11 +663,10 @@ Preferred phrases:
 
 # Summary
 
-This feature adds a per-manager optional `version_policy` gate with three values:
+This feature adds a per-manager optional `version_policy` gate with two values:
 
 * `stable`
 * `same-track`
-* `any`
 
 Selection uses **Option A**:
 
@@ -786,6 +675,6 @@ Selection uses **Option A**:
 * then filter by age
 * choose the newest remaining candidate
 
-This keeps behavior predictable, works well with your existing delayed-upgrade model, preserves backward compatibility when unset, and leaves room for future package-level overrides and interactive one-run force updates.
+This keeps behavior predictable, works well with your existing delayed-upgrade model, and preserves backward compatibility when unset.
 
-Resolver output is modeled as a recommendation plus per-candidate evaluation metadata so interactive flows can support exact manual target selection and one-run gate bypass without redesign.
+Resolver output is modeled as a recommendation plus per-candidate evaluation metadata so interactive flows can support exact manual target selection where the manager can execute an exact target.

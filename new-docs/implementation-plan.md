@@ -1,0 +1,673 @@
+# Implementation Plan
+
+## Assumptions
+This rebuild happens in a new Rust workspace inside the current project folder. This document uses `<new-workspace>/` as a placeholder path. The existing `/src` tree is read-only behavioral reference. Do not import old modules into the new workspace.
+
+## Phase 0: Workspace Shell And Guardrails
+
+### Goal
+Create the new workspace with enough structure to develop independently from the old architecture.
+
+### Behavior Delivered
+No product behavior yet. The new workspace builds and runs an empty CLI skeleton or placeholder binary.
+
+### Modules/Files Likely Created Or Changed
+- `<new-workspace>/Cargo.toml`
+- `<new-workspace>/crates/upnow-cli/`
+- `<new-workspace>/crates/upnow-domain/`
+- `<new-workspace>/crates/upnow-infra/`
+- `<new-workspace>/crates/upnow-planning/`
+- `<new-workspace>/crates/upnow-managers/`
+- `<new-workspace>/crates/upnow-presentation/`
+
+### Tests Required
+- Workspace build smoke test.
+- Empty test suite runs successfully.
+- CI/local command documented for the new workspace.
+
+### What Must Not Be Included Yet
+- No manager implementation.
+- No TUI.
+- No old `/src` imports.
+- No compatibility layer around old `ManagerPlugin`, `ManagerCtx`, `PlannedUpdate`, or `ApplyCandidate`.
+
+### Architectural Risks
+Developers may copy old structure because it is nearby.
+
+### Stop Conditions
+Stop when the new workspace compiles independently and has explicit project boundaries.
+
+### Review Checklist
+- New workspace does not depend on the old crate internals.
+- Old `/src` is referenced only in comments/tests as behavioral source.
+- Crate names reflect layers, not old modules.
+
+## Phase 1: Behavioral Fixtures From Old Code
+
+### Goal
+Capture current behavior before rewriting managers.
+
+### Behavior Delivered
+No new command behavior. Fixture files and tests define expected parsing/config behavior.
+
+### Modules/Files Likely Created Or Changed
+- `<new-workspace>/tests/fixtures/managers/...`
+- `<new-workspace>/crates/upnow-managers/tests/...`
+- `<new-workspace>/crates/upnow-domain/tests/...`
+
+### Tests Required
+- Fixtures for current manager command outputs:
+  - Brew outdated/info/tap metadata shapes.
+  - npm/pnpm/yarn/bun installed/outdated/time outputs.
+  - Cargo install list and `.crates2.json`.
+  - pipx list JSON and PyPI payloads.
+  - uv tool list/outdated/dry-run output.
+  - Go `version -m` and `go list -m` payloads.
+  - Gem list/outdated and RubyGems payloads.
+  - Dotnet tool list and NuGet registration payloads.
+  - Mise dry-run, registry, ls-remote, versions-host payloads.
+- Config fixture tests for policy, pins, mode, `no_update`, and scan age threshold.
+
+### What Must Not Be Included Yet
+- No production parser code unless needed to prove fixture shape.
+- No planning core.
+- No TUI wiring.
+- No broad manager abstractions.
+
+### Architectural Risks
+Tests may encode old internal names rather than externally visible behavior.
+
+### Stop Conditions
+Stop when fixtures cover the behaviors that must survive the rebuild.
+
+### Review Checklist
+- Fixtures test command output parsing, not old types.
+- No stringly plan fields are introduced.
+- No outdated `docs/*` content is used as source of truth.
+
+## Phase 2: Core Domain Types
+
+### Goal
+Define the typed model used by all later phases.
+
+### Behavior Delivered
+No CLI behavior yet. Domain types compile and are unit-tested.
+
+### Modules/Files Likely Created Or Changed
+- `<new-workspace>/crates/upnow-domain/src/lib.rs`
+- `<new-workspace>/crates/upnow-domain/src/manager.rs`
+- `<new-workspace>/crates/upnow-domain/src/version.rs`
+- `<new-workspace>/crates/upnow-domain/src/policy.rs`
+- `<new-workspace>/crates/upnow-domain/src/release.rs`
+- `<new-workspace>/crates/upnow-domain/src/plan.rs`
+- `<new-workspace>/crates/upnow-domain/src/scan.rs`
+- `<new-workspace>/crates/upnow-domain/src/selection.rs`
+- `<new-workspace>/crates/upnow-domain/src/error.rs`
+
+### Tests Required
+- Domain constructor and validation tests.
+- `VersionPolicy` parse/display tests.
+- `PlanItem` state tests: update, current, delayed, blocked, skipped, resolver error.
+- `PlanSelection` tests for selected items and pin changes.
+
+### What Must Not Be Included Yet
+- No manager discovery.
+- No process or HTTP code.
+- No renderer.
+- No TUI.
+- No traits unless the domain has multiple concrete uses.
+
+### Architectural Risks
+Over-modeling or recreating old string fields under typed names.
+
+### Stop Conditions
+Stop when the domain can represent scan rows, update candidates, policy decisions, release lookup results, pin changes, and execution eligibility.
+
+### Review Checklist
+- Domain types contain no terminal display strings.
+- No opaque string fields for manager control flow.
+- No equivalent of `apply_spec_base`.
+- TUI concepts do not appear in domain types.
+
+## Phase 3: Policy And Candidate Evaluation
+
+### Goal
+Implement typed version policy and min-release-age evaluation.
+
+### Behavior Delivered
+Given installed version, release timeline, policy, and clock time, the planner can produce typed candidate eligibility and a plan decision.
+
+### Modules/Files Likely Created Or Changed
+- `<new-workspace>/crates/upnow-planning/src/lib.rs`
+- `<new-workspace>/crates/upnow-planning/src/evaluate.rs`
+- `<new-workspace>/crates/upnow-domain/src/policy.rs`
+- `<new-workspace>/crates/upnow-domain/src/release.rs`
+
+### Tests Required
+- SemVer candidate ordering.
+- PEP 440 candidate ordering.
+- Brew-native stability classification.
+- `stable` policy blocks prereleases.
+- `same-track` allows same-or-more-stable versions.
+- Unknown installed track falls back to stable with typed warning.
+- No-policy mode applies no stability filter.
+- Too-fresh versions are delayed.
+- Missing release metadata blocks the item.
+
+### What Must Not Be Included Yet
+- No manager adapters.
+- No CLI orchestration.
+- No TUI selection.
+- No execution commands.
+
+### Architectural Risks
+Reintroducing old `Disabled` and `Any` as separate concepts.
+
+### Stop Conditions
+Stop when policy evaluation can fully explain why each candidate is eligible or blocked.
+
+### Review Checklist
+- Only one no-policy mode exists.
+- Policy warnings are typed.
+- Age gate and policy gate are separate typed facts.
+- Forced eligibility can be represented but is not wired to UI.
+
+## Phase 4: Infrastructure Layer
+
+### Goal
+Add testable process, HTTP, clock, env, and parallelism infrastructure.
+
+### Behavior Delivered
+No product behavior yet. Infrastructure can be faked in tests.
+
+### Modules/Files Likely Created Or Changed
+- `<new-workspace>/crates/upnow-infra/src/lib.rs`
+- `<new-workspace>/crates/upnow-infra/src/process.rs`
+- `<new-workspace>/crates/upnow-infra/src/http.rs`
+- `<new-workspace>/crates/upnow-infra/src/clock.rs`
+- `<new-workspace>/crates/upnow-infra/src/env.rs`
+- `<new-workspace>/crates/upnow-infra/src/parallel.rs`
+
+### Tests Required
+- Command success/failure classification.
+- Signal/interruption classification.
+- Mutation-skip behavior.
+- HTTP timeout/user-agent behavior.
+- Base URL env override behavior.
+- Fake clock tests.
+- Parallel execution preserves result order.
+
+### What Must Not Be Included Yet
+- No manager logic beyond infra tests.
+- No UI output.
+- No generic plugin framework.
+
+### Architectural Risks
+Introducing traits everywhere for testability. Prefer concrete wrappers and introduce traits only where fake and real implementations are both used now.
+
+### Stop Conditions
+Stop when managers and release lookups can use real or fake process/HTTP/clock dependencies.
+
+### Review Checklist
+- Domain and planning crates do not call process or HTTP directly.
+- Mutation safety behavior is preserved.
+- Infra errors are typed enough for app-level mapping.
+
+## Phase 5: Config Boundary
+
+### Goal
+Implement config loading, overrides, policy resolution, and pin persistence in the new workspace.
+
+### Behavior Delivered
+The new CLI can resolve config values into typed domain settings, but commands may still be incomplete.
+
+### Modules/Files Likely Created Or Changed
+- `<new-workspace>/crates/upnow-cli/src/config.rs`
+- `<new-workspace>/crates/upnow-domain/src/config.rs` if shared typed config is needed
+- `<new-workspace>/crates/upnow-cli/tests/config.rs`
+
+### Tests Required
+- Default manager mode and release age.
+- Brew default `12h`.
+- Gem and Dotnet default `off`.
+- Brew-only `no_update`.
+- Manager mode override from CLI manager selection.
+- Pin persistence preserves unrelated TOML.
+- Old `any` policy migration behavior, once decided.
+
+### What Must Not Be Included Yet
+- No TUI pin persistence.
+- No manager execution.
+- No global app orchestration beyond config resolution.
+
+### Architectural Risks
+Letting config own runtime behavior decisions that belong to planning/execution.
+
+### Stop Conditions
+Stop when config produces typed per-manager settings and can persist pins independently.
+
+### Review Checklist
+- Config does not know about TUI state.
+- Pins are typed names, not rendered strings.
+- Unsupported policy per manager can be reported cleanly.
+
+## Phase 6: First Manager Vertical Slice
+
+### Goal
+Prove the architecture with one simple manager end to end in batch mode.
+
+### Recommended Manager
+Use `pnpm` first. It has clear installed/outdated JSON, registry time lookup, exact target execution, and no npm whole-day release-age nuance.
+
+### Behavior Delivered
+For `pnpm`, support:
+- `scan`
+- `plan`
+- `apply` batch
+- pins
+- exact target execution
+- native shortcut where valid
+
+### Modules/Files Likely Created Or Changed
+- `<new-workspace>/crates/upnow-managers/src/lib.rs`
+- `<new-workspace>/crates/upnow-managers/src/pnpm.rs`
+- `<new-workspace>/crates/upnow-planning/src/planner.rs`
+- `<new-workspace>/crates/upnow-cli/src/main.rs`
+- `<new-workspace>/crates/upnow-presentation/src/batch.rs`
+- `<new-workspace>/crates/upnow-execution/src/lib.rs` if execution is separated as its own crate
+
+### Tests Required
+- `pnpm list -g --depth 0 --json` parser.
+- `pnpm outdated -g --json` parser.
+- `pnpm view <name> time --json` parser.
+- Plan update/current/delayed/blocked cases.
+- Apply exact command construction.
+- Native shortcut eligibility.
+- Release lookup failure blocks only the item.
+
+### What Must Not Be Included Yet
+- No TUI.
+- No other manager migrations.
+- No generic manager framework beyond what `pnpm` proves necessary.
+
+### Architectural Risks
+Designing a manager abstraction from one manager. Keep abstraction minimal; defer trait extraction until the second manager.
+
+### Stop Conditions
+Stop when `pnpm` batch behavior works through typed domain, planning, release lookup, and execution.
+
+### Review Checklist
+- Manager code emits no terminal outcomes directly.
+- Manager code does not inspect CLI mode.
+- Execution uses typed selected plan items.
+- No display-note parsing exists.
+
+## Phase 7: Manager Abstraction Extraction
+
+### Goal
+Introduce the manager adapter boundary only after at least two real managers need it.
+
+### Behavior Delivered
+`pnpm` plus one additional npm-family manager share a small concrete manager adapter interface.
+
+### Suggested Second Manager
+Use `npm` to validate whole-day min age and native shortcut semantics.
+
+### Modules/Files Likely Created Or Changed
+- `<new-workspace>/crates/upnow-managers/src/adapter.rs`
+- `<new-workspace>/crates/upnow-managers/src/registry.rs`
+- `<new-workspace>/crates/upnow-managers/src/npm.rs`
+- `<new-workspace>/crates/upnow-managers/src/pnpm.rs`
+
+### Tests Required
+- Registry selection by manager id.
+- Unknown manager error.
+- Policy support validation.
+- npm installed/outdated/time parser tests.
+- npm exact install and native update command tests.
+
+### What Must Not Be Included Yet
+- No support for hypothetical managers.
+- No TUI.
+- No Brew/Mise abstractions.
+
+### Architectural Risks
+Making the adapter trait too broad. It should cover only behavior used by current migrated managers.
+
+### Stop Conditions
+Stop when two real managers use the same narrow adapter boundary cleanly.
+
+### Review Checklist
+- Trait methods map to real current behavior.
+- No `interactive_apply` equivalent exists.
+- No manager returns presentation strings.
+- Manager capabilities are typed.
+
+## Phase 8: Batch Command Orchestration
+
+### Goal
+Route `scan`, `plan`, and `apply` batch mode through the new shared core for migrated managers.
+
+### Behavior Delivered
+The new CLI supports selected managers, config, planning, execution, and batch rendering for migrated managers.
+
+### Modules/Files Likely Created Or Changed
+- `<new-workspace>/crates/upnow-cli/src/app.rs`
+- `<new-workspace>/crates/upnow-cli/src/cli.rs`
+- `<new-workspace>/crates/upnow-presentation/src/batch.rs`
+- `<new-workspace>/crates/upnow-execution/src/...`
+- `<new-workspace>/crates/upnow-managers/src/registry.rs`
+
+### Tests Required
+- CLI command parsing.
+- Default command is `plan`.
+- `--managers` filtering.
+- `--set` overrides.
+- Batch output golden tests.
+- Batch apply with pins.
+- Missing command and unsupported manager behavior.
+- Exit code behavior.
+
+### What Must Not Be Included Yet
+- No interactive mode.
+- No progress TUI.
+- No migrated complex managers unless in separate phases.
+
+### Architectural Risks
+Renderer leaking back into planner through convenience fields.
+
+### Stop Conditions
+Stop when batch mode is fully typed for migrated managers and output is equivalent.
+
+### Review Checklist
+- Planner returns typed outcomes only.
+- Renderer owns text formatting.
+- Execution result owns command failure details.
+- Native shortcut is used only when selected plan exactly allows it.
+
+## Phase 9: Manager Migration Waves
+
+### Goal
+Migrate all remaining managers in small independent reviews.
+
+### Behavior Delivered
+Each manager preserves current behavior in the new architecture.
+
+### Suggested Order
+1. Yarn and Bun.
+2. Cargo and pipx.
+3. Go.
+4. Gem and Dotnet.
+5. uv.
+6. Mise.
+7. Brew last.
+
+### Modules/Files Likely Created Or Changed
+- `<new-workspace>/crates/upnow-managers/src/yarn.rs`
+- `<new-workspace>/crates/upnow-managers/src/bun.rs`
+- `<new-workspace>/crates/upnow-managers/src/cargo.rs`
+- `<new-workspace>/crates/upnow-managers/src/pipx.rs`
+- `<new-workspace>/crates/upnow-managers/src/go.rs`
+- `<new-workspace>/crates/upnow-managers/src/gem.rs`
+- `<new-workspace>/crates/upnow-managers/src/dotnet.rs`
+- `<new-workspace>/crates/upnow-managers/src/uv.rs`
+- `<new-workspace>/crates/upnow-managers/src/mise.rs`
+- `<new-workspace>/crates/upnow-managers/src/brew.rs`
+- `<new-workspace>/crates/upnow-release/src/...` if release sources are split out
+
+### Tests Required
+For each manager:
+- Discovery parser tests.
+- Outdated/native plan parser tests.
+- Release lookup tests.
+- Policy support tests.
+- Execution command construction tests.
+- Missing metadata blocks only that item.
+- Manager-specific skip behavior.
+
+### What Must Not Be Included Yet
+- No TUI selection.
+- No visual changes.
+- No new manager support.
+
+### Architectural Risks
+Complex managers may tempt opaque metadata strings. Use manager-specific typed metadata instead.
+
+### Stop Conditions
+Stop each manager migration when it has scan/plan/apply batch behavior and no dependency on old architecture.
+
+### Review Checklist
+- Manager-specific workaround is named and isolated.
+- Exact force support only where exact execution is possible.
+- No opaque index/string control fields.
+- Manager emits no UI output.
+
+## Phase 10: Interactive Selection Domain
+
+### Goal
+Add typed interactive selection behavior without rendering.
+
+### Behavior Delivered
+Given an `UpdatePlan`, selection reducers can select, deselect, pin, unpin, choose alternate versions, and choose forced candidates.
+
+### Modules/Files Likely Created Or Changed
+- `<new-workspace>/crates/upnow-domain/src/selection.rs`
+- `<new-workspace>/crates/upnow-planning/src/selection_view.rs`
+- `<new-workspace>/crates/upnow-presentation/src/tui/selection_state.rs`
+
+### Tests Required
+- Default selected state excludes pinned items.
+- Deselecting recommended item adds pin.
+- Selecting pinned item removes pin.
+- Global pin removal behavior.
+- Forced candidate does not mutate pins.
+- Alternate exact target marks selection as exact-required.
+- Managers without exact execution expose no forced candidates.
+
+### What Must Not Be Included Yet
+- No terminal drawing.
+- No crossterm/ratatui event loop.
+- No execution progress UI.
+
+### Architectural Risks
+Using row indices as domain identity. Reducers should use stable typed ids.
+
+### Stop Conditions
+Stop when selection behavior is fully testable without a terminal.
+
+### Review Checklist
+- Selection returns typed `PlanSelection`.
+- No rendering strings are parsed.
+- TUI state remains presentation-only.
+- Pin persistence is not performed by selection state.
+
+## Phase 11: Interactive Selection TUI
+
+### Goal
+Wire the tested selection domain into the TUI.
+
+### Behavior Delivered
+Interactive apply can display plans and return a typed confirmed selection. UX should preserve useful current behavior: tabs, all/manager views, select all/none, view all, version picker, force visibility.
+
+### Modules/Files Likely Created Or Changed
+- `<new-workspace>/crates/upnow-presentation/src/tui/mod.rs`
+- `<new-workspace>/crates/upnow-presentation/src/tui/selection.rs`
+- `<new-workspace>/crates/upnow-presentation/src/tui/components/...`
+- `<new-workspace>/crates/upnow-cli/src/app.rs`
+
+### Tests Required
+- Event reducer tests.
+- Snapshot or golden tests for view-model rows where practical.
+- Confirm/cancel behavior.
+- Planning error display behavior.
+- No selectable updates behavior.
+
+### What Must Not Be Included Yet
+- No apply progress TUI.
+- No renderer-driven domain decisions.
+- No config persistence inside TUI.
+
+### Architectural Risks
+TUI may start owning domain state. Keep TUI state to tabs, cursor, modal, visible rows, and selected ids.
+
+### Stop Conditions
+Stop when interactive selection produces typed `PlanSelection` and no execution occurs from TUI closures.
+
+### Review Checklist
+- TUI does not mutate `UpdatePlan`.
+- TUI does not persist pins.
+- TUI does not run manager commands.
+- View model is derived from domain plan.
+
+## Phase 12: Interactive Apply Execution And Progress
+
+### Goal
+Execute confirmed interactive selections with typed progress reporting.
+
+### Behavior Delivered
+After user confirmation, pin changes persist, selected updates execute, and progress TUI shows pending/running/done/failed rows.
+
+### Modules/Files Likely Created Or Changed
+- `<new-workspace>/crates/upnow-execution/src/progress.rs`
+- `<new-workspace>/crates/upnow-presentation/src/tui/progress.rs`
+- `<new-workspace>/crates/upnow-cli/src/app.rs`
+- `<new-workspace>/crates/upnow-cli/src/config.rs`
+
+### Tests Required
+- Pin persistence occurs after confirm and before execution.
+- Per-item execution failure display.
+- Manager-level execution failure display.
+- Stop-after-current behavior.
+- Signal interruption maps to exit `130`.
+- Successful execution summary.
+
+### What Must Not Be Included Yet
+- No new features.
+- No UX redesign beyond preserving existing useful behavior.
+
+### Architectural Risks
+Progress UI may become executor. Executor should produce typed events/results; progress UI should render them.
+
+### Stop Conditions
+Stop when interactive apply shares batch planning/execution core and TUI state is presentation-only.
+
+### Review Checklist
+- Execution is not owned by TUI closures.
+- Progress rows are derived from typed selected items.
+- Failures attach to selected items or manager-level results.
+- Outcome buffering is not used as state.
+
+## Phase 13: Policy Config Finalization
+
+### Goal
+Finalize external config behavior for the collapsed no-policy mode.
+
+### Behavior Delivered
+Config supports one no-policy behavior internally and has explicit compatibility behavior for old `any`.
+
+### Modules/Files Likely Created Or Changed
+- `<new-workspace>/crates/upnow-cli/src/config.rs`
+- `<new-workspace>/crates/upnow-domain/src/policy.rs`
+- `<new-workspace>/crates/upnow-cli/tests/config.rs`
+
+### Tests Required
+- Missing policy defaults to no policy.
+- `stable` parses.
+- `same-track` parses.
+- Old `any` accepted as deprecated alias or rejected with clear error, depending on final decision.
+- Unsupported policy per manager errors clearly.
+
+### What Must Not Be Included Yet
+- No new policies.
+- No unrelated config migration.
+
+### Architectural Risks
+Breaking existing configs unintentionally.
+
+### Stop Conditions
+Stop when no duplicate no-policy concepts exist and migration behavior is explicit.
+
+### Review Checklist
+- One internal no-policy enum variant.
+- External spelling is documented in tests.
+- Error messages are actionable.
+- Manager policy support remains capability-based.
+
+## Phase 14: Old Architecture Removal And Replacement Cutover
+
+### Goal
+Make the new workspace the project implementation and remove old accidental complexity from active paths.
+
+### Behavior Delivered
+All commands run from the new architecture. Old `/src` is deleted, archived, or disconnected from builds according to project decision.
+
+### Modules/Files Likely Created Or Changed
+- root `Cargo.toml`
+- old `/src` removal or archival path
+- new workspace crates
+- CI/build scripts
+- README or command docs if present
+
+### Tests Required
+- Full new workspace test suite.
+- End-to-end fake-manager tests for `scan`, `plan`, `apply`, and `apply --interactive`.
+- Build/install smoke test.
+- Regression tests for all migrated manager fixtures.
+
+### What Must Not Be Included Yet
+- No new managers.
+- No feature expansion.
+- No broad cosmetic rewrite.
+
+### Architectural Risks
+Leaving old crate paths active can hide accidental dependencies.
+
+### Stop Conditions
+Stop when the old implementation is no longer part of the active build and all intended behavior is covered by the new workspace.
+
+### Review Checklist
+- No `ManagerCtx`, old `ManagerPlugin`, `run_plan_apply_framework`, `PlannedUpdate`, `ApplyCandidate`, or `apply_spec_base`.
+- No outcome emission during planning.
+- No display-note parsing for decisions.
+- Batch and TUI share planning/execution core.
+
+## Phase 15: Final End-To-End Validation
+
+### Goal
+Validate the rebuilt architecture against the approved workflows.
+
+### Behavior Delivered
+The rebuilt project is ready to replace the old implementation.
+
+### Modules/Files Likely Created Or Changed
+- Integration tests.
+- Final docs updates.
+- Minor fixes across new crates.
+
+### Tests Required
+- `scan` with mixed managers.
+- `plan` with update/current/delayed/blocked/skipped/error items.
+- `apply` batch with pins and native shortcut.
+- `apply --interactive` with pin changes, forced candidates, alternate versions, and cancellation.
+- Release metadata failure blocks only the item.
+- Missing command and unsupported platform behavior.
+- Exit code behavior.
+
+### What Must Not Be Included Yet
+- No scope expansion.
+- No new UX concepts.
+- No hypothetical abstraction cleanup.
+
+### Architectural Risks
+Late discovery that a native shortcut does not match typed plan semantics.
+
+### Stop Conditions
+Stop when all approved workflows pass and behavior differences are intentional, reviewed, and documented.
+
+### Review Checklist
+- New architecture is layered.
+- Domain model is typed.
+- TUI state is presentation-only.
+- Managers are isolated concrete adapters.
+- Release lookup is explicit and testable.
+- Config pin persistence timing matches the approved decision.

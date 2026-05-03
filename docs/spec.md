@@ -32,7 +32,7 @@ Users can change modes in config or with CLI overrides.
 - `plan` is non-applying (preview of upgrades).
 - `apply` executes upgrades for selected managers/items.
 - `scan` is non-mutating and focuses on installed versions.
-- Managers can be selected with `--managers`, but per-manager `mode` still controls whether they run.
+- Managers can be selected with `--managers`; explicit CLI manager selection may opt managers into the requested command.
 - Missing tools or unsupported environments are reported as skipped instead of crashing the whole run.
 
 ---
@@ -80,6 +80,7 @@ Item outcomes use these statuses:
 - `current`
 - `update`
 - `delayed`
+- `blocked`
 - `skipped`
 - `error`
 
@@ -116,10 +117,10 @@ normal/verbose boundaries are part of the spec.
 | `delayed` | Candidate target exists but is too fresh | Show target and concise age gate: `~ Delayed [brew] jq v1.0.0 -> v1.1.0 (too fresh: 3d < 7d)` | Publish time, metadata source, configured minimum age source |
 | `delayed` | Newer versions exist, but no candidate is age-eligible | Show concise note: `~ Delayed [npm] foo v1.2.0 -> v1.3.0 (no eligible release yet; latest v1.3.0 too fresh)` | Age evidence: `latest v1.3.0 too fresh: 3d < 7d`; all candidate ages when diagnostics are available |
 | `delayed` | Policy and age gates together leave no eligible release | Show `no eligible release yet`, plus relevant policy note when a latest version is blocked by policy | Which candidates failed policy vs age, latest policy-eligible version, latest age-eligible version |
+| `blocked` | Missing metadata prevents a safe decision | Show item and concise reason: `x Blocked [mise] foo v1.2.0 -> v1.3.0 (missing release metadata)` | Missing field/source, fallback attempts, command or URL diagnostics |
 | `skipped` | Pinned by user/config/interactive choice | Show item and target when known: `- Skipped [npm] foo v1.2.0 -> v1.3.0 (pinned)` | Pin source, if available |
 | `skipped` | Manager command is missing | Show manager-level skip without placeholder versions: `- Skipped [cargo] (required command 'cargo' is not available)` | Probe command and PATH-related diagnostics, when available |
 | `skipped` | Unsupported platform/environment | Show manager-level skip without placeholder versions: `- Skipped [brew] (unsupported on this platform)` | Platform details and manager support condition, when available |
-| `skipped` | Missing metadata prevents a safe decision | Show item and concise reason: `- Skipped [mise] foo v1.2.0 -> v1.3.0 (missing release metadata)` | Missing field/source, fallback attempts, command or URL diagnostics |
 | `error` | Command, resolver, or metadata check failed unexpectedly | Show item or manager plus concise failure: `! Error [npm] foo v1.2.0 -> v1.3.0 (failed to query package metadata)` | Command, exit status, stderr summary, retry/fallback context |
 | `error` | Invalid or unsupported configuration | Show explicit configuration problem. Example: `! Error [gem] foo (version_policy "same-track" is not supported by this manager)` | Manager capability details and configured source, when available |
 

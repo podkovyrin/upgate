@@ -81,9 +81,10 @@ Supported values:
 
 - `stable`: only final releases are eligible
 - `same-track`: follow the installed stability track (never move to a less stable lane)
-- `any`: prereleases and finals are both eligible
 
-If unset, version policy filtering is disabled and legacy behavior is preserved.
+If unset, no version policy filtering is applied. The external migration
+behavior for older `version_policy = "any"` configs is intentionally not
+specified here.
 
 Supported by:
 
