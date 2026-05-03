@@ -1,6 +1,6 @@
 use crate::{
-    DomainError, InstalledTool, ManagerId, PackageName, ReleaseLookupResult, ToolId, VersionScheme,
-    VersionText,
+    DomainError, InstalledTool, ManagerId, PackageName, PolicyWarning, ReleaseLookupResult, ToolId,
+    VersionScheme, VersionText,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -59,6 +59,7 @@ pub struct UpdateCandidate {
     pub target_version: VersionText,
     pub version_scheme: VersionScheme,
     pub execution_eligibility: ExecutionEligibility,
+    pub policy_warnings: Vec<PolicyWarning>,
 }
 
 impl UpdateCandidate {
@@ -78,7 +79,14 @@ impl UpdateCandidate {
             target_version,
             version_scheme,
             execution_eligibility,
+            policy_warnings: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_policy_warnings(mut self, policy_warnings: Vec<PolicyWarning>) -> Self {
+        self.policy_warnings = policy_warnings;
+        self
     }
 
     #[must_use]
@@ -151,6 +159,7 @@ pub enum PlanItem {
         id: PlanItemId,
         seed: UpdateSeed,
         reason: BlockReason,
+        policy_warnings: Vec<PolicyWarning>,
     },
     Skipped {
         id: PlanItemId,
@@ -256,6 +265,7 @@ pub enum BlockReason {
 pub enum PolicyBlockReason {
     PreReleaseBlocked,
     TrackRegression,
+    UnknownStability,
     UnsupportedPolicy,
 }
 

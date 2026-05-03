@@ -10,6 +10,11 @@ pub enum VersionPolicy {
     SameTrack,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyWarning {
+    InstalledTrackUnknownFallbackStable,
+}
+
 impl Display for VersionPolicy {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {

@@ -68,6 +68,7 @@ fn plan_item_variants_represent_phase_two_states() {
         id: item_id("blocked"),
         seed: seed("missing-age"),
         reason: BlockReason::VersionPolicy(PolicyBlockReason::PreReleaseBlocked),
+        policy_warnings: Vec::new(),
     };
     let skipped = PlanItem::Skipped {
         id: item_id("skipped"),
