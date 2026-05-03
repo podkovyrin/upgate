@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/upnow-cli",
+    "crates/upnow-domain",
+    "crates/upnow-infra",
+    "crates/upnow-planning",
+    "crates/upnow-managers",
+    "crates/upnow-presentation",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
