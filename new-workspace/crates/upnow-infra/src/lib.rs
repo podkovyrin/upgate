@@ -1,1 +1,121 @@
 //! Infrastructure crate for the `upnow` rebuild.
+
+use std::fmt;
+
+pub mod clock;
+pub mod env;
+pub mod http;
+pub mod parallel;
+pub mod process;
+
+pub use clock::Clock;
+pub use env::Env;
+pub use http::{
+    FakeHttpClient, HTTP_TIMEOUT, HTTP_USER_AGENT, HttpClient, HttpResponse, HttpSettings,
+    blocking_client, env_base_url,
+};
+pub use parallel::{effective_parallelism, run_ordered_parallel};
+pub use process::{
+    CommandCheck, CommandFailure, CommandOutput, CommandSpec, FakeProcess, MUTATION_ENABLE_NOTICE,
+    MUTATION_SKIP_NOTICE, MutationMode, ProcessRunner, REQUIRE_MUTATION_MODE_ENV,
+    SKIP_MUTATING_COMMANDS_ENV, command_exists, command_exists_in_env, status_allowed,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InfraError {
+    ProcessSpawn {
+        command: String,
+        detail: String,
+    },
+    CommandFailed(CommandFailure),
+    OutputUtf8 {
+        command: String,
+        stream: &'static str,
+        detail: String,
+    },
+    HttpClientBuild {
+        detail: String,
+    },
+    HttpRequest {
+        url: String,
+        detail: String,
+    },
+    HttpStatus {
+        url: String,
+        status: u16,
+    },
+    HttpBody {
+        url: String,
+        detail: String,
+    },
+    JsonParse {
+        command: String,
+        detail: String,
+    },
+    FakeProcessState {
+        detail: String,
+    },
+    ClockBeforeUnixEpoch,
+    ParallelPoolBuild {
+        label: String,
+        detail: String,
+    },
+}
+
+impl InfraError {
+    #[must_use]
+    pub fn is_interruption(&self) -> bool {
+        matches!(self, Self::CommandFailed(failure) if failure.is_interruption())
+    }
+}
+
+impl fmt::Display for InfraError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ProcessSpawn { command, detail } => {
+                write!(formatter, "failed to run {command}: {detail}")
+            }
+            Self::CommandFailed(failure) => failure.fmt(formatter),
+            Self::OutputUtf8 {
+                command,
+                stream,
+                detail,
+            } => {
+                write!(
+                    formatter,
+                    "{command} {stream} was not valid UTF-8: {detail}"
+                )
+            }
+            Self::HttpClientBuild { detail } => {
+                write!(formatter, "failed to build HTTP client: {detail}")
+            }
+            Self::HttpRequest { url, detail } => {
+                write!(formatter, "HTTP request failed for {url}: {detail}")
+            }
+            Self::HttpStatus { url, status } => {
+                write!(formatter, "HTTP request failed for {url}: status {status}")
+            }
+            Self::HttpBody { url, detail } => {
+                write!(
+                    formatter,
+                    "failed to read HTTP response body from {url}: {detail}"
+                )
+            }
+            Self::JsonParse { command, detail } => {
+                write!(
+                    formatter,
+                    "failed to parse JSON output from {command}: {detail}"
+                )
+            }
+            Self::FakeProcessState { detail } => {
+                write!(formatter, "fake process state unavailable: {detail}")
+            }
+            Self::ClockBeforeUnixEpoch => formatter.write_str("system clock before UNIX epoch"),
+            Self::ParallelPoolBuild { label, detail } => {
+                write!(formatter, "failed to build {label} thread pool: {detail}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for InfraError {}
