@@ -1,0 +1,184 @@
+use crate::{DomainError, VersionText};
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ManagerId(String);
+
+impl ManagerId {
+    /// Creates a manager id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::EmptyManagerId`] when the value is blank.
+    pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(DomainError::EmptyManagerId);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ToolId(String);
+
+impl ToolId {
+    /// Creates a tool id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::EmptyToolId`] when the value is blank.
+    pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(DomainError::EmptyToolId);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PackageName(String);
+
+impl PackageName {
+    /// Creates a package name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::EmptyPackageName`] when the value is blank.
+    pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(DomainError::EmptyPackageName);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ToolName(String);
+
+impl ToolName {
+    /// Creates a tool display name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::EmptyToolName`] when the value is blank.
+    pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(DomainError::EmptyToolName);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledTool {
+    pub manager_id: ManagerId,
+    pub tool_id: ToolId,
+    pub package_name: PackageName,
+    pub tool_name: ToolName,
+    pub installed_version: VersionText,
+    pub metadata: ManagerMetadata,
+}
+
+impl InstalledTool {
+    #[must_use]
+    pub fn new(
+        manager_id: ManagerId,
+        tool_id: ToolId,
+        package_name: PackageName,
+        tool_name: ToolName,
+        installed_version: VersionText,
+        metadata: ManagerMetadata,
+    ) -> Self {
+        Self {
+            manager_id,
+            tool_id,
+            package_name,
+            tool_name,
+            installed_version,
+            metadata,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ManagerMetadata {
+    pub fields: Vec<ManagerMetadataField>,
+}
+
+impl ManagerMetadata {
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn new(fields: Vec<ManagerMetadataField>) -> Self {
+        Self { fields }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagerMetadataField {
+    pub key: ManagerMetadataKey,
+    pub value: ManagerMetadataValue,
+}
+
+impl ManagerMetadataField {
+    #[must_use]
+    pub fn new(key: ManagerMetadataKey, value: ManagerMetadataValue) -> Self {
+        Self { key, value }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ManagerMetadataKey(String);
+
+impl ManagerMetadataKey {
+    /// Creates a manager-owned metadata key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::EmptyMetadataKey`] when the value is blank.
+    pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(DomainError::EmptyMetadataKey);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagerMetadataValue {
+    Bool(bool),
+    Text(String),
+    List(Vec<String>),
+}

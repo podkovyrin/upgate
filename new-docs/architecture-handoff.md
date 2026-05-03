@@ -97,9 +97,7 @@ Reject preserving current wiring with typed wrappers; coupling remains. Reject a
 - Interactive pin changes persist after confirmation and before execution.
 - Forced ineligible updates are available only for managers that support exact target execution.
 - Release metadata failure blocks the item.
-
-## Unresolved Questions
-Decide the external config spelling/migration for the collapsed no-policy mode, including whether old `any` should be rejected or accepted as a deprecated alias.
+- `any` policy is removed entirely and should be rejected as any other invalid policy.
 
 ## Constraints For Future Codex Agents
 Do not treat old `/src` architecture as a refactor target. Preserve observed behavior, commands, parsing rules, URLs, config behavior, and TUI UX where explicitly useful. Do not preserve accidental abstractions. Do not introduce traits without multiple real implementations. Prefer simple typed structs/enums over framework-like design. Keep manager-specific workarounds isolated and named.

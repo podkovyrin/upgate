@@ -91,7 +91,16 @@ Stop when fixtures cover the behaviors that must survive the rebuild.
 Define the typed model used by all later phases.
 
 ### Behavior Delivered
-No CLI behavior yet. Domain types compile and are unit-tested.
+No CLI behavior yet. Domain types compile and are unit-tested. This phase is now explicitly representation-first: it defines stable domain state shapes and lightweight constructor validation, but does not evaluate version policy, min-release-age eligibility, forced update eligibility, or apply selection semantics.
+
+### Completed In This Phase
+- Added typed identities and names: `ManagerId`, `ToolId`, `PackageName`, `ToolName`, `VersionText`, `VersionScheme`.
+- Added installed and scan representation: `InstalledTool`, manager-owned metadata representation, `ScanReport`, `ScanItem`, `ScanIssue`.
+- Added release lookup representation: `ReleaseTimestamp`, `ReleaseTimeline`, `ReleaseLookupResult`.
+- Added plan representation: `UpdateSeed`, `UpdateCandidate`, `PlanItem`, `UpdatePlan`, policy block reasons, delay reasons, skip reasons, and execution eligibility.
+- Added selection representation: `PlanSelection`, `SelectedItem`, `PinChange`, and `PinOperation`.
+- Added domain error types for constructor validation and referential selection validation.
+- Stabilized `PlanSelection` to validate only stable references: selected item ids must exist in the plan, and pin-change packages must exist in the plan.
 
 ### Modules/Files Likely Created Or Changed
 - `<new-workspace>/crates/upnow-domain/src/lib.rs`
@@ -104,11 +113,24 @@ No CLI behavior yet. Domain types compile and are unit-tested.
 - `<new-workspace>/crates/upnow-domain/src/selection.rs`
 - `<new-workspace>/crates/upnow-domain/src/error.rs`
 
-### Tests Required
+### Tests Added
 - Domain constructor and validation tests.
 - `VersionPolicy` parse/display tests.
 - `PlanItem` state tests: update, current, delayed, blocked, skipped, resolver error.
-- `PlanSelection` tests for selected items and pin changes.
+- `UpdateCandidate` representation tests for target and execution eligibility.
+- `PlanSelection` tests for selected item ids and pin changes.
+- Release lookup representation tests.
+
+### Intentionally Removed During Stabilization
+- Removed phase-2 enforcement of policy and release-age readiness from `UpdateCandidate`.
+- Removed `PolicyEligibility` and `ReleaseAgeEligibility` from `UpdateCandidate`; policy and age outcomes are represented by `PlanItem` variants until phase 3 evaluation exists.
+- Removed candidate readiness constructors and readiness checks that tried to encode phase 3 behavior early.
+- Removed apply/forced-update eligibility checks from `PlanSelection`; those semantics belong after policy evaluation and execution capability modeling are present.
+
+### Changed Assumptions
+- Phase 2 does not make invalid planner outcomes unrepresentable. It defines typed states that phase 3 must construct consistently.
+- `UpdateCandidate` represents the discovered target, versions, version scheme, and execution eligibility. Policy and age decisions are represented at the plan item level in phase 2.
+- `PlanSelection` is referentially valid, not execution-valid. It does not decide whether a selected item should execute.
 
 ### What Must Not Be Included Yet
 - No manager discovery.
@@ -118,10 +140,15 @@ No CLI behavior yet. Domain types compile and are unit-tested.
 - No traits unless the domain has multiple concrete uses.
 
 ### Architectural Risks
-Over-modeling or recreating old string fields under typed names.
+Over-modeling or recreating old string fields under typed names. The remaining generic manager metadata representation is a known risk: later phases must not use metadata keys as hidden control flow or as a replacement for typed manager adapter capabilities.
+
+### Deferred Findings
+- Exact manager metadata shape is deferred until concrete manager adapters need it. Keep manager-specific workarounds isolated and named.
+- Release lookup error detail validation can be tightened later if release lookup implementation needs it.
+- Forced delayed-update selection semantics are deferred until phase 3 and execution capability modeling.
 
 ### Stop Conditions
-Stop when the domain can represent scan rows, update candidates, policy decisions, release lookup results, pin changes, and execution eligibility.
+Stop when the domain can represent scan rows, update candidates, policy decisions as plan item outcomes, release lookup results, pin changes, and execution eligibility without process, HTTP, rendering, TUI, manager discovery, or planner evaluation logic.
 
 ### Review Checklist
 - Domain types contain no terminal display strings.
@@ -135,13 +162,14 @@ Stop when the domain can represent scan rows, update candidates, policy decision
 Implement typed version policy and min-release-age evaluation.
 
 ### Behavior Delivered
-Given installed version, release timeline, policy, and clock time, the planner can produce typed candidate eligibility and a plan decision.
+Given installed version, release timeline, policy, and clock time, the planner can produce typed plan item outcomes: update, current, delayed, blocked, skipped, or resolver error. Phase 3 owns policy and release-age consistency; it must not rely on `PlanSelection` to filter invalid planner output.
 
 ### Modules/Files Likely Created Or Changed
 - `<new-workspace>/crates/upnow-planning/src/lib.rs`
 - `<new-workspace>/crates/upnow-planning/src/evaluate.rs`
 - `<new-workspace>/crates/upnow-domain/src/policy.rs`
 - `<new-workspace>/crates/upnow-domain/src/release.rs`
+- `<new-workspace>/crates/upnow-domain/src/plan.rs` only for small model adjustments required by actual evaluation.
 
 ### Tests Required
 - SemVer candidate ordering.
@@ -153,6 +181,9 @@ Given installed version, release timeline, policy, and clock time, the planner c
 - No-policy mode applies no stability filter.
 - Too-fresh versions are delayed.
 - Missing release metadata blocks the item.
+- Policy-blocked candidates produce `PlanItem::Blocked` with typed policy reason.
+- Release-age-blocked candidates produce `PlanItem::Delayed`.
+- Eligible candidates produce `PlanItem::Update`.
 
 ### What Must Not Be Included Yet
 - No manager adapters.
@@ -161,16 +192,17 @@ Given installed version, release timeline, policy, and clock time, the planner c
 - No execution commands.
 
 ### Architectural Risks
-Reintroducing old `Disabled` and `Any` as separate concepts.
+Reintroducing old `Disabled` and `Any` as separate concepts. Another risk is pushing selection/execution behavior into policy evaluation; phase 3 should produce plan outcomes only.
 
 ### Stop Conditions
-Stop when policy evaluation can fully explain why each candidate is eligible or blocked.
+Stop when policy evaluation can fully explain why each candidate is eligible, delayed, blocked, current, skipped, or a resolver error, using typed plan outcomes and without manager adapters, CLI orchestration, TUI selection, execution commands, process, or HTTP.
 
 ### Review Checklist
 - Only one no-policy mode exists.
 - Policy warnings are typed.
 - Age gate and policy gate are separate typed facts.
-- Forced eligibility can be represented but is not wired to UI.
+- Forced eligibility is not wired to UI.
+- `PlanSelection` remains referential validation only.
 
 ## Phase 4: Infrastructure Layer
 
@@ -233,7 +265,6 @@ The new CLI can resolve config values into typed domain settings, but commands m
 - Brew-only `no_update`.
 - Manager mode override from CLI manager selection.
 - Pin persistence preserves unrelated TOML.
-- Old `any` policy migration behavior, once decided.
 
 ### What Must Not Be Included Yet
 - No TUI pin persistence.
@@ -563,7 +594,7 @@ Stop when interactive apply shares batch planning/execution core and TUI state i
 Finalize external config behavior for the collapsed no-policy mode.
 
 ### Behavior Delivered
-Config supports one no-policy behavior internally and has explicit compatibility behavior for old `any`.
+Config supports one no-policy behavior internally.
 
 ### Modules/Files Likely Created Or Changed
 - `<new-workspace>/crates/upnow-cli/src/config.rs`
@@ -574,7 +605,6 @@ Config supports one no-policy behavior internally and has explicit compatibility
 - Missing policy defaults to no policy.
 - `stable` parses.
 - `same-track` parses.
-- Old `any` accepted as deprecated alias or rejected with clear error, depending on final decision.
 - Unsupported policy per manager errors clearly.
 
 ### What Must Not Be Included Yet
