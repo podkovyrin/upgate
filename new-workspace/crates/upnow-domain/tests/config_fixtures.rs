@@ -44,7 +44,7 @@ fn config_fixture_captures_brew_policy_pins_mode_and_no_update() {
 fn config_fixture_captures_package_manager_modes_policies_and_pins() {
     let config = load_current_behavior_config();
 
-    assert_eq!(config["npm"]["mode"].as_str(), Some("scan"));
+    assert_eq!(config["npm"]["mode"].as_str(), Some("plan"));
     assert_eq!(config["npm"]["version_policy"].as_str(), Some("same-track"));
     assert_eq!(config["npm"]["pinned"][0].as_str(), Some("npm"));
 

@@ -9,7 +9,7 @@ no_update = true
 pinned = ["aom", "docker"]
 
 [npm]
-mode = "scan"
+mode = "plan"
 min_release_age = "7d"
 version_policy = "same-track"
 pinned = ["npm"]
