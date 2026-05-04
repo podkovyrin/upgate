@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::{InstalledTool, ManagerId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +23,10 @@ impl ScanReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScanItem {
     Installed(InstalledTool),
+    InstalledWithReleaseAge {
+        tool: InstalledTool,
+        age: Duration,
+    },
     Skipped {
         tool: InstalledTool,
         reason: ScanIssue,

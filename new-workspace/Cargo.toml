@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/upnow-cli",
     "crates/upnow-domain",
+    "crates/upnow-execution",
     "crates/upnow-infra",
     "crates/upnow-planning",
     "crates/upnow-managers",

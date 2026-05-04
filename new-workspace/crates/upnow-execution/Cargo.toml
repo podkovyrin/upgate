@@ -1,5 +1,5 @@
 [package]
-name = "upnow-presentation"
+name = "upnow-execution"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -10,4 +10,4 @@ workspace = true
 
 [dependencies]
 upnow-domain = { path = "../upnow-domain" }
-upnow-execution = { path = "../upnow-execution" }
+upnow-infra = { path = "../upnow-infra" }
