@@ -8,8 +8,8 @@ use serde::Deserialize;
 use upnow_domain::{
     DomainError, InstalledTool, ManagerId, ManagerMetadata, PackageName, PlanItem, PlanSelection,
     ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
-    ScanIssue, ScanItem, ScanReport, ToolId, ToolName, UpdateCandidate, UpdatePlan, UpdateSeed,
-    VersionPolicy, VersionScheme, VersionText,
+    ToolId, ToolName, UpdateCandidate, UpdatePlan, UpdateSeed, VersionPolicy, VersionScheme,
+    VersionText,
 };
 use upnow_infra::{CommandCheck, CommandSpec, InfraError, ProcessRunner};
 
@@ -130,6 +130,21 @@ impl ManagerAdapter for NpmManager {
 
     fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
         true
+    }
+
+    fn installed_tools(
+        &self,
+        process: &ProcessRunner,
+    ) -> Result<Vec<InstalledTool>, ManagerAdapterError> {
+        installed_global(process).map_err(adapter_error)
+    }
+
+    fn release_lookup(
+        &self,
+        process: &ProcessRunner,
+        package: &PackageName,
+    ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
+        release_lookup(process, package).map_err(adapter_error)
     }
 
     fn update_seeds(
@@ -261,70 +276,6 @@ pub fn outdated_global(process: &ProcessRunner) -> Result<Vec<NpmOutdatedPackage
         return Ok(Vec::new());
     }
     parse_outdated_json(stdout)
-}
-
-/// Builds a scan report for installed global npm packages.
-#[must_use]
-pub fn scan(process: &ProcessRunner) -> Result<ScanReport, NpmError> {
-    let manager_id = manager_id();
-    match installed_global(process) {
-        Ok(installed) => Ok(ScanReport::new(
-            manager_id,
-            installed.into_iter().map(ScanItem::Installed).collect(),
-            Vec::new(),
-        )),
-        Err(err) if err.is_interruption() => Err(err),
-        Err(err) => Ok(ScanReport::new(
-            manager_id,
-            Vec::new(),
-            vec![ScanIssue::DiscoveryFailed {
-                detail: err.to_string(),
-            }],
-        )),
-    }
-}
-
-/// Builds a verbose scan report with release-age metadata where available.
-///
-/// # Errors
-///
-/// Returns an error when discovery or release lookup is interrupted.
-pub fn verbose_scan(process: &ProcessRunner, now: SystemTime) -> Result<ScanReport, NpmError> {
-    let manager_id = manager_id();
-    match installed_global(process) {
-        Ok(installed) => {
-            let mut items = Vec::new();
-            for tool in installed {
-                match release_lookup(process, &tool.package_name)? {
-                    ReleaseLookupResult::Known(timeline) => {
-                        match release_age(&timeline, &tool.installed_version, now) {
-                            Some(age) => {
-                                items.push(ScanItem::InstalledWithReleaseAge { tool, age })
-                            }
-                            None => items.push(ScanItem::Installed(tool)),
-                        }
-                    }
-                    ReleaseLookupResult::MissingMetadata => items.push(ScanItem::Skipped {
-                        tool,
-                        reason: ScanIssue::MissingReleaseMetadata,
-                    }),
-                    ReleaseLookupResult::LookupFailed(err) => items.push(ScanItem::Skipped {
-                        tool,
-                        reason: ScanIssue::ReleaseLookupFailed { detail: err.detail },
-                    }),
-                }
-            }
-            Ok(ScanReport::new(manager_id, items, Vec::new()))
-        }
-        Err(err) if err.is_interruption() => Err(err),
-        Err(err) => Ok(ScanReport::new(
-            manager_id,
-            Vec::new(),
-            vec![ScanIssue::DiscoveryFailed {
-                detail: err.to_string(),
-            }],
-        )),
-    }
 }
 
 /// Creates update seeds for npm planning.
@@ -528,21 +479,6 @@ fn release_lookup(
             err.to_string(),
         ))),
     }
-}
-
-fn release_age(
-    timeline: &ReleaseTimeline,
-    version: &VersionText,
-    now: SystemTime,
-) -> Option<Duration> {
-    timeline
-        .versions
-        .iter()
-        .find(|entry| entry.version == *version)
-        .map(|entry| {
-            now.duration_since(*entry.published_at.as_system_time())
-                .unwrap_or(Duration::ZERO)
-        })
 }
 
 fn newest_semver(timeline: &ReleaseTimeline) -> Option<VersionText> {

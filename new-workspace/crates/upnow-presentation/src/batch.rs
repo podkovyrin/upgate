@@ -1,5 +1,5 @@
 use upnow_domain::{
-    BlockReason, DelayReason, PlanItem, ScanIssue, ScanItem, ScanReport, UpdatePlan,
+    BlockReason, DelayReason, ManagerId, PlanItem, ScanIssue, ScanItem, ScanReport, UpdatePlan,
 };
 use upnow_execution::{ExecutionReport, ExecutionStatus};
 
@@ -117,6 +117,14 @@ pub fn render_execution_report(report: &ExecutionReport) -> String {
         }
     }
     finish(lines)
+}
+
+#[must_use]
+pub fn render_manager_error(manager_id: &ManagerId, command: &str, detail: &str) -> String {
+    finish(vec![format!(
+        "{command} {} failed: {detail}",
+        manager_id.as_str()
+    )])
 }
 
 fn render_scan_issue(issue: &ScanIssue) -> String {

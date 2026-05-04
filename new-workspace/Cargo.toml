@@ -5,6 +5,7 @@ members = [
     "crates/upnow-domain",
     "crates/upnow-execution",
     "crates/upnow-infra",
+    "crates/upnow-release",
     "crates/upnow-planning",
     "crates/upnow-managers",
     "crates/upnow-presentation",

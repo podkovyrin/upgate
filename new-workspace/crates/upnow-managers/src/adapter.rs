@@ -2,8 +2,8 @@ use std::fmt::{self, Display};
 use std::time::Duration;
 
 use upnow_domain::{
-    ManagerId, PackageName, PlanItemId, PlanSelection, UpdatePlan, UpdateSeed, VersionPolicy,
-    VersionText,
+    InstalledTool, ManagerId, PackageName, PlanItemId, PlanSelection, ReleaseLookupResult,
+    UpdatePlan, UpdateSeed, VersionPolicy, VersionText,
 };
 use upnow_infra::{CommandSpec, ProcessRunner};
 
@@ -42,7 +42,6 @@ pub struct ManagerExecutionCommand {
 pub enum ManagerAdapterErrorKind {
     Discovery,
     Parse,
-    ReleaseLookup,
     CommandConstruction,
     Interrupted,
     Infra,
@@ -98,6 +97,17 @@ pub trait ManagerAdapter {
     fn capabilities(&self) -> ManagerCapabilities;
 
     fn supports_version_policy(&self, policy: VersionPolicy) -> bool;
+
+    fn installed_tools(
+        &self,
+        process: &ProcessRunner,
+    ) -> Result<Vec<InstalledTool>, ManagerAdapterError>;
+
+    fn release_lookup(
+        &self,
+        process: &ProcessRunner,
+        package: &PackageName,
+    ) -> Result<ReleaseLookupResult, ManagerAdapterError>;
 
     fn update_seeds(
         &self,

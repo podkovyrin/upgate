@@ -1323,6 +1323,7 @@ dependencies = [
  "upnow-managers",
  "upnow-planning",
  "upnow-presentation",
+ "upnow-release",
 ]
 
 [[package]]
@@ -1377,6 +1378,13 @@ version = "0.1.0"
 dependencies = [
  "upnow-domain",
  "upnow-execution",
+]
+
+[[package]]
+name = "upnow-release"
+version = "0.1.0"
+dependencies = [
+ "upnow-domain",
 ]
 
 [[package]]

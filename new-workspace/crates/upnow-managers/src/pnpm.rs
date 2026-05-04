@@ -1,17 +1,16 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Display};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use chrono::DateTime;
 use semver::Version;
 use serde::Deserialize;
 use upnow_domain::{
     DomainError, InstalledTool, ManagerId, ManagerMetadata, PackageName, ReleaseEntry,
-    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ScanIssue,
-    ScanItem, ScanReport, ToolId, ToolName, UpdateCandidate, UpdatePlan, UpdateSeed, VersionPolicy,
-    VersionScheme, VersionText,
+    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName,
+    UpdateCandidate, UpdatePlan, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
-use upnow_domain::{PlanItem, PlanItemId, PlanSelection};
+use upnow_domain::{PlanItem, PlanSelection};
 use upnow_infra::{CommandCheck, CommandSpec, InfraError, ProcessRunner};
 
 use crate::adapter::{
@@ -99,15 +98,6 @@ pub struct PnpmOutdatedPackage {
     pub current: VersionText,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PnpmExecutionCommand {
-    pub plan_item_id: PlanItemId,
-    pub package_name: PackageName,
-    pub installed_version: VersionText,
-    pub target_version: VersionText,
-    pub command: CommandSpec,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PnpmManager;
 
@@ -122,6 +112,21 @@ impl ManagerAdapter for PnpmManager {
 
     fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
         true
+    }
+
+    fn installed_tools(
+        &self,
+        process: &ProcessRunner,
+    ) -> Result<Vec<InstalledTool>, ManagerAdapterError> {
+        installed_global(process).map_err(adapter_error)
+    }
+
+    fn release_lookup(
+        &self,
+        process: &ProcessRunner,
+        package: &PackageName,
+    ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
+        release_lookup(process, package).map_err(adapter_error)
     }
 
     fn update_seeds(
@@ -139,21 +144,7 @@ impl ManagerAdapter for PnpmManager {
         selection: &PlanSelection,
         _settings: CommandBuildSettings,
     ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError> {
-        exact_commands_for_selection(plan, selection)
-            .map(|commands| commands.into_iter().map(Into::into).collect())
-            .map_err(adapter_error)
-    }
-}
-
-impl From<PnpmExecutionCommand> for ManagerExecutionCommand {
-    fn from(value: PnpmExecutionCommand) -> Self {
-        Self {
-            plan_item_id: value.plan_item_id,
-            package_name: value.package_name,
-            installed_version: value.installed_version,
-            target_version: value.target_version,
-            command: value.command,
-        }
+        exact_commands_for_selection(plan, selection).map_err(adapter_error)
     }
 }
 
@@ -318,70 +309,6 @@ pub fn outdated_global(process: &ProcessRunner) -> Result<Vec<PnpmOutdatedPackag
     parse_outdated_json(stdout)
 }
 
-/// Builds a scan report for installed global pnpm packages.
-#[must_use]
-pub fn scan(process: &ProcessRunner) -> Result<ScanReport, PnpmError> {
-    let manager_id = manager_id();
-    match installed_global(process) {
-        Ok(installed) => Ok(ScanReport::new(
-            manager_id,
-            installed.into_iter().map(ScanItem::Installed).collect(),
-            Vec::new(),
-        )),
-        Err(err) if err.is_interruption() => Err(err),
-        Err(err) => Ok(ScanReport::new(
-            manager_id,
-            Vec::new(),
-            vec![ScanIssue::DiscoveryFailed {
-                detail: err.to_string(),
-            }],
-        )),
-    }
-}
-
-/// Builds a verbose scan report with release-age metadata where available.
-///
-/// # Errors
-///
-/// Returns an error when discovery or release lookup is interrupted.
-pub fn verbose_scan(process: &ProcessRunner, now: SystemTime) -> Result<ScanReport, PnpmError> {
-    let manager_id = manager_id();
-    match installed_global(process) {
-        Ok(installed) => {
-            let mut items = Vec::new();
-            for tool in installed {
-                match release_lookup(process, &tool.package_name)? {
-                    ReleaseLookupResult::Known(timeline) => {
-                        match release_age(&timeline, &tool.installed_version, now) {
-                            Some(age) => {
-                                items.push(ScanItem::InstalledWithReleaseAge { tool, age })
-                            }
-                            None => items.push(ScanItem::Installed(tool)),
-                        }
-                    }
-                    ReleaseLookupResult::MissingMetadata => items.push(ScanItem::Skipped {
-                        tool,
-                        reason: ScanIssue::MissingReleaseMetadata,
-                    }),
-                    ReleaseLookupResult::LookupFailed(err) => items.push(ScanItem::Skipped {
-                        tool,
-                        reason: ScanIssue::ReleaseLookupFailed { detail: err.detail },
-                    }),
-                }
-            }
-            Ok(ScanReport::new(manager_id, items, Vec::new()))
-        }
-        Err(err) if err.is_interruption() => Err(err),
-        Err(err) => Ok(ScanReport::new(
-            manager_id,
-            Vec::new(),
-            vec![ScanIssue::DiscoveryFailed {
-                detail: err.to_string(),
-            }],
-        )),
-    }
-}
-
 /// Creates update seeds for pnpm planning.
 ///
 /// # Errors
@@ -419,21 +346,6 @@ pub fn update_seeds(
     Ok(seeds)
 }
 
-fn release_age(
-    timeline: &ReleaseTimeline,
-    version: &VersionText,
-    now: SystemTime,
-) -> Option<Duration> {
-    timeline
-        .versions
-        .iter()
-        .find(|entry| entry.version == *version)
-        .map(|entry| {
-            now.duration_since(*entry.published_at.as_system_time())
-                .unwrap_or(Duration::ZERO)
-        })
-}
-
 /// Creates exact pnpm commands for a typed selection.
 ///
 /// # Errors
@@ -443,7 +355,7 @@ fn release_age(
 pub fn exact_commands_for_selection(
     plan: &UpdatePlan,
     selection: &PlanSelection,
-) -> Result<Vec<PnpmExecutionCommand>, PnpmError> {
+) -> Result<Vec<ManagerExecutionCommand>, PnpmError> {
     let mut commands = Vec::new();
     for selected in &selection.selected_items {
         let item = plan
@@ -455,7 +367,7 @@ pub fn exact_commands_for_selection(
                 selected.plan_item_id.as_str().to_owned(),
             ));
         }
-        commands.push(PnpmExecutionCommand {
+        commands.push(ManagerExecutionCommand {
             plan_item_id: selected.plan_item_id.clone(),
             package_name: candidate.package_name.clone(),
             installed_version: candidate.installed_version.clone(),

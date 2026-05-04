@@ -19,3 +19,4 @@ upnow-infra = { path = "../upnow-infra" }
 upnow-managers = { path = "../upnow-managers" }
 upnow-planning = { path = "../upnow-planning" }
 upnow-presentation = { path = "../upnow-presentation" }
+upnow-release = { path = "../upnow-release" }

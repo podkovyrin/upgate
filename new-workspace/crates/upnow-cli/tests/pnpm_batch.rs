@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use upnow_cli::config::UpnowConfig;
-use upnow_cli::{BatchCommand, run_pnpm_batch};
+use upnow_cli::{BatchCommand, run_batch};
 use upnow_domain::{PackageName, VersionPolicy};
 use upnow_infra::{Clock, CommandOutput, ProcessRunner};
 
@@ -54,8 +54,16 @@ fn plan_reports_update_current_delayed_and_lookup_failure_items() {
     ]);
     let config = config_with_policy(VersionPolicy::Stable);
 
-    let output = run_pnpm_batch(BatchCommand::Plan, &config, &process, fixed_clock())
-        .expect("plan should render");
+    let output = run_batch(
+        BatchCommand::Plan,
+        config.clone(),
+        &process,
+        fixed_clock(),
+        false,
+        &["pnpm".to_owned()],
+        &[],
+    )
+    .expect("plan should render");
 
     assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
     assert!(output.contains("delayed gamma-delayed 2.0.0 -> 2.1.0 release too fresh"));
@@ -92,8 +100,16 @@ fn apply_skips_pinned_packages_and_runs_exact_pnpm_command() {
         .set_manager_pins("pnpm", pins)
         .expect("pnpm pins can be set");
 
-    let output = run_pnpm_batch(BatchCommand::Apply, &config, &process, fixed_clock())
-        .expect("apply should render");
+    let output = run_batch(
+        BatchCommand::Apply,
+        config.clone(),
+        &process,
+        fixed_clock(),
+        false,
+        &["pnpm".to_owned()],
+        &[],
+    )
+    .expect("apply should render");
 
     assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
     assert!(!output.contains("applied pinned-pkg"));
@@ -124,8 +140,16 @@ fn plan_with_no_policy_uses_pnpm_outdated_instead_of_installed_list() {
     ]);
     let config = UpnowConfig::default();
 
-    let output = run_pnpm_batch(BatchCommand::Plan, &config, &process, fixed_clock())
-        .expect("plan should render");
+    let output = run_batch(
+        BatchCommand::Plan,
+        config.clone(),
+        &process,
+        fixed_clock(),
+        false,
+        &["pnpm".to_owned()],
+        &[],
+    )
+    .expect("plan should render");
 
     assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
     let calls = match &process {
@@ -157,8 +181,16 @@ fn apply_honors_wildcard_pin() {
         )
         .expect("pnpm pins can be set");
 
-    let output = run_pnpm_batch(BatchCommand::Apply, &config, &process, fixed_clock())
-        .expect("apply should render");
+    let output = run_batch(
+        BatchCommand::Apply,
+        config.clone(),
+        &process,
+        fixed_clock(),
+        false,
+        &["pnpm".to_owned()],
+        &[],
+    )
+    .expect("apply should render");
 
     assert!(output.contains("no selected updates"));
     assert!(!output.contains("applied alpha-ready"));
@@ -186,12 +218,14 @@ fn verbose_scan_renders_release_age_when_available() {
     ]);
     let config = UpnowConfig::default();
 
-    let output = upnow_cli::run_pnpm_batch_with_options(
+    let output = run_batch(
         BatchCommand::Scan,
-        &config,
+        config.clone(),
         &process,
         fixed_clock(),
         true,
+        &["pnpm".to_owned()],
+        &[],
     )
     .expect("scan should render");
 
@@ -226,12 +260,14 @@ fn verbose_scan_reports_release_lookup_failures_without_hiding_installed_package
     ]);
     let config = UpnowConfig::default();
 
-    let output = upnow_cli::run_pnpm_batch_with_options(
+    let output = run_batch(
         BatchCommand::Scan,
-        &config,
+        config.clone(),
         &process,
         fixed_clock(),
         true,
+        &["pnpm".to_owned()],
+        &[],
     )
     .expect("scan should render");
 
@@ -247,8 +283,16 @@ fn interrupted_outdated_discovery_returns_interrupted_error() {
     let process = ProcessRunner::fake([Ok(CommandOutput::from_parts(signal_status(), "", ""))]);
     let config = UpnowConfig::default();
 
-    let err = run_pnpm_batch(BatchCommand::Plan, &config, &process, fixed_clock())
-        .expect_err("interrupted outdated discovery should not render a plan");
+    let err = run_batch(
+        BatchCommand::Plan,
+        config.clone(),
+        &process,
+        fixed_clock(),
+        false,
+        &["pnpm".to_owned()],
+        &[],
+    )
+    .expect_err("interrupted outdated discovery should not render a plan");
 
     assert!(err.is_interruption());
 }
@@ -266,8 +310,16 @@ fn interrupted_release_lookup_returns_interrupted_error() {
     ]);
     let config = UpnowConfig::default();
 
-    let err = run_pnpm_batch(BatchCommand::Plan, &config, &process, fixed_clock())
-        .expect_err("interrupted release lookup should not render a blocked item");
+    let err = run_batch(
+        BatchCommand::Plan,
+        config.clone(),
+        &process,
+        fixed_clock(),
+        false,
+        &["pnpm".to_owned()],
+        &[],
+    )
+    .expect_err("interrupted release lookup should not render a blocked item");
 
     assert!(err.is_interruption());
 }
@@ -278,12 +330,14 @@ fn interrupted_verbose_scan_discovery_returns_interrupted_error() {
     let process = ProcessRunner::fake([Ok(CommandOutput::from_parts(signal_status(), "", ""))]);
     let config = UpnowConfig::default();
 
-    let err = upnow_cli::run_pnpm_batch_with_options(
+    let err = run_batch(
         BatchCommand::Scan,
-        &config,
+        config.clone(),
         &process,
         fixed_clock(),
         true,
+        &["pnpm".to_owned()],
+        &[],
     )
     .expect_err("interrupted scan discovery should not render a scan report");
 
