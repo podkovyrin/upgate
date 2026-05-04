@@ -1,6 +1,6 @@
 use crate::{
     DomainError, InstalledTool, ManagerId, PackageName, PolicyWarning, ReleaseLookupResult, ToolId,
-    VersionScheme, VersionText,
+    UnsupportedReason, VersionScheme, VersionText,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -191,6 +191,7 @@ impl PlanItem {
 pub struct UpdatePlan {
     pub manager_id: ManagerId,
     pub items: Vec<PlanItem>,
+    pub issues: Vec<PlanIssue>,
 }
 
 impl UpdatePlan {
@@ -200,6 +201,19 @@ impl UpdatePlan {
     ///
     /// Returns [`DomainError::DuplicatePlanItemId`] when two items share an id.
     pub fn new(manager_id: ManagerId, items: Vec<PlanItem>) -> Result<Self, DomainError> {
+        Self::with_issues(manager_id, items, Vec::new())
+    }
+
+    /// Creates an update plan with manager-level issues.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::DuplicatePlanItemId`] when two items share an id.
+    pub fn with_issues(
+        manager_id: ManagerId,
+        items: Vec<PlanItem>,
+        issues: Vec<PlanIssue>,
+    ) -> Result<Self, DomainError> {
         let mut seen = Vec::new();
         for item in &items {
             if seen.contains(item.id()) {
@@ -210,7 +224,11 @@ impl UpdatePlan {
             seen.push(item.id().clone());
         }
 
-        Ok(Self { manager_id, items })
+        Ok(Self {
+            manager_id,
+            items,
+            issues,
+        })
     }
 
     #[must_use]
@@ -259,6 +277,17 @@ pub enum BlockReason {
     ReleaseLookupFailed,
     VersionPolicy(PolicyBlockReason),
     UnsupportedExactExecution,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanIssue {
+    DiscoveryFailed {
+        detail: String,
+    },
+    UnsupportedManagerVersion {
+        installed_version: VersionText,
+        reason: UnsupportedReason,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

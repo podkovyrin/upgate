@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use upnow_domain::{
     InstalledTool, ManagerId, PackageName, PlanItemId, PlanSelection, ReleaseLookupResult,
-    UpdatePlan, UpdateSeed, VersionPolicy, VersionText,
+    UnsupportedReason, UpdatePlan, UpdateSeed, VersionPolicy, VersionText,
 };
 use upnow_infra::{CommandSpec, ProcessRunner};
 
@@ -11,6 +11,7 @@ use upnow_infra::{CommandSpec, ProcessRunner};
 pub struct ManagerCapabilities {
     pub exact_target: bool,
     pub native_update: bool,
+    pub native_global_update: bool,
 }
 
 impl ManagerCapabilities {
@@ -19,7 +20,14 @@ impl ManagerCapabilities {
         Self {
             exact_target,
             native_update,
+            native_global_update: false,
         }
+    }
+
+    #[must_use]
+    pub const fn with_native_global_update(mut self, native_global_update: bool) -> Self {
+        self.native_global_update = native_global_update;
+        self
     }
 }
 
@@ -30,12 +38,23 @@ pub struct CommandBuildSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ManagerExecutionCommand {
+pub struct ManagerExecutionCommandItem {
     pub plan_item_id: PlanItemId,
     pub package_name: PackageName,
     pub installed_version: VersionText,
     pub target_version: VersionText,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagerExecutionCommand {
+    pub items: Vec<ManagerExecutionCommandItem>,
     pub command: CommandSpec,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsupportedManagerVersion {
+    pub installed_version: VersionText,
+    pub reason: UnsupportedReason,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +117,13 @@ pub trait ManagerAdapter {
 
     fn supports_version_policy(&self, policy: VersionPolicy) -> bool;
 
+    fn unsupported_manager_version(
+        &self,
+        _process: &ProcessRunner,
+    ) -> Result<Option<UnsupportedManagerVersion>, ManagerAdapterError> {
+        Ok(None)
+    }
+
     fn installed_tools(
         &self,
         process: &ProcessRunner,
@@ -117,6 +143,7 @@ pub trait ManagerAdapter {
 
     fn commands_for_selection(
         &self,
+        process: &ProcessRunner,
         plan: &UpdatePlan,
         selection: &PlanSelection,
         settings: CommandBuildSettings,

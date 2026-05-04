@@ -398,6 +398,12 @@ fn default_manager_selection_skips_off_managers() {
     config
         .apply_cli_override("npm.mode=off")
         .expect("override should apply");
+    config
+        .apply_cli_override("yarn.mode=off")
+        .expect("override should apply");
+    config
+        .apply_cli_override("bun.mode=off")
+        .expect("override should apply");
 
     let output = run_batch(
         BatchCommand::Plan,
@@ -515,6 +521,8 @@ fn selected_managers_are_deduplicated_in_first_seen_order() {
 
 #[test]
 fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_owned());
+    let cwd = format!("{home}/.bun/install/global");
     let process = ProcessRunner::fake([
         Ok(CommandOutput::from_parts(
             success_status(),
@@ -536,6 +544,28 @@ fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
             text("npm", "deterministic/time/alpha-ready.json"),
             "",
         )),
+        Ok(CommandOutput::from_parts(success_status(), "1.22.22", "")),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{"type":"tree","data":{"trees":[{"name":"alpha-ready@1.0.0"}]}}"#,
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("yarn", "deterministic/time/alpha-ready.jsonl"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "/fake/bun", "")),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{"dependencies":{"alpha-ready":{"version":"1.0.0"}}}"#,
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("bun", "deterministic/time/alpha-ready.json"),
+            "",
+        )),
     ]);
     let config = UpnowConfig::default();
 
@@ -552,9 +582,25 @@ fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
 
     assert!(output.contains("plan pnpm"));
     assert!(output.contains("plan npm"));
+    assert!(output.contains("plan yarn"));
+    assert!(output.contains("plan bun"));
     assert!(
         output.find("plan pnpm").expect("pnpm output")
             < output.find("plan npm").expect("npm output")
+    );
+    assert!(
+        output.find("plan npm").expect("npm output")
+            < output.find("plan yarn").expect("yarn output")
+    );
+    assert!(
+        output.find("plan yarn").expect("yarn output")
+            < output.find("plan bun").expect("bun output")
+    );
+    let calls = fake_calls(&process);
+    let expected_bun_lookup = format!("/fake/bun pm view alpha-ready time --json --cwd {cwd}");
+    assert_eq!(
+        calls.last().map(String::as_str),
+        Some(expected_bun_lookup.as_str())
     );
 }
 
@@ -569,12 +615,380 @@ fn selected_unknown_unmigrated_manager_is_rejected() {
         &process,
         fixed_clock(),
         false,
-        &["yarn".to_owned()],
+        &["cargo".to_owned()],
         &[],
     )
     .expect_err("unmigrated manager should be rejected");
 
-    assert_eq!(err.to_string(), "unknown manager `yarn`");
+    assert_eq!(err.to_string(), "unknown manager `cargo`");
+}
+
+#[test]
+fn selected_yarn_plan_routes_through_batch_core() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(success_status(), "1.22.22", "")),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{"type":"tree","data":{"trees":[{"name":"alpha-ready@1.0.0"}]}}"#,
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("yarn", "deterministic/time/alpha-ready.jsonl"),
+            "",
+        )),
+    ]);
+    let config = UpnowConfig::default();
+
+    let output = run_batch(
+        BatchCommand::Plan,
+        config.clone(),
+        &process,
+        fixed_clock(),
+        false,
+        &["yarn".to_owned()],
+        &[],
+    )
+    .expect("yarn plan should render");
+
+    assert!(output.contains("plan yarn"));
+    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert_eq!(
+        fake_calls(&process),
+        [
+            "yarn --version",
+            "yarn global list --depth=0 --json",
+            "yarn info alpha-ready time --json",
+        ]
+    );
+}
+
+#[test]
+fn selected_yarn_apply_runs_exact_global_add() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(success_status(), "1.22.22", "")),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{"type":"tree","data":{"trees":[{"name":"alpha-ready@1.0.0"}]}}"#,
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("yarn", "deterministic/time/alpha-ready.jsonl"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "", "")),
+    ]);
+    let config = UpnowConfig::default();
+
+    let output = run_batch(
+        BatchCommand::Apply,
+        config.clone(),
+        &process,
+        fixed_clock(),
+        false,
+        &["yarn".to_owned()],
+        &[],
+    )
+    .expect("yarn apply should render");
+
+    assert!(output.contains("apply yarn"));
+    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
+    assert_eq!(fake_calls(&process)[3], "yarn global add alpha-ready@1.2.0");
+}
+
+#[test]
+fn selected_yarn_scan_probe_failure_reports_discovery_issue() {
+    let process = ProcessRunner::fake([Err(upnow_infra::InfraError::HttpRequest {
+        url: "yarn".to_owned(),
+        detail: "yarn unavailable".to_owned(),
+    })]);
+    let config = UpnowConfig::default();
+
+    let output = run_batch(
+        BatchCommand::Scan,
+        config.clone(),
+        &process,
+        fixed_clock(),
+        false,
+        &["yarn".to_owned()],
+        &[],
+    )
+    .expect("yarn scan should render discovery issue");
+
+    assert!(output.contains("scan yarn"));
+    assert!(output.contains("issue"));
+    assert!(output.contains("yarn unavailable"));
+    assert_eq!(fake_calls(&process), ["yarn --version"]);
+}
+
+#[test]
+fn selected_yarn_plan_probe_failure_reports_plan_issue() {
+    let process = ProcessRunner::fake([Err(upnow_infra::InfraError::HttpRequest {
+        url: "yarn".to_owned(),
+        detail: "yarn unavailable".to_owned(),
+    })]);
+    let config = UpnowConfig::default();
+
+    let output = run_batch(
+        BatchCommand::Plan,
+        config.clone(),
+        &process,
+        fixed_clock(),
+        false,
+        &["yarn".to_owned()],
+        &[],
+    )
+    .expect("yarn plan should render discovery issue");
+
+    assert!(output.contains("plan yarn"));
+    assert!(output.contains("issue"));
+    assert!(output.contains("yarn unavailable"));
+    assert_eq!(fake_calls(&process), ["yarn --version"]);
+}
+
+#[test]
+fn selected_yarn_two_plus_scan_reports_unsupported_version() {
+    let process =
+        ProcessRunner::fake([Ok(CommandOutput::from_parts(success_status(), "4.3.1", ""))]);
+    let config = UpnowConfig::default();
+
+    let output = run_batch(
+        BatchCommand::Scan,
+        config.clone(),
+        &process,
+        fixed_clock(),
+        false,
+        &["yarn".to_owned()],
+        &[],
+    )
+    .expect("yarn scan should render unsupported version");
+
+    assert!(output.contains("scan yarn"));
+    assert!(output.contains("unsupported manager version 4.3.1"));
+    assert!(output.contains("global upgrades are not supported for Yarn 2+"));
+    assert_eq!(fake_calls(&process), ["yarn --version"]);
+}
+
+#[test]
+fn selected_yarn_two_plus_plan_reports_unsupported_version() {
+    let process =
+        ProcessRunner::fake([Ok(CommandOutput::from_parts(success_status(), "4.3.1", ""))]);
+    let config = UpnowConfig::default();
+
+    let output = run_batch(
+        BatchCommand::Plan,
+        config.clone(),
+        &process,
+        fixed_clock(),
+        false,
+        &["yarn".to_owned()],
+        &[],
+    )
+    .expect("yarn plan should render unsupported version");
+
+    assert!(output.contains("plan yarn"));
+    assert!(output.contains("unsupported manager version 4.3.1"));
+    assert!(!output.contains("yarn global list"));
+    assert_eq!(fake_calls(&process), ["yarn --version"]);
+}
+
+#[test]
+fn selected_yarn_two_plus_apply_reports_unsupported_version() {
+    let process =
+        ProcessRunner::fake([Ok(CommandOutput::from_parts(success_status(), "4.3.1", ""))]);
+    let config = UpnowConfig::default();
+
+    let output = run_batch(
+        BatchCommand::Apply,
+        config.clone(),
+        &process,
+        fixed_clock(),
+        false,
+        &["yarn".to_owned()],
+        &[],
+    )
+    .expect("yarn apply should render unsupported version");
+
+    assert!(output.contains("apply yarn"));
+    assert!(output.contains("unsupported manager version 4.3.1"));
+    assert!(output.contains("global upgrades are not supported for Yarn 2+"));
+    assert_eq!(fake_calls(&process), ["yarn --version"]);
+}
+
+#[test]
+fn selected_bun_plan_routes_through_batch_core() {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_owned());
+    let cwd = format!("{home}/.bun/install/global");
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(success_status(), "/fake/bun", "")),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{"dependencies":{"alpha-ready":{"version":"1.0.0"}}}"#,
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("bun", "deterministic/time/alpha-ready.json"),
+            "",
+        )),
+    ]);
+    let config = UpnowConfig::default();
+
+    let output = run_batch(
+        BatchCommand::Plan,
+        config.clone(),
+        &process,
+        fixed_clock(),
+        false,
+        &["bun".to_owned()],
+        &[],
+    )
+    .expect("bun plan should render");
+
+    assert!(output.contains("plan bun"));
+    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert_eq!(
+        fake_calls(&process),
+        [
+            "mise which bun",
+            "/fake/bun pm ls -g --json",
+            &format!("/fake/bun pm view alpha-ready time --json --cwd {cwd}"),
+        ]
+    );
+}
+
+#[test]
+fn selected_bun_verbose_scan_missing_metadata_renders_installed_without_age() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(success_status(), "/fake/bun", "")),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{"dependencies":{"alpha-ready":{"version":"1.0.0"}}}"#,
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "/fake/bun", "")),
+        Ok(CommandOutput::from_parts(success_status(), "{}", "")),
+    ]);
+    let config = UpnowConfig::default();
+
+    let output = run_batch(
+        BatchCommand::Scan,
+        config.clone(),
+        &process,
+        fixed_clock(),
+        true,
+        &["bun".to_owned()],
+        &[],
+    )
+    .expect("bun verbose scan should render");
+
+    assert!(output.contains("scan bun"));
+    assert!(output.contains("installed alpha-ready 1.0.0"));
+    assert!(!output.contains("skipped alpha-ready"));
+    assert!(!output.contains("installed alpha-ready 1.0.0 age"));
+}
+
+#[test]
+fn selected_bun_apply_uses_native_global_update_for_complete_default_selection() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(success_status(), "/fake/bun", "")),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{
+                "dependencies": {
+                    "alpha-ready": {"version": "1.0.0"},
+                    "beta-ready": {"version": "1.0.0"}
+                }
+            }"#,
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("bun", "deterministic/time/alpha-ready.json"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("bun", "deterministic/time/alpha-ready.json"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "/fake/bun", "")),
+        Ok(CommandOutput::from_parts(success_status(), "", "")),
+    ]);
+    let config = UpnowConfig::default();
+
+    let output = run_batch(
+        BatchCommand::Apply,
+        config.clone(),
+        &process,
+        fixed_clock(),
+        false,
+        &["bun".to_owned()],
+        &[],
+    )
+    .expect("bun apply should render");
+
+    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("applied beta-ready 1.0.0 -> 1.2.0"));
+    assert_eq!(
+        fake_calls(&process).last().map(String::as_str),
+        Some("/fake/bun update -g --minimum-release-age 604800")
+    );
+}
+
+#[test]
+fn selected_bun_apply_runs_exact_update_and_honors_pins() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(success_status(), "/fake/bun", "")),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{
+                "dependencies": {
+                    "alpha-ready": {"version": "1.0.0"},
+                    "pinned-pkg": {"version": "3.0.0"}
+                }
+            }"#,
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("bun", "deterministic/time/alpha-ready.json"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("bun", "deterministic/time/pinned-pkg.json"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "/fake/bun", "")),
+        Ok(CommandOutput::from_parts(success_status(), "", "")),
+    ]);
+    let mut config = UpnowConfig::default();
+    config
+        .set_manager_pins(
+            "bun",
+            BTreeSet::from([PackageName::new("pinned-pkg").expect("valid package")]),
+        )
+        .expect("bun pins can be set");
+
+    let output = run_batch(
+        BatchCommand::Apply,
+        config.clone(),
+        &process,
+        fixed_clock(),
+        false,
+        &["bun".to_owned()],
+        &[],
+    )
+    .expect("bun apply should render");
+
+    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(!output.contains("applied pinned-pkg"));
+    assert_eq!(
+        fake_calls(&process).last().map(String::as_str),
+        Some("/fake/bun update -g alpha-ready@1.2.0 --minimum-release-age 604800")
+    );
 }
 
 #[test]

@@ -15,13 +15,13 @@ pub use manager::{
     ManagerMetadataValue, PackageName, ToolId, ToolName,
 };
 pub use plan::{
-    BlockReason, DelayReason, ExecutionEligibility, PlanItem, PlanItemId, PolicyBlockReason,
-    SkipReason, UpdateCandidate, UpdatePlan, UpdateSeed,
+    BlockReason, DelayReason, ExecutionEligibility, PlanIssue, PlanItem, PlanItemId,
+    PolicyBlockReason, SkipReason, UpdateCandidate, UpdatePlan, UpdateSeed,
 };
 pub use policy::{PolicyWarning, VersionPolicy};
 pub use release::{
     ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
 };
-pub use scan::{ManagerRuleReason, ScanIssue, ScanItem, ScanReport};
+pub use scan::{ManagerRuleReason, ScanIssue, ScanItem, ScanReport, UnsupportedReason};
 pub use selection::{PinChange, PinOperation, PlanSelection, SelectedItem};
 pub use version::{VersionScheme, VersionText};

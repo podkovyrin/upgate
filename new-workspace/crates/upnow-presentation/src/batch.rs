@@ -1,5 +1,6 @@
 use upnow_domain::{
-    BlockReason, DelayReason, ManagerId, PlanItem, ScanIssue, ScanItem, ScanReport, UpdatePlan,
+    BlockReason, DelayReason, ManagerId, PlanIssue, PlanItem, ScanIssue, ScanItem, ScanReport,
+    UnsupportedReason, UpdatePlan,
 };
 use upnow_execution::{ExecutionReport, ExecutionStatus};
 
@@ -48,6 +49,9 @@ pub fn render_scan_report(
 pub fn render_update_plan(plan: &UpdatePlan) -> String {
     let mut lines = Vec::new();
     lines.push(format!("plan {}", plan.manager_id.as_str()));
+    for issue in &plan.issues {
+        lines.push(format!("issue {}", render_plan_issue(issue)));
+    }
     for item in &plan.items {
         lines.push(match item {
             PlanItem::Update { candidate, .. } => format!(
@@ -87,9 +91,12 @@ pub fn render_update_plan(plan: &UpdatePlan) -> String {
 }
 
 #[must_use]
-pub fn render_execution_report(report: &ExecutionReport) -> String {
+pub fn render_execution_report(report: &ExecutionReport, issues: &[PlanIssue]) -> String {
     let mut lines = Vec::new();
     lines.push(format!("apply {}", report.manager_id.as_str()));
+    for issue in issues {
+        lines.push(format!("issue {}", render_plan_issue(issue)));
+    }
     if report.items.is_empty() {
         lines.push("no selected updates".to_owned());
     }
@@ -133,7 +140,37 @@ fn render_scan_issue(issue: &ScanIssue) -> String {
         | ScanIssue::DiscoveryFailed { detail }
         | ScanIssue::ReleaseLookupFailed { detail } => detail.clone(),
         ScanIssue::MissingReleaseMetadata => "missing release metadata".to_owned(),
+        ScanIssue::UnsupportedManagerVersion {
+            installed_version,
+            reason,
+        } => format!(
+            "unsupported manager version {} {}",
+            installed_version.as_str(),
+            render_unsupported_reason(reason)
+        ),
         ScanIssue::ExcludedByManagerRule(reason) => format!("{reason:?}"),
+    }
+}
+
+fn render_plan_issue(issue: &PlanIssue) -> String {
+    match issue {
+        PlanIssue::DiscoveryFailed { detail } => detail.clone(),
+        PlanIssue::UnsupportedManagerVersion {
+            installed_version,
+            reason,
+        } => format!(
+            "unsupported manager version {} {}",
+            installed_version.as_str(),
+            render_unsupported_reason(reason)
+        ),
+    }
+}
+
+fn render_unsupported_reason(reason: &UnsupportedReason) -> &'static str {
+    match reason {
+        UnsupportedReason::YarnModernGlobalUnsupported => {
+            "global upgrades are not supported for Yarn 2+"
+        }
     }
 }
 

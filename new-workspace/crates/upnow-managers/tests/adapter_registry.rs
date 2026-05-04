@@ -11,9 +11,15 @@ fn registry_selects_managers_by_id() {
         .expect("pnpm should be registered");
     let npm =
         manager_by_id(&ManagerId::new("npm").expect("valid id")).expect("npm should be registered");
+    let yarn = manager_by_id(&ManagerId::new("yarn").expect("valid id"))
+        .expect("yarn should be registered");
+    let bun =
+        manager_by_id(&ManagerId::new("bun").expect("valid id")).expect("bun should be registered");
 
     assert_eq!(pnpm.id(), "pnpm");
     assert_eq!(npm.id(), "npm");
+    assert_eq!(yarn.id(), "yarn");
+    assert_eq!(bun.id(), "bun");
 }
 
 #[test]
@@ -39,7 +45,7 @@ fn registered_managers_validate_supported_policies() {
         ] {
             manager
                 .validate_version_policy(policy)
-                .expect("npm-family managers support all current policies");
+                .expect("migrated npm-family managers support all current policies");
         }
     }
 }
@@ -50,11 +56,20 @@ fn capabilities_are_typed_per_manager() {
         .expect("pnpm should be registered");
     let npm =
         manager_by_id(&ManagerId::new("npm").expect("valid id")).expect("npm should be registered");
+    let yarn = manager_by_id(&ManagerId::new("yarn").expect("valid id"))
+        .expect("yarn should be registered");
+    let bun =
+        manager_by_id(&ManagerId::new("bun").expect("valid id")).expect("bun should be registered");
 
     assert!(pnpm.capabilities().exact_target);
     assert!(!pnpm.capabilities().native_update);
     assert!(npm.capabilities().exact_target);
     assert!(npm.capabilities().native_update);
+    assert!(yarn.capabilities().exact_target);
+    assert!(!yarn.capabilities().native_update);
+    assert!(bun.capabilities().exact_target);
+    assert!(!bun.capabilities().native_update);
+    assert!(bun.capabilities().native_global_update);
 }
 
 #[test]
@@ -88,6 +103,7 @@ fn pnpm_builds_commands_through_adapter_boundary() {
 
     let commands = manager
         .commands_for_selection(
+            &upnow_infra::ProcessRunner::fake([]),
             &plan,
             &selection,
             CommandBuildSettings {
@@ -134,6 +150,7 @@ fn adapter_errors_preserve_command_construction_category() {
 
     let err = manager
         .commands_for_selection(
+            &upnow_infra::ProcessRunner::fake([]),
             &plan,
             &selection,
             CommandBuildSettings {

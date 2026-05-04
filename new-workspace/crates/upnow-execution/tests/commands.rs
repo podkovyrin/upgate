@@ -1,15 +1,12 @@
 use upnow_domain::{ManagerId, PackageName, PlanItemId, VersionText};
-use upnow_execution::{ExecutionCommand, ExecutionStatus, execute_commands};
+use upnow_execution::{ExecutionCommand, ExecutionCommandItem, ExecutionStatus, execute_commands};
 use upnow_infra::{CommandOutput, CommandSpec, ProcessRunner};
 
 #[test]
 fn executes_manager_supplied_commands() {
     let process = ProcessRunner::fake([Ok(CommandOutput::from_parts(success_status(), "", ""))]);
     let command = ExecutionCommand {
-        plan_item_id: PlanItemId::new("pnpm:alpha-ready").expect("valid id"),
-        package_name: PackageName::new("alpha-ready").expect("valid package"),
-        installed_version: VersionText::new("1.0.0").expect("valid version"),
-        target_version: VersionText::new("1.2.0").expect("valid version"),
+        items: vec![command_item()],
         command: CommandSpec::new("tool", ["install", "alpha-ready@1.2.0"]).mutating(),
     };
 
@@ -70,11 +67,17 @@ fn interrupted_commands_return_execution_error() {
 
 fn command() -> ExecutionCommand {
     ExecutionCommand {
+        items: vec![command_item()],
+        command: CommandSpec::new("tool", ["install", "alpha-ready@1.2.0"]).mutating(),
+    }
+}
+
+fn command_item() -> ExecutionCommandItem {
+    ExecutionCommandItem {
         plan_item_id: PlanItemId::new("pnpm:alpha-ready").expect("valid id"),
         package_name: PackageName::new("alpha-ready").expect("valid package"),
         installed_version: VersionText::new("1.0.0").expect("valid version"),
         target_version: VersionText::new("1.2.0").expect("valid version"),
-        command: CommandSpec::new("tool", ["install", "alpha-ready@1.2.0"]).mutating(),
     }
 }
 

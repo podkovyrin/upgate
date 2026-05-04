@@ -8,10 +8,12 @@ use std::time::SystemTime;
 use clap::{Parser, Subcommand};
 use config::{ConfigError, ManagerConfig, UpnowConfig};
 use upnow_domain::{
-    ExecutionEligibility, InstalledTool, ManagerId, ReleaseLookupResult, ScanIssue, ScanItem,
-    ScanReport, UpdatePlan,
+    ExecutionEligibility, InstalledTool, ManagerId, PlanIssue, ReleaseLookupResult, ScanIssue,
+    ScanItem, ScanReport, UpdatePlan,
 };
-use upnow_execution::{ExecutionCommand, ExecutionReport, ExecutionStatus, execute_commands};
+use upnow_execution::{
+    ExecutionCommand, ExecutionCommandItem, ExecutionReport, ExecutionStatus, execute_commands,
+};
 use upnow_infra::{Clock, Env, MutationMode, ProcessRunner};
 use upnow_managers::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerExecutionCommand,
@@ -224,6 +226,7 @@ fn run_manager_batch(
                 .map_err(|err| AppError::Planning(err.to_string()))?;
             let commands = manager
                 .commands_for_selection(
+                    process,
                     &plan,
                     &selection,
                     CommandBuildSettings {
@@ -243,7 +246,7 @@ fn run_manager_batch(
                         AppError::Execution(err.to_string())
                     }
                 })?;
-            let output = render_execution_report(&report);
+            let output = render_execution_report(&report, &plan.issues);
             Ok(ManagerBatchOutput {
                 rendered: output,
                 failed: execution_report_has_failures(&report),
@@ -257,6 +260,29 @@ fn build_scan_report(
     process: &ProcessRunner,
 ) -> Result<ScanReport, AppError> {
     let manager_id = manager.manager_id();
+    match manager.unsupported_manager_version(process) {
+        Ok(Some(unsupported)) => {
+            return Ok(ScanReport::new(
+                manager_id,
+                Vec::new(),
+                vec![ScanIssue::UnsupportedManagerVersion {
+                    installed_version: unsupported.installed_version,
+                    reason: unsupported.reason,
+                }],
+            ));
+        }
+        Ok(None) => {}
+        Err(err) if err.is_interruption() => return Err(map_manager_error(err)),
+        Err(err) => {
+            return Ok(ScanReport::new(
+                manager_id,
+                Vec::new(),
+                vec![ScanIssue::DiscoveryFailed {
+                    detail: err.to_string(),
+                }],
+            ));
+        }
+    }
     match manager.installed_tools(process) {
         Ok(installed) => Ok(ScanReport::new(
             manager_id,
@@ -280,6 +306,29 @@ fn build_verbose_scan_report(
     now: SystemTime,
 ) -> Result<ScanReport, AppError> {
     let manager_id = manager.manager_id();
+    match manager.unsupported_manager_version(process) {
+        Ok(Some(unsupported)) => {
+            return Ok(ScanReport::new(
+                manager_id,
+                Vec::new(),
+                vec![ScanIssue::UnsupportedManagerVersion {
+                    installed_version: unsupported.installed_version,
+                    reason: unsupported.reason,
+                }],
+            ));
+        }
+        Ok(None) => {}
+        Err(err) if err.is_interruption() => return Err(map_manager_error(err)),
+        Err(err) => {
+            return Ok(ScanReport::new(
+                manager_id,
+                Vec::new(),
+                vec![ScanIssue::DiscoveryFailed {
+                    detail: err.to_string(),
+                }],
+            ));
+        }
+    }
     let installed = match manager.installed_tools(process) {
         Ok(installed) => installed,
         Err(err) if err.is_interruption() => return Err(map_manager_error(err)),
@@ -318,10 +367,7 @@ fn verbose_scan_item(
                 None => Ok(ScanItem::Installed(tool)),
             }
         }
-        ReleaseLookupResult::MissingMetadata => Ok(ScanItem::Skipped {
-            tool,
-            reason: ScanIssue::MissingReleaseMetadata,
-        }),
+        ReleaseLookupResult::MissingMetadata => Ok(ScanItem::Installed(tool)),
         ReleaseLookupResult::LookupFailed(err) => Ok(ScanItem::Skipped {
             tool,
             reason: ScanIssue::ReleaseLookupFailed { detail: err.detail },
@@ -360,6 +406,31 @@ fn build_manager_plan(
     clock: Clock,
     manager_config: &ManagerConfig,
 ) -> Result<UpdatePlan, AppError> {
+    match manager.unsupported_manager_version(process) {
+        Ok(Some(unsupported)) => {
+            return UpdatePlan::with_issues(
+                manager_config.manager_id.clone(),
+                Vec::new(),
+                vec![PlanIssue::UnsupportedManagerVersion {
+                    installed_version: unsupported.installed_version,
+                    reason: unsupported.reason,
+                }],
+            )
+            .map_err(|err| AppError::Planning(err.to_string()));
+        }
+        Ok(None) => {}
+        Err(err) if err.is_interruption() => return Err(map_manager_error(err)),
+        Err(err) => {
+            return UpdatePlan::with_issues(
+                manager_config.manager_id.clone(),
+                Vec::new(),
+                vec![PlanIssue::DiscoveryFailed {
+                    detail: err.to_string(),
+                }],
+            )
+            .map_err(|err| AppError::Planning(err.to_string()));
+        }
+    }
     let seeds = manager
         .update_seeds(process, manager_config.version_policy)
         .map_err(map_manager_error)?;
@@ -389,10 +460,16 @@ fn execution_eligibility(manager: &dyn ManagerAdapter) -> ExecutionEligibility {
 
 fn execution_command_from_manager(command: ManagerExecutionCommand) -> ExecutionCommand {
     ExecutionCommand {
-        plan_item_id: command.plan_item_id,
-        package_name: command.package_name,
-        installed_version: command.installed_version,
-        target_version: command.target_version,
+        items: command
+            .items
+            .into_iter()
+            .map(|item| ExecutionCommandItem {
+                plan_item_id: item.plan_item_id,
+                package_name: item.package_name,
+                installed_version: item.installed_version,
+                target_version: item.target_version,
+            })
+            .collect(),
         command: command.command,
     }
 }

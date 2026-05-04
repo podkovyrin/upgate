@@ -15,7 +15,7 @@ use upnow_infra::{CommandCheck, CommandSpec, InfraError, ProcessRunner};
 
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerExecutionCommand,
+    ManagerCapabilities, ManagerExecutionCommand, ManagerExecutionCommandItem,
 };
 
 pub const MANAGER_ID: &str = "npm";
@@ -158,6 +158,7 @@ impl ManagerAdapter for NpmManager {
 
     fn commands_for_selection(
         &self,
+        _process: &ProcessRunner,
         plan: &UpdatePlan,
         selection: &PlanSelection,
         settings: CommandBuildSettings,
@@ -334,10 +335,7 @@ pub fn commands_for_selection(
         let candidate = executable_candidate(item, selected.forced)?;
         if should_use_native_selected_update(candidate, settings.version_policy, selected.forced) {
             commands.push(ManagerExecutionCommand {
-                plan_item_id: selected.plan_item_id.clone(),
-                package_name: candidate.package_name.clone(),
-                installed_version: candidate.installed_version.clone(),
-                target_version: candidate.target_version.clone(),
+                items: vec![execution_item(selected.plan_item_id.clone(), candidate)],
                 command: selected_native_update_command(
                     candidate,
                     whole_days(settings.min_release_age),
@@ -351,10 +349,7 @@ pub fn commands_for_selection(
             ));
         }
         commands.push(ManagerExecutionCommand {
-            plan_item_id: selected.plan_item_id.clone(),
-            package_name: candidate.package_name.clone(),
-            installed_version: candidate.installed_version.clone(),
-            target_version: candidate.target_version.clone(),
+            items: vec![execution_item(selected.plan_item_id.clone(), candidate)],
             command: exact_command(
                 candidate,
                 whole_days(settings.min_release_age),
@@ -363,6 +358,18 @@ pub fn commands_for_selection(
         });
     }
     Ok(commands)
+}
+
+fn execution_item(
+    plan_item_id: upnow_domain::PlanItemId,
+    candidate: &UpdateCandidate,
+) -> ManagerExecutionCommandItem {
+    ManagerExecutionCommandItem {
+        plan_item_id,
+        package_name: candidate.package_name.clone(),
+        installed_version: candidate.installed_version.clone(),
+        target_version: candidate.target_version.clone(),
+    }
 }
 
 #[must_use]

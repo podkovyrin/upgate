@@ -164,6 +164,7 @@ fn adapter_uses_native_selected_update_for_no_policy_unforced_selection() {
 
     let commands = manager
         .commands_for_selection(
+            &ProcessRunner::fake([]),
             &plan,
             &selection,
             CommandBuildSettings {
@@ -190,6 +191,7 @@ fn adapter_uses_exact_install_for_exact_only_no_policy_selection() {
 
     let commands = manager
         .commands_for_selection(
+            &ProcessRunner::fake([]),
             &plan,
             &selection,
             CommandBuildSettings {
@@ -216,6 +218,7 @@ fn adapter_uses_native_selected_update_for_native_only_no_policy_selection() {
 
     let commands = manager
         .commands_for_selection(
+            &ProcessRunner::fake([]),
             &plan,
             &selection,
             CommandBuildSettings {
@@ -242,6 +245,7 @@ fn adapter_uses_exact_install_for_policy_selection() {
 
     let commands = manager
         .commands_for_selection(
+            &ProcessRunner::fake([]),
             &plan,
             &selection,
             CommandBuildSettings {
@@ -269,6 +273,7 @@ fn adapter_forced_delayed_selection_uses_exact_install_and_bypasses_min_age() {
 
     let commands = manager
         .commands_for_selection(
+            &ProcessRunner::fake([]),
             &plan,
             &selection,
             CommandBuildSettings {
