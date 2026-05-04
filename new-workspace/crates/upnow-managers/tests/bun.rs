@@ -3,13 +3,10 @@ use std::time::Duration;
 
 use upnow_domain::{
     DelayReason, ExecutionEligibility, ManagerId, PackageName, PlanItem, PlanItemId, PlanSelection,
-    ReleaseLookupResult, SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionScheme,
-    VersionText,
+    SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionScheme, VersionText,
 };
-use upnow_managers::bun::{
-    BunError, bun_global_cwd_from_values, exact_command, is_missing_global_manifest,
-    parse_pm_ls_json, parse_time_json,
-};
+use upnow_managers::bun::{exact_command, is_missing_global_manifest, parse_pm_ls_json};
+use upnow_managers::npm_family_release::bun_global_cwd_from_values;
 
 fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/managers/bun")
@@ -54,32 +51,6 @@ fn detects_missing_global_manifest_messages() {
         "error: No package.json was found for directory '/tmp/x'"
     ));
     assert!(is_missing_global_manifest("error: Lockfile not found"));
-}
-
-#[test]
-fn parses_registry_time_json() {
-    let package = PackageName::new("alpha-ready").expect("valid package");
-    let timeline =
-        parse_time_json(&package, &text("deterministic/time/alpha-ready.json")).expect("time");
-
-    assert!(
-        timeline
-            .versions
-            .iter()
-            .any(|entry| entry.version == VersionText::new("1.2.0").expect("valid version"))
-    );
-}
-
-#[test]
-fn empty_time_map_is_missing_metadata_source() {
-    let package = PackageName::new("empty").expect("valid package");
-    let err = parse_time_json(&package, "{}").expect_err("empty time map should fail");
-
-    let lookup = match err {
-        BunError::EmptyTimeMap { .. } => ReleaseLookupResult::MissingMetadata,
-        other => panic!("unexpected error: {other}"),
-    };
-    assert!(matches!(lookup, ReleaseLookupResult::MissingMetadata));
 }
 
 #[test]

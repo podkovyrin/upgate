@@ -9,21 +9,24 @@ use clap::{Parser, Subcommand};
 use config::{ConfigError, ManagerConfig, UpnowConfig};
 use upnow_domain::{
     ExecutionEligibility, InstalledTool, ManagerId, PlanIssue, ReleaseLookupResult, ScanIssue,
-    ScanItem, ScanReport, UpdatePlan,
+    ScanItem, ScanReport, UpdatePlan, UpdateSeed,
 };
 use upnow_execution::{
-    ExecutionCommand, ExecutionCommandItem, ExecutionReport, ExecutionStatus, execute_commands,
+    ExecutionCapabilities, ExecutionCommand, ExecutionCommandItem, ExecutionReport,
+    ExecutionSelectionError, ExecutionStatus, execute_commands, resolve_selection_for_execution,
 };
 use upnow_infra::{Clock, Env, MutationMode, ProcessRunner};
 use upnow_managers::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerExecutionCommand,
+    UpdateDiscovery,
 };
+use upnow_managers::npm_family_release::lookup_release;
 use upnow_managers::registry::{available_managers, manager_by_id};
 use upnow_planning::{PlanningSettings, default_batch_selection, update_plan_from_seeds};
 use upnow_presentation::{
     render_execution_report, render_manager_error, render_scan_report, render_update_plan,
 };
-use upnow_release::release_age_for_version;
+use upnow_release::{newest_semver_version, release_age_for_version};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchCommand {
@@ -224,11 +227,17 @@ fn run_manager_batch(
             let plan = build_manager_plan(manager, process, clock, &manager_config)?;
             let selection = default_batch_selection(&plan, &manager_config.pinned)
                 .map_err(|err| AppError::Planning(err.to_string()))?;
+            let execution_plan = resolve_selection_for_execution(
+                &plan,
+                &selection,
+                execution_capabilities(manager),
+                manager_config.version_policy,
+            )
+            .map_err(map_execution_selection_error)?;
             let commands = manager
-                .commands_for_selection(
+                .commands_for_execution_plan(
                     process,
-                    &plan,
-                    &selection,
+                    &execution_plan,
                     CommandBuildSettings {
                         version_policy: manager_config.version_policy,
                         min_release_age: manager_config.min_release_age,
@@ -357,10 +366,10 @@ fn verbose_scan_item(
     now: SystemTime,
     tool: InstalledTool,
 ) -> Result<ScanItem, AppError> {
-    match manager
-        .release_lookup(process, &tool.package_name)
-        .map_err(map_manager_error)?
-    {
+    let request = manager
+        .release_lookup_request(process, &tool.package_name)
+        .map_err(map_manager_error)?;
+    match lookup_release(process, &request).map_err(map_release_infra_error)? {
         ReleaseLookupResult::Known(timeline) => {
             match release_age_for_version(&timeline, &tool.installed_version, now) {
                 Some(age) => Ok(ScanItem::InstalledWithReleaseAge { tool, age }),
@@ -431,9 +440,10 @@ fn build_manager_plan(
             .map_err(|err| AppError::Planning(err.to_string()));
         }
     }
-    let seeds = manager
-        .update_seeds(process, manager_config.version_policy)
+    let discoveries = manager
+        .update_discoveries(process, manager_config.version_policy)
         .map_err(map_manager_error)?;
+    let seeds = update_seeds_from_discoveries(process, discoveries)?;
     update_plan_from_seeds(
         manager_config.manager_id.clone(),
         seeds,
@@ -447,6 +457,31 @@ fn build_manager_plan(
     .map_err(|err| AppError::Planning(err.to_string()))
 }
 
+fn update_seeds_from_discoveries(
+    process: &ProcessRunner,
+    discoveries: Vec<UpdateDiscovery>,
+) -> Result<Vec<UpdateSeed>, AppError> {
+    let mut seeds = Vec::new();
+    for discovery in discoveries {
+        let lookup =
+            lookup_release(process, &discovery.release_lookup).map_err(map_release_infra_error)?;
+        let discovered_target = match &lookup {
+            ReleaseLookupResult::Known(timeline) => newest_semver_version(timeline)
+                .unwrap_or_else(|| discovery.installed.installed_version.clone()),
+            ReleaseLookupResult::MissingMetadata | ReleaseLookupResult::LookupFailed(_) => {
+                discovery.installed.installed_version.clone()
+            }
+        };
+        seeds.push(UpdateSeed::new(
+            discovery.installed,
+            discovered_target,
+            discovery.version_scheme,
+            lookup,
+        ));
+    }
+    Ok(seeds)
+}
+
 fn execution_eligibility(manager: &dyn ManagerAdapter) -> ExecutionEligibility {
     let capabilities = manager.capabilities();
     if capabilities.native_update && capabilities.exact_target {
@@ -455,6 +490,15 @@ fn execution_eligibility(manager: &dyn ManagerAdapter) -> ExecutionEligibility {
         ExecutionEligibility::NativeOnly
     } else {
         ExecutionEligibility::ExactOnly
+    }
+}
+
+fn execution_capabilities(manager: &dyn ManagerAdapter) -> ExecutionCapabilities {
+    let capabilities = manager.capabilities();
+    ExecutionCapabilities {
+        exact_target: capabilities.exact_target,
+        native_update: capabilities.native_update,
+        native_global_update: capabilities.native_global_update,
     }
 }
 
@@ -487,6 +531,18 @@ fn map_manager_error(err: ManagerAdapterError) -> AppError {
     } else {
         AppError::Manager(err.to_string())
     }
+}
+
+fn map_release_infra_error(err: upnow_infra::InfraError) -> AppError {
+    if err.is_interruption() {
+        AppError::Interrupted(err.to_string())
+    } else {
+        AppError::Manager(err.to_string())
+    }
+}
+
+fn map_execution_selection_error(err: ExecutionSelectionError) -> AppError {
+    AppError::Manager(err.to_string())
 }
 
 fn selected_manager_ids(selected_managers: &[String]) -> Result<Vec<ManagerId>, AppError> {

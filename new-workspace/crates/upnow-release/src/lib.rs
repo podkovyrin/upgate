@@ -1,7 +1,8 @@
-//! Release metadata behavior for the `upnow` rebuild.
+//! Manager-agnostic release metadata behavior for the `upnow` rebuild.
 
 use std::time::{Duration, SystemTime};
 
+use semver::Version;
 use upnow_domain::{ReleaseTimeline, VersionText};
 
 #[must_use]
@@ -18,4 +19,18 @@ pub fn release_age_for_version(
             now.duration_since(*entry.published_at.as_system_time())
                 .unwrap_or(Duration::ZERO)
         })
+}
+
+#[must_use]
+pub fn newest_semver_version(timeline: &ReleaseTimeline) -> Option<VersionText> {
+    timeline
+        .versions
+        .iter()
+        .filter_map(|entry| {
+            Version::parse(entry.version.as_str())
+                .ok()
+                .map(|version| (version, entry.version.clone()))
+        })
+        .max_by(|(left, _), (right, _)| left.cmp(right))
+        .map(|(_, version)| version)
 }

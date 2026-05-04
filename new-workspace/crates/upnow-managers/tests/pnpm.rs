@@ -2,12 +2,12 @@ use std::path::{Path, PathBuf};
 
 use upnow_domain::{
     ExecutionEligibility, ManagerId, PackageName, PlanItem, PlanItemId, PlanSelection,
-    ReleaseLookupResult, SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionScheme,
-    VersionText,
+    SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionScheme, VersionText,
 };
+use upnow_execution::{ExecutionCapabilities, resolve_selection_for_execution};
 use upnow_managers::pnpm::{
-    exact_command, exact_commands_for_selection, is_no_importer_manifest_error,
-    parse_installed_json, parse_outdated_json, parse_time_json,
+    exact_command, exact_commands_for_execution_plan, is_no_importer_manifest_error,
+    parse_installed_json, parse_outdated_json,
 };
 
 fn fixtures_dir() -> PathBuf {
@@ -57,54 +57,6 @@ fn detects_pnpm_no_importer_manifest_message() {
 }
 
 #[test]
-fn parses_registry_time_map() {
-    let package = upnow_domain::PackageName::new("alpha-ready").expect("valid package");
-    let timeline =
-        parse_time_json(&package, &text("deterministic/time/alpha-ready.json")).expect("time map");
-
-    assert!(
-        timeline
-            .versions
-            .iter()
-            .any(|entry| { entry.version == VersionText::new("1.2.0").expect("valid version") })
-    );
-}
-
-#[test]
-fn parses_registry_time_map_skipping_created_and_modified_metadata() {
-    let package = upnow_domain::PackageName::new("alpha-ready").expect("valid package");
-    let timeline = parse_time_json(
-        &package,
-        r#"{
-            "created": "2020-01-01T00:00:00.000Z",
-            "modified": "2022-01-01T00:00:00.000Z",
-            "1.0.0": "2021-01-01T00:00:00.000Z"
-        }"#,
-    )
-    .expect("time map should parse");
-
-    assert_eq!(timeline.versions.len(), 1);
-    assert_eq!(
-        timeline.versions[0].version,
-        VersionText::new("1.0.0").expect("valid version")
-    );
-}
-
-#[test]
-fn empty_time_map_is_missing_metadata_source() {
-    let package = upnow_domain::PackageName::new("empty").expect("valid package");
-    let err = parse_time_json(&package, "{}").expect_err("empty time map should fail");
-
-    let lookup = match err {
-        upnow_managers::pnpm::PnpmError::EmptyTimeMap { .. } => {
-            ReleaseLookupResult::MissingMetadata
-        }
-        other => panic!("unexpected error: {other}"),
-    };
-    assert!(matches!(lookup, ReleaseLookupResult::MissingMetadata));
-}
-
-#[test]
 fn constructs_exact_pnpm_add_command() {
     let command = exact_command(&candidate());
 
@@ -115,9 +67,20 @@ fn constructs_exact_pnpm_add_command() {
 fn creates_exact_commands_from_typed_selection() {
     let plan = plan();
     let selection = selection(&plan);
+    let execution_plan = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        ExecutionCapabilities {
+            exact_target: true,
+            native_update: false,
+            native_global_update: false,
+        },
+        upnow_domain::VersionPolicy::Stable,
+    )
+    .expect("selection should resolve");
 
     let commands =
-        exact_commands_for_selection(&plan, &selection).expect("selection should be executable");
+        exact_commands_for_execution_plan(&execution_plan).expect("selection should be executable");
 
     assert_eq!(commands.len(), 1);
     assert_eq!(

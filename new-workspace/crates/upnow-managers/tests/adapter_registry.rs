@@ -2,7 +2,10 @@ use upnow_domain::{
     ExecutionEligibility, ManagerId, PackageName, PlanItem, PlanItemId, PlanSelection,
     SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionPolicy, VersionScheme, VersionText,
 };
-use upnow_managers::adapter::{CommandBuildSettings, ManagerAdapterError, ManagerAdapterErrorKind};
+use upnow_execution::{
+    ExecutionCapabilities, ExecutionSelectionError, resolve_selection_for_execution,
+};
+use upnow_managers::adapter::{CommandBuildSettings, ManagerAdapterError};
 use upnow_managers::registry::{available_managers, manager_by_id};
 
 #[test]
@@ -100,12 +103,22 @@ fn pnpm_builds_commands_through_adapter_boundary() {
         Vec::new(),
     )
     .expect("valid selection");
+    let execution_plan = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        ExecutionCapabilities {
+            exact_target: manager.capabilities().exact_target,
+            native_update: manager.capabilities().native_update,
+            native_global_update: manager.capabilities().native_global_update,
+        },
+        VersionPolicy::Stable,
+    )
+    .expect("selection should resolve");
 
     let commands = manager
-        .commands_for_selection(
+        .commands_for_execution_plan(
             &upnow_infra::ProcessRunner::fake([]),
-            &plan,
-            &selection,
+            &execution_plan,
             CommandBuildSettings {
                 version_policy: VersionPolicy::Stable,
                 min_release_age: std::time::Duration::from_secs(86_400),
@@ -120,9 +133,7 @@ fn pnpm_builds_commands_through_adapter_boundary() {
 }
 
 #[test]
-fn adapter_errors_preserve_command_construction_category() {
-    let manager =
-        manager_by_id(&ManagerId::new("npm").expect("valid id")).expect("npm should be registered");
+fn execution_resolver_rejects_non_executable_selected_items() {
     let plan = UpdatePlan::new(
         ManagerId::new("npm").expect("valid manager"),
         vec![PlanItem::Current {
@@ -148,22 +159,20 @@ fn adapter_errors_preserve_command_construction_category() {
     )
     .expect("valid selection");
 
-    let err = manager
-        .commands_for_selection(
-            &upnow_infra::ProcessRunner::fake([]),
-            &plan,
-            &selection,
-            CommandBuildSettings {
-                version_policy: VersionPolicy::Stable,
-                min_release_age: std::time::Duration::from_secs(86_400),
-            },
-        )
-        .expect_err("current item should not be executable");
+    let err = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        ExecutionCapabilities {
+            exact_target: true,
+            native_update: true,
+            native_global_update: false,
+        },
+        VersionPolicy::Stable,
+    )
+    .expect_err("current item should not be executable");
 
-    match err {
-        ManagerAdapterError::Manager { kind, .. } => {
-            assert_eq!(kind, ManagerAdapterErrorKind::CommandConstruction);
-        }
-        other => panic!("unexpected error: {other}"),
-    }
+    assert_eq!(
+        err,
+        ExecutionSelectionError::ItemNotExecutable("npm:alpha-ready".to_owned())
+    );
 }

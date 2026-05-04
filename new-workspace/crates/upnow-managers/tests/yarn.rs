@@ -2,13 +2,11 @@ use std::path::{Path, PathBuf};
 
 use upnow_domain::{
     ExecutionEligibility, ManagerId, PackageName, PlanItem, PlanItemId, PlanSelection,
-    ReleaseLookupResult, SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionScheme,
-    VersionText,
+    SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionScheme, VersionText,
 };
 use upnow_infra::{CommandOutput, ProcessRunner};
 use upnow_managers::yarn::{
-    YarnError, exact_command, installed_global, parse_global_list_jsonl, parse_time_jsonl,
-    parse_yarn_major_version,
+    exact_command, installed_global, parse_global_list_jsonl, parse_yarn_major_version,
 };
 
 fn fixtures_dir() -> PathBuf {
@@ -49,33 +47,6 @@ fn parses_global_list_with_scoped_package() {
     assert!(installed.iter().any(|package| {
         package.name.as_str() == "@scope/tool" && package.version.as_str() == "2.3.4"
     }));
-}
-
-#[test]
-fn parses_registry_time_jsonl() {
-    let package = PackageName::new("alpha-ready").expect("valid package");
-    let timeline =
-        parse_time_jsonl(&package, &text("deterministic/time/alpha-ready.jsonl")).expect("time");
-
-    assert!(
-        timeline
-            .versions
-            .iter()
-            .any(|entry| entry.version == VersionText::new("1.2.0").expect("valid version"))
-    );
-}
-
-#[test]
-fn empty_or_missing_inspect_data_is_missing_metadata_source() {
-    let package = PackageName::new("empty").expect("valid package");
-    let err = parse_time_jsonl(&package, r#"{"type":"info","data":"ignored"}"#)
-        .expect_err("missing inspect data should fail");
-
-    let lookup = match err {
-        YarnError::EmptyTimeMap { .. } => ReleaseLookupResult::MissingMetadata,
-        other => panic!("unexpected error: {other}"),
-    };
-    assert!(matches!(lookup, ReleaseLookupResult::MissingMetadata));
 }
 
 #[test]

@@ -1,23 +1,20 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Display};
-use std::time::SystemTime;
 
-use chrono::DateTime;
-use semver::Version;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, InstalledTool, ManagerId, ManagerMetadata, PackageName, PlanItem, PlanSelection,
-    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
-    ToolId, ToolName, UnsupportedReason, UpdateCandidate, UpdatePlan, UpdateSeed, VersionPolicy,
-    VersionScheme, VersionText,
+    DomainError, InstalledTool, ManagerId, ManagerMetadata, PackageName, ToolId, ToolName,
+    UnsupportedReason, UpdateCandidate, VersionPolicy, VersionScheme, VersionText,
 };
+use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
 use upnow_infra::{CommandCheck, CommandSpec, InfraError, ProcessRunner};
 
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
     ManagerCapabilities, ManagerExecutionCommand, ManagerExecutionCommandItem,
-    UnsupportedManagerVersion,
+    UnsupportedManagerVersion, UpdateDiscovery,
 };
+use crate::npm_family_release::{NpmRegistryTimeSource, ReleaseLookupRequest};
 
 pub const MANAGER_ID: &str = "yarn";
 
@@ -29,11 +26,7 @@ pub enum YarnError {
     Domain(String),
     InvalidMajorVersion(String),
     UnsupportedMajorVersion(u64),
-    UnknownPlanItem(String),
-    ItemNotExecutable(String),
-    ExactTargetUnsupported(String),
-    InvalidTimestamp { version: String, value: String },
-    EmptyTimeMap { package: String },
+    UnsupportedCommandIntent(String),
 }
 
 impl Display for YarnError {
@@ -55,22 +48,11 @@ impl Display for YarnError {
                     "global upgrades are not supported for Yarn {version}+"
                 )
             }
-            Self::UnknownPlanItem(id) => write!(formatter, "unknown selected plan item `{id}`"),
-            Self::ItemNotExecutable(id) => write!(formatter, "plan item `{id}` is not executable"),
-            Self::ExactTargetUnsupported(id) => {
+            Self::UnsupportedCommandIntent(kind) => {
                 write!(
                     formatter,
-                    "plan item `{id}` does not support exact target execution"
+                    "unsupported yarn execution command intent `{kind}`"
                 )
-            }
-            Self::InvalidTimestamp { version, value } => {
-                write!(
-                    formatter,
-                    "invalid timestamp `{value}` for version `{version}`"
-                )
-            }
-            Self::EmptyTimeMap { package } => {
-                write!(formatter, "yarn info time JSON is empty for {package}")
             }
         }
     }
@@ -127,15 +109,6 @@ struct YarnListTreeNode {
     name: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-enum YarnInfoJsonLine {
-    #[serde(rename = "inspect")]
-    Inspect { data: BTreeMap<String, String> },
-    #[serde(other)]
-    Other,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct YarnManager;
 
@@ -166,31 +139,30 @@ impl ManagerAdapter for YarnManager {
         installed_global_classic(process).map_err(|err| adapter_error(&err))
     }
 
-    fn release_lookup(
+    fn release_lookup_request(
         &self,
-        process: &ProcessRunner,
+        _process: &ProcessRunner,
         package: &PackageName,
-    ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
-        release_lookup(process, package).map_err(|err| adapter_error(&err))
+    ) -> Result<ReleaseLookupRequest, ManagerAdapterError> {
+        Ok(release_lookup_request(package))
     }
 
-    fn update_seeds(
+    fn update_discoveries(
         &self,
         process: &ProcessRunner,
         version_policy: VersionPolicy,
-    ) -> Result<Vec<UpdateSeed>, ManagerAdapterError> {
+    ) -> Result<Vec<UpdateDiscovery>, ManagerAdapterError> {
         self.validate_version_policy(version_policy)?;
-        update_seeds(process).map_err(|err| adapter_error(&err))
+        update_discoveries(process).map_err(|err| adapter_error(&err))
     }
 
-    fn commands_for_selection(
+    fn commands_for_execution_plan(
         &self,
         _process: &ProcessRunner,
-        plan: &UpdatePlan,
-        selection: &PlanSelection,
+        plan: &ResolvedExecutionPlan,
         _settings: CommandBuildSettings,
     ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError> {
-        commands_for_selection(plan, selection).map_err(|err| adapter_error(&err))
+        commands_for_execution_plan(plan).map_err(|err| adapter_error(&err))
     }
 }
 
@@ -241,18 +213,6 @@ pub fn parse_global_list_jsonl(raw: &str) -> Result<Vec<YarnInstalledPackage>, Y
         .collect()
 }
 
-/// Parses `yarn info <name> time --json`.
-///
-/// # Errors
-///
-/// Returns an error when no inspect object is present or timestamps are invalid.
-pub fn parse_time_jsonl(package: &PackageName, raw: &str) -> Result<ReleaseTimeline, YarnError> {
-    let timestamps = parse_inspect_object(raw).ok_or_else(|| YarnError::EmptyTimeMap {
-        package: package.as_str().to_owned(),
-    })?;
-    time_map_to_timeline(package, timestamps)
-}
-
 /// Reads installed Yarn classic global packages.
 ///
 /// # Errors
@@ -277,82 +237,71 @@ fn installed_global_classic(process: &ProcessRunner) -> Result<Vec<InstalledTool
         .collect()
 }
 
-/// Creates update seeds for Yarn classic.
+/// Discovers Yarn classic packages that need release metadata before planning.
 ///
 /// # Errors
 ///
 /// Returns an error when discovery fails.
-pub fn update_seeds(process: &ProcessRunner) -> Result<Vec<UpdateSeed>, YarnError> {
-    let installed = installed_global_classic(process)?;
-    let mut seeds = Vec::new();
-    for tool in installed {
-        let lookup = release_lookup(process, &tool.package_name)?;
-        let discovered_target = match &lookup {
-            ReleaseLookupResult::Known(timeline) => {
-                newest_semver(timeline).unwrap_or_else(|| tool.installed_version.clone())
-            }
-            ReleaseLookupResult::MissingMetadata | ReleaseLookupResult::LookupFailed(_) => {
-                tool.installed_version.clone()
-            }
-        };
-        seeds.push(UpdateSeed::new(
-            tool,
-            discovered_target,
-            VersionScheme::SemVer,
-            lookup,
-        ));
-    }
-    Ok(seeds)
+pub fn update_discoveries(process: &ProcessRunner) -> Result<Vec<UpdateDiscovery>, YarnError> {
+    installed_global_classic(process)?
+        .into_iter()
+        .map(update_discovery)
+        .collect()
 }
 
-/// Creates exact Yarn commands for a typed selection.
+/// Creates exact Yarn commands for a resolved execution plan.
 ///
 /// # Errors
 ///
-/// Returns an error when the selected item is unknown or not exact-executable.
-pub fn commands_for_selection(
-    plan: &UpdatePlan,
-    selection: &PlanSelection,
+/// Returns an error when the resolved execution mode is not supported by Yarn.
+pub fn commands_for_execution_plan(
+    plan: &ResolvedExecutionPlan,
 ) -> Result<Vec<ManagerExecutionCommand>, YarnError> {
     let mut commands = Vec::new();
-    for selected in &selection.selected_items {
-        let item = plan
-            .item(&selected.plan_item_id)
-            .ok_or_else(|| YarnError::UnknownPlanItem(selected.plan_item_id.as_str().to_owned()))?;
-        let candidate = executable_candidate(item, selected.forced)?;
-        if !candidate.execution_eligibility.supports_exact_target() {
-            return Err(YarnError::ExactTargetUnsupported(
-                selected.plan_item_id.as_str().to_owned(),
-            ));
+    for intent in &plan.intents {
+        match intent {
+            ExecutionCommandIntent::Exact(item) => {
+                commands.push(ManagerExecutionCommand {
+                    items: vec![execution_item(item)],
+                    command: exact_command_for_item(item),
+                });
+            }
+            ExecutionCommandIntent::NativeSelected(_) => {
+                return Err(YarnError::UnsupportedCommandIntent(
+                    "native-selected".to_owned(),
+                ));
+            }
+            ExecutionCommandIntent::NativeGlobal(_) => {
+                return Err(YarnError::UnsupportedCommandIntent(
+                    "native-global".to_owned(),
+                ));
+            }
         }
-        commands.push(ManagerExecutionCommand {
-            items: vec![execution_item(selected.plan_item_id.clone(), candidate)],
-            command: exact_command(candidate),
-        });
     }
     Ok(commands)
 }
 
-fn execution_item(
-    plan_item_id: upnow_domain::PlanItemId,
-    candidate: &UpdateCandidate,
-) -> ManagerExecutionCommandItem {
-    ManagerExecutionCommandItem {
-        plan_item_id,
-        package_name: candidate.package_name.clone(),
-        installed_version: candidate.installed_version.clone(),
-        target_version: candidate.target_version.clone(),
-    }
-}
-
 #[must_use]
 pub fn exact_command(candidate: &UpdateCandidate) -> CommandSpec {
-    let spec = format!(
-        "{}@{}",
-        candidate.package_name.as_str(),
-        candidate.target_version.as_str()
-    );
+    exact_command_parts(&candidate.package_name, &candidate.target_version)
+}
+
+fn exact_command_for_item(item: &ResolvedExecutionItem) -> CommandSpec {
+    exact_command_parts(&item.package_name, &item.target_version)
+}
+
+fn exact_command_parts(package_name: &PackageName, target_version: &VersionText) -> CommandSpec {
+    let spec = format!("{}@{}", package_name.as_str(), target_version.as_str());
     CommandSpec::new("yarn", ["global", "add", &spec]).mutating()
+}
+
+fn execution_item(item: &ResolvedExecutionItem) -> ManagerExecutionCommandItem {
+    ManagerExecutionCommandItem {
+        plan_item_id: item.plan_item_id.clone(),
+        package_name: item.package_name.clone(),
+        installed_version: item.installed_version.clone(),
+        target_version: item.target_version.clone(),
+    }
 }
 
 fn parse_yarn_package_spec(spec: &str) -> Option<(&str, &str)> {
@@ -362,55 +311,6 @@ fn parse_yarn_package_spec(spec: &str) -> Option<(&str, &str)> {
     } else {
         Some((name, version))
     }
-}
-
-fn parse_inspect_object(raw: &str) -> Option<BTreeMap<String, String>> {
-    for line in raw.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let parsed: YarnInfoJsonLine = match serde_json::from_str(trimmed) {
-            Ok(parsed) => parsed,
-            Err(_) => continue,
-        };
-        if let YarnInfoJsonLine::Inspect { data } = parsed {
-            return Some(data);
-        }
-    }
-    None
-}
-
-fn time_map_to_timeline(
-    package: &PackageName,
-    timestamps: BTreeMap<String, String>,
-) -> Result<ReleaseTimeline, YarnError> {
-    if timestamps.is_empty() {
-        return Err(YarnError::EmptyTimeMap {
-            package: package.as_str().to_owned(),
-        });
-    }
-    let mut entries = Vec::new();
-    for (version, timestamp) in timestamps {
-        if version == "created" || version == "modified" {
-            continue;
-        }
-        let parsed =
-            DateTime::parse_from_rfc3339(&timestamp).map_err(|_| YarnError::InvalidTimestamp {
-                version: version.clone(),
-                value: timestamp.clone(),
-            })?;
-        entries.push(ReleaseEntry::new(
-            VersionText::new(version)?,
-            ReleaseTimestamp::new(system_time_from_datetime(parsed)),
-        ));
-    }
-    if entries.is_empty() {
-        return Err(YarnError::EmptyTimeMap {
-            package: package.as_str().to_owned(),
-        });
-    }
-    Ok(ReleaseTimeline::new(entries))
 }
 
 fn yarn_major_version(process: &ProcessRunner) -> Result<u64, YarnError> {
@@ -459,51 +359,18 @@ fn installed_tool(package: YarnInstalledPackage) -> Result<InstalledTool, YarnEr
     ))
 }
 
-fn release_lookup(
-    process: &ProcessRunner,
-    package: &PackageName,
-) -> Result<ReleaseLookupResult, YarnError> {
-    match process.run(
-        &CommandSpec::new("yarn", ["info", package.as_str(), "time", "--json"]),
-        &CommandCheck::Success,
-    ) {
-        Ok(output) => match output.stdout() {
-            Ok(stdout) => match parse_time_jsonl(package, stdout) {
-                Ok(timeline) => Ok(ReleaseLookupResult::Known(timeline)),
-                Err(YarnError::EmptyTimeMap { .. }) => Ok(ReleaseLookupResult::MissingMetadata),
-                Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
-                    err.to_string(),
-                ))),
-            },
-            Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
-                err.to_string(),
-            ))),
-        },
-        Err(err) if err.is_interruption() => Err(YarnError::from(err)),
-        Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
-            err.to_string(),
-        ))),
-    }
+fn update_discovery(tool: InstalledTool) -> Result<UpdateDiscovery, YarnError> {
+    Ok(UpdateDiscovery {
+        release_lookup: release_lookup_request(&tool.package_name),
+        installed: tool,
+        version_scheme: VersionScheme::SemVer,
+    })
 }
 
-fn newest_semver(timeline: &ReleaseTimeline) -> Option<VersionText> {
-    timeline
-        .versions
-        .iter()
-        .filter_map(|entry| {
-            Version::parse(entry.version.as_str())
-                .ok()
-                .map(|version| (version, entry.version.clone()))
-        })
-        .max_by(|(left, _), (right, _)| left.cmp(right))
-        .map(|(_, version)| version)
-}
-
-fn executable_candidate(item: &PlanItem, forced: bool) -> Result<&UpdateCandidate, YarnError> {
-    match item {
-        PlanItem::Update { candidate, .. } => Ok(candidate),
-        PlanItem::Delayed { candidate, .. } if forced => Ok(candidate),
-        _ => Err(YarnError::ItemNotExecutable(item.id().as_str().to_owned())),
+fn release_lookup_request(package: &PackageName) -> ReleaseLookupRequest {
+    ReleaseLookupRequest::NpmRegistryTime {
+        source: NpmRegistryTimeSource::YarnClassic,
+        package: package.clone(),
     }
 }
 
@@ -511,14 +378,10 @@ fn adapter_error(err: &YarnError) -> ManagerAdapterError {
     let detail = err.to_string();
     let kind = match err {
         &YarnError::Interrupted(_) => ManagerAdapterErrorKind::Interrupted,
-        &YarnError::Json(_)
-        | &YarnError::Domain(_)
-        | &YarnError::InvalidMajorVersion(_)
-        | &YarnError::InvalidTimestamp { .. }
-        | &YarnError::EmptyTimeMap { .. } => ManagerAdapterErrorKind::Parse,
-        &YarnError::UnknownPlanItem(_)
-        | &YarnError::ItemNotExecutable(_)
-        | &YarnError::ExactTargetUnsupported(_) => ManagerAdapterErrorKind::CommandConstruction,
+        &YarnError::Json(_) | &YarnError::Domain(_) | &YarnError::InvalidMajorVersion(_) => {
+            ManagerAdapterErrorKind::Parse
+        }
+        &YarnError::UnsupportedCommandIntent(_) => ManagerAdapterErrorKind::CommandConstruction,
         &YarnError::Infra(_) | &YarnError::UnsupportedMajorVersion(_) => {
             ManagerAdapterErrorKind::Infra
         }
@@ -527,14 +390,5 @@ fn adapter_error(err: &YarnError) -> ManagerAdapterError {
         manager_id: MANAGER_ID.to_owned(),
         kind,
         detail,
-    }
-}
-
-fn system_time_from_datetime(datetime: DateTime<chrono::FixedOffset>) -> SystemTime {
-    let timestamp = datetime.timestamp();
-    if timestamp >= 0 {
-        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(timestamp.unsigned_abs())
-    } else {
-        SystemTime::UNIX_EPOCH - std::time::Duration::from_secs(timestamp.unsigned_abs())
     }
 }

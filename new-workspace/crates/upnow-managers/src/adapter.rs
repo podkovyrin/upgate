@@ -2,10 +2,13 @@ use std::fmt::{self, Display};
 use std::time::Duration;
 
 use upnow_domain::{
-    InstalledTool, ManagerId, PackageName, PlanItemId, PlanSelection, ReleaseLookupResult,
-    UnsupportedReason, UpdatePlan, UpdateSeed, VersionPolicy, VersionText,
+    InstalledTool, ManagerId, PackageName, PlanItemId, UnsupportedReason, VersionPolicy,
+    VersionScheme, VersionText,
 };
+use upnow_execution::ResolvedExecutionPlan;
 use upnow_infra::{CommandSpec, ProcessRunner};
+
+use crate::npm_family_release::ReleaseLookupRequest;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManagerCapabilities {
@@ -49,6 +52,13 @@ pub struct ManagerExecutionCommandItem {
 pub struct ManagerExecutionCommand {
     pub items: Vec<ManagerExecutionCommandItem>,
     pub command: CommandSpec,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateDiscovery {
+    pub installed: InstalledTool,
+    pub version_scheme: VersionScheme,
+    pub release_lookup: ReleaseLookupRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,23 +139,22 @@ pub trait ManagerAdapter {
         process: &ProcessRunner,
     ) -> Result<Vec<InstalledTool>, ManagerAdapterError>;
 
-    fn release_lookup(
+    fn release_lookup_request(
         &self,
         process: &ProcessRunner,
         package: &PackageName,
-    ) -> Result<ReleaseLookupResult, ManagerAdapterError>;
+    ) -> Result<ReleaseLookupRequest, ManagerAdapterError>;
 
-    fn update_seeds(
+    fn update_discoveries(
         &self,
         process: &ProcessRunner,
         version_policy: VersionPolicy,
-    ) -> Result<Vec<UpdateSeed>, ManagerAdapterError>;
+    ) -> Result<Vec<UpdateDiscovery>, ManagerAdapterError>;
 
-    fn commands_for_selection(
+    fn commands_for_execution_plan(
         &self,
         process: &ProcessRunner,
-        plan: &UpdatePlan,
-        selection: &PlanSelection,
+        plan: &ResolvedExecutionPlan,
         settings: CommandBuildSettings,
     ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError>;
 

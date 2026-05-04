@@ -1356,11 +1356,12 @@ name = "upnow-managers"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "semver",
  "serde",
  "serde_json",
  "upnow-domain",
+ "upnow-execution",
  "upnow-infra",
+ "upnow-release",
 ]
 
 [[package]]
@@ -1384,6 +1385,7 @@ dependencies = [
 name = "upnow-release"
 version = "0.1.0"
 dependencies = [
+ "semver",
  "upnow-domain",
 ]
 

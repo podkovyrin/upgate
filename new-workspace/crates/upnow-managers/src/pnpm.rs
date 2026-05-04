@@ -1,22 +1,19 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Display};
-use std::time::SystemTime;
 
-use chrono::DateTime;
-use semver::Version;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, InstalledTool, ManagerId, ManagerMetadata, PackageName, ReleaseEntry,
-    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName,
-    UpdateCandidate, UpdatePlan, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    DomainError, InstalledTool, ManagerId, ManagerMetadata, PackageName, ToolId, ToolName,
+    UpdateCandidate, VersionPolicy, VersionScheme, VersionText,
 };
-use upnow_domain::{PlanItem, PlanSelection};
+use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
 use upnow_infra::{CommandCheck, CommandSpec, InfraError, ProcessRunner};
 
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerExecutionCommand, ManagerExecutionCommandItem,
+    ManagerCapabilities, ManagerExecutionCommand, ManagerExecutionCommandItem, UpdateDiscovery,
 };
+use crate::npm_family_release::{NpmRegistryTimeSource, ReleaseLookupRequest};
 
 pub const MANAGER_ID: &str = "pnpm";
 
@@ -26,11 +23,7 @@ pub enum PnpmError {
     Interrupted(String),
     Json(String),
     Domain(String),
-    UnknownPlanItem(String),
-    ItemNotExecutable(String),
-    ExactTargetUnsupported(String),
-    InvalidTimestamp { version: String, value: String },
-    EmptyTimeMap { package: String },
+    UnsupportedCommandIntent(String),
 }
 
 impl Display for PnpmError {
@@ -40,22 +33,11 @@ impl Display for PnpmError {
             | Self::Interrupted(detail)
             | Self::Json(detail)
             | Self::Domain(detail) => formatter.write_str(detail),
-            Self::UnknownPlanItem(id) => write!(formatter, "unknown selected plan item `{id}`"),
-            Self::ItemNotExecutable(id) => write!(formatter, "plan item `{id}` is not executable"),
-            Self::ExactTargetUnsupported(id) => {
+            Self::UnsupportedCommandIntent(kind) => {
                 write!(
                     formatter,
-                    "plan item `{id}` does not support exact target execution"
+                    "unsupported pnpm execution command intent `{kind}`"
                 )
-            }
-            Self::InvalidTimestamp { version, value } => {
-                write!(
-                    formatter,
-                    "invalid timestamp `{value}` for version `{version}`"
-                )
-            }
-            Self::EmptyTimeMap { package } => {
-                write!(formatter, "pnpm view time JSON is empty for {package}")
             }
         }
     }
@@ -73,16 +55,16 @@ impl From<InfraError> for PnpmError {
     }
 }
 
+impl From<DomainError> for PnpmError {
+    fn from(value: DomainError) -> Self {
+        Self::Domain(value.to_string())
+    }
+}
+
 impl PnpmError {
     #[must_use]
     pub const fn is_interruption(&self) -> bool {
         matches!(self, Self::Interrupted(_))
-    }
-}
-
-impl From<DomainError> for PnpmError {
-    fn from(value: DomainError) -> Self {
-        Self::Domain(value.to_string())
     }
 }
 
@@ -121,31 +103,30 @@ impl ManagerAdapter for PnpmManager {
         installed_global(process).map_err(adapter_error)
     }
 
-    fn release_lookup(
+    fn release_lookup_request(
         &self,
-        process: &ProcessRunner,
+        _process: &ProcessRunner,
         package: &PackageName,
-    ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
-        release_lookup(process, package).map_err(adapter_error)
+    ) -> Result<ReleaseLookupRequest, ManagerAdapterError> {
+        Ok(release_lookup_request(package))
     }
 
-    fn update_seeds(
+    fn update_discoveries(
         &self,
         process: &ProcessRunner,
         version_policy: VersionPolicy,
-    ) -> Result<Vec<UpdateSeed>, ManagerAdapterError> {
+    ) -> Result<Vec<UpdateDiscovery>, ManagerAdapterError> {
         self.validate_version_policy(version_policy)?;
-        update_seeds(process, version_policy).map_err(adapter_error)
+        update_discoveries(process, version_policy).map_err(adapter_error)
     }
 
-    fn commands_for_selection(
+    fn commands_for_execution_plan(
         &self,
         _process: &ProcessRunner,
-        plan: &UpdatePlan,
-        selection: &PlanSelection,
+        plan: &ResolvedExecutionPlan,
         _settings: CommandBuildSettings,
     ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError> {
-        exact_commands_for_selection(plan, selection).map_err(adapter_error)
+        exact_commands_for_execution_plan(plan).map_err(adapter_error)
     }
 }
 
@@ -164,8 +145,6 @@ struct PnpmDependency {
 struct PnpmOutdatedMapEntry {
     current: Option<String>,
 }
-
-type PnpmTimeMap = BTreeMap<String, String>;
 
 /// Parses `pnpm list -g --depth 0 --json`.
 ///
@@ -221,43 +200,6 @@ pub fn is_no_importer_manifest_error(text: &str) -> bool {
     text.contains("ERR_PNPM_NO_IMPORTER_MANIFEST_FOUND")
 }
 
-/// Parses `pnpm view <name> time --json`.
-///
-/// # Errors
-///
-/// Returns an error when JSON or timestamps are invalid.
-pub fn parse_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeline, PnpmError> {
-    let timestamps: PnpmTimeMap =
-        serde_json::from_str(raw).map_err(|err| PnpmError::Json(err.to_string()))?;
-    if timestamps.is_empty() {
-        return Err(PnpmError::EmptyTimeMap {
-            package: package.as_str().to_owned(),
-        });
-    }
-
-    let mut entries = Vec::new();
-    for (version, timestamp) in timestamps {
-        if version == "created" || version == "modified" {
-            continue;
-        }
-        let parsed =
-            DateTime::parse_from_rfc3339(&timestamp).map_err(|_| PnpmError::InvalidTimestamp {
-                version: version.clone(),
-                value: timestamp.clone(),
-            })?;
-        entries.push(ReleaseEntry::new(
-            VersionText::new(version)?,
-            ReleaseTimestamp::new(system_time_from_datetime(parsed)),
-        ));
-    }
-    if entries.is_empty() {
-        return Err(PnpmError::EmptyTimeMap {
-            package: package.as_str().to_owned(),
-        });
-    }
-    Ok(ReleaseTimeline::new(entries))
-}
-
 /// Reads installed pnpm global packages.
 ///
 /// # Errors
@@ -310,15 +252,15 @@ pub fn outdated_global(process: &ProcessRunner) -> Result<Vec<PnpmOutdatedPackag
     parse_outdated_json(stdout)
 }
 
-/// Creates update seeds for pnpm planning.
+/// Discovers pnpm packages that need release metadata before planning.
 ///
 /// # Errors
 ///
 /// Returns an error when installed package discovery fails.
-pub fn update_seeds(
+pub fn update_discoveries(
     process: &ProcessRunner,
     version_policy: VersionPolicy,
-) -> Result<Vec<UpdateSeed>, PnpmError> {
+) -> Result<Vec<UpdateDiscovery>, PnpmError> {
     let installed = match version_policy {
         VersionPolicy::None => outdated_global(process)?
             .into_iter()
@@ -326,76 +268,62 @@ pub fn update_seeds(
             .collect::<Result<Vec<_>, _>>()?,
         VersionPolicy::Stable | VersionPolicy::SameTrack => installed_global(process)?,
     };
-    let mut seeds = Vec::new();
-    for tool in installed {
-        let lookup = release_lookup(process, &tool.package_name)?;
-        let discovered_target = match &lookup {
-            ReleaseLookupResult::Known(timeline) => {
-                newest_semver(timeline).unwrap_or_else(|| tool.installed_version.clone())
-            }
-            ReleaseLookupResult::MissingMetadata | ReleaseLookupResult::LookupFailed(_) => {
-                tool.installed_version.clone()
-            }
-        };
-        seeds.push(UpdateSeed::new(
-            tool,
-            discovered_target,
-            VersionScheme::SemVer,
-            lookup,
-        ));
-    }
-    Ok(seeds)
+    installed.into_iter().map(update_discovery).collect()
 }
 
-/// Creates exact pnpm commands for a typed selection.
+/// Creates exact pnpm commands for a resolved execution plan.
 ///
 /// # Errors
 ///
-/// Returns an error when a selected item is unknown, not executable, or cannot
-/// be executed as an exact target.
-pub fn exact_commands_for_selection(
-    plan: &UpdatePlan,
-    selection: &PlanSelection,
+/// Returns an error when the resolved execution mode is not supported by pnpm.
+pub fn exact_commands_for_execution_plan(
+    plan: &ResolvedExecutionPlan,
 ) -> Result<Vec<ManagerExecutionCommand>, PnpmError> {
     let mut commands = Vec::new();
-    for selected in &selection.selected_items {
-        let item = plan
-            .item(&selected.plan_item_id)
-            .ok_or_else(|| PnpmError::UnknownPlanItem(selected.plan_item_id.as_str().to_owned()))?;
-        let candidate = executable_candidate(item, selected.forced)?;
-        if !candidate.execution_eligibility.supports_exact_target() {
-            return Err(PnpmError::ExactTargetUnsupported(
-                selected.plan_item_id.as_str().to_owned(),
-            ));
+    for intent in &plan.intents {
+        match intent {
+            ExecutionCommandIntent::Exact(item) => {
+                commands.push(ManagerExecutionCommand {
+                    items: vec![execution_item(item)],
+                    command: exact_command_for_item(item),
+                });
+            }
+            ExecutionCommandIntent::NativeSelected(_) => {
+                return Err(PnpmError::UnsupportedCommandIntent(
+                    "native-selected".to_owned(),
+                ));
+            }
+            ExecutionCommandIntent::NativeGlobal(_) => {
+                return Err(PnpmError::UnsupportedCommandIntent(
+                    "native-global".to_owned(),
+                ));
+            }
         }
-        commands.push(ManagerExecutionCommand {
-            items: vec![execution_item(selected.plan_item_id.clone(), candidate)],
-            command: exact_command(candidate),
-        });
     }
     Ok(commands)
 }
 
-fn execution_item(
-    plan_item_id: upnow_domain::PlanItemId,
-    candidate: &UpdateCandidate,
-) -> ManagerExecutionCommandItem {
-    ManagerExecutionCommandItem {
-        plan_item_id,
-        package_name: candidate.package_name.clone(),
-        installed_version: candidate.installed_version.clone(),
-        target_version: candidate.target_version.clone(),
-    }
-}
-
 #[must_use]
 pub fn exact_command(candidate: &UpdateCandidate) -> CommandSpec {
-    let spec = format!(
-        "{}@{}",
-        candidate.package_name.as_str(),
-        candidate.target_version.as_str()
-    );
+    exact_command_parts(&candidate.package_name, &candidate.target_version)
+}
+
+fn exact_command_for_item(item: &ResolvedExecutionItem) -> CommandSpec {
+    exact_command_parts(&item.package_name, &item.target_version)
+}
+
+fn exact_command_parts(package_name: &PackageName, target_version: &VersionText) -> CommandSpec {
+    let spec = format!("{}@{}", package_name.as_str(), target_version.as_str());
     CommandSpec::new("pnpm", ["add", "-g", &spec]).mutating()
+}
+
+fn execution_item(item: &ResolvedExecutionItem) -> ManagerExecutionCommandItem {
+    ManagerExecutionCommandItem {
+        plan_item_id: item.plan_item_id.clone(),
+        package_name: item.package_name.clone(),
+        installed_version: item.installed_version.clone(),
+        target_version: item.target_version.clone(),
+    }
 }
 
 fn manager_id() -> ManagerId {
@@ -424,78 +352,31 @@ fn installed_tool_from_outdated(package: PnpmOutdatedPackage) -> Result<Installe
     ))
 }
 
-fn release_lookup(
-    process: &ProcessRunner,
-    package: &PackageName,
-) -> Result<ReleaseLookupResult, PnpmError> {
-    match process.run(
-        &CommandSpec::new("pnpm", ["view", package.as_str(), "time", "--json"]),
-        &CommandCheck::Success,
-    ) {
-        Ok(output) => match output.stdout() {
-            Ok(stdout) => match parse_time_json(package, stdout) {
-                Ok(timeline) => Ok(ReleaseLookupResult::Known(timeline)),
-                Err(PnpmError::EmptyTimeMap { .. }) => Ok(ReleaseLookupResult::MissingMetadata),
-                Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
-                    err.to_string(),
-                ))),
-            },
-            Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
-                err.to_string(),
-            ))),
-        },
-        Err(err) if err.is_interruption() => Err(PnpmError::from(err)),
-        Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
-            err.to_string(),
-        ))),
-    }
+fn update_discovery(tool: InstalledTool) -> Result<UpdateDiscovery, PnpmError> {
+    Ok(UpdateDiscovery {
+        release_lookup: release_lookup_request(&tool.package_name),
+        installed: tool,
+        version_scheme: VersionScheme::SemVer,
+    })
 }
 
-fn newest_semver(timeline: &ReleaseTimeline) -> Option<VersionText> {
-    timeline
-        .versions
-        .iter()
-        .filter_map(|entry| {
-            Version::parse(entry.version.as_str())
-                .ok()
-                .map(|version| (version, entry.version.clone()))
-        })
-        .max_by(|(left, _), (right, _)| left.cmp(right))
-        .map(|(_, version)| version)
-}
-
-fn executable_candidate(item: &PlanItem, forced: bool) -> Result<&UpdateCandidate, PnpmError> {
-    match item {
-        PlanItem::Update { candidate, .. } => Ok(candidate),
-        PlanItem::Delayed { candidate, .. } if forced => Ok(candidate),
-        _ => Err(PnpmError::ItemNotExecutable(item.id().as_str().to_owned())),
+fn release_lookup_request(package: &PackageName) -> ReleaseLookupRequest {
+    ReleaseLookupRequest::NpmRegistryTime {
+        source: NpmRegistryTimeSource::Pnpm,
+        package: package.clone(),
     }
 }
 
 fn adapter_error(err: PnpmError) -> ManagerAdapterError {
     let kind = match &err {
         PnpmError::Interrupted(_) => ManagerAdapterErrorKind::Interrupted,
-        PnpmError::Json(_)
-        | PnpmError::Domain(_)
-        | PnpmError::InvalidTimestamp { .. }
-        | PnpmError::EmptyTimeMap { .. } => ManagerAdapterErrorKind::Parse,
-        PnpmError::UnknownPlanItem(_)
-        | PnpmError::ItemNotExecutable(_)
-        | PnpmError::ExactTargetUnsupported(_) => ManagerAdapterErrorKind::CommandConstruction,
+        PnpmError::Json(_) | PnpmError::Domain(_) => ManagerAdapterErrorKind::Parse,
+        PnpmError::UnsupportedCommandIntent(_) => ManagerAdapterErrorKind::CommandConstruction,
         PnpmError::Infra(_) => ManagerAdapterErrorKind::Infra,
     };
     ManagerAdapterError::Manager {
         manager_id: MANAGER_ID.to_owned(),
         kind,
         detail: err.to_string(),
-    }
-}
-
-fn system_time_from_datetime(datetime: DateTime<chrono::FixedOffset>) -> SystemTime {
-    let timestamp = datetime.timestamp();
-    if timestamp >= 0 {
-        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(timestamp.unsigned_abs())
-    } else {
-        SystemTime::UNIX_EPOCH - std::time::Duration::from_secs(timestamp.unsigned_abs())
     }
 }
