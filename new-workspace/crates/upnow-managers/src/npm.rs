@@ -6,12 +6,11 @@ use chrono::DateTime;
 use semver::Version;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, InstalledTool, ManagerId, ManagerMetadata, PackageName, ReleaseEntry,
-    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ScanIssue,
-    ScanItem, ScanReport, ToolId, ToolName, UpdateCandidate, UpdatePlan, UpdateSeed, VersionPolicy,
-    VersionScheme, VersionText,
+    DomainError, InstalledTool, ManagerId, ManagerMetadata, PackageName, PlanItem, PlanSelection,
+    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
+    ScanIssue, ScanItem, ScanReport, ToolId, ToolName, UpdateCandidate, UpdatePlan, UpdateSeed,
+    VersionPolicy, VersionScheme, VersionText,
 };
-use upnow_domain::{PlanItem, PlanItemId, PlanSelection};
 use upnow_infra::{CommandCheck, CommandSpec, InfraError, ProcessRunner};
 
 use crate::adapter::{
@@ -19,10 +18,10 @@ use crate::adapter::{
     ManagerCapabilities, ManagerExecutionCommand,
 };
 
-pub const MANAGER_ID: &str = "pnpm";
+pub const MANAGER_ID: &str = "npm";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PnpmError {
+pub enum NpmError {
     Infra(String),
     Interrupted(String),
     Json(String),
@@ -34,7 +33,7 @@ pub enum PnpmError {
     EmptyTimeMap { package: String },
 }
 
-impl Display for PnpmError {
+impl Display for NpmError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Infra(detail)
@@ -56,15 +55,15 @@ impl Display for PnpmError {
                 )
             }
             Self::EmptyTimeMap { package } => {
-                write!(formatter, "pnpm view time JSON is empty for {package}")
+                write!(formatter, "npm view time JSON is empty for {package}")
             }
         }
     }
 }
 
-impl std::error::Error for PnpmError {}
+impl std::error::Error for NpmError {}
 
-impl From<InfraError> for PnpmError {
+impl From<InfraError> for NpmError {
     fn from(value: InfraError) -> Self {
         if value.is_interruption() {
             Self::Interrupted(value.to_string())
@@ -74,50 +73,59 @@ impl From<InfraError> for PnpmError {
     }
 }
 
-impl PnpmError {
+impl From<DomainError> for NpmError {
+    fn from(value: DomainError) -> Self {
+        Self::Domain(value.to_string())
+    }
+}
+
+impl NpmError {
     #[must_use]
     pub const fn is_interruption(&self) -> bool {
         matches!(self, Self::Interrupted(_))
     }
 }
 
-impl From<DomainError> for PnpmError {
-    fn from(value: DomainError) -> Self {
-        Self::Domain(value.to_string())
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PnpmInstalledPackage {
+pub struct NpmInstalledPackage {
     pub name: PackageName,
     pub version: VersionText,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PnpmOutdatedPackage {
+pub struct NpmOutdatedPackage {
     pub name: PackageName,
     pub current: VersionText,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PnpmExecutionCommand {
-    pub plan_item_id: PlanItemId,
-    pub package_name: PackageName,
-    pub installed_version: VersionText,
-    pub target_version: VersionText,
-    pub command: CommandSpec,
+#[derive(Debug, Deserialize)]
+struct NpmListJson {
+    #[serde(default)]
+    dependencies: BTreeMap<String, NpmDependency>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PnpmManager;
+#[derive(Debug, Deserialize)]
+struct NpmDependency {
+    version: Option<String>,
+}
 
-impl ManagerAdapter for PnpmManager {
+#[derive(Debug, Deserialize)]
+struct NpmOutdatedMapEntry {
+    current: String,
+}
+
+type NpmTimeMap = BTreeMap<String, String>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NpmManager;
+
+impl ManagerAdapter for NpmManager {
     fn id(&self) -> &'static str {
         MANAGER_ID
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
-        ManagerCapabilities::new(true, false)
+        ManagerCapabilities::new(true, true)
     }
 
     fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
@@ -137,65 +145,27 @@ impl ManagerAdapter for PnpmManager {
         &self,
         plan: &UpdatePlan,
         selection: &PlanSelection,
-        _settings: CommandBuildSettings,
+        settings: CommandBuildSettings,
     ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError> {
-        exact_commands_for_selection(plan, selection)
-            .map(|commands| commands.into_iter().map(Into::into).collect())
-            .map_err(adapter_error)
+        commands_for_selection(plan, selection, settings).map_err(adapter_error)
     }
 }
 
-impl From<PnpmExecutionCommand> for ManagerExecutionCommand {
-    fn from(value: PnpmExecutionCommand) -> Self {
-        Self {
-            plan_item_id: value.plan_item_id,
-            package_name: value.package_name,
-            installed_version: value.installed_version,
-            target_version: value.target_version,
-            command: value.command,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct PnpmListItem {
-    #[serde(default)]
-    dependencies: BTreeMap<String, PnpmDependency>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PnpmDependency {
-    version: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PnpmOutdatedMapEntry {
-    current: Option<String>,
-}
-
-type PnpmTimeMap = BTreeMap<String, String>;
-
-/// Parses `pnpm list -g --depth 0 --json`.
+/// Parses `npm ls -g --depth=0 --json`.
 ///
 /// # Errors
 ///
 /// Returns an error when JSON is malformed or a package/version is blank.
-pub fn parse_installed_json(raw: &str) -> Result<Vec<PnpmInstalledPackage>, PnpmError> {
-    let items: Vec<PnpmListItem> =
-        serde_json::from_str(raw).map_err(|err| PnpmError::Json(err.to_string()))?;
-    let mut packages = BTreeMap::new();
-    for item in items {
-        for (name, dependency) in item.dependencies {
-            if let Some(version) = dependency.version {
-                packages.insert(name, version);
-            }
-        }
-    }
+pub fn parse_installed_json(raw: &str) -> Result<Vec<NpmInstalledPackage>, NpmError> {
+    let parsed: NpmListJson =
+        serde_json::from_str(raw).map_err(|err| NpmError::Json(err.to_string()))?;
 
-    packages
+    parsed
+        .dependencies
         .into_iter()
+        .filter_map(|(name, dependency)| dependency.version.map(|version| (name, version)))
         .map(|(name, version)| {
-            Ok(PnpmInstalledPackage {
+            Ok(NpmInstalledPackage {
                 name: PackageName::new(name)?,
                 version: VersionText::new(version)?,
             })
@@ -203,42 +173,36 @@ pub fn parse_installed_json(raw: &str) -> Result<Vec<PnpmInstalledPackage>, Pnpm
         .collect()
 }
 
-/// Parses `pnpm outdated -g --json`.
+/// Parses `npm outdated -g --json`.
 ///
 /// # Errors
 ///
 /// Returns an error when JSON is malformed or a package/version is blank.
-pub fn parse_outdated_json(raw: &str) -> Result<Vec<PnpmOutdatedPackage>, PnpmError> {
-    let entries: BTreeMap<String, PnpmOutdatedMapEntry> =
-        serde_json::from_str(raw).map_err(|err| PnpmError::Json(err.to_string()))?;
+pub fn parse_outdated_json(raw: &str) -> Result<Vec<NpmOutdatedPackage>, NpmError> {
+    let entries: BTreeMap<String, NpmOutdatedMapEntry> =
+        serde_json::from_str(raw).map_err(|err| NpmError::Json(err.to_string()))?;
 
     entries
         .into_iter()
-        .filter_map(|(name, entry)| entry.current.map(|current| (name, current)))
-        .map(|(name, current)| {
-            Ok(PnpmOutdatedPackage {
+        .map(|(name, entry)| {
+            Ok(NpmOutdatedPackage {
                 name: PackageName::new(name)?,
-                current: VersionText::new(current)?,
+                current: VersionText::new(entry.current)?,
             })
         })
         .collect()
 }
 
-#[must_use]
-pub fn is_no_importer_manifest_error(text: &str) -> bool {
-    text.contains("ERR_PNPM_NO_IMPORTER_MANIFEST_FOUND")
-}
-
-/// Parses `pnpm view <name> time --json`.
+/// Parses `npm view <name> time --json`.
 ///
 /// # Errors
 ///
 /// Returns an error when JSON or timestamps are invalid.
-pub fn parse_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeline, PnpmError> {
-    let timestamps: PnpmTimeMap =
-        serde_json::from_str(raw).map_err(|err| PnpmError::Json(err.to_string()))?;
+pub fn parse_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeline, NpmError> {
+    let timestamps: NpmTimeMap =
+        serde_json::from_str(raw).map_err(|err| NpmError::Json(err.to_string()))?;
     if timestamps.is_empty() {
-        return Err(PnpmError::EmptyTimeMap {
+        return Err(NpmError::EmptyTimeMap {
             package: package.as_str().to_owned(),
         });
     }
@@ -249,7 +213,7 @@ pub fn parse_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeli
             continue;
         }
         let parsed =
-            DateTime::parse_from_rfc3339(&timestamp).map_err(|_| PnpmError::InvalidTimestamp {
+            DateTime::parse_from_rfc3339(&timestamp).map_err(|_| NpmError::InvalidTimestamp {
                 version: version.clone(),
                 value: timestamp.clone(),
             })?;
@@ -259,21 +223,21 @@ pub fn parse_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeli
         ));
     }
     if entries.is_empty() {
-        return Err(PnpmError::EmptyTimeMap {
+        return Err(NpmError::EmptyTimeMap {
             package: package.as_str().to_owned(),
         });
     }
     Ok(ReleaseTimeline::new(entries))
 }
 
-/// Reads installed pnpm global packages.
+/// Reads installed npm global packages.
 ///
 /// # Errors
 ///
 /// Returns an error when the command fails or output cannot be parsed.
-pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, PnpmError> {
+pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, NpmError> {
     let output = process.run(
-        &CommandSpec::new("pnpm", ["list", "-g", "--depth", "0", "--json"]),
+        &CommandSpec::new("npm", ["ls", "-g", "--depth=0", "--json"]),
         &CommandCheck::Success,
     )?;
     parse_installed_json(output.stdout()?)?
@@ -282,45 +246,26 @@ pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, P
         .collect()
 }
 
-/// Reads pnpm global outdated package names and current versions.
+/// Reads npm global outdated package names and current versions.
 ///
 /// # Errors
 ///
 /// Returns an error when the command fails unexpectedly or output cannot be parsed.
-pub fn outdated_global(process: &ProcessRunner) -> Result<Vec<PnpmOutdatedPackage>, PnpmError> {
+pub fn outdated_global(process: &ProcessRunner) -> Result<Vec<NpmOutdatedPackage>, NpmError> {
     let output = process.run(
-        &CommandSpec::new("pnpm", ["outdated", "-g", "--json"]),
-        &CommandCheck::IgnoreStatus,
+        &CommandSpec::new("npm", ["outdated", "-g", "--json"]),
+        &CommandCheck::Allow(vec![1]),
     )?;
     let stdout = output.stdout()?;
-    let stderr = output.stderr().unwrap_or_default();
-    if is_no_importer_manifest_error(stdout) || is_no_importer_manifest_error(stderr) {
-        return Ok(Vec::new());
-    }
-    if !output.status().success() && output.status().code() != Some(1) {
-        if output.status().code().is_none() {
-            return Err(PnpmError::Interrupted(
-                "pnpm outdated -g --json failed (exit signal)".to_owned(),
-            ));
-        }
-        let detail = if stderr.trim().is_empty() {
-            stdout.to_owned()
-        } else {
-            stderr.to_owned()
-        };
-        return Err(PnpmError::Infra(format!(
-            "pnpm outdated -g --json failed: {detail}"
-        )));
-    }
     if stdout.trim().is_empty() {
         return Ok(Vec::new());
     }
     parse_outdated_json(stdout)
 }
 
-/// Builds a scan report for installed global pnpm packages.
+/// Builds a scan report for installed global npm packages.
 #[must_use]
-pub fn scan(process: &ProcessRunner) -> Result<ScanReport, PnpmError> {
+pub fn scan(process: &ProcessRunner) -> Result<ScanReport, NpmError> {
     let manager_id = manager_id();
     match installed_global(process) {
         Ok(installed) => Ok(ScanReport::new(
@@ -344,7 +289,7 @@ pub fn scan(process: &ProcessRunner) -> Result<ScanReport, PnpmError> {
 /// # Errors
 ///
 /// Returns an error when discovery or release lookup is interrupted.
-pub fn verbose_scan(process: &ProcessRunner, now: SystemTime) -> Result<ScanReport, PnpmError> {
+pub fn verbose_scan(process: &ProcessRunner, now: SystemTime) -> Result<ScanReport, NpmError> {
     let manager_id = manager_id();
     match installed_global(process) {
         Ok(installed) => {
@@ -382,7 +327,7 @@ pub fn verbose_scan(process: &ProcessRunner, now: SystemTime) -> Result<ScanRepo
     }
 }
 
-/// Creates update seeds for pnpm planning.
+/// Creates update seeds for npm planning.
 ///
 /// # Errors
 ///
@@ -390,7 +335,7 @@ pub fn verbose_scan(process: &ProcessRunner, now: SystemTime) -> Result<ScanRepo
 pub fn update_seeds(
     process: &ProcessRunner,
     version_policy: VersionPolicy,
-) -> Result<Vec<UpdateSeed>, PnpmError> {
+) -> Result<Vec<UpdateSeed>, NpmError> {
     let installed = match version_policy {
         VersionPolicy::None => outdated_global(process)?
             .into_iter()
@@ -419,6 +364,172 @@ pub fn update_seeds(
     Ok(seeds)
 }
 
+/// Creates npm commands for a typed selection.
+///
+/// # Errors
+///
+/// Returns an error when a selected item is unknown, not executable, or cannot
+/// be executed as an exact target when exact execution is required.
+pub fn commands_for_selection(
+    plan: &UpdatePlan,
+    selection: &PlanSelection,
+    settings: CommandBuildSettings,
+) -> Result<Vec<ManagerExecutionCommand>, NpmError> {
+    let mut commands = Vec::new();
+    for selected in &selection.selected_items {
+        let item = plan
+            .item(&selected.plan_item_id)
+            .ok_or_else(|| NpmError::UnknownPlanItem(selected.plan_item_id.as_str().to_owned()))?;
+        let candidate = executable_candidate(item, selected.forced)?;
+        if should_use_native_selected_update(candidate, settings.version_policy, selected.forced) {
+            commands.push(ManagerExecutionCommand {
+                plan_item_id: selected.plan_item_id.clone(),
+                package_name: candidate.package_name.clone(),
+                installed_version: candidate.installed_version.clone(),
+                target_version: candidate.target_version.clone(),
+                command: selected_native_update_command(
+                    candidate,
+                    whole_days(settings.min_release_age),
+                ),
+            });
+            continue;
+        }
+        if !candidate.execution_eligibility.supports_exact_target() {
+            return Err(NpmError::ExactTargetUnsupported(
+                selected.plan_item_id.as_str().to_owned(),
+            ));
+        }
+        commands.push(ManagerExecutionCommand {
+            plan_item_id: selected.plan_item_id.clone(),
+            package_name: candidate.package_name.clone(),
+            installed_version: candidate.installed_version.clone(),
+            target_version: candidate.target_version.clone(),
+            command: exact_command(
+                candidate,
+                whole_days(settings.min_release_age),
+                selected.forced,
+            ),
+        });
+    }
+    Ok(commands)
+}
+
+#[must_use]
+pub fn exact_command(
+    candidate: &UpdateCandidate,
+    min_release_age_days: u64,
+    bypass_min_release_age: bool,
+) -> CommandSpec {
+    let spec = format!(
+        "{}@{}",
+        candidate.package_name.as_str(),
+        candidate.target_version.as_str()
+    );
+    let days = min_release_age_days.to_string();
+    let mut args = vec!["install".to_owned(), "-g".to_owned(), spec];
+    if !bypass_min_release_age {
+        args.push("--min-release-age".to_owned());
+        args.push(days);
+    }
+    CommandSpec::new("npm", args).mutating()
+}
+
+#[must_use]
+pub fn selected_native_update_command(
+    candidate: &UpdateCandidate,
+    min_release_age_days: u64,
+) -> CommandSpec {
+    let days = min_release_age_days.to_string();
+    CommandSpec::new(
+        "npm",
+        [
+            "-g",
+            "update",
+            candidate.package_name.as_str(),
+            "--min-release-age",
+            &days,
+        ],
+    )
+    .mutating()
+}
+
+#[must_use]
+pub fn global_update_command(min_release_age_days: u64) -> CommandSpec {
+    let days = min_release_age_days.to_string();
+    CommandSpec::new("npm", ["-g", "update", "--min-release-age", &days]).mutating()
+}
+
+fn should_use_native_selected_update(
+    candidate: &UpdateCandidate,
+    version_policy: VersionPolicy,
+    forced: bool,
+) -> bool {
+    version_policy == VersionPolicy::None
+        && !forced
+        && matches!(
+            candidate.execution_eligibility,
+            upnow_domain::ExecutionEligibility::NativeOrExact
+                | upnow_domain::ExecutionEligibility::NativeOnly
+        )
+}
+
+fn whole_days(duration: Duration) -> u64 {
+    duration.as_secs() / 86_400
+}
+
+fn manager_id() -> ManagerId {
+    ManagerId::new(MANAGER_ID).expect("static npm manager id should be valid")
+}
+
+fn installed_tool(package: NpmInstalledPackage) -> Result<InstalledTool, NpmError> {
+    Ok(InstalledTool::new(
+        manager_id(),
+        ToolId::new(package.name.as_str().to_owned())?,
+        package.name.clone(),
+        ToolName::new(package.name.as_str().to_owned())?,
+        package.version,
+        ManagerMetadata::empty(),
+    ))
+}
+
+fn installed_tool_from_outdated(package: NpmOutdatedPackage) -> Result<InstalledTool, NpmError> {
+    Ok(InstalledTool::new(
+        manager_id(),
+        ToolId::new(package.name.as_str().to_owned())?,
+        package.name.clone(),
+        ToolName::new(package.name.as_str().to_owned())?,
+        package.current,
+        ManagerMetadata::empty(),
+    ))
+}
+
+fn release_lookup(
+    process: &ProcessRunner,
+    package: &PackageName,
+) -> Result<ReleaseLookupResult, NpmError> {
+    match process.run(
+        &CommandSpec::new("npm", ["view", package.as_str(), "time", "--json"]),
+        &CommandCheck::Success,
+    ) {
+        Ok(output) => match output.stdout() {
+            Ok(stdout) => match parse_time_json(package, stdout) {
+                Ok(timeline) => Ok(ReleaseLookupResult::Known(timeline)),
+                Err(NpmError::EmptyTimeMap { .. }) => Ok(ReleaseLookupResult::MissingMetadata),
+                Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
+                    err.to_string(),
+                ))),
+            },
+            Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
+                err.to_string(),
+            ))),
+        },
+        Err(err) if err.is_interruption() => Err(NpmError::from(err)),
+        Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
+            err.to_string(),
+        ))),
+    }
+}
+
 fn release_age(
     timeline: &ReleaseTimeline,
     version: &VersionText,
@@ -434,101 +545,6 @@ fn release_age(
         })
 }
 
-/// Creates exact pnpm commands for a typed selection.
-///
-/// # Errors
-///
-/// Returns an error when a selected item is unknown, not executable, or cannot
-/// be executed as an exact target.
-pub fn exact_commands_for_selection(
-    plan: &UpdatePlan,
-    selection: &PlanSelection,
-) -> Result<Vec<PnpmExecutionCommand>, PnpmError> {
-    let mut commands = Vec::new();
-    for selected in &selection.selected_items {
-        let item = plan
-            .item(&selected.plan_item_id)
-            .ok_or_else(|| PnpmError::UnknownPlanItem(selected.plan_item_id.as_str().to_owned()))?;
-        let candidate = executable_candidate(item, selected.forced)?;
-        if !candidate.execution_eligibility.supports_exact_target() {
-            return Err(PnpmError::ExactTargetUnsupported(
-                selected.plan_item_id.as_str().to_owned(),
-            ));
-        }
-        commands.push(PnpmExecutionCommand {
-            plan_item_id: selected.plan_item_id.clone(),
-            package_name: candidate.package_name.clone(),
-            installed_version: candidate.installed_version.clone(),
-            target_version: candidate.target_version.clone(),
-            command: exact_command(candidate),
-        });
-    }
-    Ok(commands)
-}
-
-#[must_use]
-pub fn exact_command(candidate: &UpdateCandidate) -> CommandSpec {
-    let spec = format!(
-        "{}@{}",
-        candidate.package_name.as_str(),
-        candidate.target_version.as_str()
-    );
-    CommandSpec::new("pnpm", ["add", "-g", &spec]).mutating()
-}
-
-fn manager_id() -> ManagerId {
-    ManagerId::new(MANAGER_ID).expect("static pnpm manager id should be valid")
-}
-
-fn installed_tool(package: PnpmInstalledPackage) -> Result<InstalledTool, PnpmError> {
-    Ok(InstalledTool::new(
-        manager_id(),
-        ToolId::new(package.name.as_str().to_owned())?,
-        package.name.clone(),
-        ToolName::new(package.name.as_str().to_owned())?,
-        package.version,
-        ManagerMetadata::empty(),
-    ))
-}
-
-fn installed_tool_from_outdated(package: PnpmOutdatedPackage) -> Result<InstalledTool, PnpmError> {
-    Ok(InstalledTool::new(
-        manager_id(),
-        ToolId::new(package.name.as_str().to_owned())?,
-        package.name.clone(),
-        ToolName::new(package.name.as_str().to_owned())?,
-        package.current,
-        ManagerMetadata::empty(),
-    ))
-}
-
-fn release_lookup(
-    process: &ProcessRunner,
-    package: &PackageName,
-) -> Result<ReleaseLookupResult, PnpmError> {
-    match process.run(
-        &CommandSpec::new("pnpm", ["view", package.as_str(), "time", "--json"]),
-        &CommandCheck::Success,
-    ) {
-        Ok(output) => match output.stdout() {
-            Ok(stdout) => match parse_time_json(package, stdout) {
-                Ok(timeline) => Ok(ReleaseLookupResult::Known(timeline)),
-                Err(PnpmError::EmptyTimeMap { .. }) => Ok(ReleaseLookupResult::MissingMetadata),
-                Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
-                    err.to_string(),
-                ))),
-            },
-            Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
-                err.to_string(),
-            ))),
-        },
-        Err(err) if err.is_interruption() => Err(PnpmError::from(err)),
-        Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
-            err.to_string(),
-        ))),
-    }
-}
-
 fn newest_semver(timeline: &ReleaseTimeline) -> Option<VersionText> {
     timeline
         .versions
@@ -542,25 +558,25 @@ fn newest_semver(timeline: &ReleaseTimeline) -> Option<VersionText> {
         .map(|(_, version)| version)
 }
 
-fn executable_candidate(item: &PlanItem, forced: bool) -> Result<&UpdateCandidate, PnpmError> {
+fn executable_candidate(item: &PlanItem, forced: bool) -> Result<&UpdateCandidate, NpmError> {
     match item {
         PlanItem::Update { candidate, .. } => Ok(candidate),
         PlanItem::Delayed { candidate, .. } if forced => Ok(candidate),
-        _ => Err(PnpmError::ItemNotExecutable(item.id().as_str().to_owned())),
+        _ => Err(NpmError::ItemNotExecutable(item.id().as_str().to_owned())),
     }
 }
 
-fn adapter_error(err: PnpmError) -> ManagerAdapterError {
+fn adapter_error(err: NpmError) -> ManagerAdapterError {
     let kind = match &err {
-        PnpmError::Interrupted(_) => ManagerAdapterErrorKind::Interrupted,
-        PnpmError::Json(_)
-        | PnpmError::Domain(_)
-        | PnpmError::InvalidTimestamp { .. }
-        | PnpmError::EmptyTimeMap { .. } => ManagerAdapterErrorKind::Parse,
-        PnpmError::UnknownPlanItem(_)
-        | PnpmError::ItemNotExecutable(_)
-        | PnpmError::ExactTargetUnsupported(_) => ManagerAdapterErrorKind::CommandConstruction,
-        PnpmError::Infra(_) => ManagerAdapterErrorKind::Infra,
+        NpmError::Interrupted(_) => ManagerAdapterErrorKind::Interrupted,
+        NpmError::Json(_)
+        | NpmError::Domain(_)
+        | NpmError::InvalidTimestamp { .. }
+        | NpmError::EmptyTimeMap { .. } => ManagerAdapterErrorKind::Parse,
+        NpmError::UnknownPlanItem(_)
+        | NpmError::ItemNotExecutable(_)
+        | NpmError::ExactTargetUnsupported(_) => ManagerAdapterErrorKind::CommandConstruction,
+        NpmError::Infra(_) => ManagerAdapterErrorKind::Infra,
     };
     ManagerAdapterError::Manager {
         manager_id: MANAGER_ID.to_owned(),
