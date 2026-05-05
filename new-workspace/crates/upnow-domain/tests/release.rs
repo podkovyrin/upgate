@@ -31,3 +31,22 @@ fn release_lookup_result_distinguishes_known_missing_and_failed_metadata() {
         ReleaseLookupResult::LookupFailed(ReleaseLookupError::new("registry timeout"))
     );
 }
+
+#[test]
+fn target_age_evidence_preserves_evidence_source_timestamp() {
+    let published = upnow_domain::TargetAgeEvidence::PublishedAt(
+        upnow_domain::ReleaseTimestamp::new(SystemTime::UNIX_EPOCH),
+    );
+    let manager_native = upnow_domain::TargetAgeEvidence::ManagerNativeTimestamp(
+        upnow_domain::ReleaseTimestamp::new(SystemTime::UNIX_EPOCH),
+    );
+
+    assert_eq!(
+        published.timestamp().as_system_time(),
+        &SystemTime::UNIX_EPOCH
+    );
+    assert_eq!(
+        manager_native.timestamp().as_system_time(),
+        &SystemTime::UNIX_EPOCH
+    );
+}

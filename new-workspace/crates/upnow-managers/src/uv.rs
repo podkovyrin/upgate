@@ -8,9 +8,10 @@ use chrono::DateTime;
 use pep440_rs::Version as Pep440Version;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, InstalledTool, ManagerId, ManagerMetadata, ManagerScanInput, ManagerUpdateInput,
-    PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
-    ReleaseTimestamp, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    DomainError, InstalledTool, ManagerId, ManagerMetadata, ManagerScanInput,
+    ManagerSelectedTarget, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
+    TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
@@ -99,7 +100,7 @@ impl ManagerAdapter for UvManager {
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
-        ManagerCapabilities::new(false, true)
+        ManagerCapabilities::new(false, false).with_resolver_native_update(true)
     }
 
     fn supports_version_policy(&self, policy: VersionPolicy) -> bool {
@@ -139,10 +140,9 @@ impl ManagerAdapter for UvManager {
         env: &Env,
         version_policy: VersionPolicy,
         min_release_age: Duration,
-        now: SystemTime,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
         self.validate_version_policy(version_policy)?;
-        update_inputs(process, http, env, min_release_age, now).map_err(|err| adapter_error(&err))
+        update_inputs(process, http, env, min_release_age).map_err(|err| adapter_error(&err))
     }
 
     fn commands_for_execution_plan(
@@ -229,15 +229,9 @@ pub fn update_inputs(
     http: &HttpClient,
     env: &Env,
     min_release_age: Duration,
-    now: SystemTime,
 ) -> Result<Vec<ManagerUpdateInput>, UvError> {
     let min_age_arg = duration_arg(min_release_age);
     let installed = installed_global(process)?;
-    let latest_versions = match outdated_latest_map(process) {
-        Ok(latest_versions) => latest_versions,
-        Err(err @ UvError::Interrupted(_)) => return Err(err),
-        Err(_) => BTreeMap::new(),
-    };
     let mut inputs = Vec::new();
     for tool in installed {
         let installed = installed_tool(&tool)?;
@@ -252,58 +246,14 @@ pub fn update_inputs(
                 continue;
             }
         };
-        let latest = latest_versions.get(&tool.name).cloned();
-        let (target, lookup) = lookup_uv_plan_release(
-            http,
-            env,
-            &tool.name,
-            &tool.current,
-            &target,
-            latest.as_ref(),
-            min_release_age,
-            now,
-        );
-        inputs.push(ManagerUpdateInput::Seed(UpdateSeed::new(
+        let selected_target = lookup_uv_selected_target(http, env, &tool.name, target);
+        inputs.push(ManagerUpdateInput::Seed(UpdateSeed::manager_selected(
             installed,
-            target,
+            selected_target,
             VersionScheme::Pep440,
-            lookup,
         )));
     }
     Ok(inputs)
-}
-
-/// Reads `uv tool list --outdated` and returns latest versions by tool.
-///
-/// # Errors
-///
-/// Returns an error when the command fails or output cannot be read.
-pub fn outdated_latest_map(
-    process: &ProcessRunner,
-) -> Result<BTreeMap<PackageName, VersionText>, UvError> {
-    let output = process.run(
-        &CommandSpec::new("uv", ["tool", "list", "--outdated"]),
-        &CommandCheck::Success,
-    )?;
-    Ok(output
-        .stdout()?
-        .lines()
-        .filter_map(parse_outdated_tool_line)
-        .collect())
-}
-
-#[must_use]
-pub fn parse_outdated_tool_line(line: &str) -> Option<(PackageName, VersionText)> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() || trimmed.starts_with('-') {
-        return None;
-    }
-
-    let mut parts = trimmed.split_whitespace();
-    let name = PackageName::new(parts.next()?).ok()?;
-    let _current = VersionText::new(strip_v_prefix(parts.next()?)).ok()?;
-    let latest = bracket_value(trimmed, "latest: ")?;
-    Some((name, VersionText::new(latest).ok()?))
 }
 
 /// Looks up `PyPI` release metadata for a uv tool.
@@ -321,82 +271,25 @@ pub fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> Re
     }
 }
 
-fn lookup_uv_plan_release(
+fn lookup_uv_selected_target(
     http: &HttpClient,
     env: &Env,
     package: &PackageName,
-    current: &VersionText,
-    target: &VersionText,
-    latest: Option<&VersionText>,
-    min_release_age: Duration,
-    now: SystemTime,
-) -> (VersionText, ReleaseLookupResult) {
+    target: VersionText,
+) -> ManagerSelectedTarget {
     let lookup = lookup_release(http, env, package);
-    let ReleaseLookupResult::Known(timeline) = lookup else {
-        return (target.clone(), lookup);
+    let target_age = match &lookup {
+        ReleaseLookupResult::Known(timeline) => matching_versions(timeline, &target)
+            .first()
+            .map_or(TargetAgeLookupResult::MissingMetadata, |entry| {
+                TargetAgeLookupResult::Known(TargetAgeEvidence::PublishedAt(
+                    entry.published_at.clone(),
+                ))
+            }),
+        ReleaseLookupResult::MissingMetadata => TargetAgeLookupResult::MissingMetadata,
+        ReleaseLookupResult::LookupFailed(err) => TargetAgeLookupResult::LookupFailed(err.clone()),
     };
-    let selected_version =
-        selected_planning_version(current, target, latest, &timeline, min_release_age, now);
-    let mut versions = matching_versions(&timeline, &selected_version);
-    let delayed_latest = latest.filter(|latest| {
-        target_is_update(current, target)
-            && latest_is_newer_and_too_fresh(target, latest, &timeline, min_release_age, now)
-    });
-    if let Some(latest) = delayed_latest {
-        versions.extend(matching_versions(&timeline, latest));
-    }
-    if versions.is_empty() {
-        (selected_version, ReleaseLookupResult::MissingMetadata)
-    } else {
-        (
-            selected_version,
-            ReleaseLookupResult::Known(ReleaseTimeline::new(versions)),
-        )
-    }
-}
-
-fn selected_planning_version(
-    current: &VersionText,
-    target: &VersionText,
-    latest: Option<&VersionText>,
-    timeline: &ReleaseTimeline,
-    min_release_age: Duration,
-    now: SystemTime,
-) -> VersionText {
-    if target_is_update(current, target) {
-        return target.clone();
-    }
-    if let Some(latest) = latest
-        && latest_is_newer_and_too_fresh(current, latest, timeline, min_release_age, now)
-    {
-        return latest.clone();
-    }
-    target.clone()
-}
-
-fn target_is_update(current: &VersionText, target: &VersionText) -> bool {
-    match (
-        Pep440Version::from_str(current.as_str()),
-        Pep440Version::from_str(target.as_str()),
-    ) {
-        (Ok(current), Ok(target)) => target > current,
-        _ => target != current,
-    }
-}
-
-fn latest_is_newer_and_too_fresh(
-    base: &VersionText,
-    latest: &VersionText,
-    timeline: &ReleaseTimeline,
-    min_release_age: Duration,
-    now: SystemTime,
-) -> bool {
-    if !target_is_update(base, latest) {
-        return false;
-    }
-    matching_versions(timeline, latest)
-        .first()
-        .is_some_and(|entry| !release_is_old_enough(entry, now, min_release_age))
+    ManagerSelectedTarget::new(target, target_age)
 }
 
 fn matching_versions(timeline: &ReleaseTimeline, target: &VersionText) -> Vec<ReleaseEntry> {
@@ -414,19 +307,6 @@ fn matching_versions(timeline: &ReleaseTimeline, target: &VersionText) -> Vec<Re
         })
         .cloned()
         .collect()
-}
-
-fn release_is_old_enough(entry: &ReleaseEntry, now: SystemTime, min_release_age: Duration) -> bool {
-    now.duration_since(*entry.published_at.as_system_time())
-        .is_ok_and(|age| age >= min_release_age)
-}
-
-fn bracket_value(line: &str, marker: &str) -> Option<String> {
-    let token = format!("[{marker}");
-    let start = line.find(&token)?;
-    let after = &line[start + token.len()..];
-    let end = after.find(']')?;
-    Some(after[..end].to_owned())
 }
 
 /// Parses `PyPI` package metadata into a release timeline.
@@ -463,7 +343,7 @@ pub fn commands_for_execution_plan(
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
-            ExecutionCommandIntent::NativeSelected(item) => {
+            ExecutionCommandIntent::ResolverNative(item) => {
                 commands.push(ManagerExecutionCommand {
                     items: vec![execution_item(item)],
                     command: tool_install_command(&item.package_name, &min_age_arg),
@@ -475,6 +355,11 @@ pub fn commands_for_execution_plan(
             ExecutionCommandIntent::NativeGlobal(_) => {
                 return Err(UvError::UnsupportedCommandIntent(
                     "native-global".to_owned(),
+                ));
+            }
+            ExecutionCommandIntent::NativeSelected(_) => {
+                return Err(UvError::UnsupportedCommandIntent(
+                    "native-selected".to_owned(),
                 ));
             }
         }

@@ -1,5 +1,5 @@
 use std::fmt::{self, Display};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use upnow_domain::{
     InstalledTool, ManagerId, ManagerScanInput, ManagerUpdateInput, PackageName, PlanItemId,
@@ -8,11 +8,13 @@ use upnow_domain::{
 use upnow_execution::ResolvedExecutionPlan;
 use upnow_infra::{CommandSpec, Env, HttpClient, ProcessRunner};
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManagerCapabilities {
     pub exact_target: bool,
     pub native_update: bool,
     pub native_global_update: bool,
+    pub resolver_native_update: bool,
 }
 
 impl ManagerCapabilities {
@@ -22,12 +24,19 @@ impl ManagerCapabilities {
             exact_target,
             native_update,
             native_global_update: false,
+            resolver_native_update: false,
         }
     }
 
     #[must_use]
     pub const fn with_native_global_update(mut self, native_global_update: bool) -> Self {
         self.native_global_update = native_global_update;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_resolver_native_update(mut self, resolver_native_update: bool) -> Self {
+        self.resolver_native_update = resolver_native_update;
         self
     }
 }
@@ -133,6 +142,11 @@ pub trait ManagerAdapter {
 
     fn supports_version_policy(&self, policy: VersionPolicy) -> bool;
 
+    /// Returns the installed manager version when it cannot support migrated behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns a manager adapter error when the version probe fails.
     fn unsupported_manager_version(
         &self,
         _process: &ProcessRunner,
@@ -140,12 +154,22 @@ pub trait ManagerAdapter {
         Ok(None)
     }
 
+    /// Discovers installed tools for scan output.
+    ///
+    /// # Errors
+    ///
+    /// Returns a manager adapter error when scan discovery fails.
     fn scan_inputs(
         &self,
         process: &ProcessRunner,
         env: &Env,
     ) -> Result<Vec<ManagerScanInput>, ManagerAdapterError>;
 
+    /// Looks up release metadata for a package or installed tool.
+    ///
+    /// # Errors
+    ///
+    /// Returns a manager adapter error when the lookup cannot complete.
     fn release_lookup(
         &self,
         process: &ProcessRunner,
@@ -154,6 +178,11 @@ pub trait ManagerAdapter {
         subject: ReleaseLookupSubject<'_>,
     ) -> Result<ReleaseLookupResult, ManagerAdapterError>;
 
+    /// Discovers manager update inputs for shared planning.
+    ///
+    /// # Errors
+    ///
+    /// Returns a manager adapter error when update discovery fails.
     fn update_inputs(
         &self,
         process: &ProcessRunner,
@@ -161,9 +190,13 @@ pub trait ManagerAdapter {
         env: &Env,
         version_policy: VersionPolicy,
         min_release_age: Duration,
-        now: SystemTime,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError>;
 
+    /// Builds manager commands for an execution plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns a manager adapter error when command construction fails.
     fn commands_for_execution_plan(
         &self,
         process: &ProcessRunner,
@@ -176,6 +209,11 @@ pub trait ManagerAdapter {
         ManagerId::new(self.id()).expect("static manager id should be valid")
     }
 
+    /// Validates that a manager supports the resolved version policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an unsupported-policy error when the policy is not supported.
     fn validate_version_policy(&self, policy: VersionPolicy) -> Result<(), ManagerAdapterError> {
         if self.supports_version_policy(policy) {
             Ok(())

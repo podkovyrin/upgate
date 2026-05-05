@@ -306,6 +306,7 @@ fn resolve(
             exact_target: true,
             native_update: true,
             native_global_update: false,
+            resolver_native_update: false,
         },
         version_policy,
     )

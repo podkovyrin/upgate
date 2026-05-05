@@ -120,7 +120,8 @@ fn capabilities_are_typed_per_manager() {
     assert!(dotnet.capabilities().exact_target);
     assert!(!dotnet.capabilities().native_update);
     assert!(!uv.capabilities().exact_target);
-    assert!(uv.capabilities().native_update);
+    assert!(!uv.capabilities().native_update);
+    assert!(uv.capabilities().resolver_native_update);
 }
 
 #[test]
@@ -158,6 +159,7 @@ fn pnpm_builds_commands_through_adapter_boundary() {
             exact_target: manager.capabilities().exact_target,
             native_update: manager.capabilities().native_update,
             native_global_update: manager.capabilities().native_global_update,
+            resolver_native_update: manager.capabilities().resolver_native_update,
         },
         VersionPolicy::Stable,
     )
@@ -214,6 +216,7 @@ fn execution_resolver_rejects_non_executable_selected_items() {
             exact_target: true,
             native_update: true,
             native_global_update: false,
+            resolver_native_update: false,
         },
         VersionPolicy::Stable,
     )

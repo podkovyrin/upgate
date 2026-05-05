@@ -2,11 +2,12 @@ use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
     BlockReason, DelayReason, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata,
-    PackageName, PlanItem, PlanItemId, PolicyBlockReason, PolicyWarning, ReleaseEntry,
-    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName,
-    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    ManagerSelectedTarget, PackageName, PlanItem, PlanItemId, PolicyBlockReason, PolicyWarning,
+    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
+    TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy,
+    VersionScheme, VersionText,
 };
-use upnow_planning::{evaluate_brew_seed, evaluate_seed};
+use upnow_planning::evaluate_seed;
 
 const NOW_SECS: u64 = 1_800_000_000;
 
@@ -60,6 +61,26 @@ fn known_seed(
     )
 }
 
+fn manager_selected_seed(
+    package: &str,
+    installed_version: &str,
+    target_version: &str,
+    version_scheme: VersionScheme,
+    target_age: TargetAgeLookupResult,
+) -> UpdateSeed {
+    UpdateSeed::manager_selected(
+        installed_tool(package, installed_version),
+        ManagerSelectedTarget::new(version(target_version), target_age),
+        version_scheme,
+    )
+}
+
+fn known_target_age(age_secs: u64) -> TargetAgeLookupResult {
+    TargetAgeLookupResult::Known(TargetAgeEvidence::PublishedAt(ReleaseTimestamp::new(
+        SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - age_secs),
+    )))
+}
+
 fn now() -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS)
 }
@@ -76,7 +97,7 @@ fn evaluate(seed: UpdateSeed, policy: VersionPolicy, min_age_secs: u64) -> PlanI
 }
 
 fn evaluate_brew(seed: UpdateSeed, policy: VersionPolicy, min_age_secs: u64) -> PlanItem {
-    evaluate_brew_seed(
+    evaluate_seed(
         item_id("item"),
         seed,
         policy,
@@ -167,14 +188,113 @@ fn pep440_target_metadata_uses_parsed_version_equality() {
 }
 
 #[test]
+fn manager_selected_target_gates_only_the_selected_target() {
+    let item = evaluate(
+        manager_selected_seed(
+            "alpha",
+            "1.0.0",
+            "1.1.0",
+            VersionScheme::SemVer,
+            known_target_age(10_000),
+        ),
+        VersionPolicy::None,
+        0,
+    );
+
+    let PlanItem::Update { candidate, .. } = item else {
+        panic!("expected update");
+    };
+    assert_eq!(candidate.target_version.as_str(), "1.1.0");
+}
+
+#[test]
+fn manager_selected_target_missing_required_evidence_blocks_the_item() {
+    let item = evaluate(
+        manager_selected_seed(
+            "alpha",
+            "1.0.0",
+            "1.1.0",
+            VersionScheme::SemVer,
+            TargetAgeLookupResult::MissingMetadata,
+        ),
+        VersionPolicy::None,
+        0,
+    );
+
+    assert!(matches!(
+        item,
+        PlanItem::Blocked {
+            reason: BlockReason::MissingReleaseMetadata,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn manager_selected_target_ignores_failed_advisory_metadata_when_target_evidence_is_known() {
+    let seed = UpdateSeed::manager_selected(
+        installed_tool("alpha", "1.0.0"),
+        ManagerSelectedTarget::new(version("1.1.0"), known_target_age(10_000))
+            .with_advisory_release_lookup(ReleaseLookupResult::LookupFailed(
+                ReleaseLookupError::new("advisory latest unavailable"),
+            )),
+        VersionScheme::SemVer,
+    );
+
+    let item = evaluate(seed, VersionPolicy::None, 0);
+
+    let PlanItem::Update { candidate, .. } = item else {
+        panic!("expected update from selected target evidence");
+    };
+    assert_eq!(candidate.target_version.as_str(), "1.1.0");
+}
+
+#[test]
+fn manager_selected_target_age_gate_delays_only_the_selected_target() {
+    let item = evaluate(
+        manager_selected_seed(
+            "alpha",
+            "1.0.0",
+            "1.1.0",
+            VersionScheme::SemVer,
+            known_target_age(60),
+        ),
+        VersionPolicy::None,
+        3_600,
+    );
+
+    let PlanItem::Delayed { candidate, .. } = item else {
+        panic!("expected delayed selected target");
+    };
+    assert_eq!(candidate.target_version.as_str(), "1.1.0");
+}
+
+#[test]
+fn manager_selected_target_equal_to_installed_is_current_before_parsing() {
+    let item = evaluate(
+        manager_selected_seed(
+            "alpha",
+            "not-semver",
+            "not-semver",
+            VersionScheme::SemVer,
+            TargetAgeLookupResult::MissingMetadata,
+        ),
+        VersionPolicy::None,
+        0,
+    );
+
+    assert!(matches!(item, PlanItem::Current { .. }));
+}
+
+#[test]
 fn brew_native_policy_treats_clear_prerelease_markers_as_unstable() {
     let item = evaluate_brew(
-        known_seed(
+        manager_selected_seed(
             "brew-tool",
             "1.0.0",
             "1.2.0-beta.1,123",
             VersionScheme::ManagerNative,
-            vec![("1.2.0-beta.1,123", 10_000)],
+            known_target_age(10_000),
         ),
         VersionPolicy::Stable,
         0,
@@ -191,11 +311,12 @@ fn brew_native_policy_treats_clear_prerelease_markers_as_unstable() {
 
 #[test]
 fn brew_missing_release_metadata_blocks_the_item() {
-    let seed = UpdateSeed::new(
-        installed_tool("brew-tool", "1.0.0"),
-        version("1.2.0"),
+    let seed = manager_selected_seed(
+        "brew-tool",
+        "1.0.0",
+        "1.2.0",
         VersionScheme::ManagerNative,
-        ReleaseLookupResult::MissingMetadata,
+        TargetAgeLookupResult::MissingMetadata,
     );
 
     assert!(matches!(
@@ -209,11 +330,12 @@ fn brew_missing_release_metadata_blocks_the_item() {
 
 #[test]
 fn brew_failed_release_lookup_blocks_the_item() {
-    let seed = UpdateSeed::new(
-        installed_tool("brew-tool", "1.0.0"),
-        version("1.2.0"),
+    let seed = manager_selected_seed(
+        "brew-tool",
+        "1.0.0",
+        "1.2.0",
         VersionScheme::ManagerNative,
-        ReleaseLookupResult::LookupFailed(ReleaseLookupError::new("tap lookup failed")),
+        TargetAgeLookupResult::LookupFailed(ReleaseLookupError::new("tap lookup failed")),
     );
 
     assert!(matches!(
@@ -377,12 +499,12 @@ fn same_track_blocks_unknown_candidate_stability_when_installed_track_is_known()
 #[test]
 fn unknown_installed_track_falls_back_to_stable_with_typed_warning() {
     let item = evaluate_brew(
-        known_seed(
+        manager_selected_seed(
             "brew-tool",
             "latest",
             "1.2.0",
             VersionScheme::ManagerNative,
-            vec![("1.2.0", 10_000)],
+            known_target_age(10_000),
         ),
         VersionPolicy::SameTrack,
         0,
@@ -423,12 +545,12 @@ fn unknown_semver_installed_track_falls_back_to_stable_with_typed_warning() {
 #[test]
 fn blocked_same_track_fallback_keeps_typed_warning() {
     let item = evaluate_brew(
-        known_seed(
+        manager_selected_seed(
             "brew-tool",
             "latest",
             "1.2.0-beta.1",
             VersionScheme::ManagerNative,
-            vec![("1.2.0-beta.1", 10_000)],
+            known_target_age(10_000),
         ),
         VersionPolicy::SameTrack,
         0,

@@ -4,9 +4,10 @@ use std::time::{Duration, SystemTime};
 use pep440_rs::{PrereleaseKind as Pep440PrereleaseKind, Version as Pep440Version};
 use semver::Version as SemverVersion;
 use upnow_domain::{
-    BlockReason, DelayReason, ExecutionEligibility, PlanItem, PlanItemId, PolicyBlockReason,
-    PolicyWarning, ReleaseEntry, ReleaseLookupResult, UpdateCandidate, UpdateSeed, VersionPolicy,
-    VersionScheme, VersionText,
+    BlockReason, DelayReason, ExecutionEligibility, ManagerSelectedTarget, PlanItem, PlanItemId,
+    PolicyBlockReason, PolicyWarning, ReleaseEntry, ReleaseLookupResult, ReleaseTimeline,
+    TargetAgeEvidence, TargetAgeLookupResult, TargetSelection, UpdateCandidate, UpdateSeed,
+    VersionPolicy, VersionScheme, VersionText,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +55,44 @@ pub fn evaluate_seed(
     min_release_age: Duration,
     execution_eligibility: ExecutionEligibility,
 ) -> PlanItem {
-    match &seed.release_lookup {
+    match seed.target_selection.clone() {
+        TargetSelection::PlannerSelectable {
+            discovered_target,
+            release_lookup,
+        } => evaluate_planner_selectable_seed(
+            id,
+            seed,
+            &discovered_target,
+            release_lookup,
+            policy,
+            now,
+            min_release_age,
+            execution_eligibility,
+        ),
+        TargetSelection::ManagerSelected(target) => evaluate_manager_selected_seed(
+            id,
+            seed,
+            target,
+            policy,
+            now,
+            min_release_age,
+            execution_eligibility,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_planner_selectable_seed(
+    id: PlanItemId,
+    seed: UpdateSeed,
+    discovered_target: &VersionText,
+    release_lookup: ReleaseLookupResult,
+    policy: VersionPolicy,
+    now: SystemTime,
+    min_release_age: Duration,
+    execution_eligibility: ExecutionEligibility,
+) -> PlanItem {
+    match release_lookup {
         ReleaseLookupResult::MissingMetadata => PlanItem::Blocked {
             id,
             seed,
@@ -67,10 +105,12 @@ pub fn evaluate_seed(
             reason: BlockReason::ReleaseLookupFailed,
             policy_warnings: Vec::new(),
         },
-        ReleaseLookupResult::Known(_) => match seed.version_scheme {
+        ReleaseLookupResult::Known(timeline) => match seed.version_scheme {
             VersionScheme::SemVer => evaluate_semver_seed(
                 id,
-                seed.clone(),
+                seed,
+                discovered_target,
+                &timeline,
                 policy,
                 now,
                 min_release_age,
@@ -78,7 +118,9 @@ pub fn evaluate_seed(
             ),
             VersionScheme::Pep440 => evaluate_pep440_seed(
                 id,
-                seed.clone(),
+                seed,
+                discovered_target,
+                &timeline,
                 policy,
                 now,
                 min_release_age,
@@ -93,46 +135,39 @@ pub fn evaluate_seed(
     }
 }
 
-/// Evaluate Homebrew's manager-native target gate.
-///
-/// Homebrew exposes one selected outdated target rather than a full candidate
-/// timeline, so this function checks only that target against policy and age.
-#[must_use]
-pub fn evaluate_brew_seed(
+#[allow(clippy::too_many_arguments)]
+fn evaluate_manager_selected_seed(
     id: PlanItemId,
     seed: UpdateSeed,
+    target: ManagerSelectedTarget,
     policy: VersionPolicy,
     now: SystemTime,
     min_release_age: Duration,
     execution_eligibility: ExecutionEligibility,
 ) -> PlanItem {
-    let ReleaseLookupResult::Known(timeline) = &seed.release_lookup else {
-        return match seed.release_lookup {
-            ReleaseLookupResult::MissingMetadata => PlanItem::Blocked {
+    let selected_target = target.target_version.clone();
+    match selected_target_is_update(&seed, &selected_target) {
+        Ok(false) => {
+            return PlanItem::Current {
                 id,
-                seed,
-                reason: BlockReason::MissingReleaseMetadata,
-                policy_warnings: Vec::new(),
-            },
-            ReleaseLookupResult::LookupFailed(_) => PlanItem::Blocked {
+                installed: seed.installed,
+            };
+        }
+        Ok(true) => {}
+        Err(message) => {
+            return PlanItem::ResolverError {
                 id,
-                seed,
-                reason: BlockReason::ReleaseLookupFailed,
-                policy_warnings: Vec::new(),
-            },
-            ReleaseLookupResult::Known(_) => unreachable!("known lookup matched above"),
-        };
-    };
-
-    if seed.installed.installed_version == seed.discovered_target {
-        return PlanItem::Current {
-            id,
-            installed: seed.installed,
-        };
+                installed: seed.installed,
+                message,
+            };
+        }
     }
 
-    let installed_class = classify_brew_release(seed.installed.installed_version.as_str());
-    let target_class = classify_brew_release(seed.discovered_target.as_str());
+    let installed_class = classify_release(
+        seed.version_scheme,
+        seed.installed.installed_version.as_str(),
+    );
+    let target_class = classify_release(seed.version_scheme, selected_target.as_str());
     let policy_decision = evaluate_policy(policy, installed_class, target_class);
     if !policy_decision.allowed {
         return PlanItem::Blocked {
@@ -147,27 +182,34 @@ pub fn evaluate_brew_seed(
         };
     }
 
-    let Some(target_entry) = timeline
-        .versions
-        .iter()
-        .find(|entry| entry.version == seed.discovered_target)
-    else {
-        return PlanItem::Blocked {
-            id,
-            seed,
-            reason: BlockReason::MissingReleaseMetadata,
-            policy_warnings: Vec::new(),
-        };
+    let target_age = match target.target_age {
+        TargetAgeLookupResult::Known(evidence) => evidence,
+        TargetAgeLookupResult::MissingMetadata => {
+            return PlanItem::Blocked {
+                id,
+                seed,
+                reason: BlockReason::MissingReleaseMetadata,
+                policy_warnings: Vec::new(),
+            };
+        }
+        TargetAgeLookupResult::LookupFailed(_) => {
+            return PlanItem::Blocked {
+                id,
+                seed,
+                reason: BlockReason::ReleaseLookupFailed,
+                policy_warnings: Vec::new(),
+            };
+        }
     };
 
     let candidate = candidate_from_seed(
         &seed,
-        seed.discovered_target.clone(),
+        selected_target,
         execution_eligibility,
         policy_decision.warning.into_iter().collect(),
     );
 
-    if is_old_enough(target_entry, now, min_release_age) {
+    if is_evidence_old_enough(&target_age, now, min_release_age) {
         PlanItem::Update { id, candidate }
     } else {
         PlanItem::Delayed {
@@ -178,19 +220,17 @@ pub fn evaluate_brew_seed(
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn evaluate_semver_seed(
     id: PlanItemId,
     seed: UpdateSeed,
+    discovered_target: &VersionText,
+    timeline: &ReleaseTimeline,
     policy: VersionPolicy,
     now: SystemTime,
     min_release_age: Duration,
     execution_eligibility: ExecutionEligibility,
 ) -> PlanItem {
-    let ReleaseLookupResult::Known(timeline) = &seed.release_lookup else {
-        unreachable!("caller checked release lookup result")
-    };
-
     let Ok(installed_version) = parse_semver(seed.installed.installed_version.as_str()) else {
         return PlanItem::ResolverError {
             id,
@@ -198,7 +238,7 @@ fn evaluate_semver_seed(
             message: "failed to parse installed version".to_owned(),
         };
     };
-    let Ok(discovered_target) = parse_semver(seed.discovered_target.as_str()) else {
+    let Ok(parsed_discovered_target) = parse_semver(discovered_target.as_str()) else {
         return PlanItem::ResolverError {
             id,
             installed: seed.installed.clone(),
@@ -215,7 +255,7 @@ fn evaluate_semver_seed(
                 message: format!("failed to parse release version `{bad_version}`"),
             };
         };
-        if parsed == discovered_target {
+        if parsed == parsed_discovered_target {
             target_metadata_found = true;
         }
     }
@@ -319,19 +359,17 @@ fn evaluate_semver_seed(
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn evaluate_pep440_seed(
     id: PlanItemId,
     seed: UpdateSeed,
+    discovered_target: &VersionText,
+    timeline: &ReleaseTimeline,
     policy: VersionPolicy,
     now: SystemTime,
     min_release_age: Duration,
     execution_eligibility: ExecutionEligibility,
 ) -> PlanItem {
-    let ReleaseLookupResult::Known(timeline) = &seed.release_lookup else {
-        unreachable!("caller checked release lookup result")
-    };
-
     let Ok(installed_version) = parse_pep440(seed.installed.installed_version.as_str()) else {
         return PlanItem::ResolverError {
             id,
@@ -339,7 +377,7 @@ fn evaluate_pep440_seed(
             message: "failed to parse installed version".to_owned(),
         };
     };
-    let Ok(discovered_target) = parse_pep440(seed.discovered_target.as_str()) else {
+    let Ok(parsed_discovered_target) = parse_pep440(discovered_target.as_str()) else {
         return PlanItem::ResolverError {
             id,
             installed: seed.installed.clone(),
@@ -356,7 +394,7 @@ fn evaluate_pep440_seed(
                 message: format!("failed to parse release version `{bad_version}`"),
             };
         };
-        if parsed == discovered_target {
+        if parsed == parsed_discovered_target {
             target_metadata_found = true;
         }
     }
@@ -493,6 +531,38 @@ fn evaluate_policy(
     }
 }
 
+fn classify_release(version_scheme: VersionScheme, raw: &str) -> ReleaseClass {
+    match version_scheme {
+        VersionScheme::SemVer => classify_semver_release(raw),
+        VersionScheme::Pep440 => classify_pep440_release(raw),
+        VersionScheme::ManagerNative => classify_manager_native_release(raw),
+    }
+}
+
+fn selected_target_is_update(seed: &UpdateSeed, target: &VersionText) -> Result<bool, String> {
+    if target == &seed.installed.installed_version {
+        return Ok(false);
+    }
+
+    match seed.version_scheme {
+        VersionScheme::SemVer => {
+            let installed = parse_semver(seed.installed.installed_version.as_str())
+                .map_err(|_| "failed to parse installed version".to_owned())?;
+            let target = parse_semver(target.as_str())
+                .map_err(|_| "failed to parse selected target version".to_owned())?;
+            Ok(target > installed)
+        }
+        VersionScheme::Pep440 => {
+            let installed = parse_pep440(seed.installed.installed_version.as_str())
+                .map_err(|_| "failed to parse installed version".to_owned())?;
+            let target = parse_pep440(target.as_str())
+                .map_err(|_| "failed to parse selected target version".to_owned())?;
+            Ok(target > installed)
+        }
+        VersionScheme::ManagerNative => Ok(target != &seed.installed.installed_version),
+    }
+}
+
 fn evaluate_same_track_policy(
     installed_class: ReleaseClass,
     candidate_class: ReleaseClass,
@@ -556,6 +626,16 @@ fn evaluate_stable_policy(
 
 fn is_old_enough(entry: &ReleaseEntry, now: SystemTime, min_release_age: Duration) -> bool {
     release_age(entry, now) >= min_release_age
+}
+
+fn is_evidence_old_enough(
+    evidence: &TargetAgeEvidence,
+    now: SystemTime,
+    min_release_age: Duration,
+) -> bool {
+    now.duration_since(*evidence.timestamp().as_system_time())
+        .unwrap_or_default()
+        >= min_release_age
 }
 
 fn release_age(entry: &ReleaseEntry, now: SystemTime) -> Duration {
@@ -649,7 +729,7 @@ fn classify_semver_like_fallback(raw: &str) -> ReleaseClass {
     ReleaseClass::Unknown
 }
 
-fn classify_brew_release(raw: &str) -> ReleaseClass {
+fn classify_manager_native_release(raw: &str) -> ReleaseClass {
     let normalized = normalize_brew_version(raw);
     let version = normalized.trim();
     if version.is_empty()

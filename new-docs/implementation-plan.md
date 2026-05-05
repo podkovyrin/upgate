@@ -424,8 +424,8 @@ Migrate all remaining managers in small independent reviews.
 ### Behavior Delivered
 Each manager preserves current behavior in the new architecture.
 
-### Current Required Refactor
-Before continuing uv, Mise, and Brew migration, add typed manager-selected target planning. This refactor belongs to the current Phase 9 work because it is required by the managers being migrated now.
+### Completed Required Refactor: Manager-Selected Targets
+Before continuing uv, Mise, and Brew migration, typed manager-selected target planning was added. This refactor belongs to Phase 9 because it is required by the managers being migrated now.
 
 #### Goal
 Represent manager-selected targets directly so uv, Mise, and Brew do not fake planner-selectable timelines.
@@ -437,7 +437,18 @@ Planning supports two target-selection shapes:
 
 For manager-selected targets, planning must not replace the target with another version from advisory latest metadata. Managers may pass min-release-age to native resolver commands when required, such as `uv --exclude-newer` or `mise --before`, but managers must not receive `now` or compare target age against policy.
 
-#### Modules/Files Likely Changed
+#### Completed In This Refactor
+- Added `TargetSelection` with planner-selectable and manager-selected shapes.
+- Added `ManagerSelectedTarget` with required target-age evidence and optional advisory release metadata.
+- Added target-age lookup representation for publish timestamps and manager-native target-age evidence.
+- Updated planning evaluation to dispatch by target-selection shape.
+- Updated manager-selected evaluation to gate only the selected target by policy and age.
+- Kept advisory/latest metadata separate from required target-age evidence.
+- Added resolver-native execution intent support for manager resolvers such as uv.
+- Preserved grouped native execution reporting for each selected item.
+- Kept clock-aware age comparison in planning; manager discovery receives min-release-age when needed by native resolver commands, but does not receive `now`.
+
+#### Modules/Files Changed
 - `<new-workspace>/crates/upnow-domain/src/plan.rs`
 - `<new-workspace>/crates/upnow-domain/src/release.rs`
 - `<new-workspace>/crates/upnow-planning/src/evaluate.rs`
@@ -446,7 +457,7 @@ For manager-selected targets, planning must not replace the target with another 
 - `<new-workspace>/crates/upnow-managers/src/adapter.rs`
 - `<new-workspace>/crates/upnow-cli/src/lib.rs`
 
-#### Tests Required
+#### Tests Added
 - Manager-selected target evaluation gates only the selected target.
 - Manager-selected target evaluation does not choose a newer advisory/latest version.
 - Manager-selected target missing required target evidence blocks only that item.
@@ -455,8 +466,14 @@ For manager-selected targets, planning must not replace the target with another 
 - Grouped native execution reports item results for each selected item.
 - Manager discovery does not receive `now`.
 
-#### What Must Not Be Included Yet
-- No uv, Mise, or Brew manager implementation changes beyond what is needed to compile the refactor.
+#### Validation
+- `cargo test -p upnow-domain -p upnow-planning -p upnow-execution`
+- `cargo test -p upnow-managers --test uv`
+- `cargo test -p upnow-cli selected_uv`
+- `cargo test -p upnow-cli uv_apply`
+
+#### What Was Not Included
+- No Mise or Brew manager implementation changes.
 - No TUI selection changes.
 - No visual changes.
 - No new manager support.
@@ -464,8 +481,8 @@ For manager-selected targets, planning must not replace the target with another 
 #### Architectural Risks
 Preserving manager-side planning by wrapping it in typed names. Manager-selected target mode must still leave policy and clock-aware age gates in planning.
 
-#### Stop Conditions
-Stop when the shared domain, planning, execution, adapter, and CLI boundaries can represent manager-selected targets without manager-side age planning or timeline trimming.
+#### Stop Conditions Met
+The shared domain, planning, execution, adapter, and CLI boundaries can represent manager-selected targets without manager-side age planning or timeline trimming.
 
 #### Review Checklist
 - Manager-selected targets are evaluated as selected-target gates, not as trimmed timelines.
@@ -475,10 +492,9 @@ Stop when the shared domain, planning, execution, adapter, and CLI boundaries ca
 - Forced/bypassed support exists only where a typed exact-target or resolver-native bypass command exists.
 
 ### Suggested Order
-1. Complete the manager-selected target refactor above.
-2. Continue uv.
-3. Continue Mise.
-4. Finish with Brew.
+1. Continue uv.
+2. Continue Mise.
+3. Finish with Brew.
 
 ### Remaining Modules/Files Likely Changed
 - `<new-workspace>/crates/upnow-managers/src/uv.rs`

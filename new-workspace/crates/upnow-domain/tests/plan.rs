@@ -1,8 +1,9 @@
 use upnow_domain::{
     BlockReason, DelayReason, DomainError, ExecutionEligibility, InstalledTool, ManagerId,
-    ManagerMetadata, PackageName, PlanItem, PlanItemId, PolicyBlockReason, ReleaseLookupResult,
-    SkipReason, ToolId, ToolName, UpdateCandidate, UpdatePlan, UpdateSeed, VersionScheme,
-    VersionText,
+    ManagerMetadata, ManagerSelectedTarget, PackageName, PlanItem, PlanItemId, PolicyBlockReason,
+    ReleaseLookupError, ReleaseLookupResult, ReleaseTimestamp, SkipReason, TargetAgeEvidence,
+    TargetAgeLookupResult, TargetSelection, ToolId, ToolName, UpdateCandidate, UpdatePlan,
+    UpdateSeed, VersionScheme, VersionText,
 };
 
 fn manager_id() -> ManagerId {
@@ -128,4 +129,62 @@ fn update_candidate_represents_target_and_execution_eligibility() {
         candidate.execution_eligibility,
         ExecutionEligibility::NotExecutable
     );
+}
+
+#[test]
+fn update_seed_represents_planner_selectable_and_manager_selected_targets() {
+    let planner_seed = UpdateSeed::new(
+        installed_tool("alpha-ready", "1.0.0"),
+        VersionText::new("1.2.0").expect("valid target"),
+        VersionScheme::SemVer,
+        ReleaseLookupResult::MissingMetadata,
+    );
+    let TargetSelection::PlannerSelectable {
+        discovered_target,
+        release_lookup,
+    } = &planner_seed.target_selection
+    else {
+        panic!("expected planner-selectable seed");
+    };
+    assert_eq!(discovered_target.as_str(), "1.2.0");
+    assert_eq!(release_lookup, &ReleaseLookupResult::MissingMetadata);
+
+    let selected_target = ManagerSelectedTarget::new(
+        VersionText::new("1.1.0").expect("valid selected target"),
+        TargetAgeLookupResult::Known(TargetAgeEvidence::PublishedAt(ReleaseTimestamp::new(
+            std::time::SystemTime::UNIX_EPOCH,
+        ))),
+    );
+    let manager_seed = UpdateSeed::manager_selected(
+        installed_tool("resolver-tool", "1.0.0"),
+        selected_target,
+        VersionScheme::SemVer,
+    );
+    let TargetSelection::ManagerSelected(target) = &manager_seed.target_selection else {
+        panic!("expected manager-selected seed");
+    };
+    assert_eq!(target.target_version.as_str(), "1.1.0");
+    assert_eq!(target.advisory_release_lookup, None);
+}
+
+#[test]
+fn manager_selected_target_keeps_advisory_metadata_separate_from_required_age_evidence() {
+    let selected_target = ManagerSelectedTarget::new(
+        VersionText::new("1.1.0").expect("valid selected target"),
+        TargetAgeLookupResult::Known(TargetAgeEvidence::PublishedAt(ReleaseTimestamp::new(
+            std::time::SystemTime::UNIX_EPOCH,
+        ))),
+    )
+    .with_advisory_release_lookup(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
+        "advisory latest unavailable",
+    )));
+
+    assert!(matches!(
+        selected_target.target_age,
+        TargetAgeLookupResult::Known(_)
+    ));
+    assert!(matches!(
+        selected_target.advisory_release_lookup,
+        Some(ReleaseLookupResult::LookupFailed(_))
+    ));
 }

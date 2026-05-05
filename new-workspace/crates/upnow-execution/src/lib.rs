@@ -8,11 +8,13 @@ use upnow_domain::{
 };
 use upnow_infra::{CommandCheck, CommandSpec, InfraError, ProcessRunner};
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExecutionCapabilities {
     pub exact_target: bool,
     pub native_update: bool,
     pub native_global_update: bool,
+    pub resolver_native_update: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +27,7 @@ pub enum ExecutionCommandIntent {
     Exact(ResolvedExecutionItem),
     NativeSelected(ResolvedExecutionItem),
     NativeGlobal(Vec<ResolvedExecutionItem>),
+    ResolverNative(ResolvedExecutionItem),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,7 +85,9 @@ pub fn resolve_selection_for_execution(
 
     let mut intents = Vec::new();
     for item in selected {
-        if should_use_native_selected_update(&item, capabilities, version_policy) {
+        if should_use_resolver_native_update(&item, capabilities, version_policy) {
+            intents.push(ExecutionCommandIntent::ResolverNative(item));
+        } else if should_use_native_selected_update(&item, capabilities, version_policy) {
             intents.push(ExecutionCommandIntent::NativeSelected(item));
         } else if supports_exact_target(&item) && capabilities.exact_target {
             intents.push(ExecutionCommandIntent::Exact(item));
@@ -137,7 +142,10 @@ pub struct ExecutionCommandItem {
 }
 
 /// Executes concrete commands produced by a manager.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns an infrastructure error when command execution is interrupted.
 pub fn execute_commands(
     manager_id: ManagerId,
     commands: Vec<ExecutionCommand>,
@@ -182,7 +190,16 @@ fn selected_execution_items(
         })?;
         let candidate = match item {
             PlanItem::Update { candidate, .. } => candidate,
-            PlanItem::Delayed { candidate, .. } if selected.forced => candidate,
+            PlanItem::Delayed { candidate, .. }
+                if selected.forced && candidate.execution_eligibility.supports_exact_target() =>
+            {
+                candidate
+            }
+            PlanItem::Delayed { .. } if selected.forced => {
+                return Err(ExecutionSelectionError::ExactTargetUnsupported(
+                    item.id().as_str().to_owned(),
+                ));
+            }
             _ => {
                 return Err(ExecutionSelectionError::ItemNotExecutable(
                     item.id().as_str().to_owned(),
@@ -238,6 +255,16 @@ fn should_use_native_global_update(
                 .iter()
                 .any(|selected_item| selected_item.plan_item_id == **id)
         })
+}
+
+fn should_use_resolver_native_update(
+    item: &ResolvedExecutionItem,
+    capabilities: ExecutionCapabilities,
+    version_policy: VersionPolicy,
+) -> bool {
+    capabilities.resolver_native_update
+        && version_policy == VersionPolicy::None
+        && item.execution_eligibility.supports_resolver_native()
 }
 
 fn should_use_native_selected_update(

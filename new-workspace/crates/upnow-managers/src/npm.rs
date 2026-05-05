@@ -153,7 +153,6 @@ impl ManagerAdapter for NpmManager {
         _env: &Env,
         version_policy: VersionPolicy,
         _min_release_age: Duration,
-        _now: SystemTime,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
         self.validate_version_policy(version_policy)?;
         update_inputs(process, version_policy).map_err(adapter_error)
@@ -342,6 +341,11 @@ pub fn commands_for_execution_plan(
                         item.forced,
                     ),
                 });
+            }
+            ExecutionCommandIntent::ResolverNative(_) => {
+                return Err(NpmError::UnsupportedCommandIntent(
+                    "resolver-native".to_owned(),
+                ));
             }
             ExecutionCommandIntent::NativeGlobal(_) => {
                 return Err(NpmError::UnsupportedCommandIntent(

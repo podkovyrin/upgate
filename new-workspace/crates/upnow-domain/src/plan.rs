@@ -1,6 +1,6 @@
 use crate::{
-    DomainError, InstalledTool, ManagerId, PackageName, PolicyWarning, ReleaseLookupResult, ToolId,
-    UnsupportedReason, VersionScheme, VersionText,
+    DomainError, InstalledTool, ManagerId, PackageName, PolicyWarning, ReleaseLookupResult,
+    TargetAgeLookupResult, ToolId, UnsupportedReason, VersionScheme, VersionText,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -29,9 +29,8 @@ impl PlanItemId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateSeed {
     pub installed: InstalledTool,
-    pub discovered_target: VersionText,
     pub version_scheme: VersionScheme,
-    pub release_lookup: ReleaseLookupResult,
+    pub target_selection: TargetSelection,
 }
 
 impl UpdateSeed {
@@ -42,12 +41,85 @@ impl UpdateSeed {
         version_scheme: VersionScheme,
         release_lookup: ReleaseLookupResult,
     ) -> Self {
+        Self::planner_selectable(installed, discovered_target, version_scheme, release_lookup)
+    }
+
+    #[must_use]
+    pub fn planner_selectable(
+        installed: InstalledTool,
+        discovered_target: VersionText,
+        version_scheme: VersionScheme,
+        release_lookup: ReleaseLookupResult,
+    ) -> Self {
         Self {
             installed,
-            discovered_target,
             version_scheme,
-            release_lookup,
+            target_selection: TargetSelection::PlannerSelectable {
+                discovered_target,
+                release_lookup,
+            },
         }
+    }
+
+    #[must_use]
+    pub fn manager_selected(
+        installed: InstalledTool,
+        selected_target: ManagerSelectedTarget,
+        version_scheme: VersionScheme,
+    ) -> Self {
+        Self {
+            installed,
+            version_scheme,
+            target_selection: TargetSelection::ManagerSelected(selected_target),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetSelection {
+    PlannerSelectable {
+        discovered_target: VersionText,
+        release_lookup: ReleaseLookupResult,
+    },
+    ManagerSelected(ManagerSelectedTarget),
+}
+
+impl TargetSelection {
+    #[must_use]
+    pub fn target_version(&self) -> &VersionText {
+        match self {
+            Self::PlannerSelectable {
+                discovered_target, ..
+            } => discovered_target,
+            Self::ManagerSelected(target) => &target.target_version,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagerSelectedTarget {
+    pub target_version: VersionText,
+    pub target_age: TargetAgeLookupResult,
+    pub advisory_release_lookup: Option<ReleaseLookupResult>,
+}
+
+impl ManagerSelectedTarget {
+    #[must_use]
+    pub fn new(target_version: VersionText, target_age: TargetAgeLookupResult) -> Self {
+        Self {
+            target_version,
+            target_age,
+            advisory_release_lookup: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_advisory_release_lookup(
+        mut self,
+        advisory_release_lookup: ReleaseLookupResult,
+    ) -> Self {
+        self.advisory_release_lookup = Some(advisory_release_lookup);
+        self
     }
 }
 
@@ -138,6 +210,7 @@ pub enum ExecutionEligibility {
     NativeOrExact,
     ExactOnly,
     NativeOnly,
+    ResolverNativeOnly,
     NotExecutable,
 }
 
@@ -150,6 +223,11 @@ impl ExecutionEligibility {
     #[must_use]
     pub fn supports_exact_target(self) -> bool {
         matches!(self, Self::NativeOrExact | Self::ExactOnly)
+    }
+
+    #[must_use]
+    pub fn supports_resolver_native(self) -> bool {
+        matches!(self, Self::ResolverNativeOnly)
     }
 }
 

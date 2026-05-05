@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use upnow_domain::{
     ExecutionEligibility, ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseLookupResult,
-    ToolId, UpdateCandidate, UpdateSeed, VersionScheme, VersionText,
+    TargetSelection, ToolId, UpdateCandidate, UpdateSeed, VersionScheme, VersionText,
 };
 use upnow_infra::{CommandOutput, Env, HttpClient, HttpResponse, ProcessRunner};
 use upnow_managers::adapter::ManagerAdapter;
@@ -211,7 +211,6 @@ fn adapter_builds_update_inputs_with_ruby_runtime_filter() {
             &env,
             upnow_domain::VersionPolicy::Stable,
             std::time::Duration::from_secs(7 * 86_400),
-            std::time::SystemTime::UNIX_EPOCH,
         )
         .expect("inputs should build");
 
@@ -259,13 +258,19 @@ fn update_inputs_uses_outdated_current_and_keeps_full_registry_timeline() {
             &env,
             upnow_domain::VersionPolicy::Stable,
             std::time::Duration::from_secs(7 * 86_400),
-            std::time::SystemTime::UNIX_EPOCH,
         )
         .expect("inputs should build");
     let seed = only_seed(&inputs);
 
-    assert_eq!(seed.discovered_target.as_str(), "1.0.0");
-    let ReleaseLookupResult::Known(timeline) = &seed.release_lookup else {
+    let TargetSelection::PlannerSelectable {
+        discovered_target,
+        release_lookup,
+    } = &seed.target_selection
+    else {
+        panic!("gem should remain planner-selectable");
+    };
+    assert_eq!(discovered_target.as_str(), "1.0.0");
+    let ReleaseLookupResult::Known(timeline) = release_lookup else {
         panic!("lookup should be known");
     };
     assert!(

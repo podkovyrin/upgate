@@ -521,7 +521,6 @@ fn build_manager_plan(
             env,
             manager_config.version_policy,
             manager_config.min_release_age,
-            now,
         )
         .map_err(map_manager_error)?;
     update_plan_from_inputs(
@@ -543,6 +542,8 @@ fn execution_eligibility(manager: &dyn ManagerAdapter) -> ExecutionEligibility {
         ExecutionEligibility::NativeOrExact
     } else if capabilities.native_update {
         ExecutionEligibility::NativeOnly
+    } else if capabilities.resolver_native_update {
+        ExecutionEligibility::ResolverNativeOnly
     } else {
         ExecutionEligibility::ExactOnly
     }
@@ -554,6 +555,7 @@ fn execution_capabilities(manager: &dyn ManagerAdapter) -> ExecutionCapabilities
         exact_target: capabilities.exact_target,
         native_update: capabilities.native_update,
         native_global_update: capabilities.native_global_update,
+        resolver_native_update: capabilities.resolver_native_update,
     }
 }
 

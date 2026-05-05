@@ -53,6 +53,28 @@ pub enum ReleaseLookupResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetAgeLookupResult {
+    Known(TargetAgeEvidence),
+    MissingMetadata,
+    LookupFailed(ReleaseLookupError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetAgeEvidence {
+    PublishedAt(ReleaseTimestamp),
+    ManagerNativeTimestamp(ReleaseTimestamp),
+}
+
+impl TargetAgeEvidence {
+    #[must_use]
+    pub fn timestamp(&self) -> &ReleaseTimestamp {
+        match self {
+            Self::PublishedAt(timestamp) | Self::ManagerNativeTimestamp(timestamp) => timestamp,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseLookupError {
     pub detail: String,
 }

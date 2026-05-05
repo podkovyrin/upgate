@@ -56,6 +56,32 @@ fn command_failures_are_item_scoped() {
     ));
 }
 
+#[test]
+fn grouped_native_command_reports_each_selected_item() {
+    let process = ProcessRunner::fake([Ok(CommandOutput::from_parts(success_status(), "", ""))]);
+    let command = ExecutionCommand {
+        items: vec![command_item(), command_item_for("beta-ready")],
+        command: CommandSpec::new("tool", ["upgrade", "alpha-ready", "beta-ready"]).mutating(),
+    };
+
+    let report = execute_commands(
+        ManagerId::new("brew").expect("valid manager"),
+        vec![command],
+        &process,
+    )
+    .expect("grouped command should report every item");
+
+    assert_eq!(report.items.len(), 2);
+    assert_eq!(report.items[0].package_name.as_str(), "alpha-ready");
+    assert_eq!(report.items[1].package_name.as_str(), "beta-ready");
+    assert!(
+        report
+            .items
+            .iter()
+            .all(|item| matches!(item.status, ExecutionStatus::Succeeded { .. }))
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn interrupted_commands_return_execution_error() {
@@ -91,6 +117,51 @@ fn resolves_native_selected_intent_for_no_policy_native_updates() {
         resolved.intents.as_slice(),
         [ExecutionCommandIntent::NativeSelected(_)]
     ));
+}
+
+#[test]
+fn resolves_resolver_native_intent_for_resolver_selected_updates() {
+    let plan = plan(vec![PlanItem::Update {
+        id: plan_item_id(),
+        candidate: candidate(ExecutionEligibility::ResolverNativeOnly),
+    }]);
+    let selection = selection(&plan, false);
+
+    let resolved = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        resolver_capabilities(),
+        VersionPolicy::None,
+    )
+    .expect("selection should resolve");
+
+    assert!(matches!(
+        resolved.intents.as_slice(),
+        [ExecutionCommandIntent::ResolverNative(item)] if !item.forced
+    ));
+}
+
+#[test]
+fn forced_resolver_native_delayed_selection_is_rejected_without_bypass_command() {
+    let plan = plan(vec![PlanItem::Delayed {
+        id: plan_item_id(),
+        candidate: candidate(ExecutionEligibility::ResolverNativeOnly),
+        reason: DelayReason::ReleaseTooFresh,
+    }]);
+    let selection = selection(&plan, true);
+
+    let err = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        resolver_capabilities(),
+        VersionPolicy::None,
+    )
+    .expect_err("forced resolver-native selection should require an explicit bypass command");
+
+    assert_eq!(
+        err,
+        ExecutionSelectionError::ExactTargetUnsupported("pnpm:alpha-ready".to_owned())
+    );
 }
 
 #[test]
@@ -218,9 +289,13 @@ fn command() -> ExecutionCommand {
 }
 
 fn command_item() -> ExecutionCommandItem {
+    command_item_for("alpha-ready")
+}
+
+fn command_item_for(package_name: &str) -> ExecutionCommandItem {
     ExecutionCommandItem {
-        plan_item_id: PlanItemId::new("pnpm:alpha-ready").expect("valid id"),
-        package_name: PackageName::new("alpha-ready").expect("valid package"),
+        plan_item_id: PlanItemId::new(format!("pnpm:{package_name}")).expect("valid id"),
+        package_name: PackageName::new(package_name).expect("valid package"),
         installed_version: VersionText::new("1.0.0").expect("valid version"),
         target_version: VersionText::new("1.2.0").expect("valid version"),
     }
@@ -248,6 +323,16 @@ fn capabilities(
         exact_target,
         native_update,
         native_global_update,
+        resolver_native_update: false,
+    }
+}
+
+fn resolver_capabilities() -> ExecutionCapabilities {
+    ExecutionCapabilities {
+        exact_target: false,
+        native_update: false,
+        native_global_update: false,
+        resolver_native_update: true,
     }
 }
 

@@ -137,7 +137,6 @@ impl ManagerAdapter for PnpmManager {
         _env: &Env,
         version_policy: VersionPolicy,
         _min_release_age: Duration,
-        _now: SystemTime,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
         self.validate_version_policy(version_policy)?;
         update_inputs(process, version_policy).map_err(adapter_error)
@@ -366,6 +365,11 @@ pub fn exact_commands_for_execution_plan(
             ExecutionCommandIntent::NativeSelected(_) => {
                 return Err(PnpmError::UnsupportedCommandIntent(
                     "native-selected".to_owned(),
+                ));
+            }
+            ExecutionCommandIntent::ResolverNative(_) => {
+                return Err(PnpmError::UnsupportedCommandIntent(
+                    "resolver-native".to_owned(),
                 ));
             }
             ExecutionCommandIntent::NativeGlobal(_) => {

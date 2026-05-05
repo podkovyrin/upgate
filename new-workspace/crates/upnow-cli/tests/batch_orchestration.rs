@@ -621,11 +621,6 @@ fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
         )),
         Ok(CommandOutput::from_parts(
             success_status(),
-            "alpha-ready v1.0.0 [latest: 1.2.0] [required: ==1.0.0]\n",
-            "",
-        )),
-        Ok(CommandOutput::from_parts(
-            success_status(),
             text("uv", "deterministic/pip-plan/alpha-ready.txt"),
             "",
         )),
@@ -1807,11 +1802,6 @@ fn selected_uv_plan_routes_through_batch_core() {
         )),
         Ok(CommandOutput::from_parts(
             success_status(),
-            "alpha-ready v1.0.0 [latest: 1.2.0] [required: ==1.0.0]\n",
-            "",
-        )),
-        Ok(CommandOutput::from_parts(
-            success_status(),
             text("uv", "deterministic/pip-plan/alpha-ready.txt"),
             "",
         )),
@@ -1849,11 +1839,6 @@ fn selected_uv_apply_builds_native_selected_install_command() {
         Ok(CommandOutput::from_parts(
             success_status(),
             "alpha-ready v1.0.0 [required: ==1.0.0]\n",
-            "",
-        )),
-        Ok(CommandOutput::from_parts(
-            success_status(),
-            "alpha-ready v1.0.0 [latest: 1.2.0] [required: ==1.0.0]\n",
             "",
         )),
         Ok(CommandOutput::from_parts(
@@ -1900,11 +1885,6 @@ fn selected_uv_plan_keeps_dry_run_target_when_latest_is_newer() {
         Ok(CommandOutput::from_parts(
             success_status(),
             "alpha-ready v1.0.0 [required: ==1.0.0]\n",
-            "",
-        )),
-        Ok(CommandOutput::from_parts(
-            success_status(),
-            "alpha-ready v1.0.0 [latest: 1.2.0] [required: ==1.0.0]\n",
             "",
         )),
         Ok(CommandOutput::from_parts(
@@ -1986,7 +1966,7 @@ fn selected_uv_plan_does_not_invent_target_when_dry_run_selects_current() {
 }
 
 #[test]
-fn selected_uv_plan_reports_delayed_when_latest_is_too_fresh() {
+fn selected_uv_plan_ignores_too_fresh_advisory_when_dry_run_selects_current() {
     let process = ProcessRunner::fake([
         Ok(CommandOutput::from_parts(
             success_status(),
@@ -1996,11 +1976,6 @@ fn selected_uv_plan_reports_delayed_when_latest_is_too_fresh() {
         Ok(CommandOutput::from_parts(
             success_status(),
             "alpha-ready v1.0.0 [required: ==1.0.0]\n",
-            "",
-        )),
-        Ok(CommandOutput::from_parts(
-            success_status(),
-            "alpha-ready v1.0.0 [latest: 1.2.0] [required: ==1.0.0]\n",
             "",
         )),
         Ok(CommandOutput::from_parts(
@@ -2028,10 +2003,10 @@ fn selected_uv_plan_reports_delayed_when_latest_is_too_fresh() {
         &["uv".to_owned()],
         &[],
     )
-    .expect("uv plan should render delayed latest");
+    .expect("uv plan should render current selected target");
 
-    assert!(output.contains("delayed alpha-ready 1.0.0 -> 1.2.0 release too fresh"));
-    assert!(!output.contains("current alpha-ready 1.0.0"));
+    assert!(output.contains("current alpha-ready 1.0.0"));
+    assert!(!output.contains("delayed alpha-ready 1.0.0 -> 1.2.0 release too fresh"));
 }
 
 #[test]
@@ -2045,11 +2020,6 @@ fn selected_uv_plan_blocks_missing_metadata_for_one_item() {
         Ok(CommandOutput::from_parts(
             success_status(),
             "alpha-ready v1.0.0 [required: ==1.0.0]\nmissing-meta v1.0.0 [required: ==1.0.0]\n",
-            "",
-        )),
-        Ok(CommandOutput::from_parts(
-            success_status(),
-            "alpha-ready v1.0.0 [latest: 1.2.0] [required: ==1.0.0]\nmissing-meta v1.0.0 [latest: 1.2.0] [required: ==1.0.0]\n",
             "",
         )),
         Ok(CommandOutput::from_parts(
@@ -2104,11 +2074,6 @@ fn selected_uv_apply_honors_pins_without_running_them() {
         Ok(CommandOutput::from_parts(
             success_status(),
             "alpha-ready v1.0.0 [required: ==1.0.0]\npinned-pkg v3.0.0 [required: ==3.0.0]\n",
-            "",
-        )),
-        Ok(CommandOutput::from_parts(
-            success_status(),
-            "alpha-ready v1.0.0 [latest: 1.2.0] [required: ==1.0.0]\npinned-pkg v3.0.0 [latest: 3.1.0] [required: ==3.0.0]\n",
             "",
         )),
         Ok(CommandOutput::from_parts(
