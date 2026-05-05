@@ -9,24 +9,22 @@ use clap::{Parser, Subcommand};
 use config::{ConfigError, ManagerConfig, UpnowConfig};
 use upnow_domain::{
     ExecutionEligibility, InstalledTool, ManagerId, PlanIssue, ReleaseLookupResult, ScanIssue,
-    ScanItem, ScanReport, UpdatePlan, UpdateSeed,
+    ScanItem, ScanReport, UpdatePlan,
 };
 use upnow_execution::{
     ExecutionCapabilities, ExecutionCommand, ExecutionCommandItem, ExecutionReport,
     ExecutionSelectionError, ExecutionStatus, execute_commands, resolve_selection_for_execution,
 };
-use upnow_infra::{Clock, Env, MutationMode, ProcessRunner};
+use upnow_infra::{Clock, Env, HttpClient, HttpSettings, MutationMode, ProcessRunner};
 use upnow_managers::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerExecutionCommand,
-    UpdateDiscovery,
 };
-use upnow_managers::npm_family_release::lookup_release;
 use upnow_managers::registry::{available_managers, manager_by_id};
-use upnow_planning::{PlanningSettings, default_batch_selection, update_plan_from_seeds};
+use upnow_planning::{PlanningSettings, default_batch_selection, update_plan_from_inputs};
 use upnow_presentation::{
     render_execution_report, render_manager_error, render_scan_report, render_update_plan,
 };
-use upnow_release::{newest_semver_version, release_age_for_version};
+use upnow_release::release_age_for_version;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchCommand {
@@ -125,8 +123,40 @@ impl From<ConfigError> for AppError {
 /// Returns an error for config, discovery, planning, or execution failures.
 pub fn run_batch(
     command: BatchCommand,
+    config: UpnowConfig,
+    process: &ProcessRunner,
+    clock: Clock,
+    verbose: bool,
+    selected_managers: &[String],
+    overrides: &[String],
+) -> Result<String, AppError> {
+    let env = Env::real();
+    let http = HttpClient::real(&HttpSettings::default_client_settings())
+        .map_err(|err| AppError::Manager(err.to_string()))?;
+    run_batch_with_sources(
+        command,
+        config,
+        process,
+        &http,
+        &env,
+        clock,
+        verbose,
+        selected_managers,
+        overrides,
+    )
+}
+
+/// Runs a batch command with explicit release metadata sources.
+///
+/// # Errors
+///
+/// Returns an error for config, discovery, planning, or execution failures.
+pub fn run_batch_with_sources(
+    command: BatchCommand,
     mut config: UpnowConfig,
     process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
     clock: Clock,
     verbose: bool,
     selected_managers: &[String],
@@ -139,13 +169,24 @@ pub fn run_batch(
         config.apply_cli_override(override_value)?;
     }
     let manager_ids = selected_manager_ids(selected_managers)?;
-    run_batch_for_managers(command, &config, process, clock, verbose, &manager_ids)
+    run_batch_for_managers(
+        command,
+        &config,
+        process,
+        http,
+        env,
+        clock,
+        verbose,
+        &manager_ids,
+    )
 }
 
 fn run_batch_for_managers(
     command: BatchCommand,
     config: &UpnowConfig,
     process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
     clock: Clock,
     verbose: bool,
     manager_ids: &[ManagerId],
@@ -153,7 +194,9 @@ fn run_batch_for_managers(
     let mut output = String::new();
     let mut had_error = false;
     for manager_id in manager_ids {
-        match run_manager_batch(command, config, process, clock, verbose, manager_id) {
+        match run_manager_batch(
+            command, config, process, http, env, clock, verbose, manager_id,
+        ) {
             Ok(manager_output) => {
                 had_error |= manager_output.failed;
                 output.push_str(&manager_output.rendered);
@@ -185,6 +228,8 @@ fn run_manager_batch(
     command: BatchCommand,
     config: &UpnowConfig,
     process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
     clock: Clock,
     verbose: bool,
     manager_id: &ManagerId,
@@ -206,7 +251,7 @@ fn run_manager_batch(
             let old_age_threshold = config.scan_old_age_threshold()?;
             Ok(ManagerBatchOutput {
                 rendered: render_scan_report(
-                    &build_verbose_scan_report(manager, process, clock.now())?,
+                    &build_verbose_scan_report(manager, process, http, env, clock.now())?,
                     Some(old_age_threshold),
                 ),
                 failed: false,
@@ -217,14 +262,14 @@ fn run_manager_batch(
             failed: false,
         }),
         BatchCommand::Plan => {
-            let plan = build_manager_plan(manager, process, clock, &manager_config)?;
+            let plan = build_manager_plan(manager, process, http, env, clock, &manager_config)?;
             Ok(ManagerBatchOutput {
                 rendered: render_update_plan(&plan),
                 failed: false,
             })
         }
         BatchCommand::Apply => {
-            let plan = build_manager_plan(manager, process, clock, &manager_config)?;
+            let plan = build_manager_plan(manager, process, http, env, clock, &manager_config)?;
             let selection = default_batch_selection(&plan, &manager_config.pinned)
                 .map_err(|err| AppError::Planning(err.to_string()))?;
             let execution_plan = resolve_selection_for_execution(
@@ -237,6 +282,7 @@ fn run_manager_batch(
             let commands = manager
                 .commands_for_execution_plan(
                     process,
+                    env,
                     &execution_plan,
                     CommandBuildSettings {
                         version_policy: manager_config.version_policy,
@@ -312,6 +358,8 @@ fn build_scan_report(
 fn build_verbose_scan_report(
     manager: &dyn ManagerAdapter,
     process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
     now: SystemTime,
 ) -> Result<ScanReport, AppError> {
     let manager_id = manager.manager_id();
@@ -354,7 +402,7 @@ fn build_verbose_scan_report(
 
     let mut items = Vec::new();
     for tool in installed {
-        items.push(verbose_scan_item(manager, process, now, tool)?);
+        items.push(verbose_scan_item(manager, process, http, env, now, tool)?);
     }
 
     Ok(ScanReport::new(manager_id, items, Vec::new()))
@@ -363,13 +411,15 @@ fn build_verbose_scan_report(
 fn verbose_scan_item(
     manager: &dyn ManagerAdapter,
     process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
     now: SystemTime,
     tool: InstalledTool,
 ) -> Result<ScanItem, AppError> {
-    let request = manager
-        .release_lookup_request(process, &tool.package_name)
-        .map_err(map_manager_error)?;
-    match lookup_release(process, &request).map_err(map_release_infra_error)? {
+    match manager
+        .release_lookup(process, http, env, &tool.package_name)
+        .map_err(map_manager_error)?
+    {
         ReleaseLookupResult::Known(timeline) => {
             match release_age_for_version(&timeline, &tool.installed_version, now) {
                 Some(age) => Ok(ScanItem::InstalledWithReleaseAge { tool, age }),
@@ -412,6 +462,8 @@ fn run_cli(cli: Cli) -> Result<String, AppError> {
 fn build_manager_plan(
     manager: &dyn ManagerAdapter,
     process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
     clock: Clock,
     manager_config: &ManagerConfig,
 ) -> Result<UpdatePlan, AppError> {
@@ -440,13 +492,12 @@ fn build_manager_plan(
             .map_err(|err| AppError::Planning(err.to_string()));
         }
     }
-    let discoveries = manager
-        .update_discoveries(process, manager_config.version_policy)
+    let inputs = manager
+        .update_inputs(process, http, env, manager_config.version_policy)
         .map_err(map_manager_error)?;
-    let seeds = update_seeds_from_discoveries(process, discoveries)?;
-    update_plan_from_seeds(
+    update_plan_from_inputs(
         manager_config.manager_id.clone(),
-        seeds,
+        inputs,
         PlanningSettings {
             policy: manager_config.version_policy,
             now: clock.now(),
@@ -455,31 +506,6 @@ fn build_manager_plan(
         },
     )
     .map_err(|err| AppError::Planning(err.to_string()))
-}
-
-fn update_seeds_from_discoveries(
-    process: &ProcessRunner,
-    discoveries: Vec<UpdateDiscovery>,
-) -> Result<Vec<UpdateSeed>, AppError> {
-    let mut seeds = Vec::new();
-    for discovery in discoveries {
-        let lookup =
-            lookup_release(process, &discovery.release_lookup).map_err(map_release_infra_error)?;
-        let discovered_target = match &lookup {
-            ReleaseLookupResult::Known(timeline) => newest_semver_version(timeline)
-                .unwrap_or_else(|| discovery.installed.installed_version.clone()),
-            ReleaseLookupResult::MissingMetadata | ReleaseLookupResult::LookupFailed(_) => {
-                discovery.installed.installed_version.clone()
-            }
-        };
-        seeds.push(UpdateSeed::new(
-            discovery.installed,
-            discovered_target,
-            discovery.version_scheme,
-            lookup,
-        ));
-    }
-    Ok(seeds)
 }
 
 fn execution_eligibility(manager: &dyn ManagerAdapter) -> ExecutionEligibility {
@@ -526,14 +552,6 @@ fn execution_report_has_failures(report: &ExecutionReport) -> bool {
 }
 
 fn map_manager_error(err: ManagerAdapterError) -> AppError {
-    if err.is_interruption() {
-        AppError::Interrupted(err.to_string())
-    } else {
-        AppError::Manager(err.to_string())
-    }
-}
-
-fn map_release_infra_error(err: upnow_infra::InfraError) -> AppError {
     if err.is_interruption() {
         AppError::Interrupted(err.to_string())
     } else {

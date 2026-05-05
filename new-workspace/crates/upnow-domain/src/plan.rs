@@ -52,6 +52,15 @@ impl UpdateSeed {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagerUpdateInput {
+    Seed(UpdateSeed),
+    ResolverError {
+        installed: InstalledTool,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateCandidate {
     pub tool_id: ToolId,
     pub package_name: PackageName,
@@ -168,7 +177,7 @@ pub enum PlanItem {
     },
     ResolverError {
         id: PlanItemId,
-        seed: UpdateSeed,
+        installed: InstalledTool,
         message: String,
     },
 }
@@ -256,12 +265,10 @@ impl PlanItem {
             Self::Update { candidate, .. } | Self::Delayed { candidate, .. } => {
                 candidate.package_name()
             }
-            Self::Current { installed, .. } | Self::Skipped { installed, .. } => {
-                &installed.package_name
-            }
-            Self::Blocked { seed, .. } | Self::ResolverError { seed, .. } => {
-                &seed.installed.package_name
-            }
+            Self::Current { installed, .. }
+            | Self::Skipped { installed, .. }
+            | Self::ResolverError { installed, .. } => &installed.package_name,
+            Self::Blocked { seed, .. } => &seed.installed.package_name,
         }
     }
 }

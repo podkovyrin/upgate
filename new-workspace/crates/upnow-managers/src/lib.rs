@@ -2,8 +2,9 @@
 
 pub mod adapter;
 pub mod bun;
+pub mod cargo;
 pub mod npm;
-pub mod npm_family_release;
+pub mod pipx;
 pub mod pnpm;
 pub mod registry;
 pub mod yarn;

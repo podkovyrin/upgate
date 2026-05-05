@@ -86,7 +86,7 @@ pub fn evaluate_seed(
             ),
             VersionScheme::ManagerNative => PlanItem::ResolverError {
                 id,
-                seed,
+                installed: seed.installed.clone(),
                 message: "manager-native evaluation requires manager-specific planner".to_owned(),
             },
         },
@@ -194,14 +194,14 @@ fn evaluate_semver_seed(
     let Ok(installed_version) = parse_semver(seed.installed.installed_version.as_str()) else {
         return PlanItem::ResolverError {
             id,
-            seed,
+            installed: seed.installed.clone(),
             message: "failed to parse installed version".to_owned(),
         };
     };
     let Ok(discovered_target) = parse_semver(seed.discovered_target.as_str()) else {
         return PlanItem::ResolverError {
             id,
-            seed,
+            installed: seed.installed.clone(),
             message: "failed to parse discovered target version".to_owned(),
         };
     };
@@ -211,7 +211,7 @@ fn evaluate_semver_seed(
             let bad_version = entry.version.as_str().to_owned();
             return PlanItem::ResolverError {
                 id,
-                seed,
+                installed: seed.installed.clone(),
                 message: format!("failed to parse release version `{bad_version}`"),
             };
         };
@@ -238,7 +238,7 @@ fn evaluate_semver_seed(
             let bad_version = entry.version.as_str().to_owned();
             return PlanItem::ResolverError {
                 id,
-                seed,
+                installed: seed.installed.clone(),
                 message: format!("failed to parse release version `{bad_version}`"),
             };
         };
@@ -335,14 +335,14 @@ fn evaluate_pep440_seed(
     let Ok(installed_version) = parse_pep440(seed.installed.installed_version.as_str()) else {
         return PlanItem::ResolverError {
             id,
-            seed,
+            installed: seed.installed.clone(),
             message: "failed to parse installed version".to_owned(),
         };
     };
     let Ok(discovered_target) = parse_pep440(seed.discovered_target.as_str()) else {
         return PlanItem::ResolverError {
             id,
-            seed,
+            installed: seed.installed.clone(),
             message: "failed to parse discovered target version".to_owned(),
         };
     };
@@ -352,7 +352,7 @@ fn evaluate_pep440_seed(
             let bad_version = entry.version.as_str().to_owned();
             return PlanItem::ResolverError {
                 id,
-                seed,
+                installed: seed.installed.clone(),
                 message: format!("failed to parse release version `{bad_version}`"),
             };
         };
@@ -379,7 +379,7 @@ fn evaluate_pep440_seed(
             let bad_version = entry.version.as_str().to_owned();
             return PlanItem::ResolverError {
                 id,
-                seed,
+                installed: seed.installed.clone(),
                 message: format!("failed to parse release version `{bad_version}`"),
             };
         };

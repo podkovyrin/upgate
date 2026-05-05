@@ -1,20 +1,24 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Display};
+use std::time::{Duration, SystemTime};
 
+use chrono::DateTime;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, InstalledTool, ManagerId, ManagerMetadata, PackageName, ToolId, ToolName,
-    UnsupportedReason, UpdateCandidate, VersionPolicy, VersionScheme, VersionText,
+    DomainError, InstalledTool, ManagerId, ManagerMetadata, ManagerUpdateInput, PackageName,
+    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
+    ToolId, ToolName, UnsupportedReason, UpdateCandidate, UpdateSeed, VersionPolicy, VersionScheme,
+    VersionText,
 };
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
-use upnow_infra::{CommandCheck, CommandSpec, InfraError, ProcessRunner};
+use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
+use upnow_release::newest_semver_version;
 
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
     ManagerCapabilities, ManagerExecutionCommand, ManagerExecutionCommandItem,
-    UnsupportedManagerVersion, UpdateDiscovery,
+    UnsupportedManagerVersion,
 };
-use crate::npm_family_release::{NpmRegistryTimeSource, ReleaseLookupRequest};
 
 pub const MANAGER_ID: &str = "yarn";
 
@@ -24,6 +28,8 @@ pub enum YarnError {
     Interrupted(String),
     Json(String),
     Domain(String),
+    InvalidTimestamp { version: String, value: String },
+    MissingReleaseMetadata(String),
     InvalidMajorVersion(String),
     UnsupportedMajorVersion(u64),
     UnsupportedCommandIntent(String),
@@ -35,7 +41,14 @@ impl Display for YarnError {
             Self::Infra(detail)
             | Self::Interrupted(detail)
             | Self::Json(detail)
-            | Self::Domain(detail) => formatter.write_str(detail),
+            | Self::Domain(detail)
+            | Self::MissingReleaseMetadata(detail) => formatter.write_str(detail),
+            Self::InvalidTimestamp { version, value } => {
+                write!(
+                    formatter,
+                    "invalid timestamp `{value}` for version `{version}`"
+                )
+            }
             Self::InvalidMajorVersion(value) => {
                 write!(
                     formatter,
@@ -99,6 +112,15 @@ enum YarnGlobalListJsonLine {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum YarnTimeJsonLine {
+    #[serde(rename = "inspect")]
+    Inspect { data: BTreeMap<String, String> },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
 struct YarnListTreeData {
     #[serde(default)]
     trees: Vec<YarnListTreeNode>,
@@ -139,26 +161,31 @@ impl ManagerAdapter for YarnManager {
         installed_global_classic(process).map_err(|err| adapter_error(&err))
     }
 
-    fn release_lookup_request(
-        &self,
-        _process: &ProcessRunner,
-        package: &PackageName,
-    ) -> Result<ReleaseLookupRequest, ManagerAdapterError> {
-        Ok(release_lookup_request(package))
-    }
-
-    fn update_discoveries(
+    fn release_lookup(
         &self,
         process: &ProcessRunner,
+        _http: &HttpClient,
+        _env: &Env,
+        package: &PackageName,
+    ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
+        lookup_release(process, package).map_err(|err| adapter_error(&err))
+    }
+
+    fn update_inputs(
+        &self,
+        process: &ProcessRunner,
+        _http: &HttpClient,
+        _env: &Env,
         version_policy: VersionPolicy,
-    ) -> Result<Vec<UpdateDiscovery>, ManagerAdapterError> {
+    ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
         self.validate_version_policy(version_policy)?;
-        update_discoveries(process).map_err(|err| adapter_error(&err))
+        update_inputs(process).map_err(|err| adapter_error(&err))
     }
 
     fn commands_for_execution_plan(
         &self,
         _process: &ProcessRunner,
+        _env: &Env,
         plan: &ResolvedExecutionPlan,
         _settings: CommandBuildSettings,
     ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError> {
@@ -242,11 +269,64 @@ fn installed_global_classic(process: &ProcessRunner) -> Result<Vec<InstalledTool
 /// # Errors
 ///
 /// Returns an error when discovery fails.
-pub fn update_discoveries(process: &ProcessRunner) -> Result<Vec<UpdateDiscovery>, YarnError> {
-    installed_global_classic(process)?
-        .into_iter()
-        .map(update_discovery)
-        .collect()
+pub fn update_inputs(process: &ProcessRunner) -> Result<Vec<ManagerUpdateInput>, YarnError> {
+    let mut inputs = Vec::new();
+    for tool in installed_global_classic(process)? {
+        let lookup = lookup_release(process, &tool.package_name)?;
+        inputs.push(update_input(tool, lookup));
+    }
+    Ok(inputs)
+}
+
+/// Looks up Yarn classic registry release metadata.
+///
+/// # Errors
+///
+/// Returns an error only when command execution is interrupted.
+pub fn lookup_release(
+    process: &ProcessRunner,
+    package: &PackageName,
+) -> Result<ReleaseLookupResult, YarnError> {
+    let command = CommandSpec::new("yarn", ["info", package.as_str(), "time", "--json"]);
+    match process.run(&command, &CommandCheck::Success) {
+        Ok(output) => match output.stdout() {
+            Ok(stdout) => match parse_yarn_time_jsonl(package, stdout) {
+                Ok(timeline) => Ok(ReleaseLookupResult::Known(timeline)),
+                Err(YarnError::MissingReleaseMetadata(_)) => {
+                    Ok(ReleaseLookupResult::MissingMetadata)
+                }
+                Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
+                    err.to_string(),
+                ))),
+            },
+            Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
+                err.to_string(),
+            ))),
+        },
+        Err(err) if err.is_interruption() => Err(YarnError::from(err)),
+        Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
+            err.to_string(),
+        ))),
+    }
+}
+
+/// Parses Yarn classic JSONL `info <package> time --json` metadata.
+///
+/// # Errors
+///
+/// Returns an error when no inspect object is present, timestamps are invalid,
+/// or no version timestamps are present.
+pub fn parse_yarn_time_jsonl(
+    package: &PackageName,
+    raw: &str,
+) -> Result<ReleaseTimeline, YarnError> {
+    let timestamps = parse_yarn_inspect_object(raw).ok_or_else(|| {
+        YarnError::MissingReleaseMetadata(format!(
+            "registry time metadata is empty for {}",
+            package.as_str()
+        ))
+    })?;
+    time_map_to_timeline(package, timestamps)
 }
 
 /// Creates exact Yarn commands for a resolved execution plan.
@@ -359,18 +439,90 @@ fn installed_tool(package: YarnInstalledPackage) -> Result<InstalledTool, YarnEr
     ))
 }
 
-fn update_discovery(tool: InstalledTool) -> Result<UpdateDiscovery, YarnError> {
-    Ok(UpdateDiscovery {
-        release_lookup: release_lookup_request(&tool.package_name),
-        installed: tool,
-        version_scheme: VersionScheme::SemVer,
+fn update_input(tool: InstalledTool, lookup: ReleaseLookupResult) -> ManagerUpdateInput {
+    let discovered_target = match &lookup {
+        ReleaseLookupResult::Known(timeline) => {
+            newest_semver_version(timeline).unwrap_or_else(|| tool.installed_version.clone())
+        }
+        ReleaseLookupResult::MissingMetadata | ReleaseLookupResult::LookupFailed(_) => {
+            tool.installed_version.clone()
+        }
+    };
+    ManagerUpdateInput::Seed(UpdateSeed::new(
+        tool,
+        discovered_target,
+        VersionScheme::SemVer,
+        lookup,
+    ))
+}
+
+fn time_map_to_timeline(
+    package: &PackageName,
+    timestamps: BTreeMap<String, String>,
+) -> Result<ReleaseTimeline, YarnError> {
+    if timestamps.is_empty() {
+        return Err(YarnError::MissingReleaseMetadata(format!(
+            "registry time metadata is empty for {}",
+            package.as_str()
+        )));
+    }
+
+    let mut entries = Vec::new();
+    for (version, timestamp) in timestamps {
+        if version == "created" || version == "modified" {
+            continue;
+        }
+        let parsed = parse_timestamp(&timestamp).ok_or_else(|| YarnError::InvalidTimestamp {
+            version: version.clone(),
+            value: timestamp.clone(),
+        })?;
+        entries.push(ReleaseEntry::new(
+            VersionText::new(version)?,
+            ReleaseTimestamp::new(system_time_from_datetime(parsed)),
+        ));
+    }
+    if entries.is_empty() {
+        return Err(YarnError::MissingReleaseMetadata(format!(
+            "registry time metadata is empty for {}",
+            package.as_str()
+        )));
+    }
+    Ok(ReleaseTimeline::new(entries))
+}
+
+fn parse_yarn_inspect_object(raw: &str) -> Option<BTreeMap<String, String>> {
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed: YarnTimeJsonLine = match serde_json::from_str(trimmed) {
+            Ok(parsed) => parsed,
+            Err(_) => continue,
+        };
+        if let YarnTimeJsonLine::Inspect { data } = parsed {
+            return Some(data);
+        }
+    }
+    None
+}
+
+fn parse_timestamp(value: &str) -> Option<DateTime<chrono::FixedOffset>> {
+    DateTime::parse_from_rfc3339(value).ok().or_else(|| {
+        let naive = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f").ok()?;
+        Some(DateTime::from_naive_utc_and_offset(
+            naive,
+            chrono::FixedOffset::east_opt(0)?,
+        ))
     })
 }
 
-fn release_lookup_request(package: &PackageName) -> ReleaseLookupRequest {
-    ReleaseLookupRequest::NpmRegistryTime {
-        source: NpmRegistryTimeSource::YarnClassic,
-        package: package.clone(),
+fn system_time_from_datetime(datetime: DateTime<chrono::FixedOffset>) -> SystemTime {
+    let timestamp = datetime.timestamp();
+    if timestamp >= 0 {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(timestamp.unsigned_abs())
+    } else {
+        SystemTime::UNIX_EPOCH - Duration::from_secs(timestamp.unsigned_abs())
     }
 }
 
@@ -378,9 +530,11 @@ fn adapter_error(err: &YarnError) -> ManagerAdapterError {
     let detail = err.to_string();
     let kind = match err {
         &YarnError::Interrupted(_) => ManagerAdapterErrorKind::Interrupted,
-        &YarnError::Json(_) | &YarnError::Domain(_) | &YarnError::InvalidMajorVersion(_) => {
-            ManagerAdapterErrorKind::Parse
-        }
+        &YarnError::Json(_)
+        | &YarnError::Domain(_)
+        | &YarnError::InvalidTimestamp { .. }
+        | &YarnError::MissingReleaseMetadata(_)
+        | &YarnError::InvalidMajorVersion(_) => ManagerAdapterErrorKind::Parse,
         &YarnError::UnsupportedCommandIntent(_) => ManagerAdapterErrorKind::CommandConstruction,
         &YarnError::Infra(_) | &YarnError::UnsupportedMajorVersion(_) => {
             ManagerAdapterErrorKind::Infra

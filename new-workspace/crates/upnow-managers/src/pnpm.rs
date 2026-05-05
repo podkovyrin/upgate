@@ -1,19 +1,22 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Display};
+use std::time::{Duration, SystemTime};
 
+use chrono::DateTime;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, InstalledTool, ManagerId, ManagerMetadata, PackageName, ToolId, ToolName,
-    UpdateCandidate, VersionPolicy, VersionScheme, VersionText,
+    DomainError, InstalledTool, ManagerId, ManagerMetadata, ManagerUpdateInput, PackageName,
+    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
+    ToolId, ToolName, UpdateCandidate, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
-use upnow_infra::{CommandCheck, CommandSpec, InfraError, ProcessRunner};
+use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
+use upnow_release::newest_semver_version;
 
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerExecutionCommand, ManagerExecutionCommandItem, UpdateDiscovery,
+    ManagerCapabilities, ManagerExecutionCommand, ManagerExecutionCommandItem,
 };
-use crate::npm_family_release::{NpmRegistryTimeSource, ReleaseLookupRequest};
 
 pub const MANAGER_ID: &str = "pnpm";
 
@@ -23,6 +26,8 @@ pub enum PnpmError {
     Interrupted(String),
     Json(String),
     Domain(String),
+    InvalidTimestamp { version: String, value: String },
+    MissingReleaseMetadata(String),
     UnsupportedCommandIntent(String),
 }
 
@@ -32,7 +37,14 @@ impl Display for PnpmError {
             Self::Infra(detail)
             | Self::Interrupted(detail)
             | Self::Json(detail)
-            | Self::Domain(detail) => formatter.write_str(detail),
+            | Self::Domain(detail)
+            | Self::MissingReleaseMetadata(detail) => formatter.write_str(detail),
+            Self::InvalidTimestamp { version, value } => {
+                write!(
+                    formatter,
+                    "invalid timestamp `{value}` for version `{version}`"
+                )
+            }
             Self::UnsupportedCommandIntent(kind) => {
                 write!(
                     formatter,
@@ -103,26 +115,31 @@ impl ManagerAdapter for PnpmManager {
         installed_global(process).map_err(adapter_error)
     }
 
-    fn release_lookup_request(
-        &self,
-        _process: &ProcessRunner,
-        package: &PackageName,
-    ) -> Result<ReleaseLookupRequest, ManagerAdapterError> {
-        Ok(release_lookup_request(package))
-    }
-
-    fn update_discoveries(
+    fn release_lookup(
         &self,
         process: &ProcessRunner,
+        _http: &HttpClient,
+        _env: &Env,
+        package: &PackageName,
+    ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
+        lookup_release(process, package).map_err(adapter_error)
+    }
+
+    fn update_inputs(
+        &self,
+        process: &ProcessRunner,
+        _http: &HttpClient,
+        _env: &Env,
         version_policy: VersionPolicy,
-    ) -> Result<Vec<UpdateDiscovery>, ManagerAdapterError> {
+    ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
         self.validate_version_policy(version_policy)?;
-        update_discoveries(process, version_policy).map_err(adapter_error)
+        update_inputs(process, version_policy).map_err(adapter_error)
     }
 
     fn commands_for_execution_plan(
         &self,
         _process: &ProcessRunner,
+        _env: &Env,
         plan: &ResolvedExecutionPlan,
         _settings: CommandBuildSettings,
     ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError> {
@@ -252,15 +269,15 @@ pub fn outdated_global(process: &ProcessRunner) -> Result<Vec<PnpmOutdatedPackag
     parse_outdated_json(stdout)
 }
 
-/// Discovers pnpm packages that need release metadata before planning.
+/// Builds manager-owned planning inputs for pnpm.
 ///
 /// # Errors
 ///
-/// Returns an error when installed package discovery fails.
-pub fn update_discoveries(
+/// Returns an error when installed discovery fails or release lookup is interrupted.
+pub fn update_inputs(
     process: &ProcessRunner,
     version_policy: VersionPolicy,
-) -> Result<Vec<UpdateDiscovery>, PnpmError> {
+) -> Result<Vec<ManagerUpdateInput>, PnpmError> {
     let installed = match version_policy {
         VersionPolicy::None => outdated_global(process)?
             .into_iter()
@@ -268,7 +285,58 @@ pub fn update_discoveries(
             .collect::<Result<Vec<_>, _>>()?,
         VersionPolicy::Stable | VersionPolicy::SameTrack => installed_global(process)?,
     };
-    installed.into_iter().map(update_discovery).collect()
+    let mut inputs = Vec::new();
+    for tool in installed {
+        let lookup = lookup_release(process, &tool.package_name)?;
+        inputs.push(update_input(tool, lookup));
+    }
+    Ok(inputs)
+}
+
+/// Looks up pnpm registry release metadata.
+///
+/// # Errors
+///
+/// Returns an error only when command execution is interrupted.
+pub fn lookup_release(
+    process: &ProcessRunner,
+    package: &PackageName,
+) -> Result<ReleaseLookupResult, PnpmError> {
+    let command = CommandSpec::new("pnpm", ["view", package.as_str(), "time", "--json"]);
+    match process.run(&command, &CommandCheck::Success) {
+        Ok(output) => match output.stdout() {
+            Ok(stdout) => match parse_pnpm_time_json(package, stdout) {
+                Ok(timeline) => Ok(ReleaseLookupResult::Known(timeline)),
+                Err(PnpmError::MissingReleaseMetadata(_)) => {
+                    Ok(ReleaseLookupResult::MissingMetadata)
+                }
+                Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
+                    err.to_string(),
+                ))),
+            },
+            Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
+                err.to_string(),
+            ))),
+        },
+        Err(err) if err.is_interruption() => Err(PnpmError::from(err)),
+        Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
+            err.to_string(),
+        ))),
+    }
+}
+
+/// Parses pnpm registry `time` JSON metadata.
+///
+/// # Errors
+///
+/// Returns an error when JSON or timestamps are invalid, or no version timestamps are present.
+pub fn parse_pnpm_time_json(
+    package: &PackageName,
+    raw: &str,
+) -> Result<ReleaseTimeline, PnpmError> {
+    let timestamps: BTreeMap<String, String> =
+        serde_json::from_str(raw).map_err(|err| PnpmError::Json(err.to_string()))?;
+    time_map_to_timeline(package, timestamps)
 }
 
 /// Creates exact pnpm commands for a resolved execution plan.
@@ -352,25 +420,83 @@ fn installed_tool_from_outdated(package: PnpmOutdatedPackage) -> Result<Installe
     ))
 }
 
-fn update_discovery(tool: InstalledTool) -> Result<UpdateDiscovery, PnpmError> {
-    Ok(UpdateDiscovery {
-        release_lookup: release_lookup_request(&tool.package_name),
-        installed: tool,
-        version_scheme: VersionScheme::SemVer,
+fn update_input(tool: InstalledTool, lookup: ReleaseLookupResult) -> ManagerUpdateInput {
+    let discovered_target = match &lookup {
+        ReleaseLookupResult::Known(timeline) => {
+            newest_semver_version(timeline).unwrap_or_else(|| tool.installed_version.clone())
+        }
+        ReleaseLookupResult::MissingMetadata | ReleaseLookupResult::LookupFailed(_) => {
+            tool.installed_version.clone()
+        }
+    };
+    ManagerUpdateInput::Seed(UpdateSeed::new(
+        tool,
+        discovered_target,
+        VersionScheme::SemVer,
+        lookup,
+    ))
+}
+
+fn time_map_to_timeline(
+    package: &PackageName,
+    timestamps: BTreeMap<String, String>,
+) -> Result<ReleaseTimeline, PnpmError> {
+    if timestamps.is_empty() {
+        return Err(PnpmError::MissingReleaseMetadata(format!(
+            "registry time metadata is empty for {}",
+            package.as_str()
+        )));
+    }
+
+    let mut entries = Vec::new();
+    for (version, timestamp) in timestamps {
+        if version == "created" || version == "modified" {
+            continue;
+        }
+        let parsed = parse_timestamp(&timestamp).ok_or_else(|| PnpmError::InvalidTimestamp {
+            version: version.clone(),
+            value: timestamp.clone(),
+        })?;
+        entries.push(ReleaseEntry::new(
+            VersionText::new(version)?,
+            ReleaseTimestamp::new(system_time_from_datetime(parsed)),
+        ));
+    }
+    if entries.is_empty() {
+        return Err(PnpmError::MissingReleaseMetadata(format!(
+            "registry time metadata is empty for {}",
+            package.as_str()
+        )));
+    }
+    Ok(ReleaseTimeline::new(entries))
+}
+
+fn parse_timestamp(value: &str) -> Option<DateTime<chrono::FixedOffset>> {
+    DateTime::parse_from_rfc3339(value).ok().or_else(|| {
+        let naive = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f").ok()?;
+        Some(DateTime::from_naive_utc_and_offset(
+            naive,
+            chrono::FixedOffset::east_opt(0)?,
+        ))
     })
 }
 
-fn release_lookup_request(package: &PackageName) -> ReleaseLookupRequest {
-    ReleaseLookupRequest::NpmRegistryTime {
-        source: NpmRegistryTimeSource::Pnpm,
-        package: package.clone(),
+fn system_time_from_datetime(datetime: DateTime<chrono::FixedOffset>) -> SystemTime {
+    let timestamp = datetime.timestamp();
+    if timestamp >= 0 {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(timestamp.unsigned_abs())
+    } else {
+        SystemTime::UNIX_EPOCH - Duration::from_secs(timestamp.unsigned_abs())
     }
 }
 
 fn adapter_error(err: PnpmError) -> ManagerAdapterError {
     let kind = match &err {
         PnpmError::Interrupted(_) => ManagerAdapterErrorKind::Interrupted,
-        PnpmError::Json(_) | PnpmError::Domain(_) => ManagerAdapterErrorKind::Parse,
+        PnpmError::Json(_)
+        | PnpmError::Domain(_)
+        | PnpmError::InvalidTimestamp { .. }
+        | PnpmError::MissingReleaseMetadata(_) => ManagerAdapterErrorKind::Parse,
         PnpmError::UnsupportedCommandIntent(_) => ManagerAdapterErrorKind::CommandConstruction,
         PnpmError::Infra(_) => ManagerAdapterErrorKind::Infra,
     };

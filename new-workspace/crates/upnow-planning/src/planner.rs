@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
-    DomainError, ExecutionEligibility, ManagerId, PackageName, PinChange, PlanItem, PlanItemId,
-    PlanSelection, SelectedItem, UpdatePlan, UpdateSeed, VersionPolicy,
+    DomainError, ExecutionEligibility, ManagerId, ManagerUpdateInput, PackageName, PinChange,
+    PlanItem, PlanItemId, PlanSelection, SelectedItem, UpdatePlan, UpdateSeed, VersionPolicy,
 };
 
 pub const PIN_ALL: &str = "*";
@@ -28,23 +28,52 @@ pub fn update_plan_from_seeds(
     seeds: Vec<UpdateSeed>,
     settings: PlanningSettings,
 ) -> Result<UpdatePlan, DomainError> {
+    update_plan_from_inputs(
+        manager_id,
+        seeds.into_iter().map(ManagerUpdateInput::Seed).collect(),
+        settings,
+    )
+}
+
+/// Builds a typed manager update plan from manager-owned planning inputs.
+///
+/// # Errors
+///
+/// Returns an error when generated plan item ids are invalid or duplicated.
+pub fn update_plan_from_inputs(
+    manager_id: ManagerId,
+    inputs: Vec<ManagerUpdateInput>,
+    settings: PlanningSettings,
+) -> Result<UpdatePlan, DomainError> {
     let mut items = Vec::new();
-    for seed in seeds {
-        let id = PlanItemId::new(format!(
-            "{}:{}",
-            manager_id.as_str(),
-            seed.installed.package_name.as_str()
-        ))?;
-        items.push(evaluate_seed(
-            id,
-            seed,
-            settings.policy,
-            settings.now,
-            settings.min_release_age,
-            settings.execution_eligibility,
-        ));
+    for input in inputs {
+        match input {
+            ManagerUpdateInput::Seed(seed) => {
+                let id = plan_item_id(&manager_id, seed.installed.package_name.as_str())?;
+                items.push(evaluate_seed(
+                    id,
+                    seed,
+                    settings.policy,
+                    settings.now,
+                    settings.min_release_age,
+                    settings.execution_eligibility,
+                ));
+            }
+            ManagerUpdateInput::ResolverError { installed, message } => {
+                let id = plan_item_id(&manager_id, installed.package_name.as_str())?;
+                items.push(PlanItem::ResolverError {
+                    id,
+                    installed,
+                    message,
+                });
+            }
+        }
     }
     UpdatePlan::new(manager_id, items)
+}
+
+fn plan_item_id(manager_id: &ManagerId, package_name: &str) -> Result<PlanItemId, DomainError> {
+    PlanItemId::new(format!("{}:{package_name}", manager_id.as_str()))
 }
 
 /// Selects default batch apply items: update candidates not currently pinned.

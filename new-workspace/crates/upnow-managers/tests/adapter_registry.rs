@@ -18,11 +18,17 @@ fn registry_selects_managers_by_id() {
         .expect("yarn should be registered");
     let bun =
         manager_by_id(&ManagerId::new("bun").expect("valid id")).expect("bun should be registered");
+    let cargo = manager_by_id(&ManagerId::new("cargo").expect("valid id"))
+        .expect("cargo should be registered");
+    let pipx = manager_by_id(&ManagerId::new("pipx").expect("valid id"))
+        .expect("pipx should be registered");
 
     assert_eq!(pnpm.id(), "pnpm");
     assert_eq!(npm.id(), "npm");
     assert_eq!(yarn.id(), "yarn");
     assert_eq!(bun.id(), "bun");
+    assert_eq!(cargo.id(), "cargo");
+    assert_eq!(pipx.id(), "pipx");
 }
 
 #[test]
@@ -63,6 +69,10 @@ fn capabilities_are_typed_per_manager() {
         .expect("yarn should be registered");
     let bun =
         manager_by_id(&ManagerId::new("bun").expect("valid id")).expect("bun should be registered");
+    let cargo = manager_by_id(&ManagerId::new("cargo").expect("valid id"))
+        .expect("cargo should be registered");
+    let pipx = manager_by_id(&ManagerId::new("pipx").expect("valid id"))
+        .expect("pipx should be registered");
 
     assert!(pnpm.capabilities().exact_target);
     assert!(!pnpm.capabilities().native_update);
@@ -73,6 +83,10 @@ fn capabilities_are_typed_per_manager() {
     assert!(bun.capabilities().exact_target);
     assert!(!bun.capabilities().native_update);
     assert!(bun.capabilities().native_global_update);
+    assert!(cargo.capabilities().exact_target);
+    assert!(!cargo.capabilities().native_update);
+    assert!(pipx.capabilities().exact_target);
+    assert!(!pipx.capabilities().native_update);
 }
 
 #[test]
@@ -118,6 +132,7 @@ fn pnpm_builds_commands_through_adapter_boundary() {
     let commands = manager
         .commands_for_execution_plan(
             &upnow_infra::ProcessRunner::fake([]),
+            &upnow_infra::Env::fixed([]),
             &execution_plan,
             CommandBuildSettings {
                 version_policy: VersionPolicy::Stable,

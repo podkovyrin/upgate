@@ -77,7 +77,7 @@ fn plan_item_variants_represent_phase_two_states() {
     };
     let resolver_error = PlanItem::ResolverError {
         id: item_id("resolver-error"),
-        seed: seed("omega-error"),
+        installed: installed_tool("omega-error", "1.0.0"),
         message: "registry timeout".to_owned(),
     };
 

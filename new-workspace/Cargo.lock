@@ -1356,6 +1356,8 @@ name = "upnow-managers"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "pep440_rs",
+ "semver",
  "serde",
  "serde_json",
  "upnow-domain",
@@ -1385,6 +1387,7 @@ dependencies = [
 name = "upnow-release"
 version = "0.1.0"
 dependencies = [
+ "pep440_rs",
  "semver",
  "upnow-domain",
 ]

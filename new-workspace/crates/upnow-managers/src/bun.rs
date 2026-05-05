@@ -1,20 +1,22 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Display};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
+use chrono::DateTime;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, InstalledTool, ManagerId, ManagerMetadata, PackageName, ToolId, ToolName,
-    UpdateCandidate, VersionPolicy, VersionScheme, VersionText,
+    DomainError, InstalledTool, ManagerId, ManagerMetadata, ManagerUpdateInput, PackageName,
+    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
+    ToolId, ToolName, UpdateCandidate, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
-use upnow_infra::{CommandCheck, CommandSpec, InfraError, ProcessRunner};
+use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
+use upnow_release::newest_semver_version;
 
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerExecutionCommand, ManagerExecutionCommandItem, UpdateDiscovery,
+    ManagerCapabilities, ManagerExecutionCommand, ManagerExecutionCommandItem,
 };
-use crate::npm_family_release::{NpmRegistryTimeSource, ReleaseLookupRequest};
 
 pub const MANAGER_ID: &str = "bun";
 
@@ -24,6 +26,8 @@ pub enum BunError {
     Interrupted(String),
     Json(String),
     Domain(String),
+    InvalidTimestamp { version: String, value: String },
+    MissingReleaseMetadata(String),
     UnsupportedCommandIntent(String),
 }
 
@@ -33,7 +37,14 @@ impl Display for BunError {
             Self::Infra(detail)
             | Self::Interrupted(detail)
             | Self::Json(detail)
-            | Self::Domain(detail) => formatter.write_str(detail),
+            | Self::Domain(detail)
+            | Self::MissingReleaseMetadata(detail) => formatter.write_str(detail),
+            Self::InvalidTimestamp { version, value } => {
+                write!(
+                    formatter,
+                    "invalid timestamp `{value}` for version `{version}`"
+                )
+            }
             Self::UnsupportedCommandIntent(kind) => {
                 write!(
                     formatter,
@@ -116,26 +127,33 @@ impl ManagerAdapter for BunManager {
         installed_global(process).map_err(|err| adapter_error(&err))
     }
 
-    fn release_lookup_request(
+    fn release_lookup(
         &self,
         process: &ProcessRunner,
+        _http: &HttpClient,
+        env: &Env,
         package: &PackageName,
-    ) -> Result<ReleaseLookupRequest, ManagerAdapterError> {
-        Ok(release_lookup_request(process, package))
+    ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
+        let runtime = BunRuntime::resolve(process);
+        lookup_release_with_bun(process, env, runtime.executable(), package)
+            .map_err(|err| adapter_error(&err))
     }
 
-    fn update_discoveries(
+    fn update_inputs(
         &self,
         process: &ProcessRunner,
+        _http: &HttpClient,
+        env: &Env,
         version_policy: VersionPolicy,
-    ) -> Result<Vec<UpdateDiscovery>, ManagerAdapterError> {
+    ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
         self.validate_version_policy(version_policy)?;
-        update_discoveries(process).map_err(|err| adapter_error(&err))
+        update_inputs(process, env).map_err(|err| adapter_error(&err))
     }
 
     fn commands_for_execution_plan(
         &self,
         process: &ProcessRunner,
+        _env: &Env,
         plan: &ResolvedExecutionPlan,
         settings: CommandBuildSettings,
     ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError> {
@@ -236,12 +254,94 @@ fn installed_global_with_bun(
 /// # Errors
 ///
 /// Returns an error when discovery fails.
-pub fn update_discoveries(process: &ProcessRunner) -> Result<Vec<UpdateDiscovery>, BunError> {
+pub fn update_inputs(
+    process: &ProcessRunner,
+    env: &Env,
+) -> Result<Vec<ManagerUpdateInput>, BunError> {
     let runtime = BunRuntime::resolve(process);
-    installed_global_with_bun(process, runtime.executable())?
-        .into_iter()
-        .map(|tool| update_discovery(tool, runtime.executable()))
-        .collect()
+    let mut inputs = Vec::new();
+    for tool in installed_global_with_bun(process, runtime.executable())? {
+        let lookup =
+            lookup_release_with_bun(process, env, runtime.executable(), &tool.package_name)?;
+        inputs.push(update_input(tool, lookup));
+    }
+    Ok(inputs)
+}
+
+/// Looks up Bun registry release metadata.
+///
+/// # Errors
+///
+/// Returns an error only when command execution is interrupted.
+pub fn lookup_release_with_bun(
+    process: &ProcessRunner,
+    env: &Env,
+    bun: &str,
+    package: &PackageName,
+) -> Result<ReleaseLookupResult, BunError> {
+    let Some(cwd) = bun_global_cwd(env) else {
+        return Ok(ReleaseLookupResult::MissingMetadata);
+    };
+    let command = CommandSpec::new(
+        bun,
+        [
+            "pm",
+            "view",
+            package.as_str(),
+            "time",
+            "--json",
+            "--cwd",
+            &cwd,
+        ],
+    );
+    match process.run(&command, &CommandCheck::IgnoreStatus) {
+        Ok(output) if !output.status().success() => {
+            let detail = output.stderr().unwrap_or_default().to_owned();
+            Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
+                detail,
+            )))
+        }
+        Ok(output) => match output.stdout() {
+            Ok(stdout) => match parse_bun_time_json(package, stdout) {
+                Ok(timeline) => Ok(ReleaseLookupResult::Known(timeline)),
+                Err(BunError::MissingReleaseMetadata(_)) => {
+                    Ok(ReleaseLookupResult::MissingMetadata)
+                }
+                Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
+                    err.to_string(),
+                ))),
+            },
+            Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
+                err.to_string(),
+            ))),
+        },
+        Err(err) if err.is_interruption() => Err(BunError::from(err)),
+        Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
+            err.to_string(),
+        ))),
+    }
+}
+
+/// Parses Bun registry `time` JSON metadata.
+///
+/// # Errors
+///
+/// Returns an error when JSON or timestamps are invalid, or no version timestamps are present.
+pub fn parse_bun_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeline, BunError> {
+    let timestamps: BTreeMap<String, String> =
+        serde_json::from_str(raw).map_err(|err| BunError::Json(err.to_string()))?;
+    time_map_to_timeline(package, timestamps)
+}
+
+#[must_use]
+pub fn bun_global_cwd_from_values(bun_install: Option<&str>, home: Option<&str>) -> Option<String> {
+    bun_install
+        .and_then(trim_non_empty)
+        .map(|path| format!("{path}/install/global"))
+        .or_else(|| {
+            home.and_then(trim_non_empty)
+                .map(|path| format!("{path}/.bun/install/global"))
+        })
 }
 
 /// Creates Bun commands for a resolved execution plan.
@@ -403,34 +503,91 @@ fn installed_tool(package: BunInstalledPackage) -> Result<InstalledTool, BunErro
     ))
 }
 
-fn update_discovery(tool: InstalledTool, executable: &str) -> Result<UpdateDiscovery, BunError> {
-    Ok(UpdateDiscovery {
-        release_lookup: ReleaseLookupRequest::NpmRegistryTime {
-            source: NpmRegistryTimeSource::Bun {
-                executable: executable.to_owned(),
-            },
-            package: tool.package_name.clone(),
-        },
-        installed: tool,
-        version_scheme: VersionScheme::SemVer,
+fn update_input(tool: InstalledTool, lookup: ReleaseLookupResult) -> ManagerUpdateInput {
+    let discovered_target = match &lookup {
+        ReleaseLookupResult::Known(timeline) => {
+            newest_semver_version(timeline).unwrap_or_else(|| tool.installed_version.clone())
+        }
+        ReleaseLookupResult::MissingMetadata | ReleaseLookupResult::LookupFailed(_) => {
+            tool.installed_version.clone()
+        }
+    };
+    ManagerUpdateInput::Seed(UpdateSeed::new(
+        tool,
+        discovered_target,
+        VersionScheme::SemVer,
+        lookup,
+    ))
+}
+
+fn time_map_to_timeline(
+    package: &PackageName,
+    timestamps: BTreeMap<String, String>,
+) -> Result<ReleaseTimeline, BunError> {
+    if timestamps.is_empty() {
+        return Err(BunError::MissingReleaseMetadata(format!(
+            "registry time metadata is empty for {}",
+            package.as_str()
+        )));
+    }
+
+    let mut entries = Vec::new();
+    for (version, timestamp) in timestamps {
+        if version == "created" || version == "modified" {
+            continue;
+        }
+        let parsed = parse_timestamp(&timestamp).ok_or_else(|| BunError::InvalidTimestamp {
+            version: version.clone(),
+            value: timestamp.clone(),
+        })?;
+        entries.push(ReleaseEntry::new(
+            VersionText::new(version)?,
+            ReleaseTimestamp::new(system_time_from_datetime(parsed)),
+        ));
+    }
+    if entries.is_empty() {
+        return Err(BunError::MissingReleaseMetadata(format!(
+            "registry time metadata is empty for {}",
+            package.as_str()
+        )));
+    }
+    Ok(ReleaseTimeline::new(entries))
+}
+
+fn parse_timestamp(value: &str) -> Option<DateTime<chrono::FixedOffset>> {
+    DateTime::parse_from_rfc3339(value).ok().or_else(|| {
+        let naive = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f").ok()?;
+        Some(DateTime::from_naive_utc_and_offset(
+            naive,
+            chrono::FixedOffset::east_opt(0)?,
+        ))
     })
 }
 
-fn release_lookup_request(process: &ProcessRunner, package: &PackageName) -> ReleaseLookupRequest {
-    let runtime = BunRuntime::resolve(process);
-    ReleaseLookupRequest::NpmRegistryTime {
-        source: NpmRegistryTimeSource::Bun {
-            executable: runtime.executable,
-        },
-        package: package.clone(),
+fn system_time_from_datetime(datetime: DateTime<chrono::FixedOffset>) -> SystemTime {
+    let timestamp = datetime.timestamp();
+    if timestamp >= 0 {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(timestamp.unsigned_abs())
+    } else {
+        SystemTime::UNIX_EPOCH - Duration::from_secs(timestamp.unsigned_abs())
     }
+}
+
+fn bun_global_cwd(env: &Env) -> Option<String> {
+    bun_global_cwd_from_values(
+        env.var("BUN_INSTALL").as_deref(),
+        env.var("HOME").as_deref(),
+    )
 }
 
 fn adapter_error(err: &BunError) -> ManagerAdapterError {
     let detail = err.to_string();
     let kind = match err {
         &BunError::Interrupted(_) => ManagerAdapterErrorKind::Interrupted,
-        &BunError::Json(_) | &BunError::Domain(_) => ManagerAdapterErrorKind::Parse,
+        &BunError::Json(_)
+        | &BunError::Domain(_)
+        | &BunError::InvalidTimestamp { .. }
+        | &BunError::MissingReleaseMetadata(_) => ManagerAdapterErrorKind::Parse,
         &BunError::UnsupportedCommandIntent(_) => ManagerAdapterErrorKind::CommandConstruction,
         &BunError::Infra(_) => ManagerAdapterErrorKind::Infra,
     };

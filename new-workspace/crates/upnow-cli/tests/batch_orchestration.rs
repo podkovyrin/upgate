@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use upnow_cli::config::UpnowConfig;
-use upnow_cli::{BatchCommand, run_batch};
+use upnow_cli::{BatchCommand, run_batch, run_batch_with_sources};
 use upnow_domain::{PackageName, VersionPolicy};
-use upnow_infra::{Clock, CommandOutput, ProcessRunner};
+use upnow_infra::{Clock, CommandOutput, Env, HttpClient, HttpResponse, ProcessRunner};
 
 fn fixtures_dir(manager: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -404,6 +404,12 @@ fn default_manager_selection_skips_off_managers() {
     config
         .apply_cli_override("bun.mode=off")
         .expect("override should apply");
+    config
+        .apply_cli_override("cargo.mode=off")
+        .expect("override should apply");
+    config
+        .apply_cli_override("pipx.mode=off")
+        .expect("override should apply");
 
     let output = run_batch(
         BatchCommand::Plan,
@@ -523,6 +529,16 @@ fn selected_managers_are_deduplicated_in_first_seen_order() {
 fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_owned());
     let cwd = format!("{home}/.bun/install/global");
+    let (http, env) = fake_release_sources([
+        (
+            "https://crates.test/api/v1/crates/alpha-ready",
+            text("cargo", "deterministic/crates/alpha-ready.json"),
+        ),
+        (
+            "https://pypi.test/pypi/alpha-ready/json",
+            text("pipx", "deterministic/pypi/alpha-ready.json"),
+        ),
+    ]);
     let process = ProcessRunner::fake([
         Ok(CommandOutput::from_parts(
             success_status(),
@@ -566,13 +582,30 @@ fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
             text("bun", "deterministic/time/alpha-ready.json"),
             "",
         )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0:\n    alpha-ready\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("cargo", "deterministic/search/alpha-ready.txt"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{"venvs":{"alpha-ready":{"metadata":{"main_package":{"package":"alpha-ready","package_version":"1.0.0"}}}}}"#,
+            "",
+        )),
     ]);
     let config = UpnowConfig::default();
 
-    let output = run_batch(
+    let output = run_batch_with_sources(
         BatchCommand::Plan,
         config.clone(),
         &process,
+        &http,
+        &env,
         fixed_clock(),
         false,
         &[],
@@ -584,6 +617,8 @@ fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
     assert!(output.contains("plan npm"));
     assert!(output.contains("plan yarn"));
     assert!(output.contains("plan bun"));
+    assert!(output.contains("plan cargo"));
+    assert!(output.contains("plan pipx"));
     assert!(
         output.find("plan pnpm").expect("pnpm output")
             < output.find("plan npm").expect("npm output")
@@ -596,12 +631,17 @@ fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
         output.find("plan yarn").expect("yarn output")
             < output.find("plan bun").expect("bun output")
     );
+    assert!(
+        output.find("plan bun").expect("bun output")
+            < output.find("plan cargo").expect("cargo output")
+    );
+    assert!(
+        output.find("plan cargo").expect("cargo output")
+            < output.find("plan pipx").expect("pipx output")
+    );
     let calls = fake_calls(&process);
     let expected_bun_lookup = format!("/fake/bun pm view alpha-ready time --json --cwd {cwd}");
-    assert_eq!(
-        calls.last().map(String::as_str),
-        Some(expected_bun_lookup.as_str())
-    );
+    assert!(calls.iter().any(|call| call == &expected_bun_lookup));
 }
 
 #[test]
@@ -615,12 +655,238 @@ fn selected_unknown_unmigrated_manager_is_rejected() {
         &process,
         fixed_clock(),
         false,
-        &["cargo".to_owned()],
+        &["go".to_owned()],
         &[],
     )
     .expect_err("unmigrated manager should be rejected");
 
-    assert_eq!(err.to_string(), "unknown manager `cargo`");
+    assert_eq!(err.to_string(), "unknown manager `go`");
+}
+
+#[test]
+fn selected_cargo_plan_routes_through_batch_core() {
+    let (http, env) = fake_release_sources([(
+        "https://crates.test/api/v1/crates/alpha-ready",
+        text("cargo", "deterministic/crates/alpha-ready.json"),
+    )]);
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0:\n    alpha-ready\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("cargo", "deterministic/search/alpha-ready.txt"),
+            "",
+        )),
+    ]);
+    let config = UpnowConfig::default();
+
+    let output = run_batch_with_sources(
+        BatchCommand::Plan,
+        config.clone(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["cargo".to_owned()],
+        &[],
+    )
+    .expect("cargo plan should render");
+
+    assert!(output.contains("plan cargo"));
+    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert_eq!(
+        fake_calls(&process),
+        ["cargo install --list", "cargo search alpha-ready --limit 1"]
+    );
+}
+
+#[test]
+fn selected_cargo_plan_uses_crates_io_timeline_after_search_validation() {
+    let (http, env) = fake_release_sources([(
+        "https://crates.test/api/v1/crates/alpha-ready",
+        text("cargo", "deterministic/crates/alpha-ready.json"),
+    )]);
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0:\n    alpha-ready\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready = \"9.9.9\"    # intentionally newer than fixture metadata\n",
+            "",
+        )),
+    ]);
+    let config = UpnowConfig::default();
+
+    let output = run_batch_with_sources(
+        BatchCommand::Plan,
+        config.clone(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["cargo".to_owned()],
+        &[],
+    )
+    .expect("cargo plan should render");
+
+    assert!(output.contains("plan cargo"));
+    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(!output.contains("9.9.9"));
+}
+
+#[test]
+fn selected_cargo_plan_keeps_other_items_when_search_fails() {
+    let (http, env) = fake_release_sources([(
+        "https://crates.test/api/v1/crates/alpha-ready",
+        text("cargo", "deterministic/crates/alpha-ready.json"),
+    )]);
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0:\n    alpha-ready\nomega-error v1.0.0:\n    omega-error\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("cargo", "deterministic/search/alpha-ready.txt"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            exit_status(1),
+            "",
+            "registry search failed",
+        )),
+    ]);
+    let config = UpnowConfig::default();
+
+    let output = run_batch_with_sources(
+        BatchCommand::Plan,
+        config.clone(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["cargo".to_owned()],
+        &[],
+    )
+    .expect("cargo plan should keep item-level search failures in the plan");
+
+    assert!(output.contains("plan cargo"));
+    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("error omega-error"));
+    assert!(!output.contains("plan cargo failed:"));
+    assert_eq!(
+        fake_calls(&process),
+        [
+            "cargo install --list",
+            "cargo search alpha-ready --limit 1",
+            "cargo search omega-error --limit 1",
+        ]
+    );
+}
+
+#[test]
+fn selected_cargo_plan_keeps_other_items_when_crates_io_metadata_is_malformed() {
+    let (http, env) = fake_release_sources([
+        (
+            "https://crates.test/api/v1/crates/alpha-ready",
+            text("cargo", "deterministic/crates/alpha-ready.json"),
+        ),
+        (
+            "https://crates.test/api/v1/crates/omega-error",
+            "{".to_owned(),
+        ),
+    ]);
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0:\n    alpha-ready\nomega-error v1.0.0:\n    omega-error\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("cargo", "deterministic/search/alpha-ready.txt"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("cargo", "deterministic/search/omega-error.txt"),
+            "",
+        )),
+    ]);
+    let config = UpnowConfig::default();
+
+    let output = run_batch_with_sources(
+        BatchCommand::Plan,
+        config.clone(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["cargo".to_owned()],
+        &[],
+    )
+    .expect("cargo plan should keep item-level metadata failures in the plan");
+
+    assert!(output.contains("plan cargo"));
+    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("blocked omega-error release lookup failed"));
+    assert!(!output.contains("plan cargo failed:"));
+    assert_eq!(
+        fake_calls(&process),
+        [
+            "cargo install --list",
+            "cargo search alpha-ready --limit 1",
+            "cargo search omega-error --limit 1",
+        ]
+    );
+}
+
+#[test]
+fn selected_pipx_apply_routes_through_batch_core() {
+    let (http, env) = fake_release_sources([(
+        "https://pypi.test/pypi/alpha-ready/json",
+        text("pipx", "deterministic/pypi/alpha-ready.json"),
+    )]);
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{"venvs":{"alpha-ready":{"metadata":{"main_package":{"package":"alpha-ready","package_version":"1.0.0"}}}}}"#,
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "", "")),
+    ]);
+    let config = UpnowConfig::default();
+
+    let output = run_batch_with_sources(
+        BatchCommand::Apply,
+        config.clone(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["pipx".to_owned()],
+        &[],
+    )
+    .expect("pipx apply should render");
+
+    assert!(output.contains("apply pipx"));
+    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
+    assert_eq!(
+        fake_calls(&process),
+        ["pipx list --json", "pipx upgrade alpha-ready==1.2.0"]
+    );
 }
 
 #[test]
@@ -1040,6 +1306,31 @@ fn fake_calls(process: &ProcessRunner) -> Vec<String> {
             .collect(),
         ProcessRunner::Real { .. } => panic!("expected fake process"),
     }
+}
+
+fn fake_release_sources(
+    responses: impl IntoIterator<Item = (&'static str, String)>,
+) -> (HttpClient, Env) {
+    let http = HttpClient::fake(
+        responses
+            .into_iter()
+            .map(|(url, body)| (url.to_owned(), HttpResponse { status: 200, body })),
+    );
+    let env = Env::fixed([
+        (
+            "HOME".to_owned(),
+            std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_owned()),
+        ),
+        (
+            "UPNOW_CARGO_CRATES_IO_BASE_URL".to_owned(),
+            "https://crates.test".to_owned(),
+        ),
+        (
+            "UPNOW_PIPX_PYPI_BASE_URL".to_owned(),
+            "https://pypi.test".to_owned(),
+        ),
+    ]);
+    (http, env)
 }
 
 #[cfg(unix)]

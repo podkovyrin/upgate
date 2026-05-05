@@ -7,7 +7,7 @@ use upnow_domain::{
 use upnow_execution::{ExecutionCapabilities, resolve_selection_for_execution};
 use upnow_managers::pnpm::{
     exact_command, exact_commands_for_execution_plan, is_no_importer_manifest_error,
-    parse_installed_json, parse_outdated_json,
+    parse_installed_json, parse_outdated_json, parse_pnpm_time_json,
 };
 
 fn fixtures_dir() -> PathBuf {
@@ -54,6 +54,20 @@ fn detects_pnpm_no_importer_manifest_message() {
     assert!(is_no_importer_manifest_error(
         "ERR_PNPM_NO_IMPORTER_MANIFEST_FOUND No package.json found"
     ));
+}
+
+#[test]
+fn parses_pnpm_registry_time_map() {
+    let package = PackageName::new("alpha-ready").expect("valid package");
+    let timeline = parse_pnpm_time_json(&package, &text("deterministic/time/alpha-ready.json"))
+        .expect("time map");
+
+    assert!(
+        timeline
+            .versions
+            .iter()
+            .any(|entry| entry.version == VersionText::new("1.2.0").expect("valid version"))
+    );
 }
 
 #[test]

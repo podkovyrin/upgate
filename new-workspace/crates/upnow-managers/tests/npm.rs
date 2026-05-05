@@ -9,8 +9,8 @@ use upnow_execution::{ExecutionCapabilities, resolve_selection_for_execution};
 use upnow_infra::{CommandOutput, ProcessRunner};
 use upnow_managers::adapter::{CommandBuildSettings, ManagerAdapter};
 use upnow_managers::npm::{
-    NpmManager, exact_command, global_update_command, outdated_global, parse_installed_json,
-    parse_outdated_json, selected_native_update_command,
+    NpmError, NpmManager, exact_command, global_update_command, outdated_global,
+    parse_installed_json, parse_npm_time_json, parse_outdated_json, selected_native_update_command,
 };
 
 fn fixtures_dir() -> PathBuf {
@@ -42,6 +42,48 @@ fn parses_outdated_map() {
     assert!(parsed.iter().any(|package| {
         package.name.as_str() == "alpha-ready" && package.current.as_str() == "1.0.0"
     }));
+}
+
+#[test]
+fn parses_npm_registry_time_map() {
+    let package = PackageName::new("alpha-ready").expect("valid package");
+    let timeline = parse_npm_time_json(&package, &text("deterministic/time/alpha-ready.json"))
+        .expect("time map");
+
+    assert!(
+        timeline
+            .versions
+            .iter()
+            .any(|entry| entry.version == VersionText::new("1.2.0").expect("valid version"))
+    );
+}
+
+#[test]
+fn registry_time_map_skips_created_and_modified_metadata() {
+    let package = PackageName::new("alpha-ready").expect("valid package");
+    let timeline = parse_npm_time_json(
+        &package,
+        r#"{
+            "created": "2020-01-01T00:00:00.000Z",
+            "modified": "2022-01-01T00:00:00.000Z",
+            "1.0.0": "2021-01-01T00:00:00.000Z"
+        }"#,
+    )
+    .expect("time map should parse");
+
+    assert_eq!(timeline.versions.len(), 1);
+    assert_eq!(
+        timeline.versions[0].version,
+        VersionText::new("1.0.0").expect("valid version")
+    );
+}
+
+#[test]
+fn empty_npm_time_map_is_missing_metadata() {
+    let package = PackageName::new("empty").expect("valid package");
+    let err = parse_npm_time_json(&package, "{}").expect_err("empty time map should fail");
+
+    assert!(matches!(err, NpmError::MissingReleaseMetadata(_)));
 }
 
 #[test]
@@ -120,6 +162,7 @@ fn adapter_uses_native_selected_update_for_no_policy_unforced_selection() {
     let commands = manager
         .commands_for_execution_plan(
             &ProcessRunner::fake([]),
+            &upnow_infra::Env::fixed([]),
             &execution_plan,
             CommandBuildSettings {
                 version_policy: VersionPolicy::None,
@@ -147,6 +190,7 @@ fn adapter_uses_exact_install_for_exact_only_no_policy_selection() {
     let commands = manager
         .commands_for_execution_plan(
             &ProcessRunner::fake([]),
+            &upnow_infra::Env::fixed([]),
             &execution_plan,
             CommandBuildSettings {
                 version_policy: VersionPolicy::None,
@@ -174,6 +218,7 @@ fn adapter_uses_native_selected_update_for_native_only_no_policy_selection() {
     let commands = manager
         .commands_for_execution_plan(
             &ProcessRunner::fake([]),
+            &upnow_infra::Env::fixed([]),
             &execution_plan,
             CommandBuildSettings {
                 version_policy: VersionPolicy::None,
@@ -201,6 +246,7 @@ fn adapter_uses_exact_install_for_policy_selection() {
     let commands = manager
         .commands_for_execution_plan(
             &ProcessRunner::fake([]),
+            &upnow_infra::Env::fixed([]),
             &execution_plan,
             CommandBuildSettings {
                 version_policy: VersionPolicy::Stable,
@@ -229,6 +275,7 @@ fn adapter_forced_delayed_selection_uses_exact_install_and_bypasses_min_age() {
     let commands = manager
         .commands_for_execution_plan(
             &ProcessRunner::fake([]),
+            &upnow_infra::Env::fixed([]),
             &execution_plan,
             CommandBuildSettings {
                 version_policy: VersionPolicy::None,

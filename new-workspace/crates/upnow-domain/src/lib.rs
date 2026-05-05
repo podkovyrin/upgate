@@ -15,8 +15,8 @@ pub use manager::{
     ManagerMetadataValue, PackageName, ToolId, ToolName,
 };
 pub use plan::{
-    BlockReason, DelayReason, ExecutionEligibility, PlanIssue, PlanItem, PlanItemId,
-    PolicyBlockReason, SkipReason, UpdateCandidate, UpdatePlan, UpdateSeed,
+    BlockReason, DelayReason, ExecutionEligibility, ManagerUpdateInput, PlanIssue, PlanItem,
+    PlanItemId, PolicyBlockReason, SkipReason, UpdateCandidate, UpdatePlan, UpdateSeed,
 };
 pub use policy::{PolicyWarning, VersionPolicy};
 pub use release::{

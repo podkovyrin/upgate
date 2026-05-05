@@ -6,7 +6,8 @@ use upnow_domain::{
 };
 use upnow_infra::{CommandOutput, ProcessRunner};
 use upnow_managers::yarn::{
-    exact_command, installed_global, parse_global_list_jsonl, parse_yarn_major_version,
+    YarnError, exact_command, installed_global, parse_global_list_jsonl, parse_yarn_major_version,
+    parse_yarn_time_jsonl,
 };
 
 fn fixtures_dir() -> PathBuf {
@@ -47,6 +48,29 @@ fn parses_global_list_with_scoped_package() {
     assert!(installed.iter().any(|package| {
         package.name.as_str() == "@scope/tool" && package.version.as_str() == "2.3.4"
     }));
+}
+
+#[test]
+fn parses_yarn_registry_time_jsonl() {
+    let package = PackageName::new("alpha-ready").expect("valid package");
+    let timeline = parse_yarn_time_jsonl(&package, &text("deterministic/time/alpha-ready.jsonl"))
+        .expect("time");
+
+    assert!(
+        timeline
+            .versions
+            .iter()
+            .any(|entry| entry.version == VersionText::new("1.2.0").expect("valid version"))
+    );
+}
+
+#[test]
+fn missing_yarn_inspect_data_is_missing_metadata() {
+    let package = PackageName::new("empty").expect("valid package");
+    let err = parse_yarn_time_jsonl(&package, r#"{"type":"info","data":"ignored"}"#)
+        .expect_err("missing inspect data should fail");
+
+    assert!(matches!(err, YarnError::MissingReleaseMetadata(_)));
 }
 
 #[test]

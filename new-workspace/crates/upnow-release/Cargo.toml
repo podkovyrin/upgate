@@ -9,5 +9,6 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+pep440_rs = "0.7"
 semver = "1.0"
 upnow-domain = { path = "../upnow-domain" }

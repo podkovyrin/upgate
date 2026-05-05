@@ -82,8 +82,10 @@ pub fn render_update_plan(plan: &UpdatePlan) -> String {
             PlanItem::Skipped {
                 installed, reason, ..
             } => format!("skipped {} {reason:?}", installed.package_name.as_str()),
-            PlanItem::ResolverError { seed, message, .. } => {
-                format!("error {} {}", seed.installed.package_name.as_str(), message)
+            PlanItem::ResolverError {
+                installed, message, ..
+            } => {
+                format!("error {} {}", installed.package_name.as_str(), message)
             }
         });
     }

@@ -5,8 +5,10 @@ use upnow_domain::{
     DelayReason, ExecutionEligibility, ManagerId, PackageName, PlanItem, PlanItemId, PlanSelection,
     SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionScheme, VersionText,
 };
-use upnow_managers::bun::{exact_command, is_missing_global_manifest, parse_pm_ls_json};
-use upnow_managers::npm_family_release::bun_global_cwd_from_values;
+use upnow_managers::bun::{
+    bun_global_cwd_from_values, exact_command, is_missing_global_manifest, parse_bun_time_json,
+    parse_pm_ls_json,
+};
 
 fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/managers/bun")
@@ -62,6 +64,20 @@ fn resolves_global_cwd_from_bun_install_before_home() {
     assert_eq!(
         bun_global_cwd_from_values(None, Some("/home/user")).as_deref(),
         Some("/home/user/.bun/install/global")
+    );
+}
+
+#[test]
+fn parses_bun_registry_time_map() {
+    let package = PackageName::new("alpha-ready").expect("valid package");
+    let timeline = parse_bun_time_json(&package, &text("deterministic/time/alpha-ready.json"))
+        .expect("time map");
+
+    assert!(
+        timeline
+            .versions
+            .iter()
+            .any(|entry| entry.version == VersionText::new("1.2.0").expect("valid version"))
     );
 }
 

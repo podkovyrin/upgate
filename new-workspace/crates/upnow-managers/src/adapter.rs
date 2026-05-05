@@ -2,13 +2,11 @@ use std::fmt::{self, Display};
 use std::time::Duration;
 
 use upnow_domain::{
-    InstalledTool, ManagerId, PackageName, PlanItemId, UnsupportedReason, VersionPolicy,
-    VersionScheme, VersionText,
+    InstalledTool, ManagerId, ManagerUpdateInput, PackageName, PlanItemId, ReleaseLookupResult,
+    UnsupportedReason, VersionPolicy, VersionText,
 };
 use upnow_execution::ResolvedExecutionPlan;
-use upnow_infra::{CommandSpec, ProcessRunner};
-
-use crate::npm_family_release::ReleaseLookupRequest;
+use upnow_infra::{CommandSpec, Env, HttpClient, ProcessRunner};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManagerCapabilities {
@@ -52,13 +50,6 @@ pub struct ManagerExecutionCommandItem {
 pub struct ManagerExecutionCommand {
     pub items: Vec<ManagerExecutionCommandItem>,
     pub command: CommandSpec,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UpdateDiscovery {
-    pub installed: InstalledTool,
-    pub version_scheme: VersionScheme,
-    pub release_lookup: ReleaseLookupRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,21 +130,26 @@ pub trait ManagerAdapter {
         process: &ProcessRunner,
     ) -> Result<Vec<InstalledTool>, ManagerAdapterError>;
 
-    fn release_lookup_request(
+    fn release_lookup(
         &self,
         process: &ProcessRunner,
+        http: &HttpClient,
+        env: &Env,
         package: &PackageName,
-    ) -> Result<ReleaseLookupRequest, ManagerAdapterError>;
+    ) -> Result<ReleaseLookupResult, ManagerAdapterError>;
 
-    fn update_discoveries(
+    fn update_inputs(
         &self,
         process: &ProcessRunner,
+        http: &HttpClient,
+        env: &Env,
         version_policy: VersionPolicy,
-    ) -> Result<Vec<UpdateDiscovery>, ManagerAdapterError>;
+    ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError>;
 
     fn commands_for_execution_plan(
         &self,
         process: &ProcessRunner,
+        env: &Env,
         plan: &ResolvedExecutionPlan,
         settings: CommandBuildSettings,
     ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError>;
