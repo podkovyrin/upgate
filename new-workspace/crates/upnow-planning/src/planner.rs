@@ -59,6 +59,14 @@ pub fn update_plan_from_inputs(
                     settings.execution_eligibility,
                 ));
             }
+            ManagerUpdateInput::Skipped { installed, reason } => {
+                let id = plan_item_id(&manager_id, installed.package_name.as_str())?;
+                items.push(PlanItem::Skipped {
+                    id,
+                    installed,
+                    reason,
+                });
+            }
             ManagerUpdateInput::ResolverError { installed, message } => {
                 let id = plan_item_id(&manager_id, installed.package_name.as_str())?;
                 items.push(PlanItem::ResolverError {

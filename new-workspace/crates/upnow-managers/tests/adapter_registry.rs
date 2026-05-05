@@ -22,6 +22,8 @@ fn registry_selects_managers_by_id() {
         .expect("cargo should be registered");
     let pipx = manager_by_id(&ManagerId::new("pipx").expect("valid id"))
         .expect("pipx should be registered");
+    let go =
+        manager_by_id(&ManagerId::new("go").expect("valid id")).expect("go should be registered");
 
     assert_eq!(pnpm.id(), "pnpm");
     assert_eq!(npm.id(), "npm");
@@ -29,6 +31,7 @@ fn registry_selects_managers_by_id() {
     assert_eq!(bun.id(), "bun");
     assert_eq!(cargo.id(), "cargo");
     assert_eq!(pipx.id(), "pipx");
+    assert_eq!(go.id(), "go");
 }
 
 #[test]
@@ -73,6 +76,8 @@ fn capabilities_are_typed_per_manager() {
         .expect("cargo should be registered");
     let pipx = manager_by_id(&ManagerId::new("pipx").expect("valid id"))
         .expect("pipx should be registered");
+    let go =
+        manager_by_id(&ManagerId::new("go").expect("valid id")).expect("go should be registered");
 
     assert!(pnpm.capabilities().exact_target);
     assert!(!pnpm.capabilities().native_update);
@@ -87,6 +92,8 @@ fn capabilities_are_typed_per_manager() {
     assert!(!cargo.capabilities().native_update);
     assert!(pipx.capabilities().exact_target);
     assert!(!pipx.capabilities().native_update);
+    assert!(go.capabilities().exact_target);
+    assert!(!go.capabilities().native_update);
 }
 
 #[test]

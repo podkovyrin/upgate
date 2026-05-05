@@ -22,6 +22,8 @@ pub use policy::{PolicyWarning, VersionPolicy};
 pub use release::{
     ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
 };
-pub use scan::{ManagerRuleReason, ScanIssue, ScanItem, ScanReport, UnsupportedReason};
+pub use scan::{
+    ManagerRuleReason, ManagerScanInput, ScanIssue, ScanItem, ScanReport, UnsupportedReason,
+};
 pub use selection::{PinChange, PinOperation, PlanSelection, SelectedItem};
 pub use version::{VersionScheme, VersionText};

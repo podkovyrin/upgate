@@ -410,6 +410,9 @@ fn default_manager_selection_skips_off_managers() {
     config
         .apply_cli_override("pipx.mode=off")
         .expect("override should apply");
+    config
+        .apply_cli_override("go.mode=off")
+        .expect("override should apply");
 
     let output = run_batch(
         BatchCommand::Plan,
@@ -645,7 +648,7 @@ fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
 }
 
 #[test]
-fn selected_unknown_unmigrated_manager_is_rejected() {
+fn selected_unknown_manager_is_rejected() {
     let process = ProcessRunner::fake([]);
     let config = UpnowConfig::default();
 
@@ -655,12 +658,12 @@ fn selected_unknown_unmigrated_manager_is_rejected() {
         &process,
         fixed_clock(),
         false,
-        &["go".to_owned()],
+        &["not-a-manager".to_owned()],
         &[],
     )
-    .expect_err("unmigrated manager should be rejected");
+    .expect_err("unknown manager should be rejected");
 
-    assert_eq!(err.to_string(), "unknown manager `go`");
+    assert_eq!(err.to_string(), "unknown manager `not-a-manager`");
 }
 
 #[test]
@@ -1293,6 +1296,197 @@ fn set_override_affects_batch_planning_settings() {
     assert_eq!(calls[0], "npm ls -g --depth=0 --json");
 }
 
+#[test]
+fn selected_go_apply_routes_through_batch_core() {
+    let go_bin = temp_go_bin("go-batch-apply");
+    touch(go_bin.join("alpha-ready"));
+    let version_metadata = text("go", "deterministic/version-m-alpha-ready.txt");
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            version_metadata.clone(),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{"Versions":["v1.0.0","v1.2.0"]}"#,
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{"Time":"2020-01-01T00:00:00Z"}"#,
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{"Time":"2021-01-01T00:00:00Z"}"#,
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            version_metadata,
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "", "")),
+    ]);
+    let http = HttpClient::fake([]);
+    let env = Env::fixed([("GOBIN".to_owned(), go_bin.to_string_lossy().into_owned())]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Apply,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["go".to_owned()],
+        &[],
+    )
+    .expect("go apply should render");
+
+    assert!(output.contains("apply go"));
+    assert!(output.contains(
+        "applied alpha-ready v1.0.0 -> v1.2.0 (go install example.com/alpha/cmd/alpha-ready@v1.2.0)"
+    ));
+    assert_eq!(
+        fake_calls(&process).last().map(String::as_str),
+        Some("go install example.com/alpha/cmd/alpha-ready@v1.2.0")
+    );
+    let _ = std::fs::remove_dir_all(go_bin);
+}
+
+#[test]
+fn selected_go_verbose_scan_looks_up_only_installed_version_age() {
+    let go_bin = temp_go_bin("go-verbose-scan-age");
+    touch(go_bin.join("alpha-ready"));
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("go", "deterministic/version-m-alpha-ready.txt"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("go", "deterministic/version-m-alpha-ready.txt"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{"Time":"2020-01-01T00:00:00Z"}"#,
+            "",
+        )),
+    ]);
+    let http = HttpClient::fake([]);
+    let env = Env::fixed([("GOBIN".to_owned(), go_bin.to_string_lossy().into_owned())]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Scan,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        true,
+        &["go".to_owned()],
+        &[],
+    )
+    .expect("go verbose scan should render");
+
+    assert!(output.contains("installed alpha-ready v1.0.0 age"));
+    assert_eq!(
+        fake_calls(&process),
+        [
+            format!("go version -m {}", go_bin.join("alpha-ready").display()),
+            format!("go version -m {}", go_bin.join("alpha-ready").display()),
+            "go list -m -json example.com/alpha@v1.0.0".to_owned(),
+        ]
+    );
+    let _ = std::fs::remove_dir_all(go_bin);
+}
+
+#[test]
+fn selected_go_verbose_scan_renders_installed_without_age_when_current_time_is_missing() {
+    let go_bin = temp_go_bin("go-verbose-scan-noage");
+    touch(go_bin.join("alpha-ready"));
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("go", "deterministic/version-m-alpha-ready.txt"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("go", "deterministic/version-m-alpha-ready.txt"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "{}", "")),
+    ]);
+    let http = HttpClient::fake([]);
+    let env = Env::fixed([("GOBIN".to_owned(), go_bin.to_string_lossy().into_owned())]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Scan,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        true,
+        &["go".to_owned()],
+        &[],
+    )
+    .expect("go verbose scan should render");
+
+    assert!(output.contains("installed alpha-ready v1.0.0"));
+    assert!(!output.contains("skipped alpha-ready"));
+    assert!(!output.contains("go list -m -json -versions"));
+    let _ = std::fs::remove_dir_all(go_bin);
+}
+
+#[test]
+fn selected_go_verbose_scan_reports_current_time_lookup_failure() {
+    let go_bin = temp_go_bin("go-verbose-scan-failed-age");
+    touch(go_bin.join("alpha-ready"));
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("go", "deterministic/version-m-alpha-ready.txt"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("go", "deterministic/version-m-alpha-ready.txt"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            exit_status(1),
+            "",
+            "module unavailable",
+        )),
+    ]);
+    let http = HttpClient::fake([]);
+    let env = Env::fixed([("GOBIN".to_owned(), go_bin.to_string_lossy().into_owned())]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Scan,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        true,
+        &["go".to_owned()],
+        &[],
+    )
+    .expect("go verbose scan should render");
+
+    assert!(output.contains("skipped alpha-ready"));
+    assert!(output.contains("module unavailable"));
+    assert!(!output.contains("go list -m -json -versions"));
+    let _ = std::fs::remove_dir_all(go_bin);
+}
+
 fn fixed_clock() -> Clock {
     Clock::fixed(SystemTime::UNIX_EPOCH + Duration::from_secs(1_640_995_200))
 }
@@ -1331,6 +1525,17 @@ fn fake_release_sources(
         ),
     ]);
     (http, env)
+}
+
+fn temp_go_bin(name: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).expect("temp dir should be created");
+    path
+}
+
+fn touch(path: PathBuf) {
+    std::fs::write(path, "").expect("fake binary should be writable");
 }
 
 #[cfg(unix)]

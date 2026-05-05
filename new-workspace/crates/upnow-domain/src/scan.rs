@@ -26,6 +26,15 @@ impl ScanReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagerScanInput {
+    Installed(InstalledTool),
+    Skipped {
+        installed: InstalledTool,
+        reason: ScanIssue,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScanItem {
     Installed(InstalledTool),
     InstalledWithReleaseAge {

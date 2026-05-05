@@ -2,8 +2,8 @@ use std::fmt::{self, Display};
 use std::time::Duration;
 
 use upnow_domain::{
-    InstalledTool, ManagerId, ManagerUpdateInput, PackageName, PlanItemId, ReleaseLookupResult,
-    UnsupportedReason, VersionPolicy, VersionText,
+    InstalledTool, ManagerId, ManagerScanInput, ManagerUpdateInput, PackageName, PlanItemId,
+    ReleaseLookupResult, UnsupportedReason, VersionPolicy, VersionText,
 };
 use upnow_execution::ResolvedExecutionPlan;
 use upnow_infra::{CommandSpec, Env, HttpClient, ProcessRunner};
@@ -56,6 +56,22 @@ pub struct ManagerExecutionCommand {
 pub struct UnsupportedManagerVersion {
     pub installed_version: VersionText,
     pub reason: UnsupportedReason,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ReleaseLookupSubject<'a> {
+    Package(&'a PackageName),
+    Installed(&'a InstalledTool),
+}
+
+impl<'a> ReleaseLookupSubject<'a> {
+    #[must_use]
+    pub fn package_name(self) -> &'a PackageName {
+        match self {
+            Self::Package(package) => package,
+            Self::Installed(tool) => &tool.package_name,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,17 +141,18 @@ pub trait ManagerAdapter {
         Ok(None)
     }
 
-    fn installed_tools(
+    fn scan_inputs(
         &self,
         process: &ProcessRunner,
-    ) -> Result<Vec<InstalledTool>, ManagerAdapterError>;
+        env: &Env,
+    ) -> Result<Vec<ManagerScanInput>, ManagerAdapterError>;
 
     fn release_lookup(
         &self,
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
-        package: &PackageName,
+        subject: ReleaseLookupSubject<'_>,
     ) -> Result<ReleaseLookupResult, ManagerAdapterError>;
 
     fn update_inputs(

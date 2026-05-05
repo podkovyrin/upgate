@@ -5,9 +5,10 @@ use std::time::{Duration, SystemTime};
 use chrono::DateTime;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, InstalledTool, ManagerId, ManagerMetadata, ManagerUpdateInput, PackageName,
-    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
-    ToolId, ToolName, UpdateCandidate, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    DomainError, InstalledTool, ManagerId, ManagerMetadata, ManagerScanInput, ManagerUpdateInput,
+    PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
+    ReleaseTimestamp, ToolId, ToolName, UpdateCandidate, UpdateSeed, VersionPolicy, VersionScheme,
+    VersionText,
 };
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
@@ -16,6 +17,7 @@ use upnow_release::newest_semver_version;
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
     ManagerCapabilities, ManagerExecutionCommand, ManagerExecutionCommandItem,
+    ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "npm";
@@ -124,11 +126,14 @@ impl ManagerAdapter for NpmManager {
         true
     }
 
-    fn installed_tools(
+    fn scan_inputs(
         &self,
         process: &ProcessRunner,
-    ) -> Result<Vec<InstalledTool>, ManagerAdapterError> {
-        installed_global(process).map_err(adapter_error)
+        _env: &Env,
+    ) -> Result<Vec<ManagerScanInput>, ManagerAdapterError> {
+        installed_global(process)
+            .map(|tools| tools.into_iter().map(ManagerScanInput::Installed).collect())
+            .map_err(adapter_error)
     }
 
     fn release_lookup(
@@ -136,9 +141,9 @@ impl ManagerAdapter for NpmManager {
         _process: &ProcessRunner,
         _http: &HttpClient,
         _env: &Env,
-        package: &PackageName,
+        subject: ReleaseLookupSubject<'_>,
     ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
-        lookup_release(_process, package).map_err(adapter_error)
+        lookup_release(_process, subject.package_name()).map_err(adapter_error)
     }
 
     fn update_inputs(

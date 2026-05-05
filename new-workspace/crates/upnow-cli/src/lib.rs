@@ -8,8 +8,8 @@ use std::time::SystemTime;
 use clap::{Parser, Subcommand};
 use config::{ConfigError, ManagerConfig, UpnowConfig};
 use upnow_domain::{
-    ExecutionEligibility, InstalledTool, ManagerId, PlanIssue, ReleaseLookupResult, ScanIssue,
-    ScanItem, ScanReport, UpdatePlan,
+    ExecutionEligibility, InstalledTool, ManagerId, ManagerScanInput, PlanIssue,
+    ReleaseLookupResult, ScanIssue, ScanItem, ScanReport, UpdatePlan,
 };
 use upnow_execution::{
     ExecutionCapabilities, ExecutionCommand, ExecutionCommandItem, ExecutionReport,
@@ -18,6 +18,7 @@ use upnow_execution::{
 use upnow_infra::{Clock, Env, HttpClient, HttpSettings, MutationMode, ProcessRunner};
 use upnow_managers::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerExecutionCommand,
+    ReleaseLookupSubject,
 };
 use upnow_managers::registry::{available_managers, manager_by_id};
 use upnow_planning::{PlanningSettings, default_batch_selection, update_plan_from_inputs};
@@ -258,7 +259,7 @@ fn run_manager_batch(
             })
         }
         BatchCommand::Scan => Ok(ManagerBatchOutput {
-            rendered: render_scan_report(&build_scan_report(manager, process)?, None),
+            rendered: render_scan_report(&build_scan_report(manager, process, env)?, None),
             failed: false,
         }),
         BatchCommand::Plan => {
@@ -313,6 +314,7 @@ fn run_manager_batch(
 fn build_scan_report(
     manager: &dyn ManagerAdapter,
     process: &ProcessRunner,
+    env: &Env,
 ) -> Result<ScanReport, AppError> {
     let manager_id = manager.manager_id();
     match manager.unsupported_manager_version(process) {
@@ -338,10 +340,10 @@ fn build_scan_report(
             ));
         }
     }
-    match manager.installed_tools(process) {
-        Ok(installed) => Ok(ScanReport::new(
+    match manager.scan_inputs(process, env) {
+        Ok(inputs) => Ok(ScanReport::new(
             manager_id,
-            installed.into_iter().map(ScanItem::Installed).collect(),
+            inputs.into_iter().map(scan_item_from_input).collect(),
             Vec::new(),
         )),
         Err(err) if err.is_interruption() => Err(map_manager_error(err)),
@@ -386,8 +388,8 @@ fn build_verbose_scan_report(
             ));
         }
     }
-    let installed = match manager.installed_tools(process) {
-        Ok(installed) => installed,
+    let inputs = match manager.scan_inputs(process, env) {
+        Ok(inputs) => inputs,
         Err(err) if err.is_interruption() => return Err(map_manager_error(err)),
         Err(err) => {
             return Ok(ScanReport::new(
@@ -401,11 +403,31 @@ fn build_verbose_scan_report(
     };
 
     let mut items = Vec::new();
-    for tool in installed {
-        items.push(verbose_scan_item(manager, process, http, env, now, tool)?);
+    for input in inputs {
+        match input {
+            ManagerScanInput::Installed(tool) => {
+                items.push(verbose_scan_item(manager, process, http, env, now, tool)?);
+            }
+            ManagerScanInput::Skipped { installed, reason } => {
+                items.push(ScanItem::Skipped {
+                    tool: installed,
+                    reason,
+                });
+            }
+        }
     }
 
     Ok(ScanReport::new(manager_id, items, Vec::new()))
+}
+
+fn scan_item_from_input(input: ManagerScanInput) -> ScanItem {
+    match input {
+        ManagerScanInput::Installed(tool) => ScanItem::Installed(tool),
+        ManagerScanInput::Skipped { installed, reason } => ScanItem::Skipped {
+            tool: installed,
+            reason,
+        },
+    }
 }
 
 fn verbose_scan_item(
@@ -417,7 +439,7 @@ fn verbose_scan_item(
     tool: InstalledTool,
 ) -> Result<ScanItem, AppError> {
     match manager
-        .release_lookup(process, http, env, &tool.package_name)
+        .release_lookup(process, http, env, ReleaseLookupSubject::Installed(&tool))
         .map_err(map_manager_error)?
     {
         ReleaseLookupResult::Known(timeline) => {

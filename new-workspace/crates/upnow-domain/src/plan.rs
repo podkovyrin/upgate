@@ -54,6 +54,10 @@ impl UpdateSeed {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManagerUpdateInput {
     Seed(UpdateSeed),
+    Skipped {
+        installed: InstalledTool,
+        reason: SkipReason,
+    },
     ResolverError {
         installed: InstalledTool,
         message: String,

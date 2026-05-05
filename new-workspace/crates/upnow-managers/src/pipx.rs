@@ -7,9 +7,10 @@ use chrono::DateTime;
 use pep440_rs::Version as Pep440Version;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, InstalledTool, ManagerId, ManagerMetadata, ManagerUpdateInput, PackageName,
-    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
-    ToolId, ToolName, UpdateCandidate, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    DomainError, InstalledTool, ManagerId, ManagerMetadata, ManagerScanInput, ManagerUpdateInput,
+    PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
+    ReleaseTimestamp, ToolId, ToolName, UpdateCandidate, UpdateSeed, VersionPolicy, VersionScheme,
+    VersionText,
 };
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
@@ -18,6 +19,7 @@ use upnow_release::newest_pep440_version;
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
     ManagerCapabilities, ManagerExecutionCommand, ManagerExecutionCommandItem,
+    ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "pipx";
@@ -126,11 +128,14 @@ impl ManagerAdapter for PipxManager {
         true
     }
 
-    fn installed_tools(
+    fn scan_inputs(
         &self,
         process: &ProcessRunner,
-    ) -> Result<Vec<InstalledTool>, ManagerAdapterError> {
-        installed_global(process).map_err(|err| adapter_error(&err))
+        _env: &Env,
+    ) -> Result<Vec<ManagerScanInput>, ManagerAdapterError> {
+        installed_global(process)
+            .map(|tools| tools.into_iter().map(ManagerScanInput::Installed).collect())
+            .map_err(|err| adapter_error(&err))
     }
 
     fn release_lookup(
@@ -138,9 +143,9 @@ impl ManagerAdapter for PipxManager {
         _process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
-        package: &PackageName,
+        subject: ReleaseLookupSubject<'_>,
     ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
-        Ok(lookup_release(http, env, package))
+        Ok(lookup_release(http, env, subject.package_name()))
     }
 
     fn update_inputs(

@@ -5,10 +5,10 @@ use std::time::{Duration, SystemTime};
 use chrono::DateTime;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, InstalledTool, ManagerId, ManagerMetadata, ManagerUpdateInput, PackageName,
-    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
-    ToolId, ToolName, UnsupportedReason, UpdateCandidate, UpdateSeed, VersionPolicy, VersionScheme,
-    VersionText,
+    DomainError, InstalledTool, ManagerId, ManagerMetadata, ManagerScanInput, ManagerUpdateInput,
+    PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
+    ReleaseTimestamp, ToolId, ToolName, UnsupportedReason, UpdateCandidate, UpdateSeed,
+    VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
@@ -17,7 +17,7 @@ use upnow_release::newest_semver_version;
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
     ManagerCapabilities, ManagerExecutionCommand, ManagerExecutionCommandItem,
-    UnsupportedManagerVersion,
+    ReleaseLookupSubject, UnsupportedManagerVersion,
 };
 
 pub const MANAGER_ID: &str = "yarn";
@@ -154,11 +154,14 @@ impl ManagerAdapter for YarnManager {
         unsupported_manager_version(process).map_err(|err| adapter_error(&err))
     }
 
-    fn installed_tools(
+    fn scan_inputs(
         &self,
         process: &ProcessRunner,
-    ) -> Result<Vec<InstalledTool>, ManagerAdapterError> {
-        installed_global_classic(process).map_err(|err| adapter_error(&err))
+        _env: &Env,
+    ) -> Result<Vec<ManagerScanInput>, ManagerAdapterError> {
+        installed_global_classic(process)
+            .map(|tools| tools.into_iter().map(ManagerScanInput::Installed).collect())
+            .map_err(|err| adapter_error(&err))
     }
 
     fn release_lookup(
@@ -166,9 +169,9 @@ impl ManagerAdapter for YarnManager {
         process: &ProcessRunner,
         _http: &HttpClient,
         _env: &Env,
-        package: &PackageName,
+        subject: ReleaseLookupSubject<'_>,
     ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
-        lookup_release(process, package).map_err(|err| adapter_error(&err))
+        lookup_release(process, subject.package_name()).map_err(|err| adapter_error(&err))
     }
 
     fn update_inputs(
