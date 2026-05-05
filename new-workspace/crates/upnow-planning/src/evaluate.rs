@@ -579,10 +579,24 @@ impl CandidateFact {
 }
 
 fn parse_semver(raw: &str) -> Result<SemverVersion, String> {
-    SemverVersion::parse(raw)
+    let trimmed = raw.trim().trim_start_matches(['v', 'V']);
+    SemverVersion::parse(trimmed)
         .or_else(|_| {
-            raw.strip_prefix(['v', 'V'])
-                .map_or_else(|| SemverVersion::parse(raw), SemverVersion::parse)
+            let parts = trimmed.split('.').collect::<Vec<_>>();
+            if parts.is_empty()
+                || parts.len() > 3
+                || parts.iter().any(|part| part.is_empty())
+                || !parts
+                    .iter()
+                    .all(|part| part.chars().all(|ch| ch.is_ascii_digit()))
+            {
+                return SemverVersion::parse(trimmed);
+            }
+            let mut padded = parts;
+            while padded.len() < 3 {
+                padded.push("0");
+            }
+            SemverVersion::parse(&padded.join("."))
         })
         .map_err(|err| err.to_string())
 }

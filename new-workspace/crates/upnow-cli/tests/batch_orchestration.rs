@@ -1,11 +1,16 @@
 use std::collections::BTreeSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use upnow_cli::config::UpnowConfig;
 use upnow_cli::{BatchCommand, run_batch, run_batch_with_sources};
 use upnow_domain::{PackageName, VersionPolicy};
-use upnow_infra::{Clock, CommandOutput, Env, HttpClient, HttpResponse, ProcessRunner};
+use upnow_infra::{
+    Clock, CommandOutput, Env, HttpBytesResponse, HttpClient, HttpResponse, ProcessRunner,
+};
 
 fn fixtures_dir(manager: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1487,6 +1492,274 @@ fn selected_go_verbose_scan_reports_current_time_lookup_failure() {
     let _ = std::fs::remove_dir_all(go_bin);
 }
 
+#[test]
+fn selected_gem_plan_routes_through_batch_core() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready (1.0.0)\ndefault-skip (default: 9.9.9)",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready (1.0.0 < 1.2.0)\ndefault-skip (default: 9.9.9 < 10.0.0)",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "3.0.0", "")),
+    ]);
+    let http = HttpClient::fake([(
+        "https://rubygems.test/api/v1/versions/alpha-ready.json".to_owned(),
+        HttpResponse {
+            status: 200,
+            body: text("gem", "deterministic/rubygems/alpha-ready.json"),
+        },
+    )]);
+    let env = Env::fixed([(
+        "UPNOW_GEM_RUBYGEMS_BASE_URL".to_owned(),
+        "https://rubygems.test".to_owned(),
+    )]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Plan,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["gem".to_owned()],
+        &[],
+    )
+    .expect("gem plan should render");
+
+    assert!(output.contains("plan gem"));
+    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(!output.contains("default-skip"));
+}
+
+#[test]
+fn selected_gem_plan_preserves_legacy_comparable_target_text() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready (1.0.0)",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready (1.0.0 < 1.2)",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "3.0.0", "")),
+    ]);
+    let http = HttpClient::fake([(
+        "https://rubygems.test/api/v1/versions/alpha-ready.json".to_owned(),
+        HttpResponse {
+            status: 200,
+            body: r#"[
+                {"number":"1.3.0","created_at":"2022-01-01T00:00:00Z"},
+                {"number":"1.1.0","created_at":"2020-01-01T00:00:00Z"},
+                {"number":"1.2","created_at":"2021-01-01T00:00:00Z"},
+                {"number":"1.0.0","created_at":"2019-01-01T00:00:00Z"}
+            ]"#
+            .to_owned(),
+        },
+    )]);
+    let env = Env::fixed([(
+        "UPNOW_GEM_RUBYGEMS_BASE_URL".to_owned(),
+        "https://rubygems.test".to_owned(),
+    )]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Plan,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["gem".to_owned()],
+        &[],
+    )
+    .expect("gem plan should render");
+
+    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2"));
+    assert!(!output.contains("1.3.0"));
+}
+
+#[test]
+fn selected_gem_verbose_scan_keeps_installed_row_when_age_lookup_fails() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "scan-noage (5.0.0)",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "3.0.0", "")),
+    ]);
+    let http = HttpClient::fake([(
+        "https://rubygems.test/api/v1/versions/scan-noage.json".to_owned(),
+        HttpResponse {
+            status: 200,
+            body: text("gem", "deterministic/rubygems/scan-noage.json"),
+        },
+    )]);
+    let env = Env::fixed([(
+        "UPNOW_GEM_RUBYGEMS_BASE_URL".to_owned(),
+        "https://rubygems.test".to_owned(),
+    )]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Scan,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        true,
+        &["gem".to_owned()],
+        &[],
+    )
+    .expect("gem verbose scan should render");
+
+    assert!(output.contains("scan gem"));
+    assert!(output.contains("installed scan-noage 5.0.0"));
+    assert!(!output.contains("skipped scan-noage"));
+}
+
+#[test]
+fn selected_gem_apply_builds_exact_install_command() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready (1.0.0)",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready (1.0.0 < 1.2.0)",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "3.0.0", "")),
+        Ok(CommandOutput::from_parts(success_status(), "", "")),
+    ]);
+    let http = HttpClient::fake([(
+        "https://rubygems.test/api/v1/versions/alpha-ready.json".to_owned(),
+        HttpResponse {
+            status: 200,
+            body: text("gem", "deterministic/rubygems/alpha-ready.json"),
+        },
+    )]);
+    let env = Env::fixed([(
+        "UPNOW_GEM_RUBYGEMS_BASE_URL".to_owned(),
+        "https://rubygems.test".to_owned(),
+    )]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Apply,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["gem".to_owned()],
+        &[],
+    )
+    .expect("gem apply should render");
+
+    assert!(output.contains("apply gem"));
+    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
+    assert_eq!(fake_calls(&process)[3], "gem install alpha-ready -v 1.2.0");
+}
+
+#[test]
+fn selected_dotnet_plan_routes_through_batch_core() {
+    let process = ProcessRunner::fake([Ok(CommandOutput::from_parts(
+        success_status(),
+        r#"{"version":1,"data":[{"packageId":"alpha-ready","version":"1.0.0"}]}"#,
+        "",
+    ))]);
+    let base = "https://nuget.test";
+    let http = HttpClient::fake_bytes([
+        (
+            format!("{base}/v3/registration5-gz-semver2/alpha-ready/index.json"),
+            gzipped_http_body(
+                &text("dotnet", "deterministic/nuget/alpha-ready.index.json")
+                    .replace("__BASE__", base),
+            ),
+        ),
+        (
+            format!("{base}/v3/registration5-gz-semver2/alpha-ready/page/1.json"),
+            gzipped_http_body(&text("dotnet", "deterministic/nuget/alpha-ready.page.json")),
+        ),
+    ]);
+    let env = Env::fixed([("UPNOW_DOTNET_NUGET_BASE_URL".to_owned(), base.to_owned())]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Plan,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["dotnet".to_owned()],
+        &[],
+    )
+    .expect("dotnet plan should render");
+
+    assert!(output.contains("plan dotnet"));
+    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+}
+
+#[test]
+fn selected_dotnet_apply_builds_exact_update_command() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{"version":1,"data":[{"packageId":"alpha-ready","version":"1.0.0"}]}"#,
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "", "")),
+    ]);
+    let base = "https://nuget.test";
+    let http = HttpClient::fake_bytes([
+        (
+            format!("{base}/v3/registration5-gz-semver2/alpha-ready/index.json"),
+            gzipped_http_body(
+                &text("dotnet", "deterministic/nuget/alpha-ready.index.json")
+                    .replace("__BASE__", base),
+            ),
+        ),
+        (
+            format!("{base}/v3/registration5-gz-semver2/alpha-ready/page/1.json"),
+            gzipped_http_body(&text("dotnet", "deterministic/nuget/alpha-ready.page.json")),
+        ),
+    ]);
+    let env = Env::fixed([("UPNOW_DOTNET_NUGET_BASE_URL".to_owned(), base.to_owned())]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Apply,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["dotnet".to_owned()],
+        &[],
+    )
+    .expect("dotnet apply should render");
+
+    assert!(output.contains("apply dotnet"));
+    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
+    assert_eq!(
+        fake_calls(&process)[1],
+        "dotnet tool update --global alpha-ready --version 1.2.0 --allow-downgrade"
+    );
+}
+
 fn fixed_clock() -> Clock {
     Clock::fixed(SystemTime::UNIX_EPOCH + Duration::from_secs(1_640_995_200))
 }
@@ -1525,6 +1798,17 @@ fn fake_release_sources(
         ),
     ]);
     (http, env)
+}
+
+fn gzipped_http_body(body: &str) -> HttpBytesResponse {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(body.as_bytes())
+        .expect("fixture should gzip");
+    HttpBytesResponse {
+        status: 200,
+        body: encoder.finish().expect("fixture should gzip"),
+    }
 }
 
 fn temp_go_bin(name: &str) -> PathBuf {

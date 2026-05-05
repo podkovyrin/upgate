@@ -20,3 +20,6 @@ upnow-managers = { path = "../upnow-managers" }
 upnow-planning = { path = "../upnow-planning" }
 upnow-presentation = { path = "../upnow-presentation" }
 upnow-release = { path = "../upnow-release" }
+
+[dev-dependencies]
+flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }

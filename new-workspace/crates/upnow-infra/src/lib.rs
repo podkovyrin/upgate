@@ -11,8 +11,8 @@ pub mod process;
 pub use clock::Clock;
 pub use env::Env;
 pub use http::{
-    FakeHttpClient, HTTP_TIMEOUT, HTTP_USER_AGENT, HttpClient, HttpResponse, HttpSettings,
-    blocking_client, env_base_url,
+    FakeHttpClient, HTTP_TIMEOUT, HTTP_USER_AGENT, HttpBytesResponse, HttpClient, HttpResponse,
+    HttpSettings, blocking_client, env_base_url,
 };
 pub use parallel::{effective_parallelism, run_ordered_parallel};
 pub use process::{

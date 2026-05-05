@@ -3,6 +3,8 @@ use upnow_domain::ManagerId;
 use crate::adapter::{ManagerAdapter, ManagerAdapterError};
 use crate::bun::BunManager;
 use crate::cargo::CargoManager;
+use crate::dotnet::DotnetManager;
+use crate::gem::GemManager;
 use crate::go::GoManager;
 use crate::npm::NpmManager;
 use crate::pipx::PipxManager;
@@ -11,6 +13,8 @@ use crate::yarn::YarnManager;
 
 static BUN_MANAGER: BunManager = BunManager;
 static CARGO_MANAGER: CargoManager = CargoManager;
+static DOTNET_MANAGER: DotnetManager = DotnetManager;
+static GEM_MANAGER: GemManager = GemManager;
 static GO_MANAGER: GoManager = GoManager;
 static NPM_MANAGER: NpmManager = NpmManager;
 static PIPX_MANAGER: PipxManager = PipxManager;
@@ -23,6 +27,8 @@ pub fn manager_by_id(
     match manager_id.as_str() {
         crate::bun::MANAGER_ID => Ok(&BUN_MANAGER),
         crate::cargo::MANAGER_ID => Ok(&CARGO_MANAGER),
+        crate::dotnet::MANAGER_ID => Ok(&DOTNET_MANAGER),
+        crate::gem::MANAGER_ID => Ok(&GEM_MANAGER),
         crate::go::MANAGER_ID => Ok(&GO_MANAGER),
         crate::npm::MANAGER_ID => Ok(&NPM_MANAGER),
         crate::pipx::MANAGER_ID => Ok(&PIPX_MANAGER),
@@ -33,7 +39,7 @@ pub fn manager_by_id(
 }
 
 #[must_use]
-pub fn available_managers() -> [&'static dyn ManagerAdapter; 7] {
+pub fn available_managers() -> [&'static dyn ManagerAdapter; 9] {
     [
         &PNPM_MANAGER,
         &NPM_MANAGER,
@@ -42,5 +48,7 @@ pub fn available_managers() -> [&'static dyn ManagerAdapter; 7] {
         &CARGO_MANAGER,
         &PIPX_MANAGER,
         &GO_MANAGER,
+        &GEM_MANAGER,
+        &DOTNET_MANAGER,
     ]
 }

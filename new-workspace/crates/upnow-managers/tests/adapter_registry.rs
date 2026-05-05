@@ -24,6 +24,10 @@ fn registry_selects_managers_by_id() {
         .expect("pipx should be registered");
     let go =
         manager_by_id(&ManagerId::new("go").expect("valid id")).expect("go should be registered");
+    let gem =
+        manager_by_id(&ManagerId::new("gem").expect("valid id")).expect("gem should be registered");
+    let dotnet = manager_by_id(&ManagerId::new("dotnet").expect("valid id"))
+        .expect("dotnet should be registered");
 
     assert_eq!(pnpm.id(), "pnpm");
     assert_eq!(npm.id(), "npm");
@@ -32,6 +36,8 @@ fn registry_selects_managers_by_id() {
     assert_eq!(cargo.id(), "cargo");
     assert_eq!(pipx.id(), "pipx");
     assert_eq!(go.id(), "go");
+    assert_eq!(gem.id(), "gem");
+    assert_eq!(dotnet.id(), "dotnet");
 }
 
 #[test]
@@ -57,7 +63,12 @@ fn registered_managers_validate_supported_policies() {
         ] {
             manager
                 .validate_version_policy(policy)
-                .expect("migrated npm-family managers support all current policies");
+                .unwrap_or_else(|err| {
+                    assert!(
+                        manager.id() == "gem" && policy == VersionPolicy::SameTrack,
+                        "unexpected policy validation failure: {err}"
+                    );
+                });
         }
     }
 }
@@ -78,6 +89,10 @@ fn capabilities_are_typed_per_manager() {
         .expect("pipx should be registered");
     let go =
         manager_by_id(&ManagerId::new("go").expect("valid id")).expect("go should be registered");
+    let gem =
+        manager_by_id(&ManagerId::new("gem").expect("valid id")).expect("gem should be registered");
+    let dotnet = manager_by_id(&ManagerId::new("dotnet").expect("valid id"))
+        .expect("dotnet should be registered");
 
     assert!(pnpm.capabilities().exact_target);
     assert!(!pnpm.capabilities().native_update);
@@ -94,6 +109,10 @@ fn capabilities_are_typed_per_manager() {
     assert!(!pipx.capabilities().native_update);
     assert!(go.capabilities().exact_target);
     assert!(!go.capabilities().native_update);
+    assert!(gem.capabilities().exact_target);
+    assert!(!gem.capabilities().native_update);
+    assert!(dotnet.capabilities().exact_target);
+    assert!(!dotnet.capabilities().native_update);
 }
 
 #[test]

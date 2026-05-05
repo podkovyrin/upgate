@@ -35,6 +35,11 @@ impl HttpClient {
         Self::Fake(FakeHttpClient::new(responses))
     }
 
+    #[must_use]
+    pub fn fake_bytes(responses: impl IntoIterator<Item = (String, HttpBytesResponse)>) -> Self {
+        Self::Fake(FakeHttpClient::new_bytes(responses))
+    }
+
     /// Sends a GET request and returns the status code plus response body.
     ///
     /// # Errors
@@ -67,22 +72,89 @@ impl HttpClient {
             Self::Fake(fake) => fake.get_text(url),
         }
     }
+
+    /// Sends a GET request and returns the status code plus raw response body bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the HTTP request fails, the response body cannot
+    /// be read, or a fake client has no response for the URL.
+    pub fn get_bytes(&self, url: &str) -> Result<HttpBytesResponse, InfraError> {
+        match self {
+            Self::Real(client) => {
+                let response = client
+                    .get(url)
+                    .send()
+                    .map_err(|err| InfraError::HttpRequest {
+                        url: url.to_owned(),
+                        detail: err.to_string(),
+                    })?;
+                let status = response.status().as_u16();
+                if !response.status().is_success() {
+                    return Err(InfraError::HttpStatus {
+                        url: url.to_owned(),
+                        status,
+                    });
+                }
+                let body = response.bytes().map_err(|err| InfraError::HttpBody {
+                    url: url.to_owned(),
+                    detail: err.to_string(),
+                })?;
+                Ok(HttpBytesResponse {
+                    status,
+                    body: body.to_vec(),
+                })
+            }
+            Self::Fake(fake) => fake.get_bytes(url),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FakeHttpClient {
-    responses: BTreeMap<String, HttpResponse>,
+    responses: BTreeMap<String, HttpBytesResponse>,
 }
 
 impl FakeHttpClient {
     #[must_use]
     pub fn new(responses: impl IntoIterator<Item = (String, HttpResponse)>) -> Self {
         Self {
+            responses: responses
+                .into_iter()
+                .map(|(url, response)| {
+                    (
+                        url,
+                        HttpBytesResponse {
+                            status: response.status,
+                            body: response.body.into_bytes(),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn new_bytes(responses: impl IntoIterator<Item = (String, HttpBytesResponse)>) -> Self {
+        Self {
             responses: responses.into_iter().collect(),
         }
     }
 
     fn get_text(&self, url: &str) -> Result<HttpResponse, InfraError> {
+        let response = self.get_bytes(url)?;
+        let body = String::from_utf8(response.body).map_err(|err| InfraError::HttpBody {
+            url: url.to_owned(),
+            detail: err.to_string(),
+        })?;
+
+        Ok(HttpResponse {
+            status: response.status,
+            body,
+        })
+    }
+
+    fn get_bytes(&self, url: &str) -> Result<HttpBytesResponse, InfraError> {
         let response = self
             .responses
             .get(url)
@@ -107,6 +179,12 @@ impl FakeHttpClient {
 pub struct HttpResponse {
     pub status: u16,
     pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpBytesResponse {
+    pub status: u16,
+    pub body: Vec<u8>,
 }
 
 impl Default for HttpSettings {
@@ -159,7 +237,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        HTTP_TIMEOUT, HTTP_USER_AGENT, HttpClient, HttpResponse, HttpSettings, env_base_url,
+        HTTP_TIMEOUT, HTTP_USER_AGENT, HttpBytesResponse, HttpClient, HttpResponse, HttpSettings,
+        env_base_url,
     };
     use crate::Env;
 
@@ -212,6 +291,24 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert_eq!(response.body, "body");
+    }
+
+    #[test]
+    fn fake_http_client_returns_registered_byte_responses() {
+        let client = HttpClient::fake_bytes([(
+            "https://example.test/data".to_owned(),
+            HttpBytesResponse {
+                status: 200,
+                body: vec![0, 159, 146, 150],
+            },
+        )]);
+
+        let response = client
+            .get_bytes("https://example.test/data")
+            .expect("registered response should be returned");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, [0, 159, 146, 150]);
     }
 
     #[test]

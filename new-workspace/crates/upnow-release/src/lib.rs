@@ -29,9 +29,25 @@ pub fn newest_semver_version(timeline: &ReleaseTimeline) -> Option<VersionText> 
         .versions
         .iter()
         .filter_map(|entry| {
-            Version::parse(entry.version.as_str())
-                .ok()
-                .map(|version| (version, entry.version.clone()))
+            let raw = entry.version.as_str().trim().trim_start_matches(['v', 'V']);
+            let parsed = Version::parse(raw).or_else(|_| {
+                let parts = raw.split('.').collect::<Vec<_>>();
+                if parts.is_empty()
+                    || parts.len() > 3
+                    || parts.iter().any(|part| part.is_empty())
+                    || !parts
+                        .iter()
+                        .all(|part| part.chars().all(|ch| ch.is_ascii_digit()))
+                {
+                    return Version::parse(raw);
+                }
+                let mut padded = parts;
+                while padded.len() < 3 {
+                    padded.push("0");
+                }
+                Version::parse(&padded.join("."))
+            });
+            parsed.ok().map(|version| (version, entry.version.clone()))
         })
         .max_by(|(left, _), (right, _)| left.cmp(right))
         .map(|(_, version)| version)
