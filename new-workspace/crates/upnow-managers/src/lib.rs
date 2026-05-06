@@ -6,6 +6,7 @@ pub mod cargo;
 pub mod dotnet;
 pub mod gem;
 pub mod go;
+pub mod mise;
 pub mod npm;
 pub mod pipx;
 pub mod pnpm;

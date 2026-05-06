@@ -15,6 +15,7 @@ pub struct ExecutionCapabilities {
     pub native_update: bool,
     pub native_global_update: bool,
     pub resolver_native_update: bool,
+    pub resolver_native_global_update: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +29,7 @@ pub enum ExecutionCommandIntent {
     NativeSelected(ResolvedExecutionItem),
     NativeGlobal(Vec<ResolvedExecutionItem>),
     ResolverNative(ResolvedExecutionItem),
+    ResolverNativeGlobal(Vec<ResolvedExecutionItem>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +82,11 @@ pub fn resolve_selection_for_execution(
     if should_use_native_global_update(plan, &selected, capabilities) {
         return Ok(ResolvedExecutionPlan {
             intents: vec![ExecutionCommandIntent::NativeGlobal(selected)],
+        });
+    }
+    if should_use_resolver_native_global_update(plan, &selected, capabilities, version_policy) {
+        return Ok(ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::ResolverNativeGlobal(selected)],
         });
     }
 
@@ -241,6 +248,29 @@ fn should_use_native_global_update(
     {
         return false;
     }
+    selected_matches_all_updates(plan, selected)
+}
+
+fn should_use_resolver_native_global_update(
+    plan: &UpdatePlan,
+    selected: &[ResolvedExecutionItem],
+    capabilities: ExecutionCapabilities,
+    version_policy: VersionPolicy,
+) -> bool {
+    capabilities.resolver_native_global_update
+        && version_policy == VersionPolicy::None
+        && !selected.is_empty()
+        && plan
+            .items
+            .iter()
+            .all(|item| matches!(item, PlanItem::Update { .. }))
+        && selected
+            .iter()
+            .all(|item| !item.forced && item.execution_eligibility.supports_resolver_native())
+        && selected_matches_all_updates(plan, selected)
+}
+
+fn selected_matches_all_updates(plan: &UpdatePlan, selected: &[ResolvedExecutionItem]) -> bool {
     let update_ids = plan
         .items
         .iter()

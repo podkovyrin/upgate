@@ -349,6 +349,11 @@ pub fn commands_for_execution_plan(
                     command: tool_install_command(&item.package_name, &min_age_arg),
                 });
             }
+            ExecutionCommandIntent::ResolverNativeGlobal(_) => {
+                return Err(UvError::UnsupportedCommandIntent(
+                    "resolver-native-global".to_owned(),
+                ));
+            }
             ExecutionCommandIntent::Exact(_) => {
                 return Err(UvError::UnsupportedCommandIntent("exact".to_owned()));
             }

@@ -328,6 +328,11 @@ pub fn commands_for_execution_plan(
                     "resolver-native".to_owned(),
                 ));
             }
+            ExecutionCommandIntent::ResolverNativeGlobal(_) => {
+                return Err(DotnetError::UnsupportedCommandIntent(
+                    "resolver-native-global".to_owned(),
+                ));
+            }
             ExecutionCommandIntent::NativeGlobal(_) => {
                 return Err(DotnetError::UnsupportedCommandIntent(
                     "native-global".to_owned(),

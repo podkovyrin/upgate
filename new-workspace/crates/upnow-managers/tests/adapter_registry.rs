@@ -30,6 +30,8 @@ fn registry_selects_managers_by_id() {
         .expect("dotnet should be registered");
     let uv =
         manager_by_id(&ManagerId::new("uv").expect("valid id")).expect("uv should be registered");
+    let mise = manager_by_id(&ManagerId::new("mise").expect("valid id"))
+        .expect("mise should be registered");
 
     assert_eq!(pnpm.id(), "pnpm");
     assert_eq!(npm.id(), "npm");
@@ -41,6 +43,7 @@ fn registry_selects_managers_by_id() {
     assert_eq!(gem.id(), "gem");
     assert_eq!(dotnet.id(), "dotnet");
     assert_eq!(uv.id(), "uv");
+    assert_eq!(mise.id(), "mise");
 }
 
 #[test]
@@ -69,7 +72,8 @@ fn registered_managers_validate_supported_policies() {
                 .unwrap_or_else(|err| {
                     assert!(
                         (manager.id() == "gem" && policy == VersionPolicy::SameTrack)
-                            || (manager.id() == "uv" && policy != VersionPolicy::None),
+                            || (matches!(manager.id(), "uv" | "mise")
+                                && policy != VersionPolicy::None),
                         "unexpected policy validation failure: {err}"
                     );
                 });
@@ -99,6 +103,8 @@ fn capabilities_are_typed_per_manager() {
         .expect("dotnet should be registered");
     let uv =
         manager_by_id(&ManagerId::new("uv").expect("valid id")).expect("uv should be registered");
+    let mise = manager_by_id(&ManagerId::new("mise").expect("valid id"))
+        .expect("mise should be registered");
 
     assert!(pnpm.capabilities().exact_target);
     assert!(!pnpm.capabilities().native_update);
@@ -122,6 +128,10 @@ fn capabilities_are_typed_per_manager() {
     assert!(!uv.capabilities().exact_target);
     assert!(!uv.capabilities().native_update);
     assert!(uv.capabilities().resolver_native_update);
+    assert!(!mise.capabilities().exact_target);
+    assert!(!mise.capabilities().native_update);
+    assert!(mise.capabilities().resolver_native_update);
+    assert!(mise.capabilities().resolver_native_global_update);
 }
 
 #[test]
@@ -160,6 +170,7 @@ fn pnpm_builds_commands_through_adapter_boundary() {
             native_update: manager.capabilities().native_update,
             native_global_update: manager.capabilities().native_global_update,
             resolver_native_update: manager.capabilities().resolver_native_update,
+            resolver_native_global_update: manager.capabilities().resolver_native_global_update,
         },
         VersionPolicy::Stable,
     )
@@ -217,6 +228,7 @@ fn execution_resolver_rejects_non_executable_selected_items() {
             native_update: true,
             native_global_update: false,
             resolver_native_update: false,
+            resolver_native_global_update: false,
         },
         VersionPolicy::Stable,
     )

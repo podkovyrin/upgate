@@ -1,6 +1,7 @@
 use upnow_domain::{
-    DelayReason, ExecutionEligibility, ManagerId, PackageName, PlanItem, PlanItemId, PlanSelection,
-    SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionPolicy, VersionScheme, VersionText,
+    BlockReason, DelayReason, ExecutionEligibility, ManagerId, ManagerSelectedTarget, PackageName,
+    PlanItem, PlanItemId, PlanSelection, SelectedItem, TargetAgeLookupResult, ToolId,
+    UpdateCandidate, UpdatePlan, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCapabilities, ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem,
@@ -138,6 +139,73 @@ fn resolves_resolver_native_intent_for_resolver_selected_updates() {
     assert!(matches!(
         resolved.intents.as_slice(),
         [ExecutionCommandIntent::ResolverNative(item)] if !item.forced
+    ));
+}
+
+#[test]
+fn resolves_resolver_native_global_intent_for_complete_default_selection() {
+    let plan = plan(vec![
+        PlanItem::Update {
+            id: plan_item_id(),
+            candidate: candidate(ExecutionEligibility::ResolverNativeOnly),
+        },
+        PlanItem::Update {
+            id: PlanItemId::new("pnpm:beta-ready").expect("valid id"),
+            candidate: candidate_for("beta-ready", ExecutionEligibility::ResolverNativeOnly),
+        },
+    ]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![
+            SelectedItem::new(plan_item_id(), false),
+            SelectedItem::new(PlanItemId::new("pnpm:beta-ready").expect("valid id"), false),
+        ],
+        Vec::new(),
+    )
+    .expect("valid selection");
+
+    let resolved = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        resolver_global_capabilities(),
+        VersionPolicy::None,
+    )
+    .expect("selection should resolve");
+
+    assert!(matches!(
+        resolved.intents.as_slice(),
+        [ExecutionCommandIntent::ResolverNativeGlobal(items)] if items.len() == 2
+    ));
+}
+
+#[test]
+fn resolver_native_global_is_not_used_when_plan_contains_blocked_items() {
+    let plan = plan(vec![
+        PlanItem::Update {
+            id: plan_item_id(),
+            candidate: candidate(ExecutionEligibility::ResolverNativeOnly),
+        },
+        PlanItem::Blocked {
+            id: PlanItemId::new("pnpm:missing-age").expect("valid id"),
+            seed: seed_for("missing-age"),
+            reason: BlockReason::MissingReleaseMetadata,
+            policy_warnings: Vec::new(),
+        },
+    ]);
+    let selection = selection(&plan, false);
+
+    let resolved = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        resolver_global_capabilities(),
+        VersionPolicy::None,
+    )
+    .expect("selection should resolve");
+
+    assert!(matches!(
+        resolved.intents.as_slice(),
+        [ExecutionCommandIntent::ResolverNative(item)]
+            if item.package_name.as_str() == "alpha-ready"
     ));
 }
 
@@ -324,6 +392,7 @@ fn capabilities(
         native_update,
         native_global_update,
         resolver_native_update: false,
+        resolver_native_global_update: false,
     }
 }
 
@@ -333,17 +402,50 @@ fn resolver_capabilities() -> ExecutionCapabilities {
         native_update: false,
         native_global_update: false,
         resolver_native_update: true,
+        resolver_native_global_update: false,
+    }
+}
+
+fn resolver_global_capabilities() -> ExecutionCapabilities {
+    ExecutionCapabilities {
+        exact_target: false,
+        native_update: false,
+        native_global_update: false,
+        resolver_native_update: true,
+        resolver_native_global_update: true,
     }
 }
 
 fn candidate(execution_eligibility: ExecutionEligibility) -> UpdateCandidate {
+    candidate_for("alpha-ready", execution_eligibility)
+}
+
+fn candidate_for(package: &str, execution_eligibility: ExecutionEligibility) -> UpdateCandidate {
     UpdateCandidate::new(
-        ToolId::new("alpha-ready").expect("valid tool id"),
-        PackageName::new("alpha-ready").expect("valid package"),
+        ToolId::new(package).expect("valid tool id"),
+        PackageName::new(package).expect("valid package"),
         VersionText::new("1.0.0").expect("valid version"),
         VersionText::new("1.2.0").expect("valid version"),
         VersionScheme::SemVer,
         execution_eligibility,
+    )
+}
+
+fn seed_for(package: &str) -> UpdateSeed {
+    UpdateSeed::manager_selected(
+        upnow_domain::InstalledTool::new(
+            ManagerId::new("pnpm").expect("valid manager"),
+            ToolId::new(package).expect("valid tool id"),
+            PackageName::new(package).expect("valid package"),
+            upnow_domain::ToolName::new(package).expect("valid tool name"),
+            VersionText::new("1.0.0").expect("valid version"),
+            upnow_domain::ManagerMetadata::empty(),
+        ),
+        ManagerSelectedTarget::new(
+            VersionText::new("1.2.0").expect("valid version"),
+            TargetAgeLookupResult::MissingMetadata,
+        ),
+        VersionScheme::SemVer,
     )
 }
 

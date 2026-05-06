@@ -360,6 +360,11 @@ pub fn commands_for_execution_plan(
                     "resolver-native".to_owned(),
                 ));
             }
+            ExecutionCommandIntent::ResolverNativeGlobal(_) => {
+                return Err(YarnError::UnsupportedCommandIntent(
+                    "resolver-native-global".to_owned(),
+                ));
+            }
             ExecutionCommandIntent::NativeGlobal(_) => {
                 return Err(YarnError::UnsupportedCommandIntent(
                     "native-global".to_owned(),

@@ -372,6 +372,11 @@ pub fn exact_commands_for_execution_plan(
                     "resolver-native".to_owned(),
                 ));
             }
+            ExecutionCommandIntent::ResolverNativeGlobal(_) => {
+                return Err(PnpmError::UnsupportedCommandIntent(
+                    "resolver-native-global".to_owned(),
+                ));
+            }
             ExecutionCommandIntent::NativeGlobal(_) => {
                 return Err(PnpmError::UnsupportedCommandIntent(
                     "native-global".to_owned(),

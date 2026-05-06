@@ -556,6 +556,7 @@ fn execution_capabilities(manager: &dyn ManagerAdapter) -> ExecutionCapabilities
         native_update: capabilities.native_update,
         native_global_update: capabilities.native_global_update,
         resolver_native_update: capabilities.resolver_native_update,
+        resolver_native_global_update: capabilities.resolver_native_global_update,
     }
 }
 

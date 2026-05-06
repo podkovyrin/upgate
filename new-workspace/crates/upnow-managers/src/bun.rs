@@ -369,6 +369,11 @@ pub fn commands_for_execution_plan(
                     "resolver-native".to_owned(),
                 ));
             }
+            ExecutionCommandIntent::ResolverNativeGlobal(_) => {
+                return Err(BunError::UnsupportedCommandIntent(
+                    "resolver-native-global".to_owned(),
+                ));
+            }
             ExecutionCommandIntent::NativeGlobal(items) => {
                 commands.push(ManagerExecutionCommand {
                     items: items.iter().map(execution_item).collect(),

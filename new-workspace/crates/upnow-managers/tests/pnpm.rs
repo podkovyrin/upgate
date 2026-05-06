@@ -89,6 +89,7 @@ fn creates_exact_commands_from_typed_selection() {
             native_update: false,
             native_global_update: false,
             resolver_native_update: false,
+            resolver_native_global_update: false,
         },
         upnow_domain::VersionPolicy::Stable,
     )

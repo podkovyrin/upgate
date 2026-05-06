@@ -419,6 +419,9 @@ fn default_manager_selection_skips_off_managers() {
         .apply_cli_override("go.mode=off")
         .expect("override should apply");
     config
+        .apply_cli_override("mise.mode=off")
+        .expect("override should apply");
+    config
         .apply_cli_override("uv.mode=off")
         .expect("override should apply");
 
@@ -609,6 +612,7 @@ fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
             r#"{"venvs":{"alpha-ready":{"metadata":{"main_package":{"package":"alpha-ready","package_version":"1.0.0"}}}}}"#,
             "",
         )),
+        Ok(CommandOutput::from_parts(success_status(), "", "")),
         Ok(CommandOutput::from_parts(
             success_status(),
             "/tmp/uv-tools",
@@ -647,6 +651,7 @@ fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
     assert!(output.contains("plan cargo"));
     assert!(output.contains("plan pipx"));
     assert!(output.contains("plan go"));
+    assert!(output.contains("plan mise"));
     assert!(output.contains("plan uv"));
     assert!(
         output.find("plan pnpm").expect("pnpm output")
@@ -672,7 +677,10 @@ fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
         output.find("plan pipx").expect("pipx output") < output.find("plan go").expect("go output")
     );
     assert!(
-        output.find("plan go").expect("go output") < output.find("plan uv").expect("uv output")
+        output.find("plan go").expect("go output") < output.find("plan mise").expect("mise output")
+    );
+    assert!(
+        output.find("plan mise").expect("mise output") < output.find("plan uv").expect("uv output")
     );
     let calls = fake_calls(&process);
     let expected_bun_lookup = format!("/fake/bun pm view alpha-ready time --json --cwd {cwd}");
@@ -2128,6 +2136,179 @@ fn selected_uv_apply_honors_pins_without_running_them() {
     );
 }
 
+#[test]
+fn selected_mise_plan_routes_through_batch_core() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "Would uninstall npm:alpha-ready@1.0.0\nWould install npm:alpha-ready@1.2.0\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{"npm:alpha-ready":{"latest":"1.2.0"}}"#,
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            npm_time_json(&[("1.2.0", "2021-01-01T00:00:00Z")]),
+            "",
+        )),
+    ]);
+    let (http, env) = fake_release_sources([]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Plan,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["mise".to_owned()],
+        &[],
+    )
+    .expect("mise plan should render");
+
+    assert!(output.contains("plan mise"));
+    assert!(output.contains("update npm:alpha-ready 1.0.0 -> 1.2.0"));
+    assert_eq!(
+        fake_calls(&process),
+        [
+            "mise upgrade --dry-run --before 7d".to_owned(),
+            "mise outdated --json".to_owned(),
+            "npm view alpha-ready@1.2.0 time --json".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn selected_mise_apply_uses_global_resolver_command_for_complete_selection() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "Would uninstall npm:alpha-ready@1.0.0\nWould install npm:alpha-ready@1.2.0\nWould uninstall npm:beta-ready@1.0.0\nWould install npm:beta-ready@1.2.0\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{"npm:alpha-ready":{"latest":"1.2.0"},"npm:beta-ready":{"latest":"1.2.0"}}"#,
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            npm_time_json(&[("1.2.0", "2021-01-01T00:00:00Z")]),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            npm_time_json(&[("1.2.0", "2021-01-01T00:00:00Z")]),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "", "")),
+    ]);
+    let (http, env) = fake_release_sources([]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Apply,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["mise".to_owned()],
+        &[],
+    )
+    .expect("mise apply should render");
+
+    assert!(output.contains("apply mise"));
+    assert!(output.contains("applied npm:alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("applied npm:beta-ready 1.0.0 -> 1.2.0"));
+    assert_eq!(
+        fake_calls(&process).last().map(String::as_str),
+        Some("mise upgrade --before 7d")
+    );
+}
+
+#[test]
+fn selected_mise_apply_uses_per_item_command_when_plan_contains_blocked_item() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "Would uninstall npm:alpha-ready@1.0.0\nWould install npm:alpha-ready@1.2.0\nWould uninstall npm:missing-age@1.0.0\nWould install npm:missing-age@1.2.0\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "{}", "")),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            npm_time_json(&[("1.2.0", "2021-01-01T00:00:00Z")]),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "{}", "")),
+        Ok(CommandOutput::from_parts(success_status(), "", "")),
+    ]);
+    let (http, env) = fake_release_sources([]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Apply,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["mise".to_owned()],
+        &[],
+    )
+    .expect("mise apply should execute only eligible update items");
+
+    assert!(output.contains("apply mise"));
+    assert!(output.contains("applied npm:alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(!output.contains("applied npm:missing-age"));
+    assert_eq!(
+        fake_calls(&process).last().map(String::as_str),
+        Some("mise upgrade --before 7d npm:alpha-ready")
+    );
+}
+
+#[test]
+fn selected_mise_plan_blocks_missing_selected_target_metadata_per_item() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "Would uninstall npm:alpha-ready@1.0.0\nWould install npm:alpha-ready@1.2.0\nWould uninstall npm:missing-age@1.0.0\nWould install npm:missing-age@1.2.0\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "{}", "")),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            npm_time_json(&[("1.2.0", "2021-01-01T00:00:00Z")]),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "{}", "")),
+    ]);
+    let (http, env) = fake_release_sources([]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Plan,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["mise".to_owned()],
+        &[],
+    )
+    .expect("mise plan should keep item-level metadata failures in the plan");
+
+    assert!(output.contains("plan mise"));
+    assert!(output.contains("update npm:alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("blocked npm:missing-age missing release metadata"));
+    assert!(!output.contains("plan mise failed:"));
+}
+
 fn fixed_clock() -> Clock {
     Clock::fixed(SystemTime::UNIX_EPOCH + Duration::from_secs(1_640_995_200))
 }
@@ -2202,6 +2383,15 @@ fn pypi_releases_json(releases: &[(&str, &str)]) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(r#"{{"releases": {{{entries}}}}}"#)
+}
+
+fn npm_time_json(releases: &[(&str, &str)]) -> String {
+    let entries = releases
+        .iter()
+        .map(|(version, timestamp)| format!(r#""{version}":"{timestamp}""#))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{{{entries}}}")
 }
 
 fn gzipped_http_body(body: &str) -> HttpBytesResponse {

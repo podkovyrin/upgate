@@ -15,6 +15,7 @@ pub struct ManagerCapabilities {
     pub native_update: bool,
     pub native_global_update: bool,
     pub resolver_native_update: bool,
+    pub resolver_native_global_update: bool,
 }
 
 impl ManagerCapabilities {
@@ -25,6 +26,7 @@ impl ManagerCapabilities {
             native_update,
             native_global_update: false,
             resolver_native_update: false,
+            resolver_native_global_update: false,
         }
     }
 
@@ -37,6 +39,15 @@ impl ManagerCapabilities {
     #[must_use]
     pub const fn with_resolver_native_update(mut self, resolver_native_update: bool) -> Self {
         self.resolver_native_update = resolver_native_update;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_resolver_native_global_update(
+        mut self,
+        resolver_native_global_update: bool,
+    ) -> Self {
+        self.resolver_native_global_update = resolver_native_global_update;
         self
     }
 }
