@@ -1,11 +1,12 @@
 use upnow_domain::{
-    BlockReason, DelayReason, ExecutionEligibility, ManagerId, ManagerSelectedTarget, PackageName,
-    PlanItem, PlanItemId, PlanSelection, SelectedItem, TargetAgeLookupResult, ToolId,
-    UpdateCandidate, UpdatePlan, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    BlockReason, DelayReason, ExecutionEligibility, ManagerCapabilities, ManagerId,
+    ManagerSelectedTarget, PackageName, PlanItem, PlanItemId, PlanSelection, SelectedItem,
+    TargetAgeLookupResult, ToolId, UpdateCandidate, UpdatePlan, UpdateSeed, VersionPolicy,
+    VersionScheme, VersionText,
 };
 use upnow_execution::{
-    ExecutionCapabilities, ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem,
-    ExecutionSelectionError, ExecutionStatus, execute_commands, resolve_selection_for_execution,
+    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ExecutionSelectionError,
+    ExecutionStatus, execute_commands, resolve_selection_for_execution,
 };
 use upnow_infra::{CommandOutput, CommandSpec, ProcessRunner};
 
@@ -459,8 +460,8 @@ fn capabilities(
     exact_target: bool,
     native_update: bool,
     native_global_update: bool,
-) -> ExecutionCapabilities {
-    ExecutionCapabilities {
+) -> ManagerCapabilities {
+    ManagerCapabilities {
         exact_target,
         native_update,
         native_global_update,
@@ -469,8 +470,8 @@ fn capabilities(
     }
 }
 
-fn resolver_capabilities() -> ExecutionCapabilities {
-    ExecutionCapabilities {
+fn resolver_capabilities() -> ManagerCapabilities {
+    ManagerCapabilities {
         exact_target: false,
         native_update: false,
         native_global_update: false,
@@ -479,8 +480,8 @@ fn resolver_capabilities() -> ExecutionCapabilities {
     }
 }
 
-fn resolver_global_capabilities() -> ExecutionCapabilities {
-    ExecutionCapabilities {
+fn resolver_global_capabilities() -> ManagerCapabilities {
+    ManagerCapabilities {
         exact_target: false,
         native_update: false,
         native_global_update: false,

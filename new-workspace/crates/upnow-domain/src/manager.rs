@@ -1,4 +1,61 @@
-use crate::{DomainError, VersionText};
+use crate::{DomainError, ExecutionEligibility, VersionText};
+
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManagerCapabilities {
+    pub exact_target: bool,
+    pub native_update: bool,
+    pub native_global_update: bool,
+    pub resolver_native_update: bool,
+    pub resolver_native_global_update: bool,
+}
+
+impl ManagerCapabilities {
+    #[must_use]
+    pub const fn new(exact_target: bool, native_update: bool) -> Self {
+        Self {
+            exact_target,
+            native_update,
+            native_global_update: false,
+            resolver_native_update: false,
+            resolver_native_global_update: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_native_global_update(mut self, native_global_update: bool) -> Self {
+        self.native_global_update = native_global_update;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_resolver_native_update(mut self, resolver_native_update: bool) -> Self {
+        self.resolver_native_update = resolver_native_update;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_resolver_native_global_update(
+        mut self,
+        resolver_native_global_update: bool,
+    ) -> Self {
+        self.resolver_native_global_update = resolver_native_global_update;
+        self
+    }
+
+    #[must_use]
+    pub const fn execution_eligibility(self) -> ExecutionEligibility {
+        if self.native_update && self.exact_target {
+            ExecutionEligibility::NativeOrExact
+        } else if self.native_update {
+            ExecutionEligibility::NativeOnly
+        } else if self.resolver_native_update {
+            ExecutionEligibility::ResolverNativeOnly
+        } else {
+            ExecutionEligibility::ExactOnly
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ManagerId(String);

@@ -8,12 +8,12 @@ use std::time::SystemTime;
 use clap::{Parser, Subcommand};
 use config::{ConfigError, ManagerConfig, UpnowConfig};
 use upnow_domain::{
-    ExecutionEligibility, InstalledTool, ManagerId, ManagerScanInput, PlanIssue,
-    ReleaseLookupResult, ScanIssue, ScanItem, ScanReport, UpdatePlan,
+    InstalledTool, ManagerId, ManagerScanInput, PlanIssue, ReleaseLookupResult, ScanIssue,
+    ScanItem, ScanReport, UpdatePlan,
 };
 use upnow_execution::{
-    ExecutionCapabilities, ExecutionCommand, ExecutionCommandItem, ExecutionReport,
-    ExecutionSelectionError, ExecutionStatus, execute_commands, resolve_selection_for_execution,
+    ExecutionCommand, ExecutionCommandItem, ExecutionReport, ExecutionSelectionError,
+    ExecutionStatus, execute_commands, resolve_selection_for_execution,
 };
 use upnow_infra::{Clock, Env, HttpClient, HttpSettings, MutationMode, ProcessRunner};
 use upnow_managers::adapter::{
@@ -276,7 +276,7 @@ fn run_manager_batch(
             let execution_plan = resolve_selection_for_execution(
                 &plan,
                 &selection,
-                execution_capabilities(manager),
+                manager.capabilities(),
                 manager_config.version_policy,
             )
             .map_err(map_execution_selection_error)?;
@@ -537,28 +537,8 @@ fn build_manager_plan(
     .map_err(|err| AppError::Planning(err.to_string()))
 }
 
-fn execution_eligibility(manager: &dyn ManagerAdapter) -> ExecutionEligibility {
-    let capabilities = manager.capabilities();
-    if capabilities.native_update && capabilities.exact_target {
-        ExecutionEligibility::NativeOrExact
-    } else if capabilities.native_update {
-        ExecutionEligibility::NativeOnly
-    } else if capabilities.resolver_native_update {
-        ExecutionEligibility::ResolverNativeOnly
-    } else {
-        ExecutionEligibility::ExactOnly
-    }
-}
-
-fn execution_capabilities(manager: &dyn ManagerAdapter) -> ExecutionCapabilities {
-    let capabilities = manager.capabilities();
-    ExecutionCapabilities {
-        exact_target: capabilities.exact_target,
-        native_update: capabilities.native_update,
-        native_global_update: capabilities.native_global_update,
-        resolver_native_update: capabilities.resolver_native_update,
-        resolver_native_global_update: capabilities.resolver_native_global_update,
-    }
+fn execution_eligibility(manager: &dyn ManagerAdapter) -> upnow_domain::ExecutionEligibility {
+    manager.capabilities().execution_eligibility()
 }
 
 fn execution_command_from_manager(command: ManagerExecutionCommand) -> ExecutionCommand {

@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use upnow_domain::{
-    ExecutionEligibility, ManagerId, PackageName, PlanItem, PlanItemId, PlanSelection,
-    SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionScheme, VersionText,
+    ExecutionEligibility, ManagerCapabilities, ManagerId, PackageName, PlanItem, PlanItemId,
+    PlanSelection, SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionScheme, VersionText,
 };
-use upnow_execution::{ExecutionCapabilities, resolve_selection_for_execution};
+use upnow_execution::resolve_selection_for_execution;
 use upnow_managers::pnpm::{
     exact_command, exact_commands_for_execution_plan, is_no_importer_manifest_error,
     parse_installed_json, parse_outdated_json, parse_pnpm_time_json,
@@ -84,7 +84,7 @@ fn creates_exact_commands_from_typed_selection() {
     let execution_plan = resolve_selection_for_execution(
         &plan,
         &selection,
-        ExecutionCapabilities {
+        ManagerCapabilities {
             exact_target: true,
             native_update: false,
             native_global_update: false,

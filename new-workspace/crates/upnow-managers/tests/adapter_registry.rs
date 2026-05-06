@@ -1,10 +1,9 @@
 use upnow_domain::{
-    ExecutionEligibility, ManagerId, PackageName, PlanItem, PlanItemId, PlanSelection,
-    SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionPolicy, VersionScheme, VersionText,
+    ExecutionEligibility, ManagerCapabilities, ManagerId, PackageName, PlanItem, PlanItemId,
+    PlanSelection, SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionPolicy, VersionScheme,
+    VersionText,
 };
-use upnow_execution::{
-    ExecutionCapabilities, ExecutionSelectionError, resolve_selection_for_execution,
-};
+use upnow_execution::{ExecutionSelectionError, resolve_selection_for_execution};
 use upnow_managers::adapter::{CommandBuildSettings, ManagerAdapterError};
 use upnow_managers::registry::{available_managers, manager_by_id};
 
@@ -173,13 +172,7 @@ fn pnpm_builds_commands_through_adapter_boundary() {
     let execution_plan = resolve_selection_for_execution(
         &plan,
         &selection,
-        ExecutionCapabilities {
-            exact_target: manager.capabilities().exact_target,
-            native_update: manager.capabilities().native_update,
-            native_global_update: manager.capabilities().native_global_update,
-            resolver_native_update: manager.capabilities().resolver_native_update,
-            resolver_native_global_update: manager.capabilities().resolver_native_global_update,
-        },
+        manager.capabilities(),
         VersionPolicy::Stable,
     )
     .expect("selection should resolve");
@@ -231,7 +224,7 @@ fn execution_resolver_rejects_non_executable_selected_items() {
     let err = resolve_selection_for_execution(
         &plan,
         &selection,
-        ExecutionCapabilities {
+        ManagerCapabilities {
             exact_target: true,
             native_update: true,
             native_global_update: false,

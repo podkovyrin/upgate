@@ -11,8 +11,8 @@ pub mod version;
 
 pub use error::DomainError;
 pub use manager::{
-    InstalledTool, ManagerId, ManagerMetadata, ManagerMetadataField, ManagerMetadataKey,
-    ManagerMetadataValue, PackageName, ToolId, ToolName,
+    InstalledTool, ManagerCapabilities, ManagerId, ManagerMetadata, ManagerMetadataField,
+    ManagerMetadataKey, ManagerMetadataValue, PackageName, ToolId, ToolName,
 };
 pub use plan::{
     BlockReason, DelayReason, ExecutionEligibility, ExecutionTargetKind, ManagerSelectedTarget,

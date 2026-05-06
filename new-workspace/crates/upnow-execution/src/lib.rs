@@ -3,20 +3,10 @@
 use std::fmt::{self, Display};
 
 use upnow_domain::{
-    ExecutionEligibility, ExecutionTargetKind, ManagerId, PackageName, PlanItem, PlanItemId,
-    PlanSelection, UpdateCandidate, UpdatePlan, VersionPolicy, VersionText,
+    ExecutionEligibility, ExecutionTargetKind, ManagerCapabilities, ManagerId, PackageName,
+    PlanItem, PlanItemId, PlanSelection, UpdateCandidate, UpdatePlan, VersionPolicy, VersionText,
 };
 use upnow_infra::{CommandCheck, CommandSpec, InfraError, ProcessRunner};
-
-#[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ExecutionCapabilities {
-    pub exact_target: bool,
-    pub native_update: bool,
-    pub native_global_update: bool,
-    pub resolver_native_update: bool,
-    pub resolver_native_global_update: bool,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedExecutionPlan {
@@ -76,7 +66,7 @@ impl std::error::Error for ExecutionSelectionError {}
 pub fn resolve_selection_for_execution(
     plan: &UpdatePlan,
     selection: &PlanSelection,
-    capabilities: ExecutionCapabilities,
+    capabilities: ManagerCapabilities,
     version_policy: VersionPolicy,
 ) -> Result<ResolvedExecutionPlan, ExecutionSelectionError> {
     let selected = selected_execution_items(plan, selection)?;
@@ -242,7 +232,7 @@ fn resolved_item(
 fn should_use_native_global_update(
     plan: &UpdatePlan,
     selected: &[ResolvedExecutionItem],
-    capabilities: ExecutionCapabilities,
+    capabilities: ManagerCapabilities,
     version_policy: VersionPolicy,
 ) -> bool {
     if !capabilities.native_global_update
@@ -264,7 +254,7 @@ fn should_use_native_global_update(
 fn should_use_resolver_native_global_update(
     plan: &UpdatePlan,
     selected: &[ResolvedExecutionItem],
-    capabilities: ExecutionCapabilities,
+    capabilities: ManagerCapabilities,
     version_policy: VersionPolicy,
 ) -> bool {
     capabilities.resolver_native_global_update
@@ -299,7 +289,7 @@ fn selected_matches_all_updates(plan: &UpdatePlan, selected: &[ResolvedExecution
 
 fn should_use_resolver_native_update(
     item: &ResolvedExecutionItem,
-    capabilities: ExecutionCapabilities,
+    capabilities: ManagerCapabilities,
     version_policy: VersionPolicy,
 ) -> bool {
     capabilities.resolver_native_update
@@ -309,7 +299,7 @@ fn should_use_resolver_native_update(
 
 fn should_use_native_selected_update(
     item: &ResolvedExecutionItem,
-    capabilities: ExecutionCapabilities,
+    capabilities: ManagerCapabilities,
     version_policy: VersionPolicy,
 ) -> bool {
     if !capabilities.native_update || item.forced {

@@ -2,10 +2,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use upnow_domain::{
-    DelayReason, ExecutionEligibility, ManagerId, PackageName, PlanItem, PlanItemId, PlanSelection,
-    SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionPolicy, VersionScheme, VersionText,
+    DelayReason, ExecutionEligibility, ManagerCapabilities, ManagerId, PackageName, PlanItem,
+    PlanItemId, PlanSelection, SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionPolicy,
+    VersionScheme, VersionText,
 };
-use upnow_execution::{ExecutionCapabilities, resolve_selection_for_execution};
+use upnow_execution::resolve_selection_for_execution;
 use upnow_infra::{CommandOutput, ProcessRunner};
 use upnow_managers::adapter::{CommandBuildSettings, ManagerAdapter};
 use upnow_managers::npm::{
@@ -302,7 +303,7 @@ fn resolve(
     resolve_selection_for_execution(
         plan,
         selection,
-        ExecutionCapabilities {
+        ManagerCapabilities {
             exact_target: true,
             native_update: true,
             native_global_update: false,
