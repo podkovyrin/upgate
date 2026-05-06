@@ -418,6 +418,9 @@ fn default_manager_selection_skips_off_managers() {
     config
         .apply_cli_override("go.mode=off")
         .expect("override should apply");
+    config
+        .apply_cli_override("uv.mode=off")
+        .expect("override should apply");
 
     let output = run_batch(
         BatchCommand::Plan,
@@ -534,6 +537,7 @@ fn selected_managers_are_deduplicated_in_first_seen_order() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_owned());
     let cwd = format!("{home}/.bun/install/global");
@@ -605,6 +609,26 @@ fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
             r#"{"venvs":{"alpha-ready":{"metadata":{"main_package":{"package":"alpha-ready","package_version":"1.0.0"}}}}}"#,
             "",
         )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "/tmp/uv-tools",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0 [required: ==1.0.0]\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0 [latest: 1.2.0] [required: ==1.0.0]\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("uv", "deterministic/pip-plan/alpha-ready.txt"),
+            "",
+        )),
     ]);
     let config = UpnowConfig::default();
 
@@ -627,6 +651,8 @@ fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
     assert!(output.contains("plan bun"));
     assert!(output.contains("plan cargo"));
     assert!(output.contains("plan pipx"));
+    assert!(output.contains("plan go"));
+    assert!(output.contains("plan uv"));
     assert!(
         output.find("plan pnpm").expect("pnpm output")
             < output.find("plan npm").expect("npm output")
@@ -646,6 +672,12 @@ fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
     assert!(
         output.find("plan cargo").expect("cargo output")
             < output.find("plan pipx").expect("pipx output")
+    );
+    assert!(
+        output.find("plan pipx").expect("pipx output") < output.find("plan go").expect("go output")
+    );
+    assert!(
+        output.find("plan go").expect("go output") < output.find("plan uv").expect("uv output")
     );
     let calls = fake_calls(&process);
     let expected_bun_lookup = format!("/fake/bun pm view alpha-ready time --json --cwd {cwd}");
@@ -1760,6 +1792,377 @@ fn selected_dotnet_apply_builds_exact_update_command() {
     );
 }
 
+#[test]
+fn selected_uv_plan_routes_through_batch_core() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "/tmp/uv-tools",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0 [required: ==1.0.0]\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0 [latest: 1.2.0] [required: ==1.0.0]\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("uv", "deterministic/pip-plan/alpha-ready.txt"),
+            "",
+        )),
+    ]);
+    let (http, env) = uv_release_sources([(
+        "https://pypi.test/pypi/alpha-ready/json",
+        text("pipx", "deterministic/pypi/alpha-ready.json"),
+    )]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Plan,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["uv".to_owned()],
+        &[],
+    )
+    .expect("uv plan should render");
+
+    assert!(output.contains("plan uv"));
+    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+}
+
+#[test]
+fn selected_uv_apply_builds_native_selected_install_command() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "/tmp/uv-tools",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0 [required: ==1.0.0]\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0 [latest: 1.2.0] [required: ==1.0.0]\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("uv", "deterministic/pip-plan/alpha-ready.txt"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "", "")),
+    ]);
+    let (http, env) = uv_release_sources([(
+        "https://pypi.test/pypi/alpha-ready/json",
+        text("pipx", "deterministic/pypi/alpha-ready.json"),
+    )]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Apply,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["uv".to_owned()],
+        &[],
+    )
+    .expect("uv apply should render");
+
+    assert!(output.contains("apply uv"));
+    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
+    assert_eq!(
+        fake_calls(&process).last().map(String::as_str),
+        Some("uv tool install --upgrade --exclude-newer 7d alpha-ready")
+    );
+}
+
+#[test]
+fn selected_uv_plan_keeps_dry_run_target_when_latest_is_newer() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "/tmp/uv-tools",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0 [required: ==1.0.0]\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0 [latest: 1.2.0] [required: ==1.0.0]\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "Would install 1 packages\n + alpha-ready==1.0.5\n",
+            "",
+        )),
+    ]);
+    let (http, env) = uv_release_sources([(
+        "https://pypi.test/pypi/alpha-ready/json",
+        pypi_releases_json(&[
+            ("1.0.0", "2020-01-01T00:00:00Z"),
+            ("1.0.5", "2020-06-01T00:00:00Z"),
+            ("1.2.0", "2021-01-01T00:00:00Z"),
+        ]),
+    )]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Plan,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["uv".to_owned()],
+        &[],
+    )
+    .expect("uv plan should render");
+
+    assert!(output.contains("update alpha-ready 1.0.0 -> 1.0.5"));
+    assert!(!output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+}
+
+#[test]
+fn selected_uv_plan_does_not_invent_target_when_dry_run_selects_current() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "/tmp/uv-tools",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0 [required: ==1.0.0]\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "", "")),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "Would install 0 packages\n",
+            "",
+        )),
+    ]);
+    let (http, env) = uv_release_sources([(
+        "https://pypi.test/pypi/alpha-ready/json",
+        pypi_releases_json(&[
+            ("1.0.0", "2020-01-01T00:00:00Z"),
+            ("1.2.0", "2021-01-01T00:00:00Z"),
+        ]),
+    )]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Plan,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["uv".to_owned()],
+        &[],
+    )
+    .expect("uv plan should render");
+
+    assert!(output.contains("current alpha-ready 1.0.0"));
+    assert!(!output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(!output.contains("delayed alpha-ready 1.0.0 -> 1.2.0"));
+}
+
+#[test]
+fn selected_uv_plan_reports_delayed_when_latest_is_too_fresh() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "/tmp/uv-tools",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0 [required: ==1.0.0]\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0 [latest: 1.2.0] [required: ==1.0.0]\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "Would install 0 packages\n",
+            "",
+        )),
+    ]);
+    let (http, env) = uv_release_sources([(
+        "https://pypi.test/pypi/alpha-ready/json",
+        pypi_releases_json(&[
+            ("1.0.0", "2020-01-01T00:00:00Z"),
+            ("1.2.0", "2021-12-31T00:00:00Z"),
+        ]),
+    )]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Plan,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["uv".to_owned()],
+        &[],
+    )
+    .expect("uv plan should render delayed latest");
+
+    assert!(output.contains("delayed alpha-ready 1.0.0 -> 1.2.0 release too fresh"));
+    assert!(!output.contains("current alpha-ready 1.0.0"));
+}
+
+#[test]
+fn selected_uv_plan_blocks_missing_metadata_for_one_item() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "/tmp/uv-tools",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0 [required: ==1.0.0]\nmissing-meta v1.0.0 [required: ==1.0.0]\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0 [latest: 1.2.0] [required: ==1.0.0]\nmissing-meta v1.0.0 [latest: 1.2.0] [required: ==1.0.0]\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("uv", "deterministic/pip-plan/alpha-ready.txt"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "Would install 1 packages\n + missing-meta==1.2.0\n",
+            "",
+        )),
+    ]);
+    let (http, env) = uv_release_sources([
+        (
+            "https://pypi.test/pypi/alpha-ready/json",
+            text("pipx", "deterministic/pypi/alpha-ready.json"),
+        ),
+        (
+            "https://pypi.test/pypi/missing-meta/json",
+            r#"{"releases":{}}"#.to_owned(),
+        ),
+    ]);
+
+    let output = run_batch_with_sources(
+        BatchCommand::Plan,
+        UpnowConfig::default(),
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["uv".to_owned()],
+        &[],
+    )
+    .expect("uv plan should keep item-level metadata failures in the plan");
+
+    assert!(output.contains("plan uv"));
+    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("blocked missing-meta missing release metadata"));
+    assert!(!output.contains("plan uv failed:"));
+}
+
+#[test]
+fn selected_uv_apply_honors_pins_without_running_them() {
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "/tmp/uv-tools",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0 [required: ==1.0.0]\npinned-pkg v3.0.0 [required: ==3.0.0]\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "alpha-ready v1.0.0 [latest: 1.2.0] [required: ==1.0.0]\npinned-pkg v3.0.0 [latest: 3.1.0] [required: ==3.0.0]\n",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("uv", "deterministic/pip-plan/alpha-ready.txt"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("uv", "deterministic/pip-plan/pinned-pkg.txt"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(success_status(), "", "")),
+    ]);
+    let (http, env) = uv_release_sources([
+        (
+            "https://pypi.test/pypi/alpha-ready/json",
+            text("pipx", "deterministic/pypi/alpha-ready.json"),
+        ),
+        (
+            "https://pypi.test/pypi/pinned-pkg/json",
+            text("pipx", "deterministic/pypi/pinned-pkg.json"),
+        ),
+    ]);
+    let mut config = UpnowConfig::default();
+    config
+        .set_manager_pins(
+            "uv",
+            BTreeSet::from([PackageName::new("pinned-pkg").expect("valid package")]),
+        )
+        .expect("uv pins can be set");
+
+    let output = run_batch_with_sources(
+        BatchCommand::Apply,
+        config,
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["uv".to_owned()],
+        &[],
+    )
+    .expect("uv apply should render");
+
+    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(!output.contains("applied pinned-pkg"));
+    assert!(!output.contains("skipped pinned-pkg"));
+    assert_eq!(
+        fake_calls(&process).last().map(String::as_str),
+        Some("uv tool install --upgrade --exclude-newer 7d alpha-ready")
+    );
+}
+
 fn fixed_clock() -> Clock {
     Clock::fixed(SystemTime::UNIX_EPOCH + Duration::from_secs(1_640_995_200))
 }
@@ -1796,8 +2199,44 @@ fn fake_release_sources(
             "UPNOW_PIPX_PYPI_BASE_URL".to_owned(),
             "https://pypi.test".to_owned(),
         ),
+        (
+            "UPNOW_UV_PYPI_BASE_URL".to_owned(),
+            "https://pypi.test".to_owned(),
+        ),
     ]);
     (http, env)
+}
+
+fn uv_release_sources(
+    responses: impl IntoIterator<Item = (&'static str, String)>,
+) -> (HttpClient, Env) {
+    let http = HttpClient::fake(
+        responses
+            .into_iter()
+            .map(|(url, body)| (url.to_owned(), HttpResponse { status: 200, body })),
+    );
+    let env = Env::fixed([
+        (
+            "HOME".to_owned(),
+            std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_owned()),
+        ),
+        (
+            "UPNOW_UV_PYPI_BASE_URL".to_owned(),
+            "https://pypi.test".to_owned(),
+        ),
+    ]);
+    (http, env)
+}
+
+fn pypi_releases_json(releases: &[(&str, &str)]) -> String {
+    let entries = releases
+        .iter()
+        .map(|(version, timestamp)| {
+            format!(r#""{version}": [{{"upload_time_iso_8601": "{timestamp}"}}]"#)
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(r#"{{"releases": {{{entries}}}}}"#)
 }
 
 fn gzipped_http_body(body: &str) -> HttpBytesResponse {

@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use upnow_domain::{
-    ExecutionEligibility, PackageName, PlanItemId, ToolId, UpdateCandidate, VersionPolicy,
-    VersionScheme, VersionText,
+    ExecutionEligibility, PackageName, PlanItemId, ToolId, UpdateCandidate, VersionScheme,
+    VersionText,
 };
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
 use upnow_infra::{Env, ProcessRunner};
@@ -154,7 +154,6 @@ fn adapter_preserves_install_flags_from_fake_cargo_home() {
             &env,
             &plan,
             CommandBuildSettings {
-                version_policy: VersionPolicy::Stable,
                 min_release_age: std::time::Duration::from_secs(86_400),
             },
         )

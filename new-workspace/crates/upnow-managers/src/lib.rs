@@ -10,4 +10,5 @@ pub mod npm;
 pub mod pipx;
 pub mod pnpm;
 pub mod registry;
+pub mod uv;
 pub mod yarn;

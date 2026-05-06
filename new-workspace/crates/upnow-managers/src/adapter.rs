@@ -1,5 +1,5 @@
 use std::fmt::{self, Display};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
     InstalledTool, ManagerId, ManagerScanInput, ManagerUpdateInput, PackageName, PlanItemId,
@@ -34,7 +34,6 @@ impl ManagerCapabilities {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandBuildSettings {
-    pub version_policy: VersionPolicy,
     pub min_release_age: Duration,
 }
 
@@ -161,6 +160,8 @@ pub trait ManagerAdapter {
         http: &HttpClient,
         env: &Env,
         version_policy: VersionPolicy,
+        min_release_age: Duration,
+        now: SystemTime,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError>;
 
     fn commands_for_execution_plan(

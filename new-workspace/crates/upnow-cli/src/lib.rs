@@ -286,7 +286,6 @@ fn run_manager_batch(
                     env,
                     &execution_plan,
                     CommandBuildSettings {
-                        version_policy: manager_config.version_policy,
                         min_release_age: manager_config.min_release_age,
                     },
                 )
@@ -514,15 +513,23 @@ fn build_manager_plan(
             .map_err(|err| AppError::Planning(err.to_string()));
         }
     }
+    let now = clock.now();
     let inputs = manager
-        .update_inputs(process, http, env, manager_config.version_policy)
+        .update_inputs(
+            process,
+            http,
+            env,
+            manager_config.version_policy,
+            manager_config.min_release_age,
+            now,
+        )
         .map_err(map_manager_error)?;
     update_plan_from_inputs(
         manager_config.manager_id.clone(),
         inputs,
         PlanningSettings {
             policy: manager_config.version_policy,
-            now: clock.now(),
+            now,
             min_release_age: manager_config.min_release_age,
             execution_eligibility: execution_eligibility(manager),
         },

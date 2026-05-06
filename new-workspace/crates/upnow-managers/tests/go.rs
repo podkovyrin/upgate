@@ -159,7 +159,6 @@ fn adapter_rediscovers_go_metadata_to_build_execution_command() {
             &env,
             &plan,
             CommandBuildSettings {
-                version_policy: upnow_domain::VersionPolicy::Stable,
                 min_release_age: std::time::Duration::from_secs(86_400),
             },
         )

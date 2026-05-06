@@ -9,6 +9,7 @@ use crate::go::GoManager;
 use crate::npm::NpmManager;
 use crate::pipx::PipxManager;
 use crate::pnpm::PnpmManager;
+use crate::uv::UvManager;
 use crate::yarn::YarnManager;
 
 static BUN_MANAGER: BunManager = BunManager;
@@ -19,6 +20,7 @@ static GO_MANAGER: GoManager = GoManager;
 static NPM_MANAGER: NpmManager = NpmManager;
 static PIPX_MANAGER: PipxManager = PipxManager;
 static PNPM_MANAGER: PnpmManager = PnpmManager;
+static UV_MANAGER: UvManager = UvManager;
 static YARN_MANAGER: YarnManager = YarnManager;
 
 pub fn manager_by_id(
@@ -33,13 +35,14 @@ pub fn manager_by_id(
         crate::npm::MANAGER_ID => Ok(&NPM_MANAGER),
         crate::pipx::MANAGER_ID => Ok(&PIPX_MANAGER),
         crate::pnpm::MANAGER_ID => Ok(&PNPM_MANAGER),
+        crate::uv::MANAGER_ID => Ok(&UV_MANAGER),
         crate::yarn::MANAGER_ID => Ok(&YARN_MANAGER),
         other => Err(ManagerAdapterError::UnknownManager(other.to_owned())),
     }
 }
 
 #[must_use]
-pub fn available_managers() -> [&'static dyn ManagerAdapter; 9] {
+pub fn available_managers() -> [&'static dyn ManagerAdapter; 10] {
     [
         &PNPM_MANAGER,
         &NPM_MANAGER,
@@ -50,5 +53,6 @@ pub fn available_managers() -> [&'static dyn ManagerAdapter; 9] {
         &GO_MANAGER,
         &GEM_MANAGER,
         &DOTNET_MANAGER,
+        &UV_MANAGER,
     ]
 }

@@ -165,7 +165,6 @@ fn adapter_uses_native_selected_update_for_no_policy_unforced_selection() {
             &upnow_infra::Env::fixed([]),
             &execution_plan,
             CommandBuildSettings {
-                version_policy: VersionPolicy::None,
                 min_release_age: Duration::from_secs(7 * 86_400 + 3_600),
             },
         )
@@ -193,7 +192,6 @@ fn adapter_uses_exact_install_for_exact_only_no_policy_selection() {
             &upnow_infra::Env::fixed([]),
             &execution_plan,
             CommandBuildSettings {
-                version_policy: VersionPolicy::None,
                 min_release_age: Duration::from_secs(7 * 86_400),
             },
         )
@@ -221,7 +219,6 @@ fn adapter_uses_native_selected_update_for_native_only_no_policy_selection() {
             &upnow_infra::Env::fixed([]),
             &execution_plan,
             CommandBuildSettings {
-                version_policy: VersionPolicy::None,
                 min_release_age: Duration::from_secs(7 * 86_400),
             },
         )
@@ -249,7 +246,6 @@ fn adapter_uses_exact_install_for_policy_selection() {
             &upnow_infra::Env::fixed([]),
             &execution_plan,
             CommandBuildSettings {
-                version_policy: VersionPolicy::Stable,
                 min_release_age: Duration::from_secs(7 * 86_400),
             },
         )
@@ -278,7 +274,6 @@ fn adapter_forced_delayed_selection_uses_exact_install_and_bypasses_min_age() {
             &upnow_infra::Env::fixed([]),
             &execution_plan,
             CommandBuildSettings {
-                version_policy: VersionPolicy::None,
                 min_release_age: Duration::from_secs(7 * 86_400),
             },
         )

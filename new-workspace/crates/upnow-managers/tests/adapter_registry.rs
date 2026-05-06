@@ -28,6 +28,8 @@ fn registry_selects_managers_by_id() {
         manager_by_id(&ManagerId::new("gem").expect("valid id")).expect("gem should be registered");
     let dotnet = manager_by_id(&ManagerId::new("dotnet").expect("valid id"))
         .expect("dotnet should be registered");
+    let uv =
+        manager_by_id(&ManagerId::new("uv").expect("valid id")).expect("uv should be registered");
 
     assert_eq!(pnpm.id(), "pnpm");
     assert_eq!(npm.id(), "npm");
@@ -38,6 +40,7 @@ fn registry_selects_managers_by_id() {
     assert_eq!(go.id(), "go");
     assert_eq!(gem.id(), "gem");
     assert_eq!(dotnet.id(), "dotnet");
+    assert_eq!(uv.id(), "uv");
 }
 
 #[test]
@@ -65,7 +68,8 @@ fn registered_managers_validate_supported_policies() {
                 .validate_version_policy(policy)
                 .unwrap_or_else(|err| {
                     assert!(
-                        manager.id() == "gem" && policy == VersionPolicy::SameTrack,
+                        (manager.id() == "gem" && policy == VersionPolicy::SameTrack)
+                            || (manager.id() == "uv" && policy != VersionPolicy::None),
                         "unexpected policy validation failure: {err}"
                     );
                 });
@@ -93,6 +97,8 @@ fn capabilities_are_typed_per_manager() {
         manager_by_id(&ManagerId::new("gem").expect("valid id")).expect("gem should be registered");
     let dotnet = manager_by_id(&ManagerId::new("dotnet").expect("valid id"))
         .expect("dotnet should be registered");
+    let uv =
+        manager_by_id(&ManagerId::new("uv").expect("valid id")).expect("uv should be registered");
 
     assert!(pnpm.capabilities().exact_target);
     assert!(!pnpm.capabilities().native_update);
@@ -113,6 +119,8 @@ fn capabilities_are_typed_per_manager() {
     assert!(!gem.capabilities().native_update);
     assert!(dotnet.capabilities().exact_target);
     assert!(!dotnet.capabilities().native_update);
+    assert!(!uv.capabilities().exact_target);
+    assert!(uv.capabilities().native_update);
 }
 
 #[test]
@@ -161,7 +169,6 @@ fn pnpm_builds_commands_through_adapter_boundary() {
             &upnow_infra::Env::fixed([]),
             &execution_plan,
             CommandBuildSettings {
-                version_policy: VersionPolicy::Stable,
                 min_release_age: std::time::Duration::from_secs(86_400),
             },
         )

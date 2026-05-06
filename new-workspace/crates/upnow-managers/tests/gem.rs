@@ -205,7 +205,14 @@ fn adapter_builds_update_inputs_with_ruby_runtime_filter() {
     )]);
 
     let inputs = GemManager
-        .update_inputs(&process, &http, &env, upnow_domain::VersionPolicy::Stable)
+        .update_inputs(
+            &process,
+            &http,
+            &env,
+            upnow_domain::VersionPolicy::Stable,
+            std::time::Duration::from_secs(7 * 86_400),
+            std::time::SystemTime::UNIX_EPOCH,
+        )
         .expect("inputs should build");
 
     assert_eq!(inputs.len(), 5);
@@ -246,7 +253,14 @@ fn update_inputs_uses_outdated_current_and_keeps_full_registry_timeline() {
     )]);
 
     let inputs = GemManager
-        .update_inputs(&process, &http, &env, upnow_domain::VersionPolicy::Stable)
+        .update_inputs(
+            &process,
+            &http,
+            &env,
+            upnow_domain::VersionPolicy::Stable,
+            std::time::Duration::from_secs(7 * 86_400),
+            std::time::SystemTime::UNIX_EPOCH,
+        )
         .expect("inputs should build");
     let seed = only_seed(&inputs);
 
