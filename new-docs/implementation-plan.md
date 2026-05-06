@@ -424,23 +424,63 @@ Migrate all remaining managers in small independent reviews.
 ### Behavior Delivered
 Each manager preserves current behavior in the new architecture.
 
-### Suggested Order
-1. Yarn and Bun.
-2. Cargo and pipx.
-3. Go.
-4. Gem and Dotnet.
-5. uv.
-6. Mise.
-7. Brew last.
+### Current Required Refactor
+Before continuing uv, Mise, and Brew migration, add typed manager-selected target planning. This refactor belongs to the current Phase 9 work because it is required by the managers being migrated now.
 
-### Modules/Files Likely Created Or Changed
-- `<new-workspace>/crates/upnow-managers/src/yarn.rs`
-- `<new-workspace>/crates/upnow-managers/src/bun.rs`
-- `<new-workspace>/crates/upnow-managers/src/cargo.rs`
-- `<new-workspace>/crates/upnow-managers/src/pipx.rs`
-- `<new-workspace>/crates/upnow-managers/src/go.rs`
-- `<new-workspace>/crates/upnow-managers/src/gem.rs`
-- `<new-workspace>/crates/upnow-managers/src/dotnet.rs`
+#### Goal
+Represent manager-selected targets directly so uv, Mise, and Brew do not fake planner-selectable timelines.
+
+#### Behavior Delivered
+Planning supports two target-selection shapes:
+- Planner-selectable timeline: shared planning may choose the newest policy/age-eligible candidate from a release timeline.
+- Manager-selected target: the manager has already selected the target, and shared planning only gates that target by policy and age.
+
+For manager-selected targets, planning must not replace the target with another version from advisory latest metadata. Managers may pass min-release-age to native resolver commands when required, such as `uv --exclude-newer` or `mise --before`, but managers must not receive `now` or compare target age against policy.
+
+#### Modules/Files Likely Changed
+- `<new-workspace>/crates/upnow-domain/src/plan.rs`
+- `<new-workspace>/crates/upnow-domain/src/release.rs`
+- `<new-workspace>/crates/upnow-planning/src/evaluate.rs`
+- `<new-workspace>/crates/upnow-planning/src/planner.rs`
+- `<new-workspace>/crates/upnow-execution/src/lib.rs`
+- `<new-workspace>/crates/upnow-managers/src/adapter.rs`
+- `<new-workspace>/crates/upnow-cli/src/lib.rs`
+
+#### Tests Required
+- Manager-selected target evaluation gates only the selected target.
+- Manager-selected target evaluation does not choose a newer advisory/latest version.
+- Manager-selected target missing required target evidence blocks only that item.
+- Advisory latest metadata lookup failure does not block an otherwise valid manager-selected target.
+- Resolver-native execution commands preserve their age constraint or typed age bypass.
+- Grouped native execution reports item results for each selected item.
+- Manager discovery does not receive `now`.
+
+#### What Must Not Be Included Yet
+- No uv, Mise, or Brew manager implementation changes beyond what is needed to compile the refactor.
+- No TUI selection changes.
+- No visual changes.
+- No new manager support.
+
+#### Architectural Risks
+Preserving manager-side planning by wrapping it in typed names. Manager-selected target mode must still leave policy and clock-aware age gates in planning.
+
+#### Stop Conditions
+Stop when the shared domain, planning, execution, adapter, and CLI boundaries can represent manager-selected targets without manager-side age planning or timeline trimming.
+
+#### Review Checklist
+- Manager-selected targets are evaluated as selected-target gates, not as trimmed timelines.
+- Managers do not receive `now` to make release-age decisions.
+- Managers do not trim timelines or evidence to steer generic planning.
+- No planner code dispatches hidden uv, Mise, or Brew one-off branches when target-selection mode would express the rule.
+- Forced/bypassed support exists only where a typed exact-target or resolver-native bypass command exists.
+
+### Suggested Order
+1. Complete the manager-selected target refactor above.
+2. Continue uv.
+3. Continue Mise.
+4. Finish with Brew.
+
+### Remaining Modules/Files Likely Changed
 - `<new-workspace>/crates/upnow-managers/src/uv.rs`
 - `<new-workspace>/crates/upnow-managers/src/mise.rs`
 - `<new-workspace>/crates/upnow-managers/src/brew.rs`
@@ -456,6 +496,19 @@ For each manager:
 - Missing metadata blocks only that item.
 - Manager-specific skip behavior.
 
+Additional required tests for uv, Mise, and Brew:
+- uv dry-run target is authoritative; PyPI/advisory latest must not replace it.
+- uv may pass min-release-age to `--exclude-newer`, but manager discovery must not receive `now`.
+- uv `tool list --outdated` latest is advisory metadata only.
+- uv dry-run resolver failures are item-scoped resolver errors.
+- Mise dry-run target is authoritative; `mise outdated --json` latest is advisory metadata only.
+- Mise selected target publish-date metadata is required.
+- Mise advisory latest metadata failure does not block the selected target.
+- Brew outdated target is authoritative.
+- Brew version policy gates the selected target only.
+- Brew target age is based on tap git/GitHub commit evidence.
+- Brew apply groups selected formulae and casks without using opaque selection indices.
+
 ### What Must Not Be Included Yet
 - No TUI selection.
 - No visual changes.
@@ -469,9 +522,11 @@ Stop each manager migration when it has scan/plan/apply batch behavior and no de
 
 ### Review Checklist
 - Manager-specific workaround is named and isolated.
-- Exact force support only where exact execution is possible.
+- Forced/bypassed support only where a typed exact-target or resolver-native bypass command exists.
 - No opaque index/string control fields.
 - Manager emits no UI output.
+- Managers do not receive `now` to make release-age decisions.
+- Managers do not trim timelines or evidence to steer generic planning.
 
 ## Phase 10: Interactive Selection Domain
 
@@ -493,7 +548,7 @@ Given an `UpdatePlan`, selection reducers can select, deselect, pin, unpin, choo
 - Global pin removal behavior.
 - Forced candidate does not mutate pins.
 - Alternate exact target marks selection as exact-required.
-- Managers without exact execution expose no forced candidates.
+- Managers without exact execution or resolver-native bypass expose no forced candidates.
 
 ### What Must Not Be Included Yet
 - No terminal drawing.
@@ -568,6 +623,8 @@ After user confirmation, pin changes persist, selected updates execute, and prog
 - Pin persistence occurs after confirm and before execution.
 - Per-item execution failure display.
 - Manager-level execution failure display.
+- Resolver-native execution commands preserve their age constraint or typed age bypass.
+- Grouped native execution reports item results for each selected item.
 - Stop-after-current behavior.
 - Signal interruption maps to exit `130`.
 - Successful execution summary.
@@ -680,6 +737,8 @@ The rebuilt project is ready to replace the old implementation.
 - `apply` batch with pins and native shortcut.
 - `apply --interactive` with pin changes, forced candidates, alternate versions, and cancellation.
 - Release metadata failure blocks only the item.
+- Manager-selected target plans preserve uv, Mise, and Brew selected targets.
+- Manager-selected target advisory latest metadata does not replace selected targets.
 - Missing command and unsupported platform behavior.
 - Exit code behavior.
 
@@ -699,5 +758,6 @@ Stop when all approved workflows pass and behavior differences are intentional, 
 - Domain model is typed.
 - TUI state is presentation-only.
 - Managers are isolated concrete adapters.
-- Release lookup is explicit and testable.
+- Release and target-age lookup is explicit and testable.
+- Manager-selected target planning is first-class and does not rely on trimmed timelines or hidden manager branches.
 - Config pin persistence timing matches the approved decision.
