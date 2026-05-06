@@ -320,8 +320,7 @@ fn should_use_native_selected_update(
         upnow_domain::ExecutionEligibility::NativeOnly => true,
         upnow_domain::ExecutionEligibility::NativeOrExact => version_policy == VersionPolicy::None,
         upnow_domain::ExecutionEligibility::ExactOnly
-        | upnow_domain::ExecutionEligibility::ResolverNativeOnly
-        | upnow_domain::ExecutionEligibility::NotExecutable => false,
+        | upnow_domain::ExecutionEligibility::ResolverNativeOnly => false,
     }
 }
 

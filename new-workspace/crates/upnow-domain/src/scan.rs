@@ -49,9 +49,6 @@ pub enum ScanItem {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScanIssue {
-    ManagerUnavailable {
-        detail: String,
-    },
     DiscoveryFailed {
         detail: String,
     },
@@ -68,8 +65,11 @@ pub enum ScanIssue {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManagerRuleReason {
+    /// Preserves the scan boundary for Brew dependency filtering.
     Dependency,
+    /// Preserves the scan boundary for Gem default-gem skipping.
     DefaultGem,
-    ManagerDefault,
-    Other { detail: String },
+    Other {
+        detail: String,
+    },
 }

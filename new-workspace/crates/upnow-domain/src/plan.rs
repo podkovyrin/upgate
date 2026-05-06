@@ -239,7 +239,6 @@ pub enum ExecutionEligibility {
     ExactOnly,
     NativeOnly,
     ResolverNativeOnly,
-    NotExecutable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,11 +249,6 @@ pub enum ExecutionTargetKind {
 }
 
 impl ExecutionEligibility {
-    #[must_use]
-    pub fn supports_execution(self) -> bool {
-        !matches!(self, Self::NotExecutable)
-    }
-
     #[must_use]
     pub fn supports_exact_target(self) -> bool {
         matches!(self, Self::NativeOrExact | Self::ExactOnly)
@@ -400,7 +394,6 @@ pub enum BlockReason {
     MissingReleaseMetadata,
     ReleaseLookupFailed,
     VersionPolicy(PolicyBlockReason),
-    UnsupportedExactExecution,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -419,12 +412,10 @@ pub enum PolicyBlockReason {
     PreReleaseBlocked,
     TrackRegression,
     UnknownStability,
-    UnsupportedPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkipReason {
     Pinned,
-    ManagerDefault,
     ManagerRule(String),
 }

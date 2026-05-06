@@ -39,10 +39,14 @@ impl ReleaseClass {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PolicyDecision {
-    allowed: bool,
-    block_reason: Option<PolicyBlockReason>,
-    warning: Option<PolicyWarning>,
+enum PolicyDecision {
+    Allowed {
+        warning: Option<PolicyWarning>,
+    },
+    Blocked {
+        reason: PolicyBlockReason,
+        warning: Option<PolicyWarning>,
+    },
 }
 
 /// Evaluate one manager-discovered update seed into a typed plan item.
@@ -169,18 +173,17 @@ fn evaluate_manager_selected_seed(
     );
     let target_class = classify_release(seed.version_scheme, selected_target.as_str());
     let policy_decision = evaluate_policy(policy, installed_class, target_class);
-    if !policy_decision.allowed {
-        return PlanItem::Blocked {
-            id,
-            seed,
-            reason: BlockReason::VersionPolicy(
-                policy_decision
-                    .block_reason
-                    .unwrap_or(PolicyBlockReason::UnsupportedPolicy),
-            ),
-            policy_warnings: policy_decision.warning.into_iter().collect(),
-        };
-    }
+    let policy_warning = match policy_decision {
+        PolicyDecision::Allowed { warning } => warning,
+        PolicyDecision::Blocked { reason, warning } => {
+            return PlanItem::Blocked {
+                id,
+                seed,
+                reason: BlockReason::VersionPolicy(reason),
+                policy_warnings: warning.into_iter().collect(),
+            };
+        }
+    };
 
     let target_age = match target.target_age {
         TargetAgeLookupResult::Known(evidence) => evidence,
@@ -206,7 +209,7 @@ fn evaluate_manager_selected_seed(
         &seed,
         selected_target,
         execution_eligibility,
-        policy_decision.warning.into_iter().collect(),
+        policy_warning.into_iter().collect(),
     );
 
     if is_evidence_old_enough(&target_age, now, min_release_age) {
@@ -287,8 +290,12 @@ fn evaluate_semver_seed(
         }
 
         let candidate_class = classify_semver_release(entry.version.as_str());
-        let policy_decision = evaluate_policy(policy, installed_class, candidate_class);
-        let fact = CandidateFact::new(entry, policy_decision.warning);
+        let (policy_allowed, warning) =
+            match evaluate_policy(policy, installed_class, candidate_class) {
+                PolicyDecision::Allowed { warning } => (true, warning),
+                PolicyDecision::Blocked { warning, .. } => (false, warning),
+            };
+        let fact = CandidateFact::new(entry, warning);
         if newest_overall
             .as_ref()
             .is_none_or(|(current, _)| parsed > *current)
@@ -296,7 +303,7 @@ fn evaluate_semver_seed(
             newest_overall = Some((parsed.clone(), fact.clone()));
         }
 
-        if policy_decision.allowed {
+        if policy_allowed {
             if newest_policy_eligible
                 .as_ref()
                 .is_none_or(|(current, _)| parsed > *current)
@@ -322,9 +329,11 @@ fn evaluate_semver_seed(
 
     let Some((_, policy_candidate)) = newest_policy_eligible else {
         let target_class = classify_semver_release(newest_overall.version.as_str());
-        let reason = evaluate_policy(policy, installed_class, target_class)
-            .block_reason
-            .unwrap_or(PolicyBlockReason::UnsupportedPolicy);
+        let PolicyDecision::Blocked { reason, .. } =
+            evaluate_policy(policy, installed_class, target_class)
+        else {
+            unreachable!("missing policy candidate implies blocked newest candidate");
+        };
         return PlanItem::Blocked {
             id,
             seed,
@@ -426,8 +435,12 @@ fn evaluate_pep440_seed(
         }
 
         let candidate_class = classify_pep440_release(entry.version.as_str());
-        let policy_decision = evaluate_policy(policy, installed_class, candidate_class);
-        let fact = CandidateFact::new(entry, policy_decision.warning);
+        let (policy_allowed, warning) =
+            match evaluate_policy(policy, installed_class, candidate_class) {
+                PolicyDecision::Allowed { warning } => (true, warning),
+                PolicyDecision::Blocked { warning, .. } => (false, warning),
+            };
+        let fact = CandidateFact::new(entry, warning);
         if newest_overall
             .as_ref()
             .is_none_or(|(current, _)| parsed > *current)
@@ -435,7 +448,7 @@ fn evaluate_pep440_seed(
             newest_overall = Some((parsed.clone(), fact.clone()));
         }
 
-        if policy_decision.allowed {
+        if policy_allowed {
             if newest_policy_eligible
                 .as_ref()
                 .is_none_or(|(current, _)| parsed > *current)
@@ -461,9 +474,11 @@ fn evaluate_pep440_seed(
 
     let Some((_, policy_candidate)) = newest_policy_eligible else {
         let target_class = classify_pep440_release(newest_overall.version.as_str());
-        let reason = evaluate_policy(policy, installed_class, target_class)
-            .block_reason
-            .unwrap_or(PolicyBlockReason::UnsupportedPolicy);
+        let PolicyDecision::Blocked { reason, .. } =
+            evaluate_policy(policy, installed_class, target_class)
+        else {
+            unreachable!("missing policy candidate implies blocked newest candidate");
+        };
         return PlanItem::Blocked {
             id,
             seed,
@@ -522,11 +537,7 @@ fn evaluate_policy(
     candidate_class: ReleaseClass,
 ) -> PolicyDecision {
     match policy {
-        VersionPolicy::None => PolicyDecision {
-            allowed: true,
-            block_reason: None,
-            warning: None,
-        },
+        VersionPolicy::None => PolicyDecision::Allowed { warning: None },
         VersionPolicy::Stable => evaluate_stable_policy(candidate_class, None),
         VersionPolicy::SameTrack => evaluate_same_track_policy(installed_class, candidate_class),
     }
@@ -576,31 +587,21 @@ fn evaluate_same_track_policy(
     };
 
     if candidate_class.is_final() {
-        return PolicyDecision {
-            allowed: true,
-            block_reason: None,
-            warning: None,
-        };
+        return PolicyDecision::Allowed { warning: None };
     }
 
     let Some(candidate_rank) = candidate_class.stability_rank() else {
-        return PolicyDecision {
-            allowed: false,
-            block_reason: Some(PolicyBlockReason::UnknownStability),
+        return PolicyDecision::Blocked {
+            reason: PolicyBlockReason::UnknownStability,
             warning: None,
         };
     };
 
     if candidate_rank >= installed_rank {
-        PolicyDecision {
-            allowed: true,
-            block_reason: None,
-            warning: None,
-        }
+        PolicyDecision::Allowed { warning: None }
     } else {
-        PolicyDecision {
-            allowed: false,
-            block_reason: Some(PolicyBlockReason::TrackRegression),
+        PolicyDecision::Blocked {
+            reason: PolicyBlockReason::TrackRegression,
             warning: None,
         }
     }
@@ -611,15 +612,10 @@ fn evaluate_stable_policy(
     warning: Option<PolicyWarning>,
 ) -> PolicyDecision {
     if candidate_class.is_final() {
-        PolicyDecision {
-            allowed: true,
-            block_reason: None,
-            warning,
-        }
+        PolicyDecision::Allowed { warning }
     } else {
-        PolicyDecision {
-            allowed: false,
-            block_reason: Some(PolicyBlockReason::PreReleaseBlocked),
+        PolicyDecision::Blocked {
+            reason: PolicyBlockReason::PreReleaseBlocked,
             warning,
         }
     }

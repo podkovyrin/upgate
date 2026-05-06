@@ -114,20 +114,20 @@ fn update_plan_rejects_duplicate_item_ids() {
 }
 
 #[test]
-fn update_candidate_represents_target_and_execution_eligibility() {
+fn update_candidate_represents_target_and_executable_eligibility() {
     let candidate = UpdateCandidate::new(
-        ToolId::new("pnpm:not-executable").expect("valid tool id"),
-        PackageName::new("not-executable").expect("valid package name"),
+        ToolId::new("pnpm:exact-only").expect("valid tool id"),
+        PackageName::new("exact-only").expect("valid package name"),
         VersionText::new("1.0.0").expect("valid installed version"),
         VersionText::new("1.2.0").expect("valid target version"),
         VersionScheme::SemVer,
-        ExecutionEligibility::NotExecutable,
+        ExecutionEligibility::ExactOnly,
     );
 
-    assert_eq!(candidate.package_name.as_str(), "not-executable");
+    assert_eq!(candidate.package_name.as_str(), "exact-only");
     assert_eq!(
         candidate.execution_eligibility,
-        ExecutionEligibility::NotExecutable
+        ExecutionEligibility::ExactOnly
     );
 }
 

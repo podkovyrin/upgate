@@ -138,9 +138,9 @@ pub fn render_manager_error(manager_id: &ManagerId, command: &str, detail: &str)
 
 fn render_scan_issue(issue: &ScanIssue) -> String {
     match issue {
-        ScanIssue::ManagerUnavailable { detail }
-        | ScanIssue::DiscoveryFailed { detail }
-        | ScanIssue::ReleaseLookupFailed { detail } => detail.clone(),
+        ScanIssue::DiscoveryFailed { detail } | ScanIssue::ReleaseLookupFailed { detail } => {
+            detail.clone()
+        }
         ScanIssue::MissingReleaseMetadata => "missing release metadata".to_owned(),
         ScanIssue::UnsupportedManagerVersion {
             installed_version,
@@ -187,7 +187,6 @@ fn render_block_reason(reason: &BlockReason) -> String {
         BlockReason::MissingReleaseMetadata => "missing release metadata".to_owned(),
         BlockReason::ReleaseLookupFailed => "release lookup failed".to_owned(),
         BlockReason::VersionPolicy(reason) => format!("version policy {reason:?}"),
-        BlockReason::UnsupportedExactExecution => "unsupported exact execution".to_owned(),
     }
 }
 
