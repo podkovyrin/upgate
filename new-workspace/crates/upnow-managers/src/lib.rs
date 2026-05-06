@@ -1,6 +1,7 @@
 //! Manager adapter crate for the `upnow` rebuild.
 
 pub mod adapter;
+pub mod brew;
 pub mod bun;
 pub mod cargo;
 pub mod dotnet;

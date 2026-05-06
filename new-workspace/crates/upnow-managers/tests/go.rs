@@ -149,6 +149,7 @@ fn adapter_rediscovers_go_metadata_to_build_execution_command() {
             installed_version: VersionText::new("v1.0.0").expect("valid version"),
             target_version: VersionText::new("v1.2.0").expect("valid version"),
             execution_eligibility: upnow_domain::ExecutionEligibility::ExactOnly,
+            execution_target_kind: upnow_domain::ExecutionTargetKind::Standard,
             forced: false,
         })],
     };

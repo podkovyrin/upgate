@@ -157,6 +157,7 @@ fn update_inputs_use_exclude_newer_dry_run_target() {
             &env,
             VersionPolicy::None,
             Duration::from_secs(7 * 86_400),
+            true,
         )
         .expect("update inputs should resolve");
 
@@ -208,6 +209,7 @@ fn dry_run_failure_becomes_resolver_error_input() {
             &Env::fixed([]),
             VersionPolicy::None,
             Duration::from_secs(7 * 86_400),
+            true,
         )
         .expect("resolver errors should be item scoped");
 
@@ -239,6 +241,7 @@ fn adapter_builds_native_selected_command() {
                 installed_version: VersionText::new("1.0.0").expect("valid version"),
                 target_version: VersionText::new("1.2.0").expect("valid version"),
                 execution_eligibility: upnow_domain::ExecutionEligibility::ResolverNativeOnly,
+                execution_target_kind: upnow_domain::ExecutionTargetKind::Standard,
                 forced: false,
             },
         )],

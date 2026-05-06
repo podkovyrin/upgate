@@ -150,6 +150,7 @@ fn update_inputs_use_dry_run_target_as_manager_selected_target() {
             &Env::fixed([]),
             VersionPolicy::None,
             Duration::from_secs(7 * 86_400),
+            true,
         )
         .expect("update inputs should resolve");
 
@@ -193,6 +194,7 @@ fn missing_selected_target_metadata_stays_item_scoped() {
             &Env::fixed([]),
             VersionPolicy::None,
             Duration::from_secs(7 * 86_400),
+            true,
         )
         .expect("metadata failures should stay on the item");
 
@@ -246,6 +248,7 @@ fn target_lookup_continues_when_backend_lacks_selected_target_metadata() {
             &Env::fixed([]),
             VersionPolicy::None,
             Duration::from_secs(7 * 86_400),
+            true,
         )
         .expect("target lookup should continue to fallback metadata");
 
@@ -280,6 +283,7 @@ fn rejects_unsupported_policy_before_discovery() {
             &Env::fixed([]),
             VersionPolicy::Stable,
             Duration::from_secs(7 * 86_400),
+            true,
         )
         .expect_err("mise supports no-policy only");
 
@@ -326,6 +330,7 @@ fn resolved_item(plan_item_id: &str, package: &str) -> ResolvedExecutionItem {
         installed_version: VersionText::new("1.0.0").expect("valid version"),
         target_version: VersionText::new("1.2.0").expect("valid version"),
         execution_eligibility: upnow_domain::ExecutionEligibility::ResolverNativeOnly,
+        execution_target_kind: upnow_domain::ExecutionTargetKind::Standard,
         forced: false,
     }
 }

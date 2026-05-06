@@ -211,6 +211,7 @@ fn adapter_builds_update_inputs_with_ruby_runtime_filter() {
             &env,
             upnow_domain::VersionPolicy::Stable,
             std::time::Duration::from_secs(7 * 86_400),
+            true,
         )
         .expect("inputs should build");
 
@@ -258,6 +259,7 @@ fn update_inputs_uses_outdated_current_and_keeps_full_registry_timeline() {
             &env,
             upnow_domain::VersionPolicy::Stable,
             std::time::Duration::from_secs(7 * 86_400),
+            true,
         )
         .expect("inputs should build");
     let seed = only_seed(&inputs);

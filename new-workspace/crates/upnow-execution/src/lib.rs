@@ -3,8 +3,8 @@
 use std::fmt::{self, Display};
 
 use upnow_domain::{
-    ExecutionEligibility, ManagerId, PackageName, PlanItem, PlanItemId, PlanSelection,
-    UpdateCandidate, UpdatePlan, VersionPolicy, VersionText,
+    ExecutionEligibility, ExecutionTargetKind, ManagerId, PackageName, PlanItem, PlanItemId,
+    PlanSelection, UpdateCandidate, UpdatePlan, VersionPolicy, VersionText,
 };
 use upnow_infra::{CommandCheck, CommandSpec, InfraError, ProcessRunner};
 
@@ -39,6 +39,7 @@ pub struct ResolvedExecutionItem {
     pub installed_version: VersionText,
     pub target_version: VersionText,
     pub execution_eligibility: ExecutionEligibility,
+    pub execution_target_kind: ExecutionTargetKind,
     pub forced: bool,
 }
 
@@ -79,7 +80,7 @@ pub fn resolve_selection_for_execution(
     version_policy: VersionPolicy,
 ) -> Result<ResolvedExecutionPlan, ExecutionSelectionError> {
     let selected = selected_execution_items(plan, selection)?;
-    if should_use_native_global_update(plan, &selected, capabilities) {
+    if should_use_native_global_update(plan, &selected, capabilities, version_policy) {
         return Ok(ResolvedExecutionPlan {
             intents: vec![ExecutionCommandIntent::NativeGlobal(selected)],
         });
@@ -233,6 +234,7 @@ fn resolved_item(
         installed_version: candidate.installed_version.clone(),
         target_version: candidate.target_version.clone(),
         execution_eligibility: candidate.execution_eligibility,
+        execution_target_kind: candidate.execution_target_kind,
         forced,
     }
 }
@@ -241,10 +243,18 @@ fn should_use_native_global_update(
     plan: &UpdatePlan,
     selected: &[ResolvedExecutionItem],
     capabilities: ExecutionCapabilities,
+    version_policy: VersionPolicy,
 ) -> bool {
     if !capabilities.native_global_update
         || selected.is_empty()
         || selected.iter().any(|item| item.forced)
+    {
+        return false;
+    }
+    if version_policy != VersionPolicy::None
+        && !selected
+            .iter()
+            .all(|item| item.execution_eligibility == ExecutionEligibility::NativeOnly)
     {
         return false;
     }
@@ -302,14 +312,17 @@ fn should_use_native_selected_update(
     capabilities: ExecutionCapabilities,
     version_policy: VersionPolicy,
 ) -> bool {
-    capabilities.native_update
-        && version_policy == VersionPolicy::None
-        && !item.forced
-        && matches!(
-            item.execution_eligibility,
-            upnow_domain::ExecutionEligibility::NativeOrExact
-                | upnow_domain::ExecutionEligibility::NativeOnly
-        )
+    if !capabilities.native_update || item.forced {
+        return false;
+    }
+
+    match item.execution_eligibility {
+        upnow_domain::ExecutionEligibility::NativeOnly => true,
+        upnow_domain::ExecutionEligibility::NativeOrExact => version_policy == VersionPolicy::None,
+        upnow_domain::ExecutionEligibility::ExactOnly
+        | upnow_domain::ExecutionEligibility::ResolverNativeOnly
+        | upnow_domain::ExecutionEligibility::NotExecutable => false,
+    }
 }
 
 fn supports_exact_target(item: &ResolvedExecutionItem) -> bool {

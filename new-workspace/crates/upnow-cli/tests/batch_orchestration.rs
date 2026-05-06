@@ -401,6 +401,9 @@ fn default_manager_selection_skips_off_managers() {
     ]);
     let mut config = UpnowConfig::default();
     config
+        .apply_cli_override("brew.mode=off")
+        .expect("override should apply");
+    config
         .apply_cli_override("npm.mode=off")
         .expect("override should apply");
     config
@@ -555,6 +558,12 @@ fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
         ),
     ]);
     let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(success_status(), "", "")),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            r#"{"formulae":[],"casks":[]}"#,
+            "",
+        )),
         Ok(CommandOutput::from_parts(
             success_status(),
             r#"{"alpha-ready": {"current": "1.0.0"}}"#,
@@ -644,6 +653,7 @@ fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
     )
     .expect("default batch plan should render");
 
+    assert!(output.contains("plan brew"));
     assert!(output.contains("plan pnpm"));
     assert!(output.contains("plan npm"));
     assert!(output.contains("plan yarn"));
@@ -653,6 +663,10 @@ fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
     assert!(output.contains("plan go"));
     assert!(output.contains("plan mise"));
     assert!(output.contains("plan uv"));
+    assert!(
+        output.find("plan brew").expect("brew output")
+            < output.find("plan pnpm").expect("pnpm output")
+    );
     assert!(
         output.find("plan pnpm").expect("pnpm output")
             < output.find("plan npm").expect("npm output")
@@ -2307,6 +2321,262 @@ fn selected_mise_plan_blocks_missing_selected_target_metadata_per_item() {
     assert!(output.contains("update npm:alpha-ready 1.0.0 -> 1.2.0"));
     assert!(output.contains("blocked npm:missing-age missing release metadata"));
     assert!(!output.contains("plan mise failed:"));
+}
+
+#[test]
+fn selected_brew_plan_routes_through_batch_core() {
+    let process = brew_plan_process();
+    let (http, env) = fake_release_sources([]);
+    let mut config = UpnowConfig::default();
+    config
+        .apply_cli_override("brew.no_update=true")
+        .expect("brew no_update override should apply");
+
+    let output = run_batch_with_sources(
+        BatchCommand::Plan,
+        config,
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["brew".to_owned()],
+        &[],
+    )
+    .expect("brew plan should render");
+
+    assert!(output.contains("plan brew"));
+    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("delayed beta-fresh-latest 1.0.0 -> 1.1.0 release too fresh"));
+    assert!(output.contains("update pinned-pkg 3.0.0 -> 3.1.0"));
+    assert!(output.contains("blocked omega-error release lookup failed"));
+    assert_eq!(
+        fake_calls(&process),
+        [
+            "brew outdated --json=v2".to_owned(),
+            "brew info --json=v2 alpha-ready beta-fresh-latest pinned-pkg omega-error".to_owned(),
+            "brew tap-info --json --installed".to_owned(),
+            "git -C /tmp/local-tap log -1 --format=%ct origin/main -- Formula/alpha-ready.rb"
+                .to_owned(),
+            "git -C /tmp/local-tap log -1 --format=%ct origin/main -- Formula/beta-fresh-latest.rb"
+                .to_owned(),
+            "git -C /tmp/local-tap log -1 --format=%ct origin/main -- Formula/pinned-pkg.rb"
+                .to_owned(),
+            "git -C /tmp/local-tap log -1 --format=%ct origin/main -- Formula/omega-error.rb"
+                .to_owned(),
+            "git -C /tmp/local-tap log -1 --format=%ct origin/HEAD -- Formula/omega-error.rb"
+                .to_owned(),
+            "git -C /tmp/local-tap log -1 --format=%ct FETCH_HEAD -- Formula/omega-error.rb"
+                .to_owned(),
+            "git -C /tmp/local-tap log -1 --format=%ct HEAD -- Formula/omega-error.rb".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn selected_brew_apply_groups_formula_updates_without_indices() {
+    let process = brew_apply_process();
+    let (http, env) = fake_release_sources([]);
+    let mut config = UpnowConfig::default();
+    config
+        .apply_cli_override("brew.no_update=true")
+        .expect("brew no_update override should apply");
+    config
+        .set_manager_pins(
+            "brew",
+            BTreeSet::from([PackageName::new("pinned-pkg").expect("valid package")]),
+        )
+        .expect("brew pins can be set");
+
+    let output = run_batch_with_sources(
+        BatchCommand::Apply,
+        config,
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["brew".to_owned()],
+        &[],
+    )
+    .expect("brew apply should render");
+
+    assert!(output.contains("apply brew"));
+    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(!output.contains("applied beta-fresh-latest"));
+    assert!(!output.contains("applied pinned-pkg"));
+    assert_eq!(
+        fake_calls(&process).last().map(String::as_str),
+        Some("brew upgrade --formula alpha-ready")
+    );
+}
+
+#[test]
+fn selected_brew_apply_with_policy_still_uses_native_selected_update() {
+    let process = brew_apply_process();
+    let (http, env) = fake_release_sources([]);
+    let mut config = UpnowConfig::default();
+    config
+        .apply_cli_override("brew.no_update=true")
+        .expect("brew no_update override should apply");
+    config
+        .apply_cli_override("brew.version_policy=stable")
+        .expect("brew policy override should apply");
+    config
+        .set_manager_pins(
+            "brew",
+            BTreeSet::from([PackageName::new("pinned-pkg").expect("valid package")]),
+        )
+        .expect("brew pins can be set");
+
+    let output = run_batch_with_sources(
+        BatchCommand::Apply,
+        config,
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["brew".to_owned()],
+        &[],
+    )
+    .expect("brew apply should render");
+
+    assert!(output.contains("apply brew"));
+    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(!output.contains("applied beta-fresh-latest"));
+    assert!(!output.contains("applied pinned-pkg"));
+    assert_eq!(
+        fake_calls(&process).last().map(String::as_str),
+        Some("brew upgrade --formula alpha-ready")
+    );
+}
+
+#[test]
+fn selected_brew_apply_honors_config_pins() {
+    let process = brew_plan_process();
+    let (http, env) = fake_release_sources([]);
+    let mut config = UpnowConfig::default();
+    config
+        .apply_cli_override("brew.no_update=true")
+        .expect("brew no_update override should apply");
+    config
+        .set_manager_pins(
+            "brew",
+            BTreeSet::from([
+                PackageName::new("alpha-ready").expect("valid package"),
+                PackageName::new("pinned-pkg").expect("valid package"),
+            ]),
+        )
+        .expect("brew pins can be set");
+
+    let output = run_batch_with_sources(
+        BatchCommand::Apply,
+        config,
+        &process,
+        &http,
+        &env,
+        fixed_clock(),
+        false,
+        &["brew".to_owned()],
+        &[],
+    )
+    .expect("brew apply should render no selected updates");
+
+    assert!(output.contains("apply brew"));
+    assert!(output.contains("no selected updates"));
+    assert!(
+        !fake_calls(&process)
+            .iter()
+            .any(|call| call.starts_with("brew upgrade"))
+    );
+}
+
+fn brew_plan_process() -> ProcessRunner {
+    ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("brew", "deterministic/outdated.json"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("brew", "deterministic/info-plan.json"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("brew", "deterministic/tap-info.json"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "1000000000",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "9999999999",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "1000000000",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "not-a-timestamp",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(exit_status(1), "", "bad ref")),
+        Ok(CommandOutput::from_parts(exit_status(1), "", "bad ref")),
+        Ok(CommandOutput::from_parts(exit_status(1), "", "bad ref")),
+    ])
+}
+
+fn brew_apply_process() -> ProcessRunner {
+    ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("brew", "deterministic/outdated.json"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("brew", "deterministic/info-plan.json"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            text("brew", "deterministic/tap-info.json"),
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "1000000000",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "9999999999",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "1000000000",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            success_status(),
+            "not-a-timestamp",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(exit_status(1), "", "bad ref")),
+        Ok(CommandOutput::from_parts(exit_status(1), "", "bad ref")),
+        Ok(CommandOutput::from_parts(exit_status(1), "", "bad ref")),
+        Ok(CommandOutput::from_parts(success_status(), "", "")),
+    ])
 }
 
 fn fixed_clock() -> Clock {

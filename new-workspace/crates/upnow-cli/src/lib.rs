@@ -521,6 +521,7 @@ fn build_manager_plan(
             env,
             manager_config.version_policy,
             manager_config.min_release_age,
+            manager_config.no_update,
         )
         .map_err(map_manager_error)?;
     update_plan_from_inputs(

@@ -512,6 +512,7 @@ fn candidate_from_seed(
         seed.version_scheme,
         execution_eligibility,
     )
+    .with_execution_target_kind(seed.execution_target_kind)
     .with_policy_warnings(policy_warnings)
 }
 

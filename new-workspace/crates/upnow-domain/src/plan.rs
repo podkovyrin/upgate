@@ -31,6 +31,7 @@ pub struct UpdateSeed {
     pub installed: InstalledTool,
     pub version_scheme: VersionScheme,
     pub target_selection: TargetSelection,
+    pub execution_target_kind: ExecutionTargetKind,
 }
 
 impl UpdateSeed {
@@ -58,6 +59,7 @@ impl UpdateSeed {
                 discovered_target,
                 release_lookup,
             },
+            execution_target_kind: ExecutionTargetKind::Standard,
         }
     }
 
@@ -71,7 +73,17 @@ impl UpdateSeed {
             installed,
             version_scheme,
             target_selection: TargetSelection::ManagerSelected(selected_target),
+            execution_target_kind: ExecutionTargetKind::Standard,
         }
+    }
+
+    #[must_use]
+    pub const fn with_execution_target_kind(
+        mut self,
+        execution_target_kind: ExecutionTargetKind,
+    ) -> Self {
+        self.execution_target_kind = execution_target_kind;
+        self
     }
 }
 
@@ -144,6 +156,7 @@ pub struct UpdateCandidate {
     pub target_version: VersionText,
     pub version_scheme: VersionScheme,
     pub execution_eligibility: ExecutionEligibility,
+    pub execution_target_kind: ExecutionTargetKind,
     pub policy_warnings: Vec<PolicyWarning>,
 }
 
@@ -164,8 +177,18 @@ impl UpdateCandidate {
             target_version,
             version_scheme,
             execution_eligibility,
+            execution_target_kind: ExecutionTargetKind::Standard,
             policy_warnings: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub const fn with_execution_target_kind(
+        mut self,
+        execution_target_kind: ExecutionTargetKind,
+    ) -> Self {
+        self.execution_target_kind = execution_target_kind;
+        self
     }
 
     #[must_use]
@@ -203,6 +226,11 @@ impl UpdateCandidate {
     pub fn execution_eligibility(&self) -> ExecutionEligibility {
         self.execution_eligibility
     }
+
+    #[must_use]
+    pub fn execution_target_kind(&self) -> ExecutionTargetKind {
+        self.execution_target_kind
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,6 +240,13 @@ pub enum ExecutionEligibility {
     NativeOnly,
     ResolverNativeOnly,
     NotExecutable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionTargetKind {
+    Standard,
+    BrewFormula,
+    BrewCask,
 }
 
 impl ExecutionEligibility {

@@ -201,6 +201,7 @@ pub trait ManagerAdapter {
         env: &Env,
         version_policy: VersionPolicy,
         min_release_age: Duration,
+        no_update: bool,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError>;
 
     /// Builds manager commands for an execution plan.

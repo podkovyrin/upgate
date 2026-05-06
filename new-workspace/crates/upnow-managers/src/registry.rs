@@ -1,6 +1,7 @@
 use upnow_domain::ManagerId;
 
 use crate::adapter::{ManagerAdapter, ManagerAdapterError};
+use crate::brew::BrewManager;
 use crate::bun::BunManager;
 use crate::cargo::CargoManager;
 use crate::dotnet::DotnetManager;
@@ -14,6 +15,7 @@ use crate::uv::UvManager;
 use crate::yarn::YarnManager;
 
 static BUN_MANAGER: BunManager = BunManager;
+static BREW_MANAGER: BrewManager = BrewManager;
 static CARGO_MANAGER: CargoManager = CargoManager;
 static DOTNET_MANAGER: DotnetManager = DotnetManager;
 static GEM_MANAGER: GemManager = GemManager;
@@ -29,6 +31,7 @@ pub fn manager_by_id(
     manager_id: &ManagerId,
 ) -> Result<&'static dyn ManagerAdapter, ManagerAdapterError> {
     match manager_id.as_str() {
+        crate::brew::MANAGER_ID => Ok(&BREW_MANAGER),
         crate::bun::MANAGER_ID => Ok(&BUN_MANAGER),
         crate::cargo::MANAGER_ID => Ok(&CARGO_MANAGER),
         crate::dotnet::MANAGER_ID => Ok(&DOTNET_MANAGER),
@@ -45,8 +48,9 @@ pub fn manager_by_id(
 }
 
 #[must_use]
-pub fn available_managers() -> [&'static dyn ManagerAdapter; 11] {
+pub fn available_managers() -> [&'static dyn ManagerAdapter; 12] {
     [
+        &BREW_MANAGER,
         &PNPM_MANAGER,
         &NPM_MANAGER,
         &YARN_MANAGER,

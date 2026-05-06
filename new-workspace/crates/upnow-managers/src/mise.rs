@@ -166,6 +166,7 @@ impl ManagerAdapter for MiseManager {
         env: &Env,
         version_policy: VersionPolicy,
         min_release_age: Duration,
+        _no_update: bool,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
         self.validate_version_policy(version_policy)?;
         update_inputs(process, http, env, min_release_age).map_err(|err| adapter_error(&err))

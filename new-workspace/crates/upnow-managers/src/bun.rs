@@ -151,6 +151,7 @@ impl ManagerAdapter for BunManager {
         env: &Env,
         version_policy: VersionPolicy,
         _min_release_age: Duration,
+        _no_update: bool,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
         self.validate_version_policy(version_policy)?;
         update_inputs(process, env).map_err(|err| adapter_error(&err))

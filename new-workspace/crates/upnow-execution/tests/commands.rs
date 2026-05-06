@@ -255,6 +255,41 @@ fn resolves_exact_intent_for_policy_filtered_updates() {
 }
 
 #[test]
+fn native_only_policy_filtered_update_stays_native_selected() {
+    let plan = plan(vec![
+        PlanItem::Update {
+            id: plan_item_id(),
+            candidate: candidate(ExecutionEligibility::NativeOnly),
+        },
+        PlanItem::Update {
+            id: PlanItemId::new("pnpm:beta-ready").expect("valid id"),
+            candidate: candidate_for("beta-ready", ExecutionEligibility::NativeOnly),
+        },
+        PlanItem::Blocked {
+            id: PlanItemId::new("pnpm:missing-age").expect("valid id"),
+            seed: seed_for("missing-age"),
+            reason: BlockReason::MissingReleaseMetadata,
+            policy_warnings: Vec::new(),
+        },
+    ]);
+    let selection = selection(&plan, false);
+
+    let resolved = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        capabilities(false, true, true),
+        VersionPolicy::Stable,
+    )
+    .expect("native-only policy-gated selection should resolve");
+
+    assert!(matches!(
+        resolved.intents.as_slice(),
+        [ExecutionCommandIntent::NativeSelected(item)]
+            if item.package_name.as_str() == "alpha-ready"
+    ));
+}
+
+#[test]
 fn forced_delayed_selection_resolves_to_exact_intent() {
     let plan = plan(vec![PlanItem::Delayed {
         id: plan_item_id(),
@@ -278,7 +313,7 @@ fn forced_delayed_selection_resolves_to_exact_intent() {
 }
 
 #[test]
-fn complete_unforced_update_selection_resolves_to_native_global() {
+fn policy_filtered_complete_exact_capable_selection_resolves_to_exact_intents() {
     let plan = plan(vec![
         PlanItem::Update {
             id: plan_item_id(),
@@ -310,6 +345,44 @@ fn complete_unforced_update_selection_resolves_to_native_global() {
         &plan,
         &selection,
         capabilities(true, false, true),
+        VersionPolicy::Stable,
+    )
+    .expect("selection should resolve");
+
+    assert!(matches!(
+        resolved.intents.as_slice(),
+        [ExecutionCommandIntent::Exact(first), ExecutionCommandIntent::Exact(second)]
+            if first.package_name.as_str() == "alpha-ready"
+                && second.package_name.as_str() == "beta-ready"
+    ));
+}
+
+#[test]
+fn policy_filtered_complete_native_only_selection_resolves_to_native_global() {
+    let plan = plan(vec![
+        PlanItem::Update {
+            id: plan_item_id(),
+            candidate: candidate(ExecutionEligibility::NativeOnly),
+        },
+        PlanItem::Update {
+            id: PlanItemId::new("pnpm:beta-ready").expect("valid id"),
+            candidate: candidate_for("beta-ready", ExecutionEligibility::NativeOnly),
+        },
+    ]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![
+            SelectedItem::new(plan_item_id(), false),
+            SelectedItem::new(PlanItemId::new("pnpm:beta-ready").expect("valid id"), false),
+        ],
+        Vec::new(),
+    )
+    .expect("valid selection");
+
+    let resolved = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        capabilities(false, true, true),
         VersionPolicy::Stable,
     )
     .expect("selection should resolve");
