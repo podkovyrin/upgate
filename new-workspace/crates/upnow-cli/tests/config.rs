@@ -4,6 +4,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use upnow_cli::config::{ConfigError, ManagerMode, PIN_ALL, UpnowConfig};
 use upnow_domain::{PackageName, VersionPolicy};
+use upnow_managers::adapter::ManagerDefaultMode;
+use upnow_managers::registry::available_managers;
 
 fn temp_config_path(test_name: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -58,6 +60,26 @@ fn manager_defaults_cover_brew_gem_and_dotnet() {
         .resolve_manager("dotnet")
         .expect("dotnet should resolve");
     assert_eq!(dotnet.mode, ManagerMode::Off);
+}
+
+#[test]
+fn config_resolves_every_registered_manager_default() {
+    let config = UpnowConfig::default();
+
+    for manager in available_managers() {
+        let resolved = config
+            .resolve_manager(manager.id())
+            .expect("registered manager should resolve from adapter defaults");
+        assert_eq!(resolved.manager_id.as_str(), manager.id());
+        assert_eq!(resolved.min_release_age, manager.defaults().min_release_age);
+        assert_eq!(
+            resolved.mode,
+            match manager.defaults().mode {
+                ManagerDefaultMode::Off => ManagerMode::Off,
+                ManagerDefaultMode::Apply => ManagerMode::Apply,
+            }
+        );
+    }
 }
 
 #[test]

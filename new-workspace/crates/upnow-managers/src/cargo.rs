@@ -19,8 +19,8 @@ use upnow_release::newest_semver_version;
 
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerExecutionCommand, ManagerExecutionCommandItem,
-    ReleaseLookupSubject,
+    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ManagerExecutionCommand,
+    ManagerExecutionCommandItem, ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "cargo";
@@ -127,6 +127,13 @@ pub struct CargoManager;
 impl ManagerAdapter for CargoManager {
     fn id(&self) -> &'static str {
         MANAGER_ID
+    }
+
+    fn defaults(&self) -> ManagerDefaults {
+        ManagerDefaults {
+            min_release_age: Duration::from_secs(7 * 24 * 60 * 60),
+            mode: ManagerDefaultMode::Apply,
+        }
     }
 
     fn capabilities(&self) -> ManagerCapabilities {

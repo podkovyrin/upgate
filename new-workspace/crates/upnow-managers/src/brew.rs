@@ -16,8 +16,8 @@ use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, Proces
 
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerExecutionCommand, ManagerExecutionCommandItem,
-    ReleaseLookupSubject,
+    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ManagerExecutionCommand,
+    ManagerExecutionCommandItem, ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "brew";
@@ -223,6 +223,13 @@ pub struct BrewManager;
 impl ManagerAdapter for BrewManager {
     fn id(&self) -> &'static str {
         MANAGER_ID
+    }
+
+    fn defaults(&self) -> ManagerDefaults {
+        ManagerDefaults {
+            min_release_age: Duration::from_secs(12 * 60 * 60),
+            mode: ManagerDefaultMode::Apply,
+        }
     }
 
     fn capabilities(&self) -> ManagerCapabilities {

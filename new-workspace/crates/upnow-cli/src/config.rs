@@ -9,14 +9,13 @@ use std::time::Duration;
 use serde::Deserialize;
 use toml_edit::{Array, DocumentMut, Item, Table, Value};
 use upnow_domain::{ManagerId, PackageName, VersionPolicy};
+use upnow_managers::adapter::ManagerDefaultMode;
 use upnow_managers::registry::manager_by_id;
 
 pub const PIN_ALL: &str = "*";
 
 const CONFIG_RELATIVE_PATH: &str = "upnow/config.toml";
 const DEFAULT_SCAN_OLD_AGE_THRESHOLD: &str = "365d";
-const DEFAULT_MIN_RELEASE_AGE: &str = "7d";
-const BREW_MIN_RELEASE_AGE: &str = "12h";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
@@ -186,6 +185,13 @@ impl ManagerMode {
             }),
         }
     }
+
+    const fn from_default(mode: ManagerDefaultMode) -> Self {
+        match mode {
+            ManagerDefaultMode::Off => Self::Off,
+            ManagerDefaultMode::Apply => Self::Apply,
+        }
+    }
 }
 
 impl Display for ManagerMode {
@@ -266,21 +272,22 @@ impl UpnowConfig {
     /// Returns an error for unknown managers, invalid values, or unsupported
     /// manager/policy combinations.
     pub fn resolve_manager(&self, manager_id: &str) -> Result<ManagerConfig, ConfigError> {
-        let defaults = manager_defaults(manager_id)
-            .ok_or_else(|| ConfigError::UnknownManager(manager_id.to_owned()))?;
+        let manager_id_value = ManagerId::new(manager_id.to_owned())
+            .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
+        let manager = manager_by_id(&manager_id_value)
+            .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
+        let defaults = manager.defaults();
         let section = self.sections.get(manager_id);
 
-        let min_release_age_raw = section
-            .and_then(|section| section.min_release_age.as_deref())
-            .unwrap_or(defaults.min_release_age);
-        let min_release_age = parse_duration_key(
-            &format!("[{manager_id}].min_release_age"),
-            min_release_age_raw,
-        )?;
+        let min_release_age_raw = section.and_then(|section| section.min_release_age.as_deref());
+        let min_release_age = match min_release_age_raw {
+            Some(raw) => parse_duration_key(&format!("[{manager_id}].min_release_age"), raw)?,
+            None => defaults.min_release_age,
+        };
         if manager_id == "npm" && min_release_age.as_secs() % (24 * 60 * 60) != 0 {
             return Err(ConfigError::InvalidDuration {
                 key: "[npm].min_release_age".to_owned(),
-                value: min_release_age_raw.to_owned(),
+                value: min_release_age_raw.unwrap_or("<default>").to_owned(),
             });
         }
 
@@ -292,7 +299,7 @@ impl UpnowConfig {
 
         let mode = match section.and_then(|section| section.mode.as_deref()) {
             Some(raw) => ManagerMode::parse_for(manager_id, raw)?,
-            None => defaults.mode,
+            None => ManagerMode::from_default(defaults.mode),
         };
 
         let no_update = if manager_id == "brew" {
@@ -314,8 +321,7 @@ impl UpnowConfig {
         }
 
         Ok(ManagerConfig {
-            manager_id: ManagerId::new(manager_id.to_owned())
-                .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?,
+            manager_id: manager_id_value,
             mode,
             min_release_age,
             version_policy,
@@ -356,9 +362,10 @@ impl UpnowConfig {
             };
         }
 
-        if manager_defaults(section).is_none() {
-            return Err(ConfigError::UnknownManager(section.to_owned()));
-        }
+        let section_manager_id = ManagerId::new(section.to_owned())
+            .map_err(|_| ConfigError::UnknownManager(section.to_owned()))?;
+        manager_by_id(&section_manager_id)
+            .map_err(|_| ConfigError::UnknownManager(section.to_owned()))?;
 
         match key {
             "min_release_age" => {
@@ -425,9 +432,10 @@ impl UpnowConfig {
     ) -> Result<(), ConfigError> {
         for manager_id in selected_ids {
             let manager_id = manager_id.as_ref();
-            if manager_defaults(manager_id).is_none() {
-                return Err(ConfigError::UnknownManager(manager_id.to_owned()));
-            }
+            let manager_id_value = ManagerId::new(manager_id.to_owned())
+                .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
+            manager_by_id(&manager_id_value)
+                .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
             self.sections.entry(manager_id.to_owned()).or_default().mode =
                 Some(ManagerMode::Apply.to_string());
         }
@@ -444,9 +452,10 @@ impl UpnowConfig {
         manager_id: &str,
         pins: BTreeSet<PackageName>,
     ) -> Result<(), ConfigError> {
-        if manager_defaults(manager_id).is_none() {
-            return Err(ConfigError::UnknownManager(manager_id.to_owned()));
-        }
+        let manager_id_value = ManagerId::new(manager_id.to_owned())
+            .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
+        manager_by_id(&manager_id_value)
+            .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
 
         self.sections
             .entry(manager_id.to_owned())
@@ -479,9 +488,10 @@ impl UpnowConfig {
         manager_id: &str,
         path: &Path,
     ) -> Result<(), ConfigError> {
-        if manager_defaults(manager_id).is_none() {
-            return Err(ConfigError::UnknownManager(manager_id.to_owned()));
-        }
+        let manager_id_value = ManagerId::new(manager_id.to_owned())
+            .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
+        manager_by_id(&manager_id_value)
+            .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|err| {
@@ -546,32 +556,6 @@ impl UpnowConfig {
                 path.display()
             ))
         })
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ManagerDefaults {
-    min_release_age: &'static str,
-    mode: ManagerMode,
-}
-
-fn manager_defaults(manager_id: &str) -> Option<ManagerDefaults> {
-    match manager_id {
-        "brew" => Some(ManagerDefaults {
-            min_release_age: BREW_MIN_RELEASE_AGE,
-            mode: ManagerMode::Apply,
-        }),
-        "gem" | "dotnet" => Some(ManagerDefaults {
-            min_release_age: DEFAULT_MIN_RELEASE_AGE,
-            mode: ManagerMode::Off,
-        }),
-        "bun" | "cargo" | "go" | "mise" | "npm" | "pipx" | "pnpm" | "uv" | "yarn" => {
-            Some(ManagerDefaults {
-                min_release_age: DEFAULT_MIN_RELEASE_AGE,
-                mode: ManagerMode::Apply,
-            })
-        }
-        _ => None,
     }
 }
 

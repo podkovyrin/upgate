@@ -11,6 +11,18 @@ use upnow_infra::{CommandSpec, Env, HttpClient, ProcessRunner};
 pub use upnow_domain::ManagerCapabilities;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagerDefaultMode {
+    Off,
+    Apply,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManagerDefaults {
+    pub min_release_age: Duration,
+    pub mode: ManagerDefaultMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandBuildSettings {
     pub min_release_age: Duration,
 }
@@ -106,6 +118,8 @@ impl std::error::Error for ManagerAdapterError {}
 
 pub trait ManagerAdapter {
     fn id(&self) -> &'static str;
+
+    fn defaults(&self) -> ManagerDefaults;
 
     fn capabilities(&self) -> ManagerCapabilities;
 

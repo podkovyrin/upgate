@@ -18,8 +18,8 @@ use upnow_release::newest_pep440_version;
 
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerExecutionCommand, ManagerExecutionCommandItem,
-    ReleaseLookupSubject,
+    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ManagerExecutionCommand,
+    ManagerExecutionCommandItem, ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "pipx";
@@ -118,6 +118,13 @@ pub struct PipxManager;
 impl ManagerAdapter for PipxManager {
     fn id(&self) -> &'static str {
         MANAGER_ID
+    }
+
+    fn defaults(&self) -> ManagerDefaults {
+        ManagerDefaults {
+            min_release_age: Duration::from_secs(7 * 24 * 60 * 60),
+            mode: ManagerDefaultMode::Apply,
+        }
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
