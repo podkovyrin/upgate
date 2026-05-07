@@ -10,14 +10,16 @@ use upnow_domain::{
     ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate, UpdateSeed,
     VersionPolicy, VersionScheme, VersionText,
 };
-use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
+use upnow_execution::{
+    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
+    ResolvedExecutionPlan,
+};
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
 use upnow_release::newest_semver_version;
 
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ManagerExecutionCommand,
-    ManagerExecutionCommandItem, ReleaseLookupSubject,
+    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "npm";
@@ -172,7 +174,7 @@ impl ManagerAdapter for NpmManager {
         _env: &Env,
         plan: &ResolvedExecutionPlan,
         settings: CommandBuildSettings,
-    ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError> {
+    ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
         commands_for_execution_plan(plan, settings).map_err(adapter_error)
     }
 }
@@ -327,12 +329,12 @@ pub fn parse_npm_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTi
 pub fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
     settings: CommandBuildSettings,
-) -> Result<Vec<ManagerExecutionCommand>, NpmError> {
+) -> Result<Vec<ExecutionCommand>, NpmError> {
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
             ExecutionCommandIntent::NativeSelected(item) => {
-                commands.push(ManagerExecutionCommand {
+                commands.push(ExecutionCommand {
                     items: vec![execution_item(item)],
                     command: selected_native_update_command_for_item(
                         item,
@@ -341,7 +343,7 @@ pub fn commands_for_execution_plan(
                 });
             }
             ExecutionCommandIntent::Exact(item) => {
-                commands.push(ManagerExecutionCommand {
+                commands.push(ExecutionCommand {
                     items: vec![execution_item(item)],
                     command: exact_command_for_item(
                         item,
@@ -398,8 +400,8 @@ pub fn global_update_command(min_release_age_days: u64) -> CommandSpec {
     CommandSpec::new("npm", ["-g", "update", "--min-release-age", &days]).mutating()
 }
 
-fn execution_item(item: &ResolvedExecutionItem) -> ManagerExecutionCommandItem {
-    ManagerExecutionCommandItem {
+fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
+    ExecutionCommandItem {
         plan_item_id: item.plan_item_id.clone(),
         package_name: item.package_name.clone(),
         installed_version: item.installed_version.clone(),

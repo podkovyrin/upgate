@@ -2,11 +2,11 @@ use std::fmt::{self, Display};
 use std::time::Duration;
 
 use upnow_domain::{
-    InstalledTool, ManagerId, ManagerScanInput, ManagerUpdateInput, PackageName, PlanItemId,
+    InstalledTool, ManagerId, ManagerScanInput, ManagerUpdateInput, PackageName,
     ReleaseLookupResult, UnsupportedReason, VersionPolicy, VersionText,
 };
-use upnow_execution::ResolvedExecutionPlan;
-use upnow_infra::{CommandSpec, Env, HttpClient, ProcessRunner};
+use upnow_execution::{ExecutionCommand, ResolvedExecutionPlan};
+use upnow_infra::{Env, HttpClient, ProcessRunner};
 
 pub use upnow_domain::ManagerCapabilities;
 
@@ -25,20 +25,6 @@ pub struct ManagerDefaults {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandBuildSettings {
     pub min_release_age: Duration,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ManagerExecutionCommandItem {
-    pub plan_item_id: PlanItemId,
-    pub package_name: PackageName,
-    pub installed_version: VersionText,
-    pub target_version: VersionText,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ManagerExecutionCommand {
-    pub items: Vec<ManagerExecutionCommandItem>,
-    pub command: CommandSpec,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,7 +173,7 @@ pub trait ManagerAdapter {
         env: &Env,
         plan: &ResolvedExecutionPlan,
         settings: CommandBuildSettings,
-    ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError>;
+    ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError>;
 
     fn manager_id(&self) -> ManagerId {
         ManagerId::new(self.id()).expect("static manager id should be valid")

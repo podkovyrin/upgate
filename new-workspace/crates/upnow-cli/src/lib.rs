@@ -12,13 +12,12 @@ use upnow_domain::{
     ScanItem, ScanReport, UpdatePlan,
 };
 use upnow_execution::{
-    ExecutionCommand, ExecutionCommandItem, ExecutionReport, ExecutionSelectionError,
-    ExecutionStatus, execute_commands, resolve_selection_for_execution,
+    ExecutionReport, ExecutionSelectionError, ExecutionStatus, execute_commands,
+    resolve_selection_for_execution,
 };
 use upnow_infra::{Clock, Env, HttpClient, HttpSettings, MutationMode, ProcessRunner};
 use upnow_managers::adapter::{
-    CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerExecutionCommand,
-    ReleaseLookupSubject,
+    CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ReleaseLookupSubject,
 };
 use upnow_managers::registry::{available_managers, manager_by_id};
 use upnow_planning::{PlanningSettings, default_batch_selection, update_plan_from_inputs};
@@ -289,10 +288,7 @@ fn run_manager_batch(
                         min_release_age: manager_config.min_release_age,
                     },
                 )
-                .map_err(map_manager_error)?
-                .into_iter()
-                .map(execution_command_from_manager)
-                .collect();
+                .map_err(map_manager_error)?;
             let report =
                 execute_commands(plan.manager_id.clone(), commands, process).map_err(|err| {
                     if err.is_interruption() {
@@ -534,22 +530,6 @@ fn build_manager_plan(
         },
     )
     .map_err(|err| AppError::Planning(err.to_string()))
-}
-
-fn execution_command_from_manager(command: ManagerExecutionCommand) -> ExecutionCommand {
-    ExecutionCommand {
-        items: command
-            .items
-            .into_iter()
-            .map(|item| ExecutionCommandItem {
-                plan_item_id: item.plan_item_id,
-                package_name: item.package_name,
-                installed_version: item.installed_version,
-                target_version: item.target_version,
-            })
-            .collect(),
-        command: command.command,
-    }
 }
 
 fn execution_report_has_failures(report: &ExecutionReport) -> bool {

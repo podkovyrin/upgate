@@ -11,14 +11,16 @@ use upnow_domain::{
     ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate, UpdateSeed,
     VersionPolicy, VersionScheme, VersionText,
 };
-use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
+use upnow_execution::{
+    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
+    ResolvedExecutionPlan,
+};
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
 use upnow_release::newest_semver_version;
 
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ManagerExecutionCommand,
-    ManagerExecutionCommandItem, ReleaseLookupSubject,
+    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "dotnet";
@@ -196,7 +198,7 @@ impl ManagerAdapter for DotnetManager {
         _env: &Env,
         plan: &ResolvedExecutionPlan,
         _settings: CommandBuildSettings,
-    ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError> {
+    ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
         commands_for_execution_plan(plan).map_err(|err| adapter_error(&err))
     }
 }
@@ -316,12 +318,12 @@ pub fn parse_nuget_page_json(raw: &str) -> Result<Vec<ReleaseEntry>, DotnetError
 /// Returns an error when the resolved execution mode is not supported.
 pub fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
-) -> Result<Vec<ManagerExecutionCommand>, DotnetError> {
+) -> Result<Vec<ExecutionCommand>, DotnetError> {
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
             ExecutionCommandIntent::Exact(item) => {
-                commands.push(ManagerExecutionCommand {
+                commands.push(ExecutionCommand {
                     items: vec![execution_item(item)],
                     command: exact_command_for_item(item),
                 });
@@ -448,8 +450,8 @@ fn exact_command_parts(package_name: &PackageName, target_version: &VersionText)
     .mutating()
 }
 
-fn execution_item(item: &ResolvedExecutionItem) -> ManagerExecutionCommandItem {
-    ManagerExecutionCommandItem {
+fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
+    ExecutionCommandItem {
         plan_item_id: item.plan_item_id.clone(),
         package_name: item.package_name.clone(),
         installed_version: item.installed_version.clone(),

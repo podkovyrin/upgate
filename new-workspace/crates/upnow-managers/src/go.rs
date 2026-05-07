@@ -14,13 +14,15 @@ use upnow_domain::{
     ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ScanIssue,
     SkipReason, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
-use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
+use upnow_execution::{
+    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
+    ResolvedExecutionPlan,
+};
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
 
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ManagerExecutionCommand,
-    ManagerExecutionCommandItem, ReleaseLookupSubject,
+    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "go";
@@ -181,7 +183,7 @@ impl ManagerAdapter for GoManager {
         env: &Env,
         plan: &ResolvedExecutionPlan,
         _settings: CommandBuildSettings,
-    ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError> {
+    ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
         commands_for_execution_plan(process, env, plan).map_err(|err| adapter_error(&err))
     }
 }
@@ -437,13 +439,13 @@ pub fn commands_for_execution_plan(
     process: &ProcessRunner,
     env: &Env,
     plan: &ResolvedExecutionPlan,
-) -> Result<Vec<ManagerExecutionCommand>, GoError> {
+) -> Result<Vec<ExecutionCommand>, GoError> {
     let install_paths = install_paths_by_package(process, env)?;
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
             ExecutionCommandIntent::Exact(item) => {
-                commands.push(ManagerExecutionCommand {
+                commands.push(ExecutionCommand {
                     items: vec![execution_item(item)],
                     command: exact_command_for_item(item, &install_paths)?,
                 });
@@ -660,8 +662,8 @@ fn lookup_installed_release_by_module(
     }
 }
 
-fn execution_item(item: &ResolvedExecutionItem) -> ManagerExecutionCommandItem {
-    ManagerExecutionCommandItem {
+fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
+    ExecutionCommandItem {
         plan_item_id: item.plan_item_id.clone(),
         package_name: item.package_name.clone(),
         installed_version: item.installed_version.clone(),

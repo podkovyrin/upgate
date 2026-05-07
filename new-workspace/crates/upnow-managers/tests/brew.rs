@@ -415,6 +415,19 @@ fn builds_grouped_formula_and_cask_commands() {
         commands[1].command.display(),
         "brew upgrade --cask beta-cask"
     );
+    assert_eq!(commands[0].items.len(), 1);
+    assert_eq!(
+        commands[0].items[0].plan_item_id.as_str(),
+        "brew:alpha-ready"
+    );
+    assert_eq!(commands[0].items[0].package_name.as_str(), "alpha-ready");
+    assert_eq!(commands[0].items[0].installed_version.as_str(), "1.0.0");
+    assert_eq!(commands[0].items[0].target_version.as_str(), "1.2.0");
+    assert_eq!(commands[1].items.len(), 1);
+    assert_eq!(commands[1].items[0].plan_item_id.as_str(), "brew:beta-cask");
+    assert_eq!(commands[1].items[0].package_name.as_str(), "beta-cask");
+    assert_eq!(commands[1].items[0].installed_version.as_str(), "1.0.0");
+    assert_eq!(commands[1].items[0].target_version.as_str(), "1.2.0");
 }
 
 fn resolved_item(

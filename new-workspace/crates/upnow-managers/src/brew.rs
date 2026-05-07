@@ -12,13 +12,15 @@ use upnow_domain::{
     TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy,
     VersionScheme, VersionText,
 };
-use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
+use upnow_execution::{
+    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
+    ResolvedExecutionPlan,
+};
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
 
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ManagerExecutionCommand,
-    ManagerExecutionCommandItem, ReleaseLookupSubject,
+    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "brew";
@@ -291,7 +293,7 @@ impl ManagerAdapter for BrewManager {
         _env: &Env,
         plan: &ResolvedExecutionPlan,
         _settings: CommandBuildSettings,
-    ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError> {
+    ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
         commands_for_execution_plan(plan).map_err(|err| adapter_error(&err))
     }
 }
@@ -478,7 +480,7 @@ pub fn update_inputs(
 /// Returns an error when the resolved execution mode is unsupported by Brew.
 pub fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
-) -> Result<Vec<ManagerExecutionCommand>, BrewError> {
+) -> Result<Vec<ExecutionCommand>, BrewError> {
     let mut formulae = Vec::new();
     let mut casks = Vec::new();
     for intent in &plan.intents {
@@ -890,24 +892,21 @@ fn push_brew_item(
     }
 }
 
-fn grouped_upgrade_command(
-    kind_arg: &str,
-    items: &[ResolvedExecutionItem],
-) -> ManagerExecutionCommand {
+fn grouped_upgrade_command(kind_arg: &str, items: &[ResolvedExecutionItem]) -> ExecutionCommand {
     let mut args = vec!["upgrade".to_owned(), kind_arg.to_owned()];
     args.extend(
         items
             .iter()
             .map(|item| item.package_name.as_str().to_owned()),
     );
-    ManagerExecutionCommand {
+    ExecutionCommand {
         items: items.iter().map(execution_item).collect(),
         command: CommandSpec::new("brew", args).mutating(),
     }
 }
 
-fn execution_item(item: &ResolvedExecutionItem) -> ManagerExecutionCommandItem {
-    ManagerExecutionCommandItem {
+fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
+    ExecutionCommandItem {
         plan_item_id: item.plan_item_id.clone(),
         package_name: item.package_name.clone(),
         installed_version: item.installed_version.clone(),

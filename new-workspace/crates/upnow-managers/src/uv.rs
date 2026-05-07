@@ -13,13 +13,15 @@ use upnow_domain::{
     ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
     TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
-use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
+use upnow_execution::{
+    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
+    ResolvedExecutionPlan,
+};
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
 
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ManagerExecutionCommand,
-    ManagerExecutionCommandItem, ReleaseLookupSubject,
+    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "uv";
@@ -159,7 +161,7 @@ impl ManagerAdapter for UvManager {
         _env: &Env,
         plan: &ResolvedExecutionPlan,
         settings: CommandBuildSettings,
-    ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError> {
+    ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
         commands_for_execution_plan(plan, settings.min_release_age)
             .map_err(|err| adapter_error(&err))
     }
@@ -347,13 +349,13 @@ pub fn parse_pypi_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeli
 pub fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
     min_release_age: Duration,
-) -> Result<Vec<ManagerExecutionCommand>, UvError> {
+) -> Result<Vec<ExecutionCommand>, UvError> {
     let min_age_arg = duration_arg(min_release_age);
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
             ExecutionCommandIntent::ResolverNative(item) => {
-                commands.push(ManagerExecutionCommand {
+                commands.push(ExecutionCommand {
                     items: vec![execution_item(item)],
                     command: tool_install_command(&item.package_name, &min_age_arg),
                 });
@@ -506,8 +508,8 @@ fn installed_tool(tool: &UvTool) -> Result<InstalledTool, UvError> {
     ))
 }
 
-fn execution_item(item: &ResolvedExecutionItem) -> ManagerExecutionCommandItem {
-    ManagerExecutionCommandItem {
+fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
+    ExecutionCommandItem {
         plan_item_id: item.plan_item_id.clone(),
         package_name: item.package_name.clone(),
         installed_version: item.installed_version.clone(),

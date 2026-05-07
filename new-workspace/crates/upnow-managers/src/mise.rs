@@ -13,13 +13,15 @@ use upnow_domain::{
     ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
     TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
-use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
+use upnow_execution::{
+    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
+    ResolvedExecutionPlan,
+};
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
 
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ManagerExecutionCommand,
-    ManagerExecutionCommandItem, ReleaseLookupSubject,
+    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "mise";
@@ -183,7 +185,7 @@ impl ManagerAdapter for MiseManager {
         _env: &Env,
         plan: &ResolvedExecutionPlan,
         settings: CommandBuildSettings,
-    ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError> {
+    ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
         commands_for_execution_plan(plan, settings.min_release_age)
             .map_err(|err| adapter_error(&err))
     }
@@ -451,19 +453,19 @@ pub fn update_inputs(
 pub fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
     min_release_age: Duration,
-) -> Result<Vec<ManagerExecutionCommand>, MiseError> {
+) -> Result<Vec<ExecutionCommand>, MiseError> {
     let min_age_arg = duration_arg(min_release_age);
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
             ExecutionCommandIntent::ResolverNative(item) => {
-                commands.push(ManagerExecutionCommand {
+                commands.push(ExecutionCommand {
                     items: vec![execution_item(item)],
                     command: selected_upgrade_command(&min_age_arg, &item.package_name),
                 });
             }
             ExecutionCommandIntent::ResolverNativeGlobal(items) => {
-                commands.push(ManagerExecutionCommand {
+                commands.push(ExecutionCommand {
                     items: items.iter().map(execution_item).collect(),
                     command: global_upgrade_command(&min_age_arg),
                 });
@@ -913,8 +915,8 @@ fn installed_tool_from_plan_item(item: &MisePlanItem) -> Result<InstalledTool, M
     ))
 }
 
-fn execution_item(item: &ResolvedExecutionItem) -> ManagerExecutionCommandItem {
-    ManagerExecutionCommandItem {
+fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
+    ExecutionCommandItem {
         plan_item_id: item.plan_item_id.clone(),
         package_name: item.package_name.clone(),
         installed_version: item.installed_version.clone(),

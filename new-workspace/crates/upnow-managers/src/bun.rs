@@ -10,14 +10,16 @@ use upnow_domain::{
     ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate, UpdateSeed,
     VersionPolicy, VersionScheme, VersionText,
 };
-use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
+use upnow_execution::{
+    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
+    ResolvedExecutionPlan,
+};
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
 use upnow_release::newest_semver_version;
 
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ManagerExecutionCommand,
-    ManagerExecutionCommandItem, ReleaseLookupSubject,
+    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "bun";
@@ -170,7 +172,7 @@ impl ManagerAdapter for BunManager {
         _env: &Env,
         plan: &ResolvedExecutionPlan,
         settings: CommandBuildSettings,
-    ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError> {
+    ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
         commands_for_execution_plan(process, plan, settings.min_release_age)
             .map_err(|err| adapter_error(&err))
     }
@@ -367,7 +369,7 @@ pub fn commands_for_execution_plan(
     process: &ProcessRunner,
     plan: &ResolvedExecutionPlan,
     min_release_age: Duration,
-) -> Result<Vec<ManagerExecutionCommand>, BunError> {
+) -> Result<Vec<ExecutionCommand>, BunError> {
     let runtime = BunRuntime::resolve(process);
     let mut commands = Vec::new();
     for intent in &plan.intents {
@@ -383,13 +385,13 @@ pub fn commands_for_execution_plan(
                 ));
             }
             ExecutionCommandIntent::NativeGlobal(items) => {
-                commands.push(ManagerExecutionCommand {
+                commands.push(ExecutionCommand {
                     items: items.iter().map(execution_item).collect(),
                     command: global_update_command(runtime.executable(), min_release_age),
                 });
             }
             ExecutionCommandIntent::Exact(item) => {
-                commands.push(ManagerExecutionCommand {
+                commands.push(ExecutionCommand {
                     items: vec![execution_item(item)],
                     command: exact_command_with_program(
                         runtime.executable(),
@@ -475,8 +477,8 @@ impl BunRuntime {
     }
 }
 
-fn execution_item(item: &ResolvedExecutionItem) -> ManagerExecutionCommandItem {
-    ManagerExecutionCommandItem {
+fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
+    ExecutionCommandItem {
         plan_item_id: item.plan_item_id.clone(),
         package_name: item.package_name.clone(),
         installed_version: item.installed_version.clone(),

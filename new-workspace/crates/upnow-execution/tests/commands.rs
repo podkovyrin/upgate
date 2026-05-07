@@ -74,8 +74,14 @@ fn grouped_native_command_reports_each_selected_item() {
     .expect("grouped command should report every item");
 
     assert_eq!(report.items.len(), 2);
+    assert_eq!(report.items[0].plan_item_id.as_str(), "pnpm:alpha-ready");
     assert_eq!(report.items[0].package_name.as_str(), "alpha-ready");
+    assert_eq!(report.items[0].installed_version.as_str(), "1.0.0");
+    assert_eq!(report.items[0].target_version.as_str(), "1.2.0");
+    assert_eq!(report.items[1].plan_item_id.as_str(), "pnpm:beta-ready");
     assert_eq!(report.items[1].package_name.as_str(), "beta-ready");
+    assert_eq!(report.items[1].installed_version.as_str(), "1.0.0");
+    assert_eq!(report.items[1].target_version.as_str(), "1.2.0");
     assert!(
         report
             .items

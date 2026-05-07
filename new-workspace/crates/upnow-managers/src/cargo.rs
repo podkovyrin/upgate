@@ -13,14 +13,16 @@ use upnow_domain::{
     ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate, UpdateSeed,
     VersionPolicy, VersionScheme, VersionText,
 };
-use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
+use upnow_execution::{
+    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
+    ResolvedExecutionPlan,
+};
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
 use upnow_release::newest_semver_version;
 
 use crate::adapter::{
     CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ManagerExecutionCommand,
-    ManagerExecutionCommandItem, ReleaseLookupSubject,
+    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "cargo";
@@ -183,7 +185,7 @@ impl ManagerAdapter for CargoManager {
         env: &Env,
         plan: &ResolvedExecutionPlan,
         _settings: CommandBuildSettings,
-    ) -> Result<Vec<ManagerExecutionCommand>, ManagerAdapterError> {
+    ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
         commands_for_execution_plan(env, plan).map_err(|err| adapter_error(&err))
     }
 }
@@ -383,14 +385,14 @@ pub fn parse_crates_io_json(
 pub fn commands_for_execution_plan(
     env: &Env,
     plan: &ResolvedExecutionPlan,
-) -> Result<Vec<ManagerExecutionCommand>, CargoError> {
+) -> Result<Vec<ExecutionCommand>, CargoError> {
     let install_meta = install_tracking_map(env).unwrap_or_default();
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
             ExecutionCommandIntent::Exact(item) => {
                 let meta = install_meta.get(item.package_name.as_str());
-                commands.push(ManagerExecutionCommand {
+                commands.push(ExecutionCommand {
                     items: vec![execution_item(item)],
                     command: exact_command_for_item(item, meta),
                 });
@@ -532,8 +534,8 @@ fn trimmed(value: &str) -> Option<String> {
     }
 }
 
-fn execution_item(item: &ResolvedExecutionItem) -> ManagerExecutionCommandItem {
-    ManagerExecutionCommandItem {
+fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
+    ExecutionCommandItem {
         plan_item_id: item.plan_item_id.clone(),
         package_name: item.package_name.clone(),
         installed_version: item.installed_version.clone(),

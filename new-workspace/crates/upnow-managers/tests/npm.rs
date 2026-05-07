@@ -202,6 +202,14 @@ fn adapter_uses_exact_install_for_exact_only_no_policy_selection() {
         commands[0].command.display(),
         "npm install -g alpha-ready@1.2.0 --min-release-age 7"
     );
+    assert_eq!(commands[0].items.len(), 1);
+    assert_eq!(
+        commands[0].items[0].plan_item_id.as_str(),
+        "npm:alpha-ready"
+    );
+    assert_eq!(commands[0].items[0].package_name.as_str(), "alpha-ready");
+    assert_eq!(commands[0].items[0].installed_version.as_str(), "1.0.0");
+    assert_eq!(commands[0].items[0].target_version.as_str(), "1.2.0");
 }
 
 #[test]
