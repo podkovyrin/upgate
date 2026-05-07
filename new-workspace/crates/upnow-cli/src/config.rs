@@ -9,6 +9,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use toml_edit::{Array, DocumentMut, Item, Table, Value};
 use upnow_domain::{ManagerId, PackageName, VersionPolicy};
+use upnow_managers::registry::manager_by_id;
 
 pub const PIN_ALL: &str = "*";
 
@@ -287,12 +288,7 @@ impl UpnowConfig {
             manager_id,
             section.and_then(|section| section.version_policy.as_deref()),
         )?;
-        if !supports_policy(manager_id, version_policy) {
-            return Err(ConfigError::UnsupportedVersionPolicy {
-                manager_id: manager_id.to_owned(),
-                policy: version_policy,
-            });
-        }
+        validate_policy_support(manager_id, version_policy)?;
 
         let mode = match section.and_then(|section| section.mode.as_deref()) {
             Some(raw) => ManagerMode::parse_for(manager_id, raw)?,
@@ -382,12 +378,7 @@ impl UpnowConfig {
             }
             "version_policy" => {
                 let parsed = parse_policy(section, value)?;
-                if !supports_policy(section, parsed) {
-                    return Err(ConfigError::UnsupportedVersionPolicy {
-                        manager_id: section.to_owned(),
-                        policy: parsed,
-                    });
-                }
+                validate_policy_support(section, parsed)?;
                 self.sections
                     .entry(section.to_owned())
                     .or_default()
@@ -584,12 +575,18 @@ fn manager_defaults(manager_id: &str) -> Option<ManagerDefaults> {
     }
 }
 
-fn supports_policy(manager_id: &str, policy: VersionPolicy) -> bool {
-    // Phase 5 scaffolding: remove this when manager adapter capabilities exist.
-    match manager_id {
-        "uv" | "mise" => matches!(policy, VersionPolicy::None),
-        "gem" => matches!(policy, VersionPolicy::None | VersionPolicy::Stable),
-        _ => true,
+fn validate_policy_support(manager_id: &str, policy: VersionPolicy) -> Result<(), ConfigError> {
+    let manager_id = ManagerId::new(manager_id.to_owned())
+        .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
+    let manager = manager_by_id(&manager_id)
+        .map_err(|_| ConfigError::UnknownManager(manager_id.as_str().to_owned()))?;
+    if manager.supports_version_policy(policy) {
+        Ok(())
+    } else {
+        Err(ConfigError::UnsupportedVersionPolicy {
+            manager_id: manager_id.as_str().to_owned(),
+            policy,
+        })
     }
 }
 
