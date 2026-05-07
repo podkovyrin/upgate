@@ -1,13 +1,14 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use upnow_domain::{
-    ManagerUpdateInput, PackageName, PlanItemId, TargetAgeLookupResult, TargetSelection,
-    VersionPolicy, VersionText,
+    ManagerConfig, ManagerId, ManagerMode, ManagerUpdateInput, PackageName, PlanItemId,
+    TargetAgeLookupResult, TargetSelection, VersionPolicy, VersionText,
 };
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
 use upnow_infra::{CommandOutput, Env, HttpClient, HttpResponse, ProcessRunner};
-use upnow_managers::adapter::{CommandBuildSettings, ManagerAdapter};
+use upnow_managers::adapter::ManagerAdapter;
 use upnow_managers::mise::{
     MiseManager, global_upgrade_command, parse_installed_json, parse_ls_remote_json,
     parse_outdated_json, parse_upgrade_dry_run, parse_versions_host_toml, selected_upgrade_command,
@@ -20,6 +21,17 @@ fn fixtures_root() -> PathBuf {
 fn text(manager: &str, path: &str) -> String {
     std::fs::read_to_string(fixtures_root().join(manager).join(path))
         .expect("fixture should be readable")
+}
+
+fn mise_manager(version_policy: VersionPolicy) -> MiseManager {
+    MiseManager::new(ManagerConfig {
+        manager_id: ManagerId::new("mise").expect("valid manager id"),
+        mode: ManagerMode::Apply,
+        min_release_age: Duration::from_secs(7 * 86_400),
+        version_policy,
+        no_update: false,
+        pinned: BTreeSet::new(),
+    })
 }
 
 #[test]
@@ -143,15 +155,8 @@ fn update_inputs_use_dry_run_target_as_manager_selected_target() {
         )),
     ]);
 
-    let inputs = MiseManager
-        .update_inputs(
-            &process,
-            &HttpClient::fake([]),
-            &Env::fixed([]),
-            VersionPolicy::None,
-            Duration::from_secs(7 * 86_400),
-            true,
-        )
+    let inputs = mise_manager(VersionPolicy::None)
+        .update_inputs(&process, &HttpClient::fake([]), &Env::fixed([]))
         .expect("update inputs should resolve");
 
     assert!(matches!(
@@ -187,15 +192,8 @@ fn missing_selected_target_metadata_stays_item_scoped() {
         Ok(CommandOutput::from_parts(success_status(), "{}", "")),
     ]);
 
-    let inputs = MiseManager
-        .update_inputs(
-            &process,
-            &HttpClient::fake([]),
-            &Env::fixed([]),
-            VersionPolicy::None,
-            Duration::from_secs(7 * 86_400),
-            true,
-        )
+    let inputs = mise_manager(VersionPolicy::None)
+        .update_inputs(&process, &HttpClient::fake([]), &Env::fixed([]))
         .expect("metadata failures should stay on the item");
 
     assert!(matches!(
@@ -241,15 +239,8 @@ fn target_lookup_continues_when_backend_lacks_selected_target_metadata() {
         },
     )]);
 
-    let inputs = MiseManager
-        .update_inputs(
-            &process,
-            &http,
-            &Env::fixed([]),
-            VersionPolicy::None,
-            Duration::from_secs(7 * 86_400),
-            true,
-        )
+    let inputs = mise_manager(VersionPolicy::None)
+        .update_inputs(&process, &http, &Env::fixed([]))
         .expect("target lookup should continue to fallback metadata");
 
     assert!(matches!(
@@ -276,14 +267,11 @@ fn target_lookup_continues_when_backend_lacks_selected_target_metadata() {
 
 #[test]
 fn rejects_unsupported_policy_before_discovery() {
-    let err = MiseManager
+    let err = mise_manager(VersionPolicy::Stable)
         .update_inputs(
             &ProcessRunner::fake([]),
             &HttpClient::fake([]),
             &Env::fixed([]),
-            VersionPolicy::Stable,
-            Duration::from_secs(7 * 86_400),
-            true,
         )
         .expect_err("mise supports no-policy only");
 
@@ -308,15 +296,8 @@ fn builds_selected_and_global_resolver_commands() {
             resolved_item("mise:swiftformat", "swiftformat"),
         ])],
     };
-    let commands = MiseManager
-        .commands_for_execution_plan(
-            &ProcessRunner::fake([]),
-            &Env::fixed([]),
-            &plan,
-            CommandBuildSettings {
-                min_release_age: Duration::from_secs(7 * 86_400),
-            },
-        )
+    let commands = mise_manager(VersionPolicy::None)
+        .commands_for_execution_plan(&ProcessRunner::fake([]), &Env::fixed([]), &plan)
         .expect("global command should build");
 
     assert_eq!(commands[0].items.len(), 2);

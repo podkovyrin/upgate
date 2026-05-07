@@ -1,5 +1,6 @@
 //! Domain model crate for the `upnow` rebuild.
 
+pub mod config;
 pub mod error;
 pub mod manager;
 pub mod plan;
@@ -9,6 +10,7 @@ pub mod scan;
 pub mod selection;
 pub mod version;
 
+pub use config::{ManagerConfig, ManagerMode};
 pub use error::DomainError;
 pub use manager::{
     InstalledTool, ManagerCapabilities, ManagerId, ManagerMetadata, ManagerMetadataField,

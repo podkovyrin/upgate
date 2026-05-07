@@ -1,13 +1,14 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use upnow_domain::{
-    ManagerUpdateInput, PackageName, PlanItemId, ReleaseLookupResult, TargetSelection,
-    VersionPolicy, VersionText,
+    ManagerConfig, ManagerId, ManagerMode, ManagerUpdateInput, PackageName, PlanItemId,
+    ReleaseLookupResult, TargetSelection, VersionPolicy, VersionText,
 };
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
 use upnow_infra::{CommandOutput, Env, HttpClient, HttpResponse, ProcessRunner};
-use upnow_managers::adapter::{CommandBuildSettings, ManagerAdapter, ReleaseLookupSubject};
+use upnow_managers::adapter::{ManagerAdapter, ReleaseLookupSubject};
 use upnow_managers::uv::{
     UvManager, parse_install_target_for_package, parse_installed_tool_line, parse_pypi_json,
     tool_install_command,
@@ -20,6 +21,17 @@ fn fixtures_root() -> PathBuf {
 fn text(manager: &str, path: &str) -> String {
     std::fs::read_to_string(fixtures_root().join(manager).join(path))
         .expect("fixture should be readable")
+}
+
+fn uv_manager(version_policy: VersionPolicy) -> UvManager {
+    UvManager::new(ManagerConfig {
+        manager_id: ManagerId::new("uv").expect("valid manager id"),
+        mode: ManagerMode::Apply,
+        min_release_age: Duration::from_secs(7 * 86_400),
+        version_policy,
+        no_update: false,
+        pinned: BTreeSet::new(),
+    })
 }
 
 #[test]
@@ -78,7 +90,7 @@ fn release_lookup_failure_is_item_scoped() {
         "https://pypi.test".to_owned(),
     )]);
 
-    let lookup = UvManager
+    let lookup = uv_manager(VersionPolicy::None)
         .release_lookup(
             &ProcessRunner::fake([]),
             &http,
@@ -105,7 +117,7 @@ fn scan_inputs_read_uv_tool_list() {
         )),
     ]);
 
-    let inputs = UvManager
+    let inputs = uv_manager(VersionPolicy::None)
         .scan_inputs(&process, &Env::fixed([]))
         .expect("scan should discover installed tools");
 
@@ -150,15 +162,8 @@ fn update_inputs_use_exclude_newer_dry_run_target() {
         "https://pypi.test".to_owned(),
     )]);
 
-    let inputs = UvManager
-        .update_inputs(
-            &process,
-            &http,
-            &env,
-            VersionPolicy::None,
-            Duration::from_secs(7 * 86_400),
-            true,
-        )
+    let inputs = uv_manager(VersionPolicy::None)
+        .update_inputs(&process, &http, &env)
         .expect("update inputs should resolve");
 
     assert_eq!(inputs.len(), 1);
@@ -202,15 +207,8 @@ fn dry_run_failure_becomes_resolver_error_input() {
         )),
     ]);
 
-    let inputs = UvManager
-        .update_inputs(
-            &process,
-            &HttpClient::fake([]),
-            &Env::fixed([]),
-            VersionPolicy::None,
-            Duration::from_secs(7 * 86_400),
-            true,
-        )
+    let inputs = uv_manager(VersionPolicy::None)
+        .update_inputs(&process, &HttpClient::fake([]), &Env::fixed([]))
         .expect("resolver errors should be item scoped");
 
     assert!(matches!(
@@ -248,15 +246,8 @@ fn adapter_builds_native_selected_command() {
         )],
     };
 
-    let commands = UvManager
-        .commands_for_execution_plan(
-            &ProcessRunner::fake([]),
-            &Env::fixed([]),
-            &plan,
-            CommandBuildSettings {
-                min_release_age: Duration::from_secs(7 * 86_400),
-            },
-        )
+    let commands = uv_manager(VersionPolicy::None)
+        .commands_for_execution_plan(&ProcessRunner::fake([]), &Env::fixed([]), &plan)
         .expect("native selected command should build");
 
     assert_eq!(

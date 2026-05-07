@@ -8,9 +8,11 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use toml_edit::{Array, DocumentMut, Item, Table, Value};
-use upnow_domain::{ManagerId, PackageName, PinTarget, VersionPolicy};
-use upnow_managers::adapter::ManagerDefaultMode;
-use upnow_managers::registry::manager_by_id;
+use upnow_domain::{ManagerConfig, ManagerId, ManagerMode, PackageName, PinTarget, VersionPolicy};
+
+use crate::registry::{
+    ManagerDefaultMode, ensure_known_manager, manager_defaults, supports_version_policy,
+};
 
 const CONFIG_RELATIVE_PATH: &str = "upnow/config.toml";
 const DEFAULT_SCAN_OLD_AGE_THRESHOLD: &str = "365d";
@@ -155,63 +157,6 @@ struct ManagerSectionConfig {
     pinned: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ManagerMode {
-    Off,
-    Plan,
-    Apply,
-}
-
-impl ManagerMode {
-    #[must_use]
-    pub const fn allows_run(self, applying: bool) -> bool {
-        match self {
-            Self::Off => false,
-            Self::Plan => !applying,
-            Self::Apply => true,
-        }
-    }
-
-    fn parse_for(manager_id: &str, raw: &str) -> Result<Self, ConfigError> {
-        match raw {
-            "off" => Ok(Self::Off),
-            "plan" => Ok(Self::Plan),
-            "apply" => Ok(Self::Apply),
-            other => Err(ConfigError::InvalidMode {
-                manager_id: manager_id.to_owned(),
-                value: other.to_owned(),
-            }),
-        }
-    }
-
-    const fn from_default(mode: ManagerDefaultMode) -> Self {
-        match mode {
-            ManagerDefaultMode::Off => Self::Off,
-            ManagerDefaultMode::Apply => Self::Apply,
-        }
-    }
-}
-
-impl Display for ManagerMode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Off => "off",
-            Self::Plan => "plan",
-            Self::Apply => "apply",
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ManagerConfig {
-    pub manager_id: ManagerId,
-    pub mode: ManagerMode,
-    pub min_release_age: Duration,
-    pub version_policy: VersionPolicy,
-    pub no_update: bool,
-    pub pinned: BTreeSet<PinTarget>,
-}
-
 impl UpnowConfig {
     /// Loads config from the standard user config path.
     ///
@@ -272,9 +217,8 @@ impl UpnowConfig {
     pub fn resolve_manager(&self, manager_id: &str) -> Result<ManagerConfig, ConfigError> {
         let manager_id_value = ManagerId::new(manager_id.to_owned())
             .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
-        let manager = manager_by_id(&manager_id_value)
+        let defaults = manager_defaults(manager_id)
             .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
-        let defaults = manager.defaults();
         let section = self.sections.get(manager_id);
 
         let min_release_age_raw = section.and_then(|section| section.min_release_age.as_deref());
@@ -296,8 +240,8 @@ impl UpnowConfig {
         validate_policy_support(manager_id, version_policy)?;
 
         let mode = match section.and_then(|section| section.mode.as_deref()) {
-            Some(raw) => ManagerMode::parse_for(manager_id, raw)?,
-            None => ManagerMode::from_default(defaults.mode),
+            Some(raw) => parse_manager_mode(manager_id, raw)?,
+            None => manager_mode_from_default(defaults.mode),
         };
 
         let no_update = if manager_id == "brew" {
@@ -359,7 +303,7 @@ impl UpnowConfig {
 
         let section_manager_id = ManagerId::new(section.to_owned())
             .map_err(|_| ConfigError::UnknownManager(section.to_owned()))?;
-        manager_by_id(&section_manager_id)
+        ensure_known_manager(section_manager_id.as_str())
             .map_err(|_| ConfigError::UnknownManager(section.to_owned()))?;
 
         match key {
@@ -404,7 +348,7 @@ impl UpnowConfig {
                 Ok(())
             }
             "mode" => {
-                let parsed = ManagerMode::parse_for(section, value)?;
+                let parsed = parse_manager_mode(section, value)?;
                 self.sections.entry(section.to_owned()).or_default().mode =
                     Some(parsed.to_string());
                 Ok(())
@@ -429,7 +373,7 @@ impl UpnowConfig {
             let manager_id = manager_id.as_ref();
             let manager_id_value = ManagerId::new(manager_id.to_owned())
                 .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
-            manager_by_id(&manager_id_value)
+            ensure_known_manager(manager_id_value.as_str())
                 .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
             self.sections.entry(manager_id.to_owned()).or_default().mode =
                 Some(ManagerMode::Apply.to_string());
@@ -449,7 +393,7 @@ impl UpnowConfig {
     ) -> Result<(), ConfigError> {
         let manager_id_value = ManagerId::new(manager_id.to_owned())
             .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
-        manager_by_id(&manager_id_value)
+        ensure_known_manager(manager_id_value.as_str())
             .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
 
         self.sections
@@ -488,7 +432,7 @@ impl UpnowConfig {
     ) -> Result<(), ConfigError> {
         let manager_id_value = ManagerId::new(manager_id.to_owned())
             .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
-        manager_by_id(&manager_id_value)
+        ensure_known_manager(manager_id_value.as_str())
             .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
 
         if let Some(parent) = path.parent() {
@@ -557,12 +501,29 @@ impl UpnowConfig {
     }
 }
 
+fn parse_manager_mode(manager_id: &str, raw: &str) -> Result<ManagerMode, ConfigError> {
+    match raw {
+        "off" => Ok(ManagerMode::Off),
+        "plan" => Ok(ManagerMode::Plan),
+        "apply" => Ok(ManagerMode::Apply),
+        other => Err(ConfigError::InvalidMode {
+            manager_id: manager_id.to_owned(),
+            value: other.to_owned(),
+        }),
+    }
+}
+
+const fn manager_mode_from_default(mode: ManagerDefaultMode) -> ManagerMode {
+    match mode {
+        ManagerDefaultMode::Off => ManagerMode::Off,
+        ManagerDefaultMode::Apply => ManagerMode::Apply,
+    }
+}
+
 fn validate_policy_support(manager_id: &str, policy: VersionPolicy) -> Result<(), ConfigError> {
     let manager_id = ManagerId::new(manager_id.to_owned())
         .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
-    let manager = manager_by_id(&manager_id)
-        .map_err(|_| ConfigError::UnknownManager(manager_id.as_str().to_owned()))?;
-    if manager.supports_version_policy(policy) {
+    if supports_version_policy(manager_id.as_str(), policy) {
         Ok(())
     } else {
         Err(ConfigError::UnsupportedVersionPolicy {

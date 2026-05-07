@@ -5,10 +5,10 @@ use std::time::{Duration, SystemTime};
 use chrono::DateTime;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata, ManagerScanInput,
-    ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult,
-    ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate, UpdateSeed,
-    VersionPolicy, VersionScheme, VersionText,
+    DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
+    ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate,
+    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -18,8 +18,8 @@ use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, Proces
 use upnow_release::newest_semver_version;
 
 use crate::adapter::{
-    CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ReleaseLookupSubject,
+    ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
+    ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "npm";
@@ -112,19 +112,20 @@ struct NpmOutdatedMapEntry {
     current: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NpmManager;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NpmManager {
+    config: ManagerConfig,
+}
 
+impl NpmManager {
+    #[must_use]
+    pub const fn new(config: ManagerConfig) -> Self {
+        Self { config }
+    }
+}
 impl ManagerAdapter for NpmManager {
     fn id(&self) -> &'static str {
         MANAGER_ID
-    }
-
-    fn defaults(&self) -> ManagerDefaults {
-        ManagerDefaults {
-            min_release_age: Duration::from_secs(7 * 24 * 60 * 60),
-            mode: ManagerDefaultMode::Apply,
-        }
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
@@ -160,12 +161,9 @@ impl ManagerAdapter for NpmManager {
         process: &ProcessRunner,
         _http: &HttpClient,
         _env: &Env,
-        version_policy: VersionPolicy,
-        _min_release_age: Duration,
-        _no_update: bool,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
-        self.validate_version_policy(version_policy)?;
-        update_inputs(process, version_policy).map_err(adapter_error)
+        self.validate_version_policy(self.config.version_policy)?;
+        update_inputs(process, self.config.version_policy).map_err(adapter_error)
     }
 
     fn commands_for_execution_plan(
@@ -173,9 +171,8 @@ impl ManagerAdapter for NpmManager {
         _process: &ProcessRunner,
         _env: &Env,
         plan: &ResolvedExecutionPlan,
-        settings: CommandBuildSettings,
     ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
-        commands_for_execution_plan(plan, settings).map_err(adapter_error)
+        commands_for_execution_plan(plan, self.config.min_release_age).map_err(adapter_error)
     }
 }
 
@@ -328,7 +325,7 @@ pub fn parse_npm_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTi
 /// Returns an error when the resolved execution mode is not supported by npm.
 pub fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
-    settings: CommandBuildSettings,
+    min_release_age: Duration,
 ) -> Result<Vec<ExecutionCommand>, NpmError> {
     let mut commands = Vec::new();
     for intent in &plan.intents {
@@ -338,7 +335,7 @@ pub fn commands_for_execution_plan(
                     items: vec![execution_item(item)],
                     command: selected_native_update_command_for_item(
                         item,
-                        whole_days(settings.min_release_age),
+                        whole_days(min_release_age),
                     ),
                 });
             }
@@ -347,7 +344,7 @@ pub fn commands_for_execution_plan(
                     items: vec![execution_item(item)],
                     command: exact_command_for_item(
                         item,
-                        whole_days(settings.min_release_age),
+                        whole_days(min_release_age),
                         item.bypass_min_release_age,
                     ),
                 });

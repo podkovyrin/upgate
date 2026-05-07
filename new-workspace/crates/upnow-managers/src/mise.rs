@@ -8,9 +8,9 @@ use pep440_rs::Version as Pep440Version;
 use semver::Version as SemverVersion;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata, ManagerScanInput,
-    ManagerSelectedTarget, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
+    DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
+    ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput, PackageName, ReleaseEntry,
+    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
     TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
@@ -20,8 +20,8 @@ use upnow_execution::{
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
 
 use crate::adapter::{
-    CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ReleaseLookupSubject,
+    ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
+    ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "mise";
@@ -106,19 +106,20 @@ pub struct MisePlanItem {
     pub to_version: VersionText,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MiseManager;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MiseManager {
+    config: ManagerConfig,
+}
 
+impl MiseManager {
+    #[must_use]
+    pub const fn new(config: ManagerConfig) -> Self {
+        Self { config }
+    }
+}
 impl ManagerAdapter for MiseManager {
     fn id(&self) -> &'static str {
         MANAGER_ID
-    }
-
-    fn defaults(&self) -> ManagerDefaults {
-        ManagerDefaults {
-            min_release_age: Duration::from_secs(7 * 24 * 60 * 60),
-            mode: ManagerDefaultMode::Apply,
-        }
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
@@ -171,12 +172,10 @@ impl ManagerAdapter for MiseManager {
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
-        version_policy: VersionPolicy,
-        min_release_age: Duration,
-        _no_update: bool,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
-        self.validate_version_policy(version_policy)?;
-        update_inputs(process, http, env, min_release_age).map_err(|err| adapter_error(&err))
+        self.validate_version_policy(self.config.version_policy)?;
+        update_inputs(process, http, env, self.config.min_release_age)
+            .map_err(|err| adapter_error(&err))
     }
 
     fn commands_for_execution_plan(
@@ -184,9 +183,8 @@ impl ManagerAdapter for MiseManager {
         _process: &ProcessRunner,
         _env: &Env,
         plan: &ResolvedExecutionPlan,
-        settings: CommandBuildSettings,
     ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
-        commands_for_execution_plan(plan, settings.min_release_age)
+        commands_for_execution_plan(plan, self.config.min_release_age)
             .map_err(|err| adapter_error(&err))
     }
 }

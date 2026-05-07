@@ -1,5 +1,4 @@
 use std::fmt::{self, Display};
-use std::time::Duration;
 
 use upnow_domain::{
     InstalledTool, ManagerId, ManagerScanInput, ManagerUpdateInput, PackageName,
@@ -9,23 +8,6 @@ use upnow_execution::{ExecutionCommand, ResolvedExecutionPlan};
 use upnow_infra::{Env, HttpClient, ProcessRunner};
 
 pub use upnow_domain::ManagerCapabilities;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ManagerDefaultMode {
-    Off,
-    Apply,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ManagerDefaults {
-    pub min_release_age: Duration,
-    pub mode: ManagerDefaultMode,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CommandBuildSettings {
-    pub min_release_age: Duration,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsupportedManagerVersion {
@@ -105,8 +87,6 @@ impl std::error::Error for ManagerAdapterError {}
 pub trait ManagerAdapter {
     fn id(&self) -> &'static str;
 
-    fn defaults(&self) -> ManagerDefaults;
-
     fn capabilities(&self) -> ManagerCapabilities;
 
     fn supports_version_policy(&self, policy: VersionPolicy) -> bool;
@@ -157,9 +137,6 @@ pub trait ManagerAdapter {
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
-        version_policy: VersionPolicy,
-        min_release_age: Duration,
-        no_update: bool,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError>;
 
     /// Builds manager commands for an execution plan.
@@ -172,7 +149,6 @@ pub trait ManagerAdapter {
         process: &ProcessRunner,
         env: &Env,
         plan: &ResolvedExecutionPlan,
-        settings: CommandBuildSettings,
     ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError>;
 
     fn manager_id(&self) -> ManagerId {

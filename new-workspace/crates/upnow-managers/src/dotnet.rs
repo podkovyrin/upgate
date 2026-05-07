@@ -6,10 +6,10 @@ use chrono::DateTime;
 use flate2::read::GzDecoder;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata, ManagerScanInput,
-    ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult,
-    ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate, UpdateSeed,
-    VersionPolicy, VersionScheme, VersionText,
+    DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
+    ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate,
+    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -19,8 +19,8 @@ use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, Proces
 use upnow_release::newest_semver_version;
 
 use crate::adapter::{
-    CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ReleaseLookupSubject,
+    ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
+    ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "dotnet";
@@ -136,19 +136,20 @@ struct NugetCatalogEntry {
     listed: Option<bool>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DotnetManager;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DotnetManager {
+    config: ManagerConfig,
+}
 
+impl DotnetManager {
+    #[must_use]
+    pub const fn new(config: ManagerConfig) -> Self {
+        Self { config }
+    }
+}
 impl ManagerAdapter for DotnetManager {
     fn id(&self) -> &'static str {
         MANAGER_ID
-    }
-
-    fn defaults(&self) -> ManagerDefaults {
-        ManagerDefaults {
-            min_release_age: Duration::from_secs(7 * 24 * 60 * 60),
-            mode: ManagerDefaultMode::Off,
-        }
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
@@ -184,11 +185,8 @@ impl ManagerAdapter for DotnetManager {
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
-        version_policy: VersionPolicy,
-        _min_release_age: Duration,
-        _no_update: bool,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
-        self.validate_version_policy(version_policy)?;
+        self.validate_version_policy(self.config.version_policy)?;
         update_inputs(process, http, env).map_err(|err| adapter_error(&err))
     }
 
@@ -197,7 +195,6 @@ impl ManagerAdapter for DotnetManager {
         _process: &ProcessRunner,
         _env: &Env,
         plan: &ResolvedExecutionPlan,
-        _settings: CommandBuildSettings,
     ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
         commands_for_execution_plan(plan).map_err(|err| adapter_error(&err))
     }

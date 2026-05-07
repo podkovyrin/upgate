@@ -1,12 +1,14 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use upnow_domain::{
-    ExecutionEligibility, PackageName, PlanItemId, ToolId, UpdateCandidate, VersionScheme,
-    VersionText,
+    ExecutionEligibility, ManagerConfig, ManagerId, ManagerMode, PackageName, PlanItemId, ToolId,
+    UpdateCandidate, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
 use upnow_infra::{Env, ProcessRunner};
-use upnow_managers::adapter::{CommandBuildSettings, ManagerAdapter};
+use upnow_managers::adapter::ManagerAdapter;
 use upnow_managers::cargo::{
     CargoInstallMeta, CargoManager, exact_command, parse_crates_io_json, parse_install_ledger,
     parse_install_list, parse_ledger_key_name, parse_search_latest_version,
@@ -18,6 +20,17 @@ fn fixtures_dir() -> PathBuf {
 
 fn text(path: &str) -> String {
     std::fs::read_to_string(fixtures_dir().join(path)).expect("fixture should be readable")
+}
+
+fn cargo_manager() -> CargoManager {
+    CargoManager::new(ManagerConfig {
+        manager_id: ManagerId::new("cargo").expect("valid manager id"),
+        mode: ManagerMode::Apply,
+        min_release_age: Duration::from_secs(7 * 86_400),
+        version_policy: VersionPolicy::None,
+        no_update: false,
+        pinned: BTreeSet::new(),
+    })
 }
 
 #[test]
@@ -150,15 +163,8 @@ fn adapter_preserves_install_flags_from_fake_cargo_home() {
         })],
     };
 
-    let commands = CargoManager
-        .commands_for_execution_plan(
-            &ProcessRunner::fake([]),
-            &env,
-            &plan,
-            CommandBuildSettings {
-                min_release_age: std::time::Duration::from_secs(86_400),
-            },
-        )
+    let commands = cargo_manager()
+        .commands_for_execution_plan(&ProcessRunner::fake([]), &env, &plan)
         .expect("commands should build");
 
     assert_eq!(

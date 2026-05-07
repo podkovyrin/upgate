@@ -1,9 +1,11 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use upnow_domain::{
-    ExecutionEligibility, ExecutionTargetKind, ManagerUpdateInput, PackageName, PlanItemId,
-    TargetAgeLookupResult, TargetSelection, VersionPolicy, VersionText,
+    ExecutionEligibility, ExecutionTargetKind, ManagerConfig, ManagerId, ManagerMode,
+    ManagerUpdateInput, PackageName, PlanItemId, TargetAgeLookupResult, TargetSelection,
+    VersionPolicy, VersionText,
 };
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
 use upnow_infra::{CommandOutput, Env, HttpClient, HttpResponse, ProcessRunner};
@@ -20,6 +22,21 @@ fn fixtures_root() -> PathBuf {
 fn text(manager: &str, path: &str) -> String {
     std::fs::read_to_string(fixtures_root().join(manager).join(path))
         .expect("fixture should be readable")
+}
+
+fn brew_manager(
+    no_update: bool,
+    version_policy: VersionPolicy,
+    min_release_age: Duration,
+) -> BrewManager {
+    BrewManager::new(ManagerConfig {
+        manager_id: ManagerId::new("brew").expect("valid manager id"),
+        mode: ManagerMode::Apply,
+        min_release_age,
+        version_policy,
+        no_update,
+        pinned: BTreeSet::new(),
+    })
 }
 
 #[test]
@@ -78,16 +95,13 @@ fn update_inputs_use_brew_selected_targets_and_tap_age_evidence() {
         )),
     ]);
 
-    let inputs = BrewManager
-        .update_inputs(
-            &process,
-            &HttpClient::fake([]),
-            &Env::fixed([]),
-            VersionPolicy::Stable,
-            Duration::from_secs(12 * 60 * 60),
-            true,
-        )
-        .expect("brew update inputs should build");
+    let inputs = brew_manager(
+        true,
+        VersionPolicy::Stable,
+        Duration::from_secs(12 * 60 * 60),
+    )
+    .update_inputs(&process, &HttpClient::fake([]), &Env::fixed([]))
+    .expect("brew update inputs should build");
 
     assert_eq!(inputs.len(), 4);
     let ManagerUpdateInput::Seed(seed) = &inputs[0] else {
@@ -129,15 +143,8 @@ fn homebrew_pinned_outdated_items_are_skipped() {
         Ok(CommandOutput::from_parts(success_status(), "[]", "")),
     ]);
 
-    let inputs = BrewManager
-        .update_inputs(
-            &process,
-            &HttpClient::fake([]),
-            &Env::fixed([]),
-            VersionPolicy::None,
-            Duration::from_secs(0),
-            true,
-        )
+    let inputs = brew_manager(true, VersionPolicy::None, Duration::from_secs(0))
+        .update_inputs(&process, &HttpClient::fake([]), &Env::fixed([]))
         .expect("brew inputs should preserve manager-pinned skips");
 
     assert!(matches!(
@@ -160,15 +167,8 @@ fn no_update_false_refreshes_brew_metadata_before_discovery() {
         )),
     ]);
 
-    let inputs = BrewManager
-        .update_inputs(
-            &process,
-            &HttpClient::fake([]),
-            &Env::fixed([]),
-            VersionPolicy::None,
-            Duration::from_secs(0),
-            false,
-        )
+    let inputs = brew_manager(false, VersionPolicy::None, Duration::from_secs(0))
+        .update_inputs(&process, &HttpClient::fake([]), &Env::fixed([]))
         .expect("empty brew update inputs should build");
 
     assert!(inputs.is_empty());
@@ -179,6 +179,22 @@ fn no_update_false_refreshes_brew_metadata_before_discovery() {
             "brew outdated --json=v2".to_owned(),
         ]
     );
+}
+
+#[test]
+fn no_update_true_skips_brew_metadata_refresh() {
+    let process = ProcessRunner::fake([Ok(CommandOutput::from_parts(
+        success_status(),
+        r#"{"formulae":[],"casks":[]}"#,
+        "",
+    ))]);
+
+    let inputs = brew_manager(true, VersionPolicy::None, Duration::from_secs(0))
+        .update_inputs(&process, &HttpClient::fake([]), &Env::fixed([]))
+        .expect("empty brew update inputs should build");
+
+    assert!(inputs.is_empty());
+    assert_eq!(fake_calls(&process), ["brew outdated --json=v2".to_owned()]);
 }
 
 #[test]
@@ -196,15 +212,8 @@ fn package_info_failure_becomes_item_scoped_target_lookup_failure() {
         )),
     ]);
 
-    let inputs = BrewManager
-        .update_inputs(
-            &process,
-            &HttpClient::fake([]),
-            &Env::fixed([]),
-            VersionPolicy::None,
-            Duration::from_secs(0),
-            true,
-        )
+    let inputs = brew_manager(true, VersionPolicy::None, Duration::from_secs(0))
+        .update_inputs(&process, &HttpClient::fake([]), &Env::fixed([]))
         .expect("metadata failure should not abort brew discovery");
 
     assert_eq!(inputs.len(), 1);
@@ -253,15 +262,8 @@ fn local_tap_git_lookup_uses_fallback_refs() {
         )),
     ]);
 
-    let inputs = BrewManager
-        .update_inputs(
-            &process,
-            &HttpClient::fake([]),
-            &Env::fixed([]),
-            VersionPolicy::None,
-            Duration::from_secs(0),
-            true,
-        )
+    let inputs = brew_manager(true, VersionPolicy::None, Duration::from_secs(0))
+        .update_inputs(&process, &HttpClient::fake([]), &Env::fixed([]))
         .expect("fallback ref should recover target age");
 
     let ManagerUpdateInput::Seed(seed) = &inputs[0] else {
@@ -309,15 +311,8 @@ fn local_tap_git_lookup_reports_failure_after_all_refs_fail() {
         Ok(CommandOutput::from_parts(failure_status(), "", "bad ref")),
     ]);
 
-    let inputs = BrewManager
-        .update_inputs(
-            &process,
-            &HttpClient::fake([]),
-            &Env::fixed([]),
-            VersionPolicy::None,
-            Duration::from_secs(0),
-            true,
-        )
+    let inputs = brew_manager(true, VersionPolicy::None, Duration::from_secs(0))
+        .update_inputs(&process, &HttpClient::fake([]), &Env::fixed([]))
         .expect("all-ref failure should stay item-scoped");
 
     let ManagerUpdateInput::Seed(seed) = &inputs[0] else {
@@ -371,15 +366,8 @@ fn github_fallback_encodes_query_parameters() {
         },
     )]);
 
-    let inputs = BrewManager
-        .update_inputs(
-            &process,
-            &http,
-            &Env::fixed([]),
-            VersionPolicy::None,
-            Duration::from_secs(0),
-            true,
-        )
+    let inputs = brew_manager(true, VersionPolicy::None, Duration::from_secs(0))
+        .update_inputs(&process, &http, &Env::fixed([]))
         .expect("encoded GitHub URL should be requested");
 
     let ManagerUpdateInput::Seed(seed) = &inputs[0] else {

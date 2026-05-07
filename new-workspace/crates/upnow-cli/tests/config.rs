@@ -2,10 +2,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use upnow_cli::config::{ConfigError, ManagerMode, UpnowConfig};
-use upnow_domain::{PackageName, PinTarget, VersionPolicy};
-use upnow_managers::adapter::ManagerDefaultMode;
-use upnow_managers::registry::available_managers;
+use upnow_cli::config::{ConfigError, UpnowConfig};
+use upnow_cli::registry::{ManagerDefaultMode, available_manager_ids, manager_defaults};
+use upnow_domain::{ManagerMode, PackageName, PinTarget, VersionPolicy};
 
 fn temp_config_path(test_name: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -66,15 +65,16 @@ fn manager_defaults_cover_brew_gem_and_dotnet() {
 fn config_resolves_every_registered_manager_default() {
     let config = UpnowConfig::default();
 
-    for manager in available_managers() {
+    for manager_id in available_manager_ids() {
         let resolved = config
-            .resolve_manager(manager.id())
+            .resolve_manager(manager_id)
             .expect("registered manager should resolve from adapter defaults");
-        assert_eq!(resolved.manager_id.as_str(), manager.id());
-        assert_eq!(resolved.min_release_age, manager.defaults().min_release_age);
+        let defaults = manager_defaults(manager_id).expect("registered manager has defaults");
+        assert_eq!(resolved.manager_id.as_str(), manager_id);
+        assert_eq!(resolved.min_release_age, defaults.min_release_age);
         assert_eq!(
             resolved.mode,
-            match manager.defaults().mode {
+            match defaults.mode {
                 ManagerDefaultMode::Off => ManagerMode::Off,
                 ManagerDefaultMode::Apply => ManagerMode::Apply,
             }

@@ -1,11 +1,13 @@
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use upnow_domain::{
-    ExecutionEligibility, PackageName, ReleaseLookupResult, ToolId, UpdateCandidate, VersionScheme,
-    VersionText,
+    ExecutionEligibility, ManagerConfig, ManagerId, ManagerMode, PackageName, ReleaseLookupResult,
+    ToolId, UpdateCandidate, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_infra::{CommandOutput, Env, HttpBytesResponse, HttpClient, ProcessRunner};
 use upnow_managers::adapter::{ManagerAdapter, ReleaseLookupSubject};
@@ -19,6 +21,17 @@ fn fixtures_dir() -> PathBuf {
 
 fn text(path: &str) -> String {
     std::fs::read_to_string(fixtures_dir().join(path)).expect("fixture should be readable")
+}
+
+fn dotnet_manager() -> DotnetManager {
+    DotnetManager::new(ManagerConfig {
+        manager_id: ManagerId::new("dotnet").expect("valid manager id"),
+        mode: ManagerMode::Apply,
+        min_release_age: Duration::from_secs(7 * 86_400),
+        version_policy: VersionPolicy::None,
+        no_update: false,
+        pinned: BTreeSet::new(),
+    })
 }
 
 #[test]
@@ -42,7 +55,7 @@ fn missing_sdk_is_reported_as_discovery_error() {
         "No .NET SDKs were found",
     ))]);
 
-    let err = DotnetManager
+    let err = dotnet_manager()
         .scan_inputs(&process, &Env::fixed([]))
         .expect_err("missing SDK should fail discovery");
 
@@ -76,7 +89,7 @@ fn release_lookup_reads_nuget_registration_pages() {
     let package = PackageName::new("alpha-ready").expect("valid package");
     let http = nuget_http("alpha-ready");
 
-    let lookup = DotnetManager
+    let lookup = dotnet_manager()
         .release_lookup(
             &ProcessRunner::fake([]),
             &http,
@@ -101,7 +114,7 @@ fn release_lookup_decodes_gzipped_semver2_registration_pages() {
     let package = PackageName::new("alpha-ready").expect("valid package");
     let http = nuget_http("alpha-ready");
 
-    let lookup = DotnetManager
+    let lookup = dotnet_manager()
         .release_lookup(
             &ProcessRunner::fake([]),
             &http,
@@ -128,7 +141,7 @@ fn release_lookup_failure_is_item_scoped() {
     let package = PackageName::new("omega-error").expect("valid package");
     let http = nuget_http("omega-error");
 
-    let lookup = DotnetManager
+    let lookup = dotnet_manager()
         .release_lookup(
             &ProcessRunner::fake([]),
             &http,

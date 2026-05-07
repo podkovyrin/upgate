@@ -1,25 +1,24 @@
 //! CLI-layer behavior for the `upnow` rebuild.
 
 pub mod config;
+pub mod registry;
 
 use std::fmt::{self, Display};
 use std::time::SystemTime;
 
 use clap::{Parser, Subcommand};
-use config::{ConfigError, ManagerConfig, UpnowConfig};
+use config::{ConfigError, UpnowConfig};
+use registry::{available_manager_ids, configured_manager, ensure_known_manager};
 use upnow_domain::{
-    InstalledTool, ManagerId, ManagerScanInput, PlanIssue, ReleaseLookupResult, ScanIssue,
-    ScanItem, ScanReport, UpdatePlan,
+    InstalledTool, ManagerConfig, ManagerId, ManagerScanInput, PlanIssue, ReleaseLookupResult,
+    ScanIssue, ScanItem, ScanReport, UpdatePlan,
 };
 use upnow_execution::{
     ExecutionReport, ExecutionSelectionError, ExecutionStatus, execute_commands,
     resolve_selection_for_execution,
 };
 use upnow_infra::{Clock, Env, HttpClient, HttpSettings, MutationMode, ProcessRunner};
-use upnow_managers::adapter::{
-    CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ReleaseLookupSubject,
-};
-use upnow_managers::registry::{available_managers, manager_by_id};
+use upnow_managers::adapter::{ManagerAdapter, ManagerAdapterError, ReleaseLookupSubject};
 use upnow_planning::{PlanningSettings, default_batch_selection, update_plan_from_inputs};
 use upnow_presentation::{
     render_execution_report, render_manager_error, render_scan_report, render_update_plan,
@@ -234,8 +233,8 @@ fn run_manager_batch(
     verbose: bool,
     manager_id: &ManagerId,
 ) -> Result<ManagerBatchOutput, AppError> {
-    let manager = manager_by_id(manager_id).map_err(map_manager_error)?;
-    let manager_config = config.resolve_manager(manager.id())?;
+    ensure_known_manager(manager_id.as_str()).map_err(map_manager_error)?;
+    let manager_config = config.resolve_manager(manager_id.as_str())?;
     if !manager_config
         .mode
         .allows_run(command == BatchCommand::Apply)
@@ -248,28 +247,39 @@ fn run_manager_batch(
 
     match command {
         BatchCommand::Scan if verbose => {
+            let manager = configured_manager(manager_config).map_err(map_manager_error)?;
             let old_age_threshold = config.scan_old_age_threshold()?;
             Ok(ManagerBatchOutput {
                 rendered: render_scan_report(
-                    &build_verbose_scan_report(manager, process, http, env, clock.now())?,
+                    &build_verbose_scan_report(manager.as_ref(), process, http, env, clock.now())?,
                     Some(old_age_threshold),
                 ),
                 failed: false,
             })
         }
-        BatchCommand::Scan => Ok(ManagerBatchOutput {
-            rendered: render_scan_report(&build_scan_report(manager, process, env)?, None),
-            failed: false,
-        }),
+        BatchCommand::Scan => {
+            let manager = configured_manager(manager_config).map_err(map_manager_error)?;
+            Ok(ManagerBatchOutput {
+                rendered: render_scan_report(
+                    &build_scan_report(manager.as_ref(), process, env)?,
+                    None,
+                ),
+                failed: false,
+            })
+        }
         BatchCommand::Plan => {
-            let plan = build_manager_plan(manager, process, http, env, clock, &manager_config)?;
+            let manager = configured_manager(manager_config.clone()).map_err(map_manager_error)?;
+            let plan =
+                build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config)?;
             Ok(ManagerBatchOutput {
                 rendered: render_update_plan(&plan),
                 failed: false,
             })
         }
         BatchCommand::Apply => {
-            let plan = build_manager_plan(manager, process, http, env, clock, &manager_config)?;
+            let manager = configured_manager(manager_config.clone()).map_err(map_manager_error)?;
+            let plan =
+                build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config)?;
             let selection = default_batch_selection(&plan, &manager_config.pinned)
                 .map_err(|err| AppError::Planning(err.to_string()))?;
             let execution_plan = resolve_selection_for_execution(
@@ -280,14 +290,7 @@ fn run_manager_batch(
             )
             .map_err(map_execution_selection_error)?;
             let commands = manager
-                .commands_for_execution_plan(
-                    process,
-                    env,
-                    &execution_plan,
-                    CommandBuildSettings {
-                        min_release_age: manager_config.min_release_age,
-                    },
-                )
+                .commands_for_execution_plan(process, env, &execution_plan)
                 .map_err(map_manager_error)?;
             let report =
                 execute_commands(plan.manager_id.clone(), commands, process).map_err(|err| {
@@ -511,14 +514,7 @@ fn build_manager_plan(
     }
     let now = clock.now();
     let inputs = manager
-        .update_inputs(
-            process,
-            http,
-            env,
-            manager_config.version_policy,
-            manager_config.min_release_age,
-            manager_config.no_update,
-        )
+        .update_inputs(process, http, env)
         .map_err(map_manager_error)?;
     update_plan_from_inputs(
         manager_config.manager_id.clone(),
@@ -553,17 +549,20 @@ fn map_execution_selection_error(err: ExecutionSelectionError) -> AppError {
 
 fn selected_manager_ids(selected_managers: &[String]) -> Result<Vec<ManagerId>, AppError> {
     if selected_managers.is_empty() {
-        return Ok(available_managers()
+        return available_manager_ids()
             .into_iter()
-            .map(ManagerAdapter::manager_id)
-            .collect());
+            .map(|manager_id| {
+                ManagerId::new(manager_id.to_owned())
+                    .map_err(|err| AppError::InvalidArgs(err.to_string()))
+            })
+            .collect();
     }
 
     let mut manager_ids = Vec::new();
     for manager_id in selected_managers {
         let manager_id = ManagerId::new(manager_id.clone())
             .map_err(|err| AppError::InvalidArgs(err.to_string()))?;
-        manager_by_id(&manager_id).map_err(map_manager_error)?;
+        ensure_known_manager(manager_id.as_str()).map_err(map_manager_error)?;
         if !manager_ids.contains(&manager_id) {
             manager_ids.push(manager_id);
         }

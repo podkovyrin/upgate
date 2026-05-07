@@ -5,8 +5,8 @@ use std::time::{Duration, SystemTime};
 use chrono::DateTime;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionEligibility, ExecutionTargetKind, InstalledTool, ManagerId,
-    ManagerMetadata, ManagerMetadataField, ManagerMetadataKey, ManagerMetadataValue,
+    DomainError, ExecutionEligibility, ExecutionTargetKind, InstalledTool, ManagerConfig,
+    ManagerId, ManagerMetadata, ManagerMetadataField, ManagerMetadataKey, ManagerMetadataValue,
     ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput, PackageName, ReleaseEntry,
     ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, SkipReason,
     TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy,
@@ -19,8 +19,8 @@ use upnow_execution::{
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
 
 use crate::adapter::{
-    CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ReleaseLookupSubject,
+    ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
+    ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "brew";
@@ -83,7 +83,7 @@ impl BrewError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrewPackageKind {
     Formula,
     Cask,
@@ -220,19 +220,20 @@ struct GitHubCommitPerson {
     date: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BrewManager;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrewManager {
+    config: ManagerConfig,
+}
 
+impl BrewManager {
+    #[must_use]
+    pub const fn new(config: ManagerConfig) -> Self {
+        Self { config }
+    }
+}
 impl ManagerAdapter for BrewManager {
     fn id(&self) -> &'static str {
         MANAGER_ID
-    }
-
-    fn defaults(&self) -> ManagerDefaults {
-        ManagerDefaults {
-            min_release_age: Duration::from_secs(12 * 60 * 60),
-            mode: ManagerDefaultMode::Apply,
-        }
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
@@ -279,12 +280,9 @@ impl ManagerAdapter for BrewManager {
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
-        version_policy: VersionPolicy,
-        _min_release_age: Duration,
-        no_update: bool,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
-        self.validate_version_policy(version_policy)?;
-        update_inputs(process, http, env, no_update).map_err(|err| adapter_error(&err))
+        self.validate_version_policy(self.config.version_policy)?;
+        update_inputs(process, http, env, self.config.no_update).map_err(|err| adapter_error(&err))
     }
 
     fn commands_for_execution_plan(
@@ -292,7 +290,6 @@ impl ManagerAdapter for BrewManager {
         _process: &ProcessRunner,
         _env: &Env,
         plan: &ResolvedExecutionPlan,
-        _settings: CommandBuildSettings,
     ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
         commands_for_execution_plan(plan).map_err(|err| adapter_error(&err))
     }

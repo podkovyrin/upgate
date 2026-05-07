@@ -1,8 +1,11 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use upnow_domain::{
-    ExecutionEligibility, ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseLookupResult,
-    TargetSelection, ToolId, UpdateCandidate, UpdateSeed, VersionScheme, VersionText,
+    ExecutionEligibility, ManagerConfig, ManagerId, ManagerMode, ManagerScanInput,
+    ManagerUpdateInput, PackageName, ReleaseLookupResult, TargetSelection, ToolId, UpdateCandidate,
+    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_infra::{CommandOutput, Env, HttpClient, HttpResponse, ProcessRunner};
 use upnow_managers::adapter::ManagerAdapter;
@@ -16,6 +19,17 @@ fn fixtures_dir() -> PathBuf {
 
 fn text(path: &str) -> String {
     std::fs::read_to_string(fixtures_dir().join(path)).expect("fixture should be readable")
+}
+
+fn gem_manager() -> GemManager {
+    GemManager::new(ManagerConfig {
+        manager_id: ManagerId::new("gem").expect("valid manager id"),
+        mode: ManagerMode::Apply,
+        min_release_age: Duration::from_secs(7 * 86_400),
+        version_policy: VersionPolicy::Stable,
+        no_update: false,
+        pinned: BTreeSet::new(),
+    })
 }
 
 #[test]
@@ -112,7 +126,7 @@ fn constructs_exact_gem_install_command() {
 #[test]
 fn adapter_release_lookup_applies_ruby_runtime_filter() {
     let package = PackageName::new("alpha-ready").expect("valid package");
-    let lookup = GemManager
+    let lookup = gem_manager()
         .release_lookup(
             &ProcessRunner::fake([Ok(CommandOutput::from_parts(success_status(), "3.0.0", ""))]),
             &HttpClient::fake([response(
@@ -145,7 +159,7 @@ fn adapter_skips_default_gems_for_scan() {
         "",
     ))]);
 
-    let inputs = GemManager
+    let inputs = gem_manager()
         .scan_inputs(&process, &Env::fixed([]))
         .expect("installed gems should parse");
 
@@ -204,15 +218,8 @@ fn adapter_builds_update_inputs_with_ruby_runtime_filter() {
         base_url.to_owned(),
     )]);
 
-    let inputs = GemManager
-        .update_inputs(
-            &process,
-            &http,
-            &env,
-            upnow_domain::VersionPolicy::Stable,
-            std::time::Duration::from_secs(7 * 86_400),
-            true,
-        )
+    let inputs = gem_manager()
+        .update_inputs(&process, &http, &env)
         .expect("inputs should build");
 
     assert_eq!(inputs.len(), 5);
@@ -252,15 +259,8 @@ fn update_inputs_uses_outdated_current_and_keeps_full_registry_timeline() {
         base_url.to_owned(),
     )]);
 
-    let inputs = GemManager
-        .update_inputs(
-            &process,
-            &http,
-            &env,
-            upnow_domain::VersionPolicy::Stable,
-            std::time::Duration::from_secs(7 * 86_400),
-            true,
-        )
+    let inputs = gem_manager()
+        .update_inputs(&process, &http, &env)
         .expect("inputs should build");
     let seed = only_seed(&inputs);
 
@@ -286,7 +286,7 @@ fn update_inputs_uses_outdated_current_and_keeps_full_registry_timeline() {
 #[test]
 fn release_lookup_failure_is_item_scoped() {
     let package = PackageName::new("omega-error").expect("valid package");
-    let lookup = GemManager
+    let lookup = gem_manager()
         .release_lookup(
             &ProcessRunner::fake([Ok(CommandOutput::from_parts(success_status(), "3.0.0", ""))]),
             &HttpClient::fake([response(

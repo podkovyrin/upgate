@@ -7,10 +7,10 @@ use chrono::DateTime;
 use pep440_rs::Version as Pep440Version;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata, ManagerScanInput,
-    ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult,
-    ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate, UpdateSeed,
-    VersionPolicy, VersionScheme, VersionText,
+    DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
+    ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate,
+    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -20,8 +20,8 @@ use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, Proces
 use upnow_release::newest_pep440_version;
 
 use crate::adapter::{
-    CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ReleaseLookupSubject,
+    ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
+    ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "pipx";
@@ -114,19 +114,20 @@ struct PipxMainPackage {
     package_version: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PipxManager;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipxManager {
+    config: ManagerConfig,
+}
 
+impl PipxManager {
+    #[must_use]
+    pub const fn new(config: ManagerConfig) -> Self {
+        Self { config }
+    }
+}
 impl ManagerAdapter for PipxManager {
     fn id(&self) -> &'static str {
         MANAGER_ID
-    }
-
-    fn defaults(&self) -> ManagerDefaults {
-        ManagerDefaults {
-            min_release_age: Duration::from_secs(7 * 24 * 60 * 60),
-            mode: ManagerDefaultMode::Apply,
-        }
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
@@ -162,11 +163,8 @@ impl ManagerAdapter for PipxManager {
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
-        version_policy: VersionPolicy,
-        _min_release_age: Duration,
-        _no_update: bool,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
-        self.validate_version_policy(version_policy)?;
+        self.validate_version_policy(self.config.version_policy)?;
         update_inputs(process, http, env).map_err(|err| adapter_error(&err))
     }
 
@@ -175,7 +173,6 @@ impl ManagerAdapter for PipxManager {
         _process: &ProcessRunner,
         _env: &Env,
         plan: &ResolvedExecutionPlan,
-        _settings: CommandBuildSettings,
     ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
         commands_for_execution_plan(plan).map_err(|err| adapter_error(&err))
     }

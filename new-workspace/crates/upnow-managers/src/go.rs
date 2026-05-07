@@ -9,7 +9,7 @@ use chrono::DateTime;
 use semver::Version;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata,
+    DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerRuleReason, ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry,
     ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ScanIssue,
     SkipReason, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
@@ -21,8 +21,8 @@ use upnow_execution::{
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
 
 use crate::adapter::{
-    CommandBuildSettings, ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind,
-    ManagerCapabilities, ManagerDefaultMode, ManagerDefaults, ReleaseLookupSubject,
+    ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
+    ReleaseLookupSubject,
 };
 
 pub const MANAGER_ID: &str = "go";
@@ -119,19 +119,20 @@ pub struct GoBuildInfo {
     pub version: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GoManager;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoManager {
+    config: ManagerConfig,
+}
 
+impl GoManager {
+    #[must_use]
+    pub const fn new(config: ManagerConfig) -> Self {
+        Self { config }
+    }
+}
 impl ManagerAdapter for GoManager {
     fn id(&self) -> &'static str {
         MANAGER_ID
-    }
-
-    fn defaults(&self) -> ManagerDefaults {
-        ManagerDefaults {
-            min_release_age: Duration::from_secs(7 * 24 * 60 * 60),
-            mode: ManagerDefaultMode::Apply,
-        }
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
@@ -169,11 +170,8 @@ impl ManagerAdapter for GoManager {
         process: &ProcessRunner,
         _http: &HttpClient,
         env: &Env,
-        version_policy: VersionPolicy,
-        _min_release_age: Duration,
-        _no_update: bool,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
-        self.validate_version_policy(version_policy)?;
+        self.validate_version_policy(self.config.version_policy)?;
         update_inputs(process, env).map_err(|err| adapter_error(&err))
     }
 
@@ -182,7 +180,6 @@ impl ManagerAdapter for GoManager {
         process: &ProcessRunner,
         env: &Env,
         plan: &ResolvedExecutionPlan,
-        _settings: CommandBuildSettings,
     ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
         commands_for_execution_plan(process, env, plan).map_err(|err| adapter_error(&err))
     }

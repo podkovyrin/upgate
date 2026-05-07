@@ -1,9 +1,14 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::time::Duration;
 
-use upnow_domain::{PackageName, PlanItemId, ReleaseLookupResult, VersionText};
+use upnow_domain::{
+    ManagerConfig, ManagerId, ManagerMode, PackageName, PlanItemId, ReleaseLookupResult,
+    VersionPolicy, VersionText,
+};
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
 use upnow_infra::{CommandOutput, Env, ProcessRunner};
-use upnow_managers::adapter::{CommandBuildSettings, ManagerAdapter, ReleaseLookupSubject};
+use upnow_managers::adapter::{ManagerAdapter, ReleaseLookupSubject};
 use upnow_managers::go::{
     GoDiscoveredTool, GoManager, exact_command, lookup_release_by_module,
     parse_go_version_m_output, parse_module_time_json, parse_module_versions_json,
@@ -15,6 +20,17 @@ fn fixtures_dir() -> PathBuf {
 
 fn text(path: &str) -> String {
     std::fs::read_to_string(fixtures_dir().join(path)).expect("fixture should be readable")
+}
+
+fn go_manager() -> GoManager {
+    GoManager::new(ManagerConfig {
+        manager_id: ManagerId::new("go").expect("valid manager id"),
+        mode: ManagerMode::Apply,
+        min_release_age: Duration::from_secs(7 * 86_400),
+        version_policy: VersionPolicy::None,
+        no_update: false,
+        pinned: BTreeSet::new(),
+    })
 }
 
 #[test]
@@ -155,15 +171,8 @@ fn adapter_rediscovers_go_metadata_to_build_execution_command() {
         })],
     };
 
-    let commands = GoManager
-        .commands_for_execution_plan(
-            &process,
-            &env,
-            &plan,
-            CommandBuildSettings {
-                min_release_age: std::time::Duration::from_secs(86_400),
-            },
-        )
+    let commands = go_manager()
+        .commands_for_execution_plan(&process, &env, &plan)
         .expect("command should build");
 
     assert_eq!(
@@ -198,7 +207,7 @@ fn verbose_installed_lookup_uses_current_module_version_only() {
         )),
     ]);
     let env = Env::fixed([("GOBIN".to_owned(), temp.to_string_lossy().into_owned())]);
-    let lookup = GoManager
+    let lookup = go_manager()
         .release_lookup(
             &process,
             &upnow_infra::HttpClient::fake([]),
@@ -235,7 +244,7 @@ fn verbose_installed_lookup_treats_missing_time_as_no_age() {
     ]);
     let env = Env::fixed([("GOBIN".to_owned(), temp.to_string_lossy().into_owned())]);
 
-    let lookup = GoManager
+    let lookup = go_manager()
         .release_lookup(
             &process,
             &upnow_infra::HttpClient::fake([]),
@@ -266,7 +275,7 @@ fn verbose_installed_lookup_reports_failed_time_lookup() {
     ]);
     let env = Env::fixed([("GOBIN".to_owned(), temp.to_string_lossy().into_owned())]);
 
-    let lookup = GoManager
+    let lookup = go_manager()
         .release_lookup(
             &process,
             &upnow_infra::HttpClient::fake([]),

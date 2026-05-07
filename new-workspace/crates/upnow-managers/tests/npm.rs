@@ -1,14 +1,15 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use upnow_domain::{
-    DelayReason, ExecutionEligibility, ManagerCapabilities, ManagerId, PackageName, PlanItem,
-    PlanItemId, PlanSelection, SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionPolicy,
-    VersionScheme, VersionText,
+    DelayReason, ExecutionEligibility, ManagerCapabilities, ManagerConfig, ManagerId, ManagerMode,
+    PackageName, PlanItem, PlanItemId, PlanSelection, SelectedItem, ToolId, UpdateCandidate,
+    UpdatePlan, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::resolve_selection_for_execution;
 use upnow_infra::{CommandOutput, ProcessRunner};
-use upnow_managers::adapter::{CommandBuildSettings, ManagerAdapter};
+use upnow_managers::adapter::ManagerAdapter;
 use upnow_managers::npm::{
     NpmError, NpmManager, exact_command, global_update_command, outdated_global,
     parse_installed_json, parse_npm_time_json, parse_outdated_json, selected_native_update_command,
@@ -20,6 +21,17 @@ fn fixtures_dir() -> PathBuf {
 
 fn text(path: &str) -> String {
     std::fs::read_to_string(fixtures_dir().join(path)).expect("fixture should be readable")
+}
+
+fn npm_manager(min_release_age: Duration, version_policy: VersionPolicy) -> NpmManager {
+    NpmManager::new(ManagerConfig {
+        manager_id: ManagerId::new("npm").expect("valid manager id"),
+        mode: ManagerMode::Apply,
+        min_release_age,
+        version_policy,
+        no_update: false,
+        pinned: BTreeSet::new(),
+    })
 }
 
 #[test]
@@ -152,7 +164,7 @@ fn constructs_global_native_update_command() {
 
 #[test]
 fn adapter_uses_native_selected_update_for_no_policy_unforced_selection() {
-    let manager = NpmManager;
+    let manager = npm_manager(Duration::from_secs(7 * 86_400 + 3_600), VersionPolicy::None);
     let plan = plan(PlanItem::Update {
         id: plan_item_id(),
         candidate: candidate(),
@@ -165,9 +177,6 @@ fn adapter_uses_native_selected_update_for_no_policy_unforced_selection() {
             &ProcessRunner::fake([]),
             &upnow_infra::Env::fixed([]),
             &execution_plan,
-            CommandBuildSettings {
-                min_release_age: Duration::from_secs(7 * 86_400 + 3_600),
-            },
         )
         .expect("selection should build commands");
 
@@ -179,7 +188,7 @@ fn adapter_uses_native_selected_update_for_no_policy_unforced_selection() {
 
 #[test]
 fn adapter_uses_exact_install_for_exact_only_no_policy_selection() {
-    let manager = NpmManager;
+    let manager = npm_manager(Duration::from_secs(7 * 86_400), VersionPolicy::None);
     let plan = plan(PlanItem::Update {
         id: plan_item_id(),
         candidate: exact_only_candidate(),
@@ -192,9 +201,6 @@ fn adapter_uses_exact_install_for_exact_only_no_policy_selection() {
             &ProcessRunner::fake([]),
             &upnow_infra::Env::fixed([]),
             &execution_plan,
-            CommandBuildSettings {
-                min_release_age: Duration::from_secs(7 * 86_400),
-            },
         )
         .expect("selection should build commands");
 
@@ -214,7 +220,7 @@ fn adapter_uses_exact_install_for_exact_only_no_policy_selection() {
 
 #[test]
 fn adapter_uses_native_selected_update_for_native_only_no_policy_selection() {
-    let manager = NpmManager;
+    let manager = npm_manager(Duration::from_secs(7 * 86_400), VersionPolicy::None);
     let plan = plan(PlanItem::Update {
         id: plan_item_id(),
         candidate: native_only_candidate(),
@@ -227,9 +233,6 @@ fn adapter_uses_native_selected_update_for_native_only_no_policy_selection() {
             &ProcessRunner::fake([]),
             &upnow_infra::Env::fixed([]),
             &execution_plan,
-            CommandBuildSettings {
-                min_release_age: Duration::from_secs(7 * 86_400),
-            },
         )
         .expect("selection should build commands");
 
@@ -241,7 +244,7 @@ fn adapter_uses_native_selected_update_for_native_only_no_policy_selection() {
 
 #[test]
 fn adapter_uses_exact_install_for_policy_selection() {
-    let manager = NpmManager;
+    let manager = npm_manager(Duration::from_secs(7 * 86_400), VersionPolicy::Stable);
     let plan = plan(PlanItem::Update {
         id: plan_item_id(),
         candidate: candidate(),
@@ -254,9 +257,6 @@ fn adapter_uses_exact_install_for_policy_selection() {
             &ProcessRunner::fake([]),
             &upnow_infra::Env::fixed([]),
             &execution_plan,
-            CommandBuildSettings {
-                min_release_age: Duration::from_secs(7 * 86_400),
-            },
         )
         .expect("selection should build commands");
 
@@ -268,7 +268,7 @@ fn adapter_uses_exact_install_for_policy_selection() {
 
 #[test]
 fn adapter_forced_delayed_selection_uses_exact_install_and_bypasses_min_age() {
-    let manager = NpmManager;
+    let manager = npm_manager(Duration::from_secs(7 * 86_400), VersionPolicy::None);
     let plan = plan(PlanItem::Delayed {
         id: plan_item_id(),
         candidate: candidate(),
@@ -282,9 +282,6 @@ fn adapter_forced_delayed_selection_uses_exact_install_and_bypasses_min_age() {
             &ProcessRunner::fake([]),
             &upnow_infra::Env::fixed([]),
             &execution_plan,
-            CommandBuildSettings {
-                min_release_age: Duration::from_secs(7 * 86_400),
-            },
         )
         .expect("forced selection should build commands");
 
