@@ -429,7 +429,8 @@ fn resolved_item(
         target_version: VersionText::new("1.2.0").expect("valid version"),
         execution_eligibility: ExecutionEligibility::NativeOnly,
         execution_target_kind,
-        forced: false,
+        exact_target_required: false,
+        bypass_min_release_age: false,
     }
 }
 

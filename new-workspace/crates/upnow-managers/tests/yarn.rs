@@ -106,9 +106,8 @@ fn candidate() -> UpdateCandidate {
 fn selection(plan: &UpdatePlan) -> PlanSelection {
     PlanSelection::new(
         plan,
-        vec![SelectedItem::new(
+        vec![SelectedItem::recommended(
             PlanItemId::new("yarn:alpha-ready").expect("valid id"),
-            false,
         )],
         Vec::new(),
     )

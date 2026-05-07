@@ -98,7 +98,7 @@ pub fn default_batch_selection(
                 if !pin_all
                     && !pinned.contains(&PinTarget::Package(candidate.package_name.clone())) =>
             {
-                Some(SelectedItem::new(id.clone(), false))
+                Some(SelectedItem::recommended(id.clone()))
             }
             _ => None,
         })

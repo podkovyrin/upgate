@@ -102,9 +102,8 @@ fn creates_exact_commands_from_typed_selection() {
 fn selection(plan: &UpdatePlan) -> PlanSelection {
     PlanSelection::new(
         plan,
-        vec![SelectedItem::new(
+        vec![SelectedItem::recommended(
             PlanItemId::new("pnpm:alpha-ready").expect("valid id"),
-            false,
         )],
         Vec::new(),
     )

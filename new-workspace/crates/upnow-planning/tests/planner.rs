@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use upnow_domain::{
-    ExecutionEligibility, ManagerId, PackageName, PinTarget, PlanItem, PlanItemId, ToolId,
-    UpdateCandidate, UpdatePlan, VersionScheme, VersionText,
+    ExecutionEligibility, ManagerId, PackageName, PinTarget, PlanItem, PlanItemId, SelectedTarget,
+    ToolId, UpdateCandidate, UpdatePlan, VersionScheme, VersionText,
 };
 use upnow_planning::default_batch_selection;
 
@@ -57,6 +57,10 @@ fn default_batch_selection_excludes_package_pins() {
     assert_eq!(
         selection.selected_items[0].plan_item_id.as_str(),
         "pnpm:alpha-ready"
+    );
+    assert_eq!(
+        selection.selected_items[0].target,
+        SelectedTarget::Recommended
     );
 }
 

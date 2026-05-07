@@ -115,9 +115,8 @@ fn delayed_plan() -> UpdatePlan {
 fn selection(plan: &UpdatePlan) -> PlanSelection {
     PlanSelection::new(
         plan,
-        vec![SelectedItem::new(
+        vec![SelectedItem::forced_candidate(
             PlanItemId::new("bun:alpha-ready").expect("valid id"),
-            true,
         )],
         Vec::new(),
     )

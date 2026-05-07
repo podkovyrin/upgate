@@ -145,7 +145,8 @@ fn adapter_preserves_install_flags_from_fake_cargo_home() {
             target_version: VersionText::new("1.2.0").expect("valid version"),
             execution_eligibility: ExecutionEligibility::ExactOnly,
             execution_target_kind: upnow_domain::ExecutionTargetKind::Standard,
-            forced: false,
+            exact_target_required: true,
+            bypass_min_release_age: false,
         })],
     };
 

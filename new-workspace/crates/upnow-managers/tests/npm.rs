@@ -287,12 +287,12 @@ fn adapter_forced_delayed_selection_uses_exact_install_and_bypasses_min_age() {
 }
 
 fn selection_for_plan(plan: &UpdatePlan, forced: bool) -> PlanSelection {
-    PlanSelection::new(
-        plan,
-        vec![SelectedItem::new(plan_item_id(), forced)],
-        Vec::new(),
-    )
-    .expect("valid selection")
+    let selected = if forced {
+        SelectedItem::forced_candidate(plan_item_id())
+    } else {
+        SelectedItem::recommended(plan_item_id())
+    };
+    PlanSelection::new(plan, vec![selected], Vec::new()).expect("valid selection")
 }
 
 fn resolve(

@@ -396,7 +396,7 @@ pub fn commands_for_execution_plan(
                         &item.package_name,
                         &item.target_version,
                         min_release_age,
-                        item.forced,
+                        item.bypass_min_release_age,
                     ),
                 });
             }

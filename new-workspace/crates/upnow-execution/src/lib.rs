@@ -4,7 +4,8 @@ use std::fmt::{self, Display};
 
 use upnow_domain::{
     ExecutionEligibility, ExecutionTargetKind, ManagerCapabilities, ManagerId, PackageName,
-    PlanItem, PlanItemId, PlanSelection, UpdateCandidate, UpdatePlan, VersionPolicy, VersionText,
+    PlanItem, PlanItemId, PlanSelection, SelectedTarget, UpdateCandidate, UpdatePlan,
+    VersionPolicy, VersionText,
 };
 use upnow_infra::{CommandCheck, CommandSpec, InfraError, ProcessRunner};
 
@@ -30,7 +31,8 @@ pub struct ResolvedExecutionItem {
     pub target_version: VersionText,
     pub execution_eligibility: ExecutionEligibility,
     pub execution_target_kind: ExecutionTargetKind,
-    pub forced: bool,
+    pub exact_target_required: bool,
+    pub bypass_min_release_age: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,7 +85,9 @@ pub fn resolve_selection_for_execution(
 
     let mut intents = Vec::new();
     for item in selected {
-        if should_use_resolver_native_update(&item, version_policy) {
+        if item.exact_target_required {
+            intents.push(ExecutionCommandIntent::Exact(item));
+        } else if should_use_resolver_native_update(&item, version_policy) {
             intents.push(ExecutionCommandIntent::ResolverNative(item));
         } else if should_use_native_selected_update(&item, version_policy) {
             intents.push(ExecutionCommandIntent::NativeSelected(item));
@@ -186,14 +190,44 @@ fn selected_execution_items(
         let item = plan.item(&selected.plan_item_id).ok_or_else(|| {
             ExecutionSelectionError::UnknownPlanItem(selected.plan_item_id.as_str().to_owned())
         })?;
-        let candidate = match item {
-            PlanItem::Update { candidate, .. } => candidate,
-            PlanItem::Delayed { candidate, .. }
-                if selected.forced && candidate.execution_eligibility.supports_exact_target() =>
-            {
-                candidate
+        let resolved = match (item, &selected.target) {
+            (PlanItem::Update { candidate, .. }, SelectedTarget::Recommended) => resolved_item(
+                selected.plan_item_id.clone(),
+                candidate,
+                candidate.target_version.clone(),
+                false,
+                false,
+            ),
+            (
+                PlanItem::Update { candidate, .. } | PlanItem::Delayed { candidate, .. },
+                SelectedTarget::AlternateExact { target_version },
+            ) if candidate.execution_eligibility.supports_exact_target() => resolved_item(
+                selected.plan_item_id.clone(),
+                candidate,
+                target_version.clone(),
+                true,
+                false,
+            ),
+            (
+                PlanItem::Update { candidate, .. } | PlanItem::Delayed { candidate, .. },
+                SelectedTarget::AlternateExact { .. },
+            ) if !candidate.execution_eligibility.supports_exact_target() => {
+                return Err(ExecutionSelectionError::ExactTargetUnsupported(
+                    item.id().as_str().to_owned(),
+                ));
             }
-            PlanItem::Delayed { .. } if selected.forced => {
+            (PlanItem::Delayed { candidate, .. }, SelectedTarget::ForcedCandidate)
+                if candidate.execution_eligibility.supports_exact_target() =>
+            {
+                resolved_item(
+                    selected.plan_item_id.clone(),
+                    candidate,
+                    candidate.target_version.clone(),
+                    true,
+                    true,
+                )
+            }
+            (PlanItem::Delayed { .. }, SelectedTarget::ForcedCandidate) => {
                 return Err(ExecutionSelectionError::ExactTargetUnsupported(
                     item.id().as_str().to_owned(),
                 ));
@@ -204,11 +238,7 @@ fn selected_execution_items(
                 ));
             }
         };
-        items.push(resolved_item(
-            selected.plan_item_id.clone(),
-            candidate,
-            selected.forced,
-        ));
+        items.push(resolved);
     }
     Ok(items)
 }
@@ -216,16 +246,19 @@ fn selected_execution_items(
 fn resolved_item(
     plan_item_id: PlanItemId,
     candidate: &UpdateCandidate,
-    forced: bool,
+    target_version: VersionText,
+    exact_target_required: bool,
+    bypass_min_release_age: bool,
 ) -> ResolvedExecutionItem {
     ResolvedExecutionItem {
         plan_item_id,
         package_name: candidate.package_name.clone(),
         installed_version: candidate.installed_version.clone(),
-        target_version: candidate.target_version.clone(),
+        target_version,
         execution_eligibility: candidate.execution_eligibility,
         execution_target_kind: candidate.execution_target_kind,
-        forced,
+        exact_target_required,
+        bypass_min_release_age,
     }
 }
 
@@ -237,7 +270,8 @@ fn should_use_native_global_update(
 ) -> bool {
     if !capabilities.native_global_update
         || selected.is_empty()
-        || selected.iter().any(|item| item.forced)
+        || selected.iter().any(|item| item.bypass_min_release_age)
+        || selected.iter().any(|item| item.exact_target_required)
     {
         return false;
     }
@@ -264,9 +298,11 @@ fn should_use_resolver_native_global_update(
             .items
             .iter()
             .all(|item| matches!(item, PlanItem::Update { .. }))
-        && selected
-            .iter()
-            .all(|item| !item.forced && item.execution_eligibility.supports_resolver_native())
+        && selected.iter().all(|item| {
+            !item.bypass_min_release_age
+                && !item.exact_target_required
+                && item.execution_eligibility.supports_resolver_native()
+        })
         && selected_matches_all_updates(plan, selected)
 }
 
@@ -298,7 +334,7 @@ fn should_use_native_selected_update(
     item: &ResolvedExecutionItem,
     version_policy: VersionPolicy,
 ) -> bool {
-    if item.forced {
+    if item.bypass_min_release_age || item.exact_target_required {
         return false;
     }
 

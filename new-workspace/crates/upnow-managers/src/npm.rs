@@ -346,7 +346,7 @@ pub fn commands_for_execution_plan(
                     command: exact_command_for_item(
                         item,
                         whole_days(settings.min_release_age),
-                        item.forced,
+                        item.bypass_min_release_age,
                     ),
                 });
             }

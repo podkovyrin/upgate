@@ -1,7 +1,8 @@
 use upnow_domain::{
     DelayReason, DomainError, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata,
     PackageName, PinChange, PinOperation, PinTarget, PlanItem, PlanItemId, PlanSelection,
-    SelectedItem, ToolId, ToolName, UpdateCandidate, UpdatePlan, VersionScheme, VersionText,
+    SelectedItem, SelectedTarget, ToolId, ToolName, UpdateCandidate, UpdatePlan, VersionScheme,
+    VersionText,
 };
 
 fn plan_item_id(value: &str) -> PlanItemId {
@@ -58,7 +59,7 @@ fn plan_selection_accepts_selected_items_and_pin_changes() {
     let plan = plan();
     let selection = PlanSelection::new(
         &plan,
-        vec![SelectedItem::new(plan_item_id("alpha-ready"), true)],
+        vec![SelectedItem::forced_candidate(plan_item_id("alpha-ready"))],
         vec![
             PinChange::new(
                 PinTarget::Package(PackageName::new("fresh-tool").expect("valid package name")),
@@ -76,8 +77,38 @@ fn plan_selection_accepts_selected_items_and_pin_changes() {
         selection.selected_items[0].plan_item_id.as_str(),
         "alpha-ready"
     );
-    assert!(selection.selected_items[0].forced);
+    assert_eq!(
+        selection.selected_items[0].target,
+        SelectedTarget::ForcedCandidate
+    );
     assert_eq!(selection.pin_changes.len(), 2);
+}
+
+#[test]
+fn selected_item_preserves_alternate_exact_target() {
+    let target_version = VersionText::new("1.1.0").expect("valid target version");
+    let selected = SelectedItem::alternate_exact(plan_item_id("alpha-ready"), target_version);
+
+    assert!(matches!(
+        selected.target,
+        SelectedTarget::AlternateExact { ref target_version }
+            if target_version.as_str() == "1.1.0"
+    ));
+}
+
+#[test]
+fn forced_candidate_selection_does_not_create_pin_changes() {
+    let plan = plan();
+    let selection = PlanSelection::new(
+        &plan,
+        vec![SelectedItem::forced_candidate(plan_item_id(
+            "delayed-exact",
+        ))],
+        Vec::new(),
+    )
+    .expect("forced candidate selection should be valid");
+
+    assert!(selection.pin_changes.is_empty());
 }
 
 #[test]
@@ -99,8 +130,8 @@ fn plan_selection_accepts_known_selected_item_ids() {
     let selection = PlanSelection::new(
         &plan,
         vec![
-            SelectedItem::new(plan_item_id("delayed-exact"), false),
-            SelectedItem::new(plan_item_id("fresh-tool"), false),
+            SelectedItem::recommended(plan_item_id("delayed-exact")),
+            SelectedItem::recommended(plan_item_id("fresh-tool")),
         ],
         Vec::new(),
     )
@@ -133,7 +164,7 @@ fn plan_selection_rejects_unknown_selected_items() {
     let plan = plan();
     let error = PlanSelection::new(
         &plan,
-        vec![SelectedItem::new(plan_item_id("missing"), false)],
+        vec![SelectedItem::recommended(plan_item_id("missing"))],
         Vec::new(),
     )
     .expect_err("unknown selected item should fail");

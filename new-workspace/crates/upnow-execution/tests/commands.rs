@@ -105,7 +105,7 @@ fn resolves_native_selected_intent_for_no_policy_native_updates() {
         id: plan_item_id(),
         candidate: candidate(ExecutionEligibility::NativeOrExact),
     }]);
-    let selection = selection(&plan, false);
+    let selection = recommended_selection(&plan);
 
     let resolved = resolve_selection_for_execution(
         &plan,
@@ -127,7 +127,7 @@ fn resolves_resolver_native_intent_for_resolver_selected_updates() {
         id: plan_item_id(),
         candidate: candidate(ExecutionEligibility::ResolverNativeOnly),
     }]);
-    let selection = selection(&plan, false);
+    let selection = recommended_selection(&plan);
 
     let resolved = resolve_selection_for_execution(
         &plan,
@@ -139,7 +139,7 @@ fn resolves_resolver_native_intent_for_resolver_selected_updates() {
 
     assert!(matches!(
         resolved.intents.as_slice(),
-        [ExecutionCommandIntent::ResolverNative(item)] if !item.forced
+        [ExecutionCommandIntent::ResolverNative(item)] if !item.bypass_min_release_age
     ));
 }
 
@@ -158,8 +158,8 @@ fn resolves_resolver_native_global_intent_for_complete_default_selection() {
     let selection = PlanSelection::new(
         &plan,
         vec![
-            SelectedItem::new(plan_item_id(), false),
-            SelectedItem::new(PlanItemId::new("pnpm:beta-ready").expect("valid id"), false),
+            SelectedItem::recommended(plan_item_id()),
+            SelectedItem::recommended(PlanItemId::new("pnpm:beta-ready").expect("valid id")),
         ],
         Vec::new(),
     )
@@ -193,7 +193,7 @@ fn resolver_native_global_is_not_used_when_plan_contains_blocked_items() {
             policy_warnings: Vec::new(),
         },
     ]);
-    let selection = selection(&plan, false);
+    let selection = recommended_selection(&plan);
 
     let resolved = resolve_selection_for_execution(
         &plan,
@@ -217,7 +217,7 @@ fn forced_resolver_native_delayed_selection_is_rejected_without_bypass_command()
         candidate: candidate(ExecutionEligibility::ResolverNativeOnly),
         reason: DelayReason::ReleaseTooFresh,
     }]);
-    let selection = selection(&plan, true);
+    let selection = forced_selection(&plan);
 
     let err = resolve_selection_for_execution(
         &plan,
@@ -239,7 +239,7 @@ fn resolves_exact_intent_for_policy_filtered_updates() {
         id: plan_item_id(),
         candidate: candidate(ExecutionEligibility::NativeOrExact),
     }]);
-    let selection = selection(&plan, false);
+    let selection = recommended_selection(&plan);
 
     let resolved = resolve_selection_for_execution(
         &plan,
@@ -273,7 +273,7 @@ fn native_only_policy_filtered_update_stays_native_selected() {
             policy_warnings: Vec::new(),
         },
     ]);
-    let selection = selection(&plan, false);
+    let selection = recommended_selection(&plan);
 
     let resolved = resolve_selection_for_execution(
         &plan,
@@ -297,7 +297,7 @@ fn forced_delayed_selection_resolves_to_exact_intent() {
         candidate: candidate(ExecutionEligibility::NativeOrExact),
         reason: DelayReason::ReleaseTooFresh,
     }]);
-    let selection = selection(&plan, true);
+    let selection = forced_selection(&plan);
 
     let resolved = resolve_selection_for_execution(
         &plan,
@@ -309,8 +309,63 @@ fn forced_delayed_selection_resolves_to_exact_intent() {
 
     assert!(matches!(
         resolved.intents.as_slice(),
-        [ExecutionCommandIntent::Exact(item)] if item.forced
+        [ExecutionCommandIntent::Exact(item)] if item.bypass_min_release_age
     ));
+}
+
+#[test]
+fn alternate_exact_selection_resolves_to_exact_target_version() {
+    let plan = plan(vec![PlanItem::Update {
+        id: plan_item_id(),
+        candidate: candidate(ExecutionEligibility::NativeOrExact),
+    }]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![SelectedItem::alternate_exact(
+            plan_item_id(),
+            VersionText::new("1.1.0").expect("valid alternate version"),
+        )],
+        Vec::new(),
+    )
+    .expect("valid selection");
+
+    let resolved =
+        resolve_selection_for_execution(&plan, &selection, capabilities(true), VersionPolicy::None)
+            .expect("alternate exact selection should resolve");
+
+    assert!(matches!(
+        resolved.intents.as_slice(),
+        [ExecutionCommandIntent::Exact(item)]
+            if item.target_version.as_str() == "1.1.0"
+                && item.exact_target_required
+                && !item.bypass_min_release_age
+    ));
+}
+
+#[test]
+fn alternate_exact_selection_rejects_non_exact_capable_item() {
+    let plan = plan(vec![PlanItem::Update {
+        id: plan_item_id(),
+        candidate: candidate(ExecutionEligibility::NativeOnly),
+    }]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![SelectedItem::alternate_exact(
+            plan_item_id(),
+            VersionText::new("1.1.0").expect("valid alternate version"),
+        )],
+        Vec::new(),
+    )
+    .expect("valid selection");
+
+    let err =
+        resolve_selection_for_execution(&plan, &selection, capabilities(true), VersionPolicy::None)
+            .expect_err("alternate exact selection should require exact support");
+
+    assert_eq!(
+        err,
+        ExecutionSelectionError::ExactTargetUnsupported("pnpm:alpha-ready".to_owned())
+    );
 }
 
 #[test]
@@ -335,8 +390,8 @@ fn policy_filtered_complete_exact_capable_selection_resolves_to_exact_intents() 
     let selection = PlanSelection::new(
         &plan,
         vec![
-            SelectedItem::new(plan_item_id(), false),
-            SelectedItem::new(PlanItemId::new("pnpm:beta-ready").expect("valid id"), false),
+            SelectedItem::recommended(plan_item_id()),
+            SelectedItem::recommended(PlanItemId::new("pnpm:beta-ready").expect("valid id")),
         ],
         Vec::new(),
     )
@@ -373,8 +428,8 @@ fn policy_filtered_complete_native_only_selection_resolves_to_native_global() {
     let selection = PlanSelection::new(
         &plan,
         vec![
-            SelectedItem::new(plan_item_id(), false),
-            SelectedItem::new(PlanItemId::new("pnpm:beta-ready").expect("valid id"), false),
+            SelectedItem::recommended(plan_item_id()),
+            SelectedItem::recommended(PlanItemId::new("pnpm:beta-ready").expect("valid id")),
         ],
         Vec::new(),
     )
@@ -407,7 +462,7 @@ fn current_selection_is_not_executable() {
             upnow_domain::ManagerMetadata::empty(),
         ),
     }]);
-    let selection = selection(&plan, false);
+    let selection = recommended_selection(&plan);
 
     let err = resolve_selection_for_execution(
         &plan,
@@ -447,10 +502,19 @@ fn plan(items: Vec<PlanItem>) -> UpdatePlan {
     UpdatePlan::new(ManagerId::new("pnpm").expect("valid manager"), items).expect("valid plan")
 }
 
-fn selection(plan: &UpdatePlan, forced: bool) -> PlanSelection {
+fn recommended_selection(plan: &UpdatePlan) -> PlanSelection {
     PlanSelection::new(
         plan,
-        vec![SelectedItem::new(plan_item_id(), forced)],
+        vec![SelectedItem::recommended(plan_item_id())],
+        Vec::new(),
+    )
+    .expect("valid selection")
+}
+
+fn forced_selection(plan: &UpdatePlan) -> PlanSelection {
+    PlanSelection::new(
+        plan,
+        vec![SelectedItem::forced_candidate(plan_item_id())],
         Vec::new(),
     )
     .expect("valid selection")

@@ -242,7 +242,8 @@ fn adapter_builds_native_selected_command() {
                 target_version: VersionText::new("1.2.0").expect("valid version"),
                 execution_eligibility: upnow_domain::ExecutionEligibility::ResolverNativeOnly,
                 execution_target_kind: upnow_domain::ExecutionTargetKind::Standard,
-                forced: false,
+                exact_target_required: false,
+                bypass_min_release_age: false,
             },
         )],
     };

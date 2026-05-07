@@ -145,9 +145,8 @@ fn pnpm_builds_commands_through_adapter_boundary() {
     .expect("valid plan");
     let selection = PlanSelection::new(
         &plan,
-        vec![SelectedItem::new(
+        vec![SelectedItem::recommended(
             PlanItemId::new("pnpm:alpha-ready").expect("valid id"),
-            false,
         )],
         Vec::new(),
     )
@@ -196,9 +195,8 @@ fn execution_resolver_rejects_non_executable_selected_items() {
     .expect("valid plan");
     let selection = PlanSelection::new(
         &plan,
-        vec![SelectedItem::new(
+        vec![SelectedItem::recommended(
             PlanItemId::new("npm:alpha-ready").expect("valid id"),
-            false,
         )],
         Vec::new(),
     )

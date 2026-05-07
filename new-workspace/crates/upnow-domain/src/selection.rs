@@ -1,4 +1,4 @@
-use crate::{DomainError, PackageName, PlanItemId, UpdatePlan};
+use crate::{DomainError, PackageName, PlanItemId, UpdatePlan, VersionText};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanSelection {
@@ -46,17 +46,42 @@ impl PlanSelection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectedItem {
     pub plan_item_id: PlanItemId,
-    pub forced: bool,
+    pub target: SelectedTarget,
 }
 
 impl SelectedItem {
     #[must_use]
-    pub fn new(plan_item_id: PlanItemId, forced: bool) -> Self {
+    pub fn new(plan_item_id: PlanItemId, target: SelectedTarget) -> Self {
         Self {
             plan_item_id,
-            forced,
+            target,
         }
     }
+
+    #[must_use]
+    pub fn recommended(plan_item_id: PlanItemId) -> Self {
+        Self::new(plan_item_id, SelectedTarget::Recommended)
+    }
+
+    #[must_use]
+    pub fn forced_candidate(plan_item_id: PlanItemId) -> Self {
+        Self::new(plan_item_id, SelectedTarget::ForcedCandidate)
+    }
+
+    #[must_use]
+    pub fn alternate_exact(plan_item_id: PlanItemId, target_version: VersionText) -> Self {
+        Self::new(
+            plan_item_id,
+            SelectedTarget::AlternateExact { target_version },
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectedTarget {
+    Recommended,
+    ForcedCandidate,
+    AlternateExact { target_version: VersionText },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
