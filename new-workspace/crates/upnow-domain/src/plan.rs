@@ -31,6 +31,7 @@ pub struct UpdateSeed {
     pub installed: InstalledTool,
     pub version_scheme: VersionScheme,
     pub target_selection: TargetSelection,
+    pub execution_eligibility: ExecutionEligibility,
     pub execution_target_kind: ExecutionTargetKind,
 }
 
@@ -41,8 +42,15 @@ impl UpdateSeed {
         discovered_target: VersionText,
         version_scheme: VersionScheme,
         release_lookup: ReleaseLookupResult,
+        execution_eligibility: ExecutionEligibility,
     ) -> Self {
-        Self::planner_selectable(installed, discovered_target, version_scheme, release_lookup)
+        Self::planner_selectable(
+            installed,
+            discovered_target,
+            version_scheme,
+            release_lookup,
+            execution_eligibility,
+        )
     }
 
     #[must_use]
@@ -51,6 +59,7 @@ impl UpdateSeed {
         discovered_target: VersionText,
         version_scheme: VersionScheme,
         release_lookup: ReleaseLookupResult,
+        execution_eligibility: ExecutionEligibility,
     ) -> Self {
         Self {
             installed,
@@ -59,6 +68,7 @@ impl UpdateSeed {
                 discovered_target,
                 release_lookup,
             },
+            execution_eligibility,
             execution_target_kind: ExecutionTargetKind::Standard,
         }
     }
@@ -68,11 +78,13 @@ impl UpdateSeed {
         installed: InstalledTool,
         selected_target: ManagerSelectedTarget,
         version_scheme: VersionScheme,
+        execution_eligibility: ExecutionEligibility,
     ) -> Self {
         Self {
             installed,
             version_scheme,
             target_selection: TargetSelection::ManagerSelected(selected_target),
+            execution_eligibility,
             execution_target_kind: ExecutionTargetKind::Standard,
         }
     }

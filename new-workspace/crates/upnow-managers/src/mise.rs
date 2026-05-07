@@ -8,7 +8,7 @@ use pep440_rs::Version as Pep440Version;
 use semver::Version as SemverVersion;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, InstalledTool, ManagerId, ManagerMetadata, ManagerScanInput,
+    DomainError, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata, ManagerScanInput,
     ManagerSelectedTarget, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
     ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
     TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
@@ -120,9 +120,7 @@ impl ManagerAdapter for MiseManager {
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
-        ManagerCapabilities::new(false, false)
-            .with_resolver_native_update(true)
-            .with_resolver_native_global_update(true)
+        ManagerCapabilities::new().with_resolver_native_global_update(true)
     }
 
     fn supports_version_policy(&self, policy: VersionPolicy) -> bool {
@@ -439,6 +437,7 @@ pub fn update_inputs(
             installed,
             selected,
             version_scheme(&item.from_version, &item.to_version),
+            ExecutionEligibility::ResolverNativeOnly,
         )));
     }
     Ok(inputs)

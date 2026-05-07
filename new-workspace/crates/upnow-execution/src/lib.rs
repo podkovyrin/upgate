@@ -83,11 +83,11 @@ pub fn resolve_selection_for_execution(
 
     let mut intents = Vec::new();
     for item in selected {
-        if should_use_resolver_native_update(&item, capabilities, version_policy) {
+        if should_use_resolver_native_update(&item, version_policy) {
             intents.push(ExecutionCommandIntent::ResolverNative(item));
-        } else if should_use_native_selected_update(&item, capabilities, version_policy) {
+        } else if should_use_native_selected_update(&item, version_policy) {
             intents.push(ExecutionCommandIntent::NativeSelected(item));
-        } else if supports_exact_target(&item) && capabilities.exact_target {
+        } else if supports_exact_target(&item) {
             intents.push(ExecutionCommandIntent::Exact(item));
         } else {
             return Err(ExecutionSelectionError::ExactTargetUnsupported(
@@ -289,20 +289,16 @@ fn selected_matches_all_updates(plan: &UpdatePlan, selected: &[ResolvedExecution
 
 fn should_use_resolver_native_update(
     item: &ResolvedExecutionItem,
-    capabilities: ManagerCapabilities,
     version_policy: VersionPolicy,
 ) -> bool {
-    capabilities.resolver_native_update
-        && version_policy == VersionPolicy::None
-        && item.execution_eligibility.supports_resolver_native()
+    version_policy == VersionPolicy::None && item.execution_eligibility.supports_resolver_native()
 }
 
 fn should_use_native_selected_update(
     item: &ResolvedExecutionItem,
-    capabilities: ManagerCapabilities,
     version_policy: VersionPolicy,
 ) -> bool {
-    if !capabilities.native_update || item.forced {
+    if item.forced {
         return false;
     }
 

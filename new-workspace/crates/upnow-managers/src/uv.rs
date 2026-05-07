@@ -8,7 +8,7 @@ use chrono::DateTime;
 use pep440_rs::Version as Pep440Version;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, InstalledTool, ManagerId, ManagerMetadata, ManagerScanInput,
+    DomainError, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata, ManagerScanInput,
     ManagerSelectedTarget, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
     ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
     TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
@@ -107,7 +107,7 @@ impl ManagerAdapter for UvManager {
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
-        ManagerCapabilities::new(false, false).with_resolver_native_update(true)
+        ManagerCapabilities::new()
     }
 
     fn supports_version_policy(&self, policy: VersionPolicy) -> bool {
@@ -259,6 +259,7 @@ pub fn update_inputs(
             installed,
             selected_target,
             VersionScheme::Pep440,
+            ExecutionEligibility::ResolverNativeOnly,
         )));
     }
     Ok(inputs)

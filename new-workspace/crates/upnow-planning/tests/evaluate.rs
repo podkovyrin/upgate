@@ -58,6 +58,7 @@ fn known_seed(
                 })
                 .collect(),
         )),
+        ExecutionEligibility::NativeOrExact,
     )
 }
 
@@ -72,6 +73,7 @@ fn manager_selected_seed(
         installed_tool(package, installed_version),
         ManagerSelectedTarget::new(version(target_version), target_age),
         version_scheme,
+        ExecutionEligibility::NativeOrExact,
     )
 }
 
@@ -92,7 +94,6 @@ fn evaluate(seed: UpdateSeed, policy: VersionPolicy, min_age_secs: u64) -> PlanI
         policy,
         now(),
         Duration::from_secs(min_age_secs),
-        ExecutionEligibility::NativeOrExact,
     )
 }
 
@@ -103,7 +104,6 @@ fn evaluate_brew(seed: UpdateSeed, policy: VersionPolicy, min_age_secs: u64) -> 
         policy,
         now(),
         Duration::from_secs(min_age_secs),
-        ExecutionEligibility::NativeOrExact,
     )
 }
 
@@ -208,6 +208,29 @@ fn manager_selected_target_gates_only_the_selected_target() {
 }
 
 #[test]
+fn planner_preserves_manager_produced_item_execution_eligibility() {
+    let seed = UpdateSeed::new(
+        installed_tool("alpha", "1.0.0"),
+        version("1.1.0"),
+        VersionScheme::SemVer,
+        ReleaseLookupResult::Known(ReleaseTimeline::new(vec![ReleaseEntry::new(
+            version("1.1.0"),
+            ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 86_400)),
+        )])),
+        ExecutionEligibility::ExactOnly,
+    );
+
+    let PlanItem::Update { candidate, .. } = evaluate(seed, VersionPolicy::Stable, 0) else {
+        panic!("expected update");
+    };
+
+    assert_eq!(
+        candidate.execution_eligibility,
+        ExecutionEligibility::ExactOnly
+    );
+}
+
+#[test]
 fn manager_selected_target_missing_required_evidence_blocks_the_item() {
     let item = evaluate(
         manager_selected_seed(
@@ -239,6 +262,7 @@ fn manager_selected_target_ignores_failed_advisory_metadata_when_target_evidence
                 ReleaseLookupError::new("advisory latest unavailable"),
             )),
         VersionScheme::SemVer,
+        ExecutionEligibility::NativeOrExact,
     );
 
     let item = evaluate(seed, VersionPolicy::None, 0);
@@ -624,6 +648,7 @@ fn missing_release_metadata_blocks_the_item() {
         version("1.1.0"),
         VersionScheme::SemVer,
         ReleaseLookupResult::MissingMetadata,
+        ExecutionEligibility::NativeOrExact,
     );
 
     assert!(matches!(
@@ -642,6 +667,7 @@ fn failed_release_lookup_blocks_the_item() {
         version("1.1.0"),
         VersionScheme::SemVer,
         ReleaseLookupResult::LookupFailed(ReleaseLookupError::new("registry timeout")),
+        ExecutionEligibility::NativeOrExact,
     );
 
     assert!(matches!(

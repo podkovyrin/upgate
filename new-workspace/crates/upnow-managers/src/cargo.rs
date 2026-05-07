@@ -8,10 +8,10 @@ use chrono::DateTime;
 use semver::Version;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, InstalledTool, ManagerId, ManagerMetadata, ManagerScanInput, ManagerUpdateInput,
-    PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
-    ReleaseTimestamp, ToolId, ToolName, UpdateCandidate, UpdateSeed, VersionPolicy, VersionScheme,
-    VersionText,
+    DomainError, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata, ManagerScanInput,
+    ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult,
+    ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate, UpdateSeed,
+    VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
@@ -137,7 +137,7 @@ impl ManagerAdapter for CargoManager {
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
-        ManagerCapabilities::new(true, false)
+        ManagerCapabilities::new()
     }
 
     fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
@@ -325,6 +325,7 @@ pub fn update_inputs(
                     target,
                     VersionScheme::SemVer,
                     lookup,
+                    ExecutionEligibility::ExactOnly,
                 )));
             }
             Err(err) if err.is_interruption() => return Err(err),

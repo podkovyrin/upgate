@@ -531,14 +531,9 @@ fn build_manager_plan(
             policy: manager_config.version_policy,
             now,
             min_release_age: manager_config.min_release_age,
-            execution_eligibility: execution_eligibility(manager),
         },
     )
     .map_err(|err| AppError::Planning(err.to_string()))
-}
-
-fn execution_eligibility(manager: &dyn ManagerAdapter) -> upnow_domain::ExecutionEligibility {
-    manager.capabilities().execution_eligibility()
 }
 
 fn execution_command_from_manager(command: ManagerExecutionCommand) -> ExecutionCommand {

@@ -5,10 +5,10 @@ use std::time::{Duration, SystemTime};
 use chrono::DateTime;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, InstalledTool, ManagerId, ManagerMetadata, ManagerScanInput, ManagerUpdateInput,
-    PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
-    ReleaseTimestamp, ToolId, ToolName, UnsupportedReason, UpdateCandidate, UpdateSeed,
-    VersionPolicy, VersionScheme, VersionText,
+    DomainError, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata, ManagerScanInput,
+    ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult,
+    ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UnsupportedReason, UpdateCandidate,
+    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
@@ -147,7 +147,7 @@ impl ManagerAdapter for YarnManager {
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
-        ManagerCapabilities::new(true, false)
+        ManagerCapabilities::new()
     }
 
     fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
@@ -475,6 +475,7 @@ fn update_input(tool: InstalledTool, lookup: ReleaseLookupResult) -> ManagerUpda
         discovered_target,
         VersionScheme::SemVer,
         lookup,
+        ExecutionEligibility::ExactOnly,
     ))
 }
 

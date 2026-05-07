@@ -38,6 +38,7 @@ fn seed(name: &str) -> UpdateSeed {
         VersionText::new("1.2.0").expect("valid target version"),
         VersionScheme::SemVer,
         ReleaseLookupResult::MissingMetadata,
+        ExecutionEligibility::NativeOrExact,
     )
 }
 
@@ -138,6 +139,11 @@ fn update_seed_represents_planner_selectable_and_manager_selected_targets() {
         VersionText::new("1.2.0").expect("valid target"),
         VersionScheme::SemVer,
         ReleaseLookupResult::MissingMetadata,
+        ExecutionEligibility::ExactOnly,
+    );
+    assert_eq!(
+        planner_seed.execution_eligibility,
+        ExecutionEligibility::ExactOnly
     );
     let TargetSelection::PlannerSelectable {
         discovered_target,
@@ -159,6 +165,11 @@ fn update_seed_represents_planner_selectable_and_manager_selected_targets() {
         installed_tool("resolver-tool", "1.0.0"),
         selected_target,
         VersionScheme::SemVer,
+        ExecutionEligibility::ResolverNativeOnly,
+    );
+    assert_eq!(
+        manager_seed.execution_eligibility,
+        ExecutionEligibility::ResolverNativeOnly
     );
     let TargetSelection::ManagerSelected(target) = &manager_seed.target_selection else {
         panic!("expected manager-selected seed");

@@ -5,11 +5,12 @@ use std::time::{Duration, SystemTime};
 use chrono::DateTime;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionTargetKind, InstalledTool, ManagerId, ManagerMetadata,
-    ManagerMetadataField, ManagerMetadataKey, ManagerMetadataValue, ManagerScanInput,
-    ManagerSelectedTarget, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, SkipReason, TargetAgeEvidence,
-    TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    DomainError, ExecutionEligibility, ExecutionTargetKind, InstalledTool, ManagerId,
+    ManagerMetadata, ManagerMetadataField, ManagerMetadataKey, ManagerMetadataValue,
+    ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput, PackageName, ReleaseEntry,
+    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, SkipReason,
+    TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy,
+    VersionScheme, VersionText,
 };
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
@@ -233,7 +234,7 @@ impl ManagerAdapter for BrewManager {
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
-        ManagerCapabilities::new(false, true).with_native_global_update(true)
+        ManagerCapabilities::new().with_native_global_update(true)
     }
 
     fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
@@ -458,8 +459,13 @@ pub fn update_inputs(
         );
         let selected = ManagerSelectedTarget::new(package.target.clone(), target_age);
         inputs.push(ManagerUpdateInput::Seed(
-            UpdateSeed::manager_selected(installed, selected, VersionScheme::ManagerNative)
-                .with_execution_target_kind(execution_target_kind(package.kind)),
+            UpdateSeed::manager_selected(
+                installed,
+                selected,
+                VersionScheme::ManagerNative,
+                ExecutionEligibility::NativeOnly,
+            )
+            .with_execution_target_kind(execution_target_kind(package.kind)),
         ));
     }
     Ok(inputs)

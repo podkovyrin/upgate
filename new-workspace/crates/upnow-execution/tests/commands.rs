@@ -110,7 +110,7 @@ fn resolves_native_selected_intent_for_no_policy_native_updates() {
     let resolved = resolve_selection_for_execution(
         &plan,
         &selection,
-        capabilities(true, true, false),
+        capabilities(false),
         VersionPolicy::None,
     )
     .expect("selection should resolve");
@@ -132,7 +132,7 @@ fn resolves_resolver_native_intent_for_resolver_selected_updates() {
     let resolved = resolve_selection_for_execution(
         &plan,
         &selection,
-        resolver_capabilities(),
+        capabilities(false),
         VersionPolicy::None,
     )
     .expect("selection should resolve");
@@ -222,7 +222,7 @@ fn forced_resolver_native_delayed_selection_is_rejected_without_bypass_command()
     let err = resolve_selection_for_execution(
         &plan,
         &selection,
-        resolver_capabilities(),
+        capabilities(false),
         VersionPolicy::None,
     )
     .expect_err("forced resolver-native selection should require an explicit bypass command");
@@ -244,7 +244,7 @@ fn resolves_exact_intent_for_policy_filtered_updates() {
     let resolved = resolve_selection_for_execution(
         &plan,
         &selection,
-        capabilities(true, true, false),
+        capabilities(false),
         VersionPolicy::Stable,
     )
     .expect("selection should resolve");
@@ -278,7 +278,7 @@ fn native_only_policy_filtered_update_stays_native_selected() {
     let resolved = resolve_selection_for_execution(
         &plan,
         &selection,
-        capabilities(false, true, true),
+        capabilities(true),
         VersionPolicy::Stable,
     )
     .expect("native-only policy-gated selection should resolve");
@@ -302,7 +302,7 @@ fn forced_delayed_selection_resolves_to_exact_intent() {
     let resolved = resolve_selection_for_execution(
         &plan,
         &selection,
-        capabilities(true, true, false),
+        capabilities(false),
         VersionPolicy::None,
     )
     .expect("forced delayed selection should resolve");
@@ -345,7 +345,7 @@ fn policy_filtered_complete_exact_capable_selection_resolves_to_exact_intents() 
     let resolved = resolve_selection_for_execution(
         &plan,
         &selection,
-        capabilities(true, false, true),
+        capabilities(true),
         VersionPolicy::Stable,
     )
     .expect("selection should resolve");
@@ -383,7 +383,7 @@ fn policy_filtered_complete_native_only_selection_resolves_to_native_global() {
     let resolved = resolve_selection_for_execution(
         &plan,
         &selection,
-        capabilities(false, true, true),
+        capabilities(true),
         VersionPolicy::Stable,
     )
     .expect("selection should resolve");
@@ -412,7 +412,7 @@ fn current_selection_is_not_executable() {
     let err = resolve_selection_for_execution(
         &plan,
         &selection,
-        capabilities(true, true, false),
+        capabilities(false),
         VersionPolicy::Stable,
     )
     .expect_err("current item should not resolve");
@@ -456,38 +456,12 @@ fn selection(plan: &UpdatePlan, forced: bool) -> PlanSelection {
     .expect("valid selection")
 }
 
-fn capabilities(
-    exact_target: bool,
-    native_update: bool,
-    native_global_update: bool,
-) -> ManagerCapabilities {
-    ManagerCapabilities {
-        exact_target,
-        native_update,
-        native_global_update,
-        resolver_native_update: false,
-        resolver_native_global_update: false,
-    }
-}
-
-fn resolver_capabilities() -> ManagerCapabilities {
-    ManagerCapabilities {
-        exact_target: false,
-        native_update: false,
-        native_global_update: false,
-        resolver_native_update: true,
-        resolver_native_global_update: false,
-    }
+fn capabilities(native_global_update: bool) -> ManagerCapabilities {
+    ManagerCapabilities::new().with_native_global_update(native_global_update)
 }
 
 fn resolver_global_capabilities() -> ManagerCapabilities {
-    ManagerCapabilities {
-        exact_target: false,
-        native_update: false,
-        native_global_update: false,
-        resolver_native_update: true,
-        resolver_native_global_update: true,
-    }
+    ManagerCapabilities::new().with_resolver_native_global_update(true)
 }
 
 fn candidate(execution_eligibility: ExecutionEligibility) -> UpdateCandidate {
@@ -520,6 +494,7 @@ fn seed_for(package: &str) -> UpdateSeed {
             TargetAgeLookupResult::MissingMetadata,
         ),
         VersionScheme::SemVer,
+        ExecutionEligibility::ExactOnly,
     )
 }
 

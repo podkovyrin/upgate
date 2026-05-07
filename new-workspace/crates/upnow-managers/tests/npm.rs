@@ -300,19 +300,8 @@ fn resolve(
     selection: &PlanSelection,
     version_policy: VersionPolicy,
 ) -> upnow_execution::ResolvedExecutionPlan {
-    resolve_selection_for_execution(
-        plan,
-        selection,
-        ManagerCapabilities {
-            exact_target: true,
-            native_update: true,
-            native_global_update: false,
-            resolver_native_update: false,
-            resolver_native_global_update: false,
-        },
-        version_policy,
-    )
-    .expect("selection should resolve")
+    resolve_selection_for_execution(plan, selection, ManagerCapabilities::new(), version_policy)
+        .expect("selection should resolve")
 }
 
 fn plan(item: PlanItem) -> UpdatePlan {

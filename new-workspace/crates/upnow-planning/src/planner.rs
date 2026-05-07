@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
-    DomainError, ExecutionEligibility, ManagerId, ManagerUpdateInput, PackageName, PinChange,
-    PlanItem, PlanItemId, PlanSelection, SelectedItem, UpdatePlan, UpdateSeed, VersionPolicy,
+    DomainError, ManagerId, ManagerUpdateInput, PackageName, PinChange, PlanItem, PlanItemId,
+    PlanSelection, SelectedItem, UpdatePlan, UpdateSeed, VersionPolicy,
 };
 
 pub const PIN_ALL: &str = "*";
@@ -15,7 +15,6 @@ pub struct PlanningSettings {
     pub policy: VersionPolicy,
     pub now: SystemTime,
     pub min_release_age: Duration,
-    pub execution_eligibility: ExecutionEligibility,
 }
 
 /// Builds a typed manager update plan from manager-discovered seeds.
@@ -56,7 +55,6 @@ pub fn update_plan_from_inputs(
                     settings.policy,
                     settings.now,
                     settings.min_release_age,
-                    settings.execution_eligibility,
                 ));
             }
             ManagerUpdateInput::Skipped { installed, reason } => {

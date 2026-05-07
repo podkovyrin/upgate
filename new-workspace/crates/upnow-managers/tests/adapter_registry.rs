@@ -84,7 +84,7 @@ fn registered_managers_validate_supported_policies() {
 }
 
 #[test]
-fn capabilities_are_typed_per_manager() {
+fn manager_capabilities_cover_only_global_shortcuts() {
     let pnpm = manager_by_id(&ManagerId::new("pnpm").expect("valid id"))
         .expect("pnpm should be registered");
     let npm =
@@ -110,34 +110,17 @@ fn capabilities_are_typed_per_manager() {
     let mise = manager_by_id(&ManagerId::new("mise").expect("valid id"))
         .expect("mise should be registered");
 
-    assert!(pnpm.capabilities().exact_target);
-    assert!(!pnpm.capabilities().native_update);
-    assert!(npm.capabilities().exact_target);
-    assert!(npm.capabilities().native_update);
-    assert!(yarn.capabilities().exact_target);
-    assert!(!yarn.capabilities().native_update);
-    assert!(bun.capabilities().exact_target);
-    assert!(!bun.capabilities().native_update);
+    assert!(!pnpm.capabilities().native_global_update);
+    assert!(!npm.capabilities().native_global_update);
+    assert!(!yarn.capabilities().native_global_update);
     assert!(bun.capabilities().native_global_update);
-    assert!(!brew.capabilities().exact_target);
-    assert!(brew.capabilities().native_update);
     assert!(brew.capabilities().native_global_update);
-    assert!(cargo.capabilities().exact_target);
-    assert!(!cargo.capabilities().native_update);
-    assert!(pipx.capabilities().exact_target);
-    assert!(!pipx.capabilities().native_update);
-    assert!(go.capabilities().exact_target);
-    assert!(!go.capabilities().native_update);
-    assert!(gem.capabilities().exact_target);
-    assert!(!gem.capabilities().native_update);
-    assert!(dotnet.capabilities().exact_target);
-    assert!(!dotnet.capabilities().native_update);
-    assert!(!uv.capabilities().exact_target);
-    assert!(!uv.capabilities().native_update);
-    assert!(uv.capabilities().resolver_native_update);
-    assert!(!mise.capabilities().exact_target);
-    assert!(!mise.capabilities().native_update);
-    assert!(mise.capabilities().resolver_native_update);
+    assert!(!cargo.capabilities().native_global_update);
+    assert!(!pipx.capabilities().native_global_update);
+    assert!(!go.capabilities().native_global_update);
+    assert!(!gem.capabilities().native_global_update);
+    assert!(!dotnet.capabilities().native_global_update);
+    assert!(!uv.capabilities().resolver_native_global_update);
     assert!(mise.capabilities().resolver_native_global_update);
 }
 
@@ -224,13 +207,7 @@ fn execution_resolver_rejects_non_executable_selected_items() {
     let err = resolve_selection_for_execution(
         &plan,
         &selection,
-        ManagerCapabilities {
-            exact_target: true,
-            native_update: true,
-            native_global_update: false,
-            resolver_native_update: false,
-            resolver_native_global_update: false,
-        },
+        ManagerCapabilities::new(),
         VersionPolicy::Stable,
     )
     .expect_err("current item should not be executable");

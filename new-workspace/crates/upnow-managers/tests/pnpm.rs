@@ -84,13 +84,7 @@ fn creates_exact_commands_from_typed_selection() {
     let execution_plan = resolve_selection_for_execution(
         &plan,
         &selection,
-        ManagerCapabilities {
-            exact_target: true,
-            native_update: false,
-            native_global_update: false,
-            resolver_native_update: false,
-            resolver_native_global_update: false,
-        },
+        ManagerCapabilities::new(),
         upnow_domain::VersionPolicy::Stable,
     )
     .expect("selection should resolve");

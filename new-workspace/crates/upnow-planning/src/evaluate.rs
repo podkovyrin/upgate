@@ -4,10 +4,10 @@ use std::time::{Duration, SystemTime};
 use pep440_rs::{PrereleaseKind as Pep440PrereleaseKind, Version as Pep440Version};
 use semver::Version as SemverVersion;
 use upnow_domain::{
-    BlockReason, DelayReason, ExecutionEligibility, ManagerSelectedTarget, PlanItem, PlanItemId,
-    PolicyBlockReason, PolicyWarning, ReleaseEntry, ReleaseLookupResult, ReleaseTimeline,
-    TargetAgeEvidence, TargetAgeLookupResult, TargetSelection, UpdateCandidate, UpdateSeed,
-    VersionPolicy, VersionScheme, VersionText,
+    BlockReason, DelayReason, ManagerSelectedTarget, PlanItem, PlanItemId, PolicyBlockReason,
+    PolicyWarning, ReleaseEntry, ReleaseLookupResult, ReleaseTimeline, TargetAgeEvidence,
+    TargetAgeLookupResult, TargetSelection, UpdateCandidate, UpdateSeed, VersionPolicy,
+    VersionScheme, VersionText,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +57,6 @@ pub fn evaluate_seed(
     policy: VersionPolicy,
     now: SystemTime,
     min_release_age: Duration,
-    execution_eligibility: ExecutionEligibility,
 ) -> PlanItem {
     match seed.target_selection.clone() {
         TargetSelection::PlannerSelectable {
@@ -71,17 +70,10 @@ pub fn evaluate_seed(
             policy,
             now,
             min_release_age,
-            execution_eligibility,
         ),
-        TargetSelection::ManagerSelected(target) => evaluate_manager_selected_seed(
-            id,
-            seed,
-            target,
-            policy,
-            now,
-            min_release_age,
-            execution_eligibility,
-        ),
+        TargetSelection::ManagerSelected(target) => {
+            evaluate_manager_selected_seed(id, seed, target, policy, now, min_release_age)
+        }
     }
 }
 
@@ -94,7 +86,6 @@ fn evaluate_planner_selectable_seed(
     policy: VersionPolicy,
     now: SystemTime,
     min_release_age: Duration,
-    execution_eligibility: ExecutionEligibility,
 ) -> PlanItem {
     match release_lookup {
         ReleaseLookupResult::MissingMetadata => PlanItem::Blocked {
@@ -118,7 +109,6 @@ fn evaluate_planner_selectable_seed(
                 policy,
                 now,
                 min_release_age,
-                execution_eligibility,
             ),
             VersionScheme::Pep440 => evaluate_pep440_seed(
                 id,
@@ -128,7 +118,6 @@ fn evaluate_planner_selectable_seed(
                 policy,
                 now,
                 min_release_age,
-                execution_eligibility,
             ),
             VersionScheme::ManagerNative => PlanItem::ResolverError {
                 id,
@@ -147,7 +136,6 @@ fn evaluate_manager_selected_seed(
     policy: VersionPolicy,
     now: SystemTime,
     min_release_age: Duration,
-    execution_eligibility: ExecutionEligibility,
 ) -> PlanItem {
     let selected_target = target.target_version.clone();
     match selected_target_is_update(&seed, &selected_target) {
@@ -205,12 +193,8 @@ fn evaluate_manager_selected_seed(
         }
     };
 
-    let candidate = candidate_from_seed(
-        &seed,
-        selected_target,
-        execution_eligibility,
-        policy_warning.into_iter().collect(),
-    );
+    let candidate =
+        candidate_from_seed(&seed, selected_target, policy_warning.into_iter().collect());
 
     if is_evidence_old_enough(&target_age, now, min_release_age) {
         PlanItem::Update { id, candidate }
@@ -232,7 +216,6 @@ fn evaluate_semver_seed(
     policy: VersionPolicy,
     now: SystemTime,
     min_release_age: Duration,
-    execution_eligibility: ExecutionEligibility,
 ) -> PlanItem {
     let Ok(installed_version) = parse_semver(seed.installed.installed_version.as_str()) else {
         return PlanItem::ResolverError {
@@ -342,12 +325,7 @@ fn evaluate_semver_seed(
         };
     };
 
-    let candidate = candidate_from_seed(
-        &seed,
-        policy_candidate.version,
-        execution_eligibility,
-        policy_candidate.warnings,
-    );
+    let candidate = candidate_from_seed(&seed, policy_candidate.version, policy_candidate.warnings);
 
     let Some((_, age_candidate)) = newest_age_eligible else {
         return PlanItem::Delayed {
@@ -359,12 +337,7 @@ fn evaluate_semver_seed(
 
     PlanItem::Update {
         id,
-        candidate: candidate_from_seed(
-            &seed,
-            age_candidate.version,
-            execution_eligibility,
-            age_candidate.warnings,
-        ),
+        candidate: candidate_from_seed(&seed, age_candidate.version, age_candidate.warnings),
     }
 }
 
@@ -377,7 +350,6 @@ fn evaluate_pep440_seed(
     policy: VersionPolicy,
     now: SystemTime,
     min_release_age: Duration,
-    execution_eligibility: ExecutionEligibility,
 ) -> PlanItem {
     let Ok(installed_version) = parse_pep440(seed.installed.installed_version.as_str()) else {
         return PlanItem::ResolverError {
@@ -487,12 +459,7 @@ fn evaluate_pep440_seed(
         };
     };
 
-    let candidate = candidate_from_seed(
-        &seed,
-        policy_candidate.version,
-        execution_eligibility,
-        policy_candidate.warnings,
-    );
+    let candidate = candidate_from_seed(&seed, policy_candidate.version, policy_candidate.warnings);
 
     let Some((_, age_candidate)) = newest_age_eligible else {
         return PlanItem::Delayed {
@@ -504,19 +471,13 @@ fn evaluate_pep440_seed(
 
     PlanItem::Update {
         id,
-        candidate: candidate_from_seed(
-            &seed,
-            age_candidate.version,
-            execution_eligibility,
-            age_candidate.warnings,
-        ),
+        candidate: candidate_from_seed(&seed, age_candidate.version, age_candidate.warnings),
     }
 }
 
 fn candidate_from_seed(
     seed: &UpdateSeed,
     target_version: VersionText,
-    execution_eligibility: ExecutionEligibility,
     policy_warnings: Vec<PolicyWarning>,
 ) -> UpdateCandidate {
     UpdateCandidate::new(
@@ -525,7 +486,7 @@ fn candidate_from_seed(
         seed.installed.installed_version.clone(),
         target_version,
         seed.version_scheme,
-        execution_eligibility,
+        seed.execution_eligibility,
     )
     .with_execution_target_kind(seed.execution_target_kind)
     .with_policy_warnings(policy_warnings)
