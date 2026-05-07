@@ -2,11 +2,9 @@ use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
-    DomainError, ManagerId, ManagerUpdateInput, PackageName, PinChange, PlanItem, PlanItemId,
+    DomainError, ManagerId, ManagerUpdateInput, PinChange, PinTarget, PlanItem, PlanItemId,
     PlanSelection, SelectedItem, UpdatePlan, UpdateSeed, VersionPolicy,
 };
-
-pub const PIN_ALL: &str = "*";
 
 use crate::evaluate_seed;
 
@@ -89,15 +87,16 @@ fn plan_item_id(manager_id: &ManagerId, package_name: &str) -> Result<PlanItemId
 /// Returns an error if the generated selection does not reference the plan.
 pub fn default_batch_selection(
     plan: &UpdatePlan,
-    pinned: &BTreeSet<PackageName>,
+    pinned: &BTreeSet<PinTarget>,
 ) -> Result<PlanSelection, DomainError> {
-    let pin_all = pinned.iter().any(|pin| pin.as_str() == PIN_ALL);
+    let pin_all = pinned.contains(&PinTarget::All);
     let selected_items = plan
         .items
         .iter()
         .filter_map(|item| match item {
             PlanItem::Update { id, candidate }
-                if !pin_all && !pinned.contains(&candidate.package_name) =>
+                if !pin_all
+                    && !pinned.contains(&PinTarget::Package(candidate.package_name.clone())) =>
             {
                 Some(SelectedItem::new(id.clone(), false))
             }

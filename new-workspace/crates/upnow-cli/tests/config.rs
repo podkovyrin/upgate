@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use upnow_cli::config::{ConfigError, ManagerMode, PIN_ALL, UpnowConfig};
-use upnow_domain::{PackageName, VersionPolicy};
+use upnow_cli::config::{ConfigError, ManagerMode, UpnowConfig};
+use upnow_domain::{PackageName, PinTarget, VersionPolicy};
 use upnow_managers::adapter::ManagerDefaultMode;
 use upnow_managers::registry::available_managers;
 
@@ -112,14 +112,10 @@ pinned = ["aom", "*"]
     assert_eq!(brew.mode, ManagerMode::Plan);
     assert_eq!(brew.version_policy, VersionPolicy::Stable);
     assert!(brew.no_update);
-    assert!(
-        brew.pinned
-            .contains(&PackageName::new("aom").expect("valid package name"))
-    );
-    assert!(
-        brew.pinned
-            .contains(&PackageName::new(PIN_ALL).expect("valid package name"))
-    );
+    assert!(brew.pinned.contains(&PinTarget::Package(
+        PackageName::new("aom").expect("valid package name")
+    )));
+    assert!(brew.pinned.contains(&PinTarget::All));
 }
 
 #[test]
@@ -306,8 +302,8 @@ pinned = ["aom"]
     );
     let mut config = UpnowConfig::load_from_path(&path).expect("config should load");
     let pins = BTreeSet::from([
-        PackageName::new("typescript").expect("valid package"),
-        PackageName::new("vite").expect("valid package"),
+        PinTarget::Package(PackageName::new("typescript").expect("valid package")),
+        PinTarget::Package(PackageName::new("vite").expect("valid package")),
     ]);
 
     config
@@ -330,6 +326,24 @@ pinned = ["aom"]
         .map(|value| value.as_str().expect("pin should be string"))
         .collect::<Vec<_>>();
     assert_eq!(npm_pins, vec!["typescript", "vite"]);
+}
+
+#[test]
+fn pin_persistence_writes_global_pin_target() {
+    let path = temp_config_path("persist-global-pin");
+    let mut config = UpnowConfig::default();
+
+    config
+        .set_manager_pins("npm", BTreeSet::from([PinTarget::All]))
+        .expect("pins should be set");
+    config
+        .persist_manager_pins_to_path("npm", &path)
+        .expect("pins should persist");
+
+    let value: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&path).expect("config should be readable"))
+            .expect("persisted TOML should parse");
+    assert_eq!(value["npm"]["pinned"][0].as_str(), Some("*"));
 }
 
 #[test]

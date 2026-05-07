@@ -8,11 +8,9 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use toml_edit::{Array, DocumentMut, Item, Table, Value};
-use upnow_domain::{ManagerId, PackageName, VersionPolicy};
+use upnow_domain::{ManagerId, PackageName, PinTarget, VersionPolicy};
 use upnow_managers::adapter::ManagerDefaultMode;
 use upnow_managers::registry::manager_by_id;
-
-pub const PIN_ALL: &str = "*";
 
 const CONFIG_RELATIVE_PATH: &str = "upnow/config.toml";
 const DEFAULT_SCAN_OLD_AGE_THRESHOLD: &str = "365d";
@@ -211,7 +209,7 @@ pub struct ManagerConfig {
     pub min_release_age: Duration,
     pub version_policy: VersionPolicy,
     pub no_update: bool,
-    pub pinned: BTreeSet<PackageName>,
+    pub pinned: BTreeSet<PinTarget>,
 }
 
 impl UpnowConfig {
@@ -313,10 +311,7 @@ impl UpnowConfig {
         let mut pinned = BTreeSet::new();
         if let Some(section) = section {
             for pin in &section.pinned {
-                pinned.insert(
-                    PackageName::new(pin.clone())
-                        .map_err(|_| ConfigError::InvalidPinnedName(pin.clone()))?,
-                );
+                pinned.insert(parse_pin_target(pin)?);
             }
         }
 
@@ -450,7 +445,7 @@ impl UpnowConfig {
     pub fn set_manager_pins(
         &mut self,
         manager_id: &str,
-        pins: BTreeSet<PackageName>,
+        pins: BTreeSet<PinTarget>,
     ) -> Result<(), ConfigError> {
         let manager_id_value = ManagerId::new(manager_id.to_owned())
             .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
@@ -462,7 +457,10 @@ impl UpnowConfig {
             .or_default()
             .pinned = pins
             .into_iter()
-            .map(|pin| pin.as_str().to_owned())
+            .map(|pin| match pin {
+                PinTarget::Package(package_name) => package_name.as_str().to_owned(),
+                PinTarget::All => "*".to_owned(),
+            })
             .collect();
         Ok(())
     }
@@ -579,6 +577,17 @@ fn parse_optional_policy(
     raw: Option<&str>,
 ) -> Result<VersionPolicy, ConfigError> {
     raw.map_or(Ok(VersionPolicy::None), |raw| parse_policy(manager_id, raw))
+}
+
+fn parse_pin_target(raw: &str) -> Result<PinTarget, ConfigError> {
+    if raw == "*" {
+        return Ok(PinTarget::All);
+    }
+
+    Ok(PinTarget::Package(
+        PackageName::new(raw.to_owned())
+            .map_err(|_| ConfigError::InvalidPinnedName(raw.to_owned()))?,
+    ))
 }
 
 fn parse_policy(manager_id: &str, raw: &str) -> Result<VersionPolicy, ConfigError> {

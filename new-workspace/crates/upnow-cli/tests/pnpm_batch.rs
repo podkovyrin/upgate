@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime};
 
 use upnow_cli::config::UpnowConfig;
 use upnow_cli::{BatchCommand, run_batch};
-use upnow_domain::{PackageName, VersionPolicy};
+use upnow_domain::{PackageName, PinTarget, VersionPolicy};
 use upnow_infra::{Clock, CommandOutput, ProcessRunner};
 
 fn fixtures_dir() -> PathBuf {
@@ -95,7 +95,9 @@ fn apply_skips_pinned_packages_and_runs_exact_pnpm_command() {
         Ok(CommandOutput::from_parts(success_status(), "", "")),
     ]);
     let mut config = UpnowConfig::default();
-    let pins = BTreeSet::from([PackageName::new("pinned-pkg").expect("valid package")]);
+    let pins = BTreeSet::from([PinTarget::Package(
+        PackageName::new("pinned-pkg").expect("valid package"),
+    )]);
     config
         .set_manager_pins("pnpm", pins)
         .expect("pnpm pins can be set");
@@ -175,10 +177,7 @@ fn apply_honors_wildcard_pin() {
     ]);
     let mut config = UpnowConfig::default();
     config
-        .set_manager_pins(
-            "pnpm",
-            BTreeSet::from([PackageName::new("*").expect("wildcard pin should be valid")]),
-        )
+        .set_manager_pins("pnpm", BTreeSet::from([PinTarget::All]))
         .expect("pnpm pins can be set");
 
     let output = run_batch(

@@ -27,5 +27,5 @@ pub use release::{
 pub use scan::{
     ManagerRuleReason, ManagerScanInput, ScanIssue, ScanItem, ScanReport, UnsupportedReason,
 };
-pub use selection::{PinChange, PinOperation, PlanSelection, SelectedItem};
+pub use selection::{PinChange, PinOperation, PinTarget, PlanSelection, SelectedItem};
 pub use version::{VersionScheme, VersionText};

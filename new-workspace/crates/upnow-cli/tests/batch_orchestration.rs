@@ -7,7 +7,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use upnow_cli::config::UpnowConfig;
 use upnow_cli::{BatchCommand, run_batch, run_batch_with_sources};
-use upnow_domain::{PackageName, VersionPolicy};
+use upnow_domain::{PackageName, PinTarget, VersionPolicy};
 use upnow_infra::{
     Clock, CommandOutput, Env, HttpBytesResponse, HttpClient, HttpResponse, ProcessRunner,
 };
@@ -178,7 +178,9 @@ fn selected_npm_apply_honors_pins() {
     config
         .set_manager_pins(
             "npm",
-            BTreeSet::from([PackageName::new("pinned-pkg").expect("valid package")]),
+            BTreeSet::from([PinTarget::Package(
+                PackageName::new("pinned-pkg").expect("valid package"),
+            )]),
         )
         .expect("npm pins can be set");
 
@@ -1291,7 +1293,9 @@ fn selected_bun_apply_runs_exact_update_and_honors_pins() {
     config
         .set_manager_pins(
             "bun",
-            BTreeSet::from([PackageName::new("pinned-pkg").expect("valid package")]),
+            BTreeSet::from([PinTarget::Package(
+                PackageName::new("pinned-pkg").expect("valid package"),
+            )]),
         )
         .expect("bun pins can be set");
 
@@ -2124,7 +2128,9 @@ fn selected_uv_apply_honors_pins_without_running_them() {
     config
         .set_manager_pins(
             "uv",
-            BTreeSet::from([PackageName::new("pinned-pkg").expect("valid package")]),
+            BTreeSet::from([PinTarget::Package(
+                PackageName::new("pinned-pkg").expect("valid package"),
+            )]),
         )
         .expect("uv pins can be set");
 
@@ -2384,7 +2390,9 @@ fn selected_brew_apply_groups_formula_updates_without_indices() {
     config
         .set_manager_pins(
             "brew",
-            BTreeSet::from([PackageName::new("pinned-pkg").expect("valid package")]),
+            BTreeSet::from([PinTarget::Package(
+                PackageName::new("pinned-pkg").expect("valid package"),
+            )]),
         )
         .expect("brew pins can be set");
 
@@ -2425,7 +2433,9 @@ fn selected_brew_apply_with_policy_still_uses_native_selected_update() {
     config
         .set_manager_pins(
             "brew",
-            BTreeSet::from([PackageName::new("pinned-pkg").expect("valid package")]),
+            BTreeSet::from([PinTarget::Package(
+                PackageName::new("pinned-pkg").expect("valid package"),
+            )]),
         )
         .expect("brew pins can be set");
 
@@ -2464,8 +2474,8 @@ fn selected_brew_apply_honors_config_pins() {
         .set_manager_pins(
             "brew",
             BTreeSet::from([
-                PackageName::new("alpha-ready").expect("valid package"),
-                PackageName::new("pinned-pkg").expect("valid package"),
+                PinTarget::Package(PackageName::new("alpha-ready").expect("valid package")),
+                PinTarget::Package(PackageName::new("pinned-pkg").expect("valid package")),
             ]),
         )
         .expect("brew pins can be set");

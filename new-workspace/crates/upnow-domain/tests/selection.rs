@@ -1,7 +1,7 @@
 use upnow_domain::{
     DelayReason, DomainError, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata,
-    PackageName, PinChange, PinOperation, PlanItem, PlanItemId, PlanSelection, SelectedItem,
-    ToolId, ToolName, UpdateCandidate, UpdatePlan, VersionScheme, VersionText,
+    PackageName, PinChange, PinOperation, PinTarget, PlanItem, PlanItemId, PlanSelection,
+    SelectedItem, ToolId, ToolName, UpdateCandidate, UpdatePlan, VersionScheme, VersionText,
 };
 
 fn plan_item_id(value: &str) -> PlanItemId {
@@ -61,11 +61,11 @@ fn plan_selection_accepts_selected_items_and_pin_changes() {
         vec![SelectedItem::new(plan_item_id("alpha-ready"), true)],
         vec![
             PinChange::new(
-                PackageName::new("fresh-tool").expect("valid package name"),
+                PinTarget::Package(PackageName::new("fresh-tool").expect("valid package name")),
                 PinOperation::Pin,
             ),
             PinChange::new(
-                PackageName::new("alpha-ready").expect("valid package name"),
+                PinTarget::Package(PackageName::new("alpha-ready").expect("valid package name")),
                 PinOperation::Unpin,
             ),
         ],
@@ -78,6 +78,19 @@ fn plan_selection_accepts_selected_items_and_pin_changes() {
     );
     assert!(selection.selected_items[0].forced);
     assert_eq!(selection.pin_changes.len(), 2);
+}
+
+#[test]
+fn plan_selection_accepts_global_pin_changes() {
+    let plan = plan();
+    let selection = PlanSelection::new(
+        &plan,
+        Vec::new(),
+        vec![PinChange::new(PinTarget::All, PinOperation::Unpin)],
+    )
+    .expect("global pin changes should not be validated as packages");
+
+    assert_eq!(selection.pin_changes[0].target, PinTarget::All);
 }
 
 #[test]
@@ -103,7 +116,7 @@ fn plan_selection_rejects_pin_changes_for_unknown_packages() {
         &plan,
         Vec::new(),
         vec![PinChange::new(
-            PackageName::new("not-in-plan").expect("valid package name"),
+            PinTarget::Package(PackageName::new("not-in-plan").expect("valid package name")),
             PinOperation::Pin,
         )],
     )

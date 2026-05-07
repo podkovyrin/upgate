@@ -18,9 +18,12 @@ impl PlanSelection {
         pin_changes: Vec<PinChange>,
     ) -> Result<Self, DomainError> {
         for pin_change in &pin_changes {
-            if !plan.contains_package(&pin_change.package_name) {
+            let PinTarget::Package(package_name) = &pin_change.target else {
+                continue;
+            };
+            if !plan.contains_package(package_name) {
                 return Err(DomainError::UnknownPinTarget(
-                    pin_change.package_name.as_str().to_owned(),
+                    package_name.as_str().to_owned(),
                 ));
             }
         }
@@ -56,19 +59,22 @@ impl SelectedItem {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PinTarget {
+    Package(PackageName),
+    All,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PinChange {
-    pub package_name: PackageName,
+    pub target: PinTarget,
     pub operation: PinOperation,
 }
 
 impl PinChange {
     #[must_use]
-    pub fn new(package_name: PackageName, operation: PinOperation) -> Self {
-        Self {
-            package_name,
-            operation,
-        }
+    pub fn new(target: PinTarget, operation: PinOperation) -> Self {
+        Self { target, operation }
     }
 }
 
