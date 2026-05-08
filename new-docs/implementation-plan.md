@@ -491,16 +491,17 @@ The shared domain, planning, execution, adapter, and CLI boundaries can represen
 - No planner code dispatches hidden uv, Mise, or Brew one-off branches when target-selection mode would express the rule.
 - Forced/bypassed support exists only where a typed exact-target or resolver-native bypass command exists.
 
-### Suggested Order
-1. Continue uv.
-2. Continue Mise.
-3. Finish with Brew.
+### Completed Manager Migration Status
+All current managers have migrated batch scan/plan/apply coverage in the new architecture. Brew, uv, and Mise use the typed manager-selected target model instead of planner-selectable timeline workarounds. Manager-specific parsing, requests, command construction, policy support checks, min-age resolver arguments, and workarounds live inside concrete managers.
 
-### Remaining Modules/Files Likely Changed
-- `<new-workspace>/crates/upnow-managers/src/uv.rs`
-- `<new-workspace>/crates/upnow-managers/src/mise.rs`
-- `<new-workspace>/crates/upnow-managers/src/brew.rs`
-- `<new-workspace>/crates/upnow-release/src/...` if release sources are split out
+### Completed Refactorings After Manager-Selected Targets
+- Managers now receive resolved `ManagerConfig` at construction and use it internally instead of receiving loose policy/min-age/`no_update` settings through adapter methods.
+- npm-family and Python-family manager duplication is intentional when the logic belongs to independent concrete managers.
+- Per-item execution support is represented by `ExecutionEligibility`; manager-level capabilities only advertise global native or resolver-native shortcuts.
+- Manager-private execution command types were removed; managers now build shared `ExecutionCommand` values from `ResolvedExecutionPlan`.
+- Interactive selected targets are typed as recommended, forced candidate, or alternate exact target.
+- Pins are typed as package pins or manager-wide pins; persisted `*` represents the manager-wide pin.
+- Broad fixture-shape tests were removed in favor of stable-boundary parser, manager adapter, planner, execution, config, and CLI tests.
 
 ### Tests Required
 For each manager:
@@ -534,7 +535,7 @@ Additional required tests for uv, Mise, and Brew:
 Complex managers may tempt opaque metadata strings. Use manager-specific typed metadata instead.
 
 ### Stop Conditions
-Stop each manager migration when it has scan/plan/apply batch behavior and no dependency on old architecture.
+Stop each manager migration when it has scan/plan/apply batch behavior and no dependency on old architecture. This condition is met for current managers.
 
 ### Review Checklist
 - Manager-specific workaround is named and isolated.
@@ -547,10 +548,10 @@ Stop each manager migration when it has scan/plan/apply batch behavior and no de
 ## Phase 10: Interactive Selection Domain
 
 ### Goal
-Add typed interactive selection behavior without rendering.
+Add typed interactive selection behavior and view-model state without rendering.
 
 ### Behavior Delivered
-Given an `UpdatePlan`, selection reducers can select, deselect, pin, unpin, choose alternate versions, and choose forced candidates.
+Given an `UpdatePlan`, selection reducers can select, deselect, pin, unpin, choose typed selected targets, and return a typed `PlanSelection`. Existing typed domain pieces include `SelectedTarget` and package/global `PinTarget`; Phase 10 should build reducer behavior around those types rather than remodel execution.
 
 ### Modules/Files Likely Created Or Changed
 - `<new-workspace>/crates/upnow-domain/src/selection.rs`
@@ -564,7 +565,8 @@ Given an `UpdatePlan`, selection reducers can select, deselect, pin, unpin, choo
 - Global pin removal behavior.
 - Forced candidate does not mutate pins.
 - Alternate exact target marks selection as exact-required.
-- Managers without exact execution or resolver-native bypass expose no forced candidates.
+- Managers without exact execution expose no forced candidates.
+- Alternate version choices are sourced from existing typed plan data or the phase stops for an explicit architecture decision.
 
 ### What Must Not Be Included Yet
 - No terminal drawing.
@@ -572,10 +574,10 @@ Given an `UpdatePlan`, selection reducers can select, deselect, pin, unpin, choo
 - No execution progress UI.
 
 ### Architectural Risks
-Using row indices as domain identity. Reducers should use stable typed ids.
+Using row indices as domain identity. Reducers should use stable typed ids. Another risk is inventing an alternate-version source that is not already represented by the typed plan.
 
 ### Stop Conditions
-Stop when selection behavior is fully testable without a terminal.
+Stop when selection behavior is fully testable without a terminal. Stop earlier if alternate exact selection needs data that the current typed plan does not expose.
 
 ### Review Checklist
 - Selection returns typed `PlanSelection`.
@@ -664,20 +666,21 @@ Stop when interactive apply shares batch planning/execution core and TUI state i
 ## Phase 13: Policy Config Finalization
 
 ### Goal
-Finalize external config behavior for the collapsed no-policy mode.
+Record completed external config behavior for the collapsed no-policy mode.
 
 ### Behavior Delivered
-Config supports one no-policy behavior internally.
+Config supports one no-policy behavior internally. Missing policy defaults to no policy, `stable` and `same-track` parse, removed `any` is rejected, and unsupported policies are reported per manager before discovery.
 
-### Modules/Files Likely Created Or Changed
+### Modules/Files Changed
 - `<new-workspace>/crates/upnow-cli/src/config.rs`
 - `<new-workspace>/crates/upnow-domain/src/policy.rs`
 - `<new-workspace>/crates/upnow-cli/tests/config.rs`
 
-### Tests Required
+### Tests Added
 - Missing policy defaults to no policy.
 - `stable` parses.
 - `same-track` parses.
+- `any` is rejected.
 - Unsupported policy per manager errors clearly.
 
 ### What Must Not Be Included Yet
@@ -688,7 +691,7 @@ Config supports one no-policy behavior internally.
 Breaking existing configs unintentionally.
 
 ### Stop Conditions
-Stop when no duplicate no-policy concepts exist and migration behavior is explicit.
+Stop when no duplicate no-policy concepts exist and migration behavior is explicit. This condition is met.
 
 ### Review Checklist
 - One internal no-policy enum variant.

@@ -7,7 +7,7 @@ Rebuild `upnow` around `apply` as the central feature. `apply` has two modes: in
 The old architecture mixes manager behavior, planning, terminal rendering, TUI state, config mutation, and execution. Domain decisions are encoded in strings, display notes, indices, and fields such as `apply_spec_base`. Interactive selection mutates presentation-derived structures instead of a typed plan. Manager files emit outcomes directly and contain workflow orchestration that should be shared.
 
 ## Approved Architecture
-Use a typed layered architecture with concrete manager adapters. Batch and TUI modes share the same planning and execution core. Managers stay manager-specific but are isolated behind narrow boundaries. Do not build a framework for hypothetical future managers.
+Use a typed layered architecture with concrete manager adapters. Batch and TUI modes share the same planning and execution core. Managers stay manager-specific but are isolated behind narrow boundaries. Managers are independent units: parsing, requests, manager-specific command construction, policy support checks, and workarounds belong inside the concrete manager, even when managers from the same ecosystem duplicate code. Do not build a framework for hypothetical future managers.
 
 ## Core Domain Concepts
 - `ManagerId`, `ToolId`, `PackageName`, `ToolName`
@@ -22,7 +22,9 @@ Use a typed layered architecture with concrete manager adapters. Batch and TUI m
 - `VersionPolicy`: one no-policy mode, `stable`, `same-track`
 - `PlanItem`: update, current, delayed, blocked, skipped, resolver error
 - `UpdatePlan`: immutable typed plan per manager
-- `PlanSelection`: selected candidates and pin changes
+- `PlanSelection`: selected targets and pin changes
+- `SelectedTarget`: recommended, forced candidate, or alternate exact target
+- `PinTarget`: package pin or manager-wide pin
 - `ExecutionPlan`: exact, native, grouped-native, or resolver-native commands derived from selected plan items
 
 ## Command Workflows
@@ -39,8 +41,8 @@ Build the same `UpdatePlan` as `plan` -> apply existing pins -> create default `
 Build the same `UpdatePlan` -> TUI receives presentation view model -> user confirms typed `PlanSelection` -> persist pin changes after confirmation and before execution -> derive `ExecutionPlan` -> progress TUI executes and reports results.
 
 ## Module Boundaries
-- `app`: CLI, orchestration, exit codes.
-- `config`: TOML load/save, overrides, pin persistence, manager policy resolution.
+- `app`: CLI, orchestration, exit codes, manager construction/ordering.
+- `config`: TOML load/save, overrides, pin persistence, manager mode and settings resolution.
 - `domain`: strict types, policy model, plan model, scan model, error model.
 - `planning`: shared planning logic from discovered target facts, release timelines, manager-selected target evidence, and policy/age settings.
 - `execution`: selected plan to commands/results.
@@ -51,14 +53,16 @@ Build the same `UpdatePlan` -> TUI receives presentation view model -> user conf
 - `infra`: process runner, HTTP client, clock, env, parallelism.
 
 ## Data Flow
-Manager adapters produce typed update facts. A fact is either planner-selectable, where shared planning may choose from a release timeline, or manager-selected, where the manager has already selected the target and shared planning may only gate that target. Planning evaluates typed facts and returns typed outcomes. Presentation renders outcomes but does not create them. Selection modifies a typed plan selection. Execution consumes typed selections and manager execution capabilities.
+Configured manager adapters produce typed update facts. A fact is either planner-selectable, where shared planning may choose from a release timeline, or manager-selected, where the manager has already selected the target and shared planning may only gate that target. Planning evaluates typed facts and returns typed outcomes. Presentation renders outcomes but does not create them. Selection modifies a typed plan selection. Execution resolves typed selections into command intents, and managers turn those intents into concrete commands.
 
 Managers may use min-release-age when it is an input to a native resolver command, such as `uv --exclude-newer` or `mise --before`. Managers must not receive `now` or compare timestamps against policy age. Clock-aware age decisions belong to planning.
 
 Planner-selectable managers provide a release timeline from which planning can select the newest policy/age-eligible candidate. Manager-selected target managers provide the selected target plus target evidence. For manager-selected targets, planning must not replace the selected target with another version from advisory metadata.
 
 ## Manager Abstraction
-A `ManagerAdapter` trait is justified because there are multiple real managers. It should expose identity, defaults, capabilities, installed discovery, update discovery, target/release evidence lookup requests, and execution command construction. It must not emit outcomes, parse TUI choices, persist pins, compare release age against `now`, or decide batch vs interactive behavior.
+A `ManagerAdapter` trait is justified because there are multiple real managers. It should expose identity, capabilities, installed discovery, update discovery, target/release evidence lookup requests, and execution command construction. Adapters receive resolved manager config at construction and may use it internally for manager-specific behavior such as native resolver arguments and `brew.no_update`. They must not emit outcomes, parse TUI choices, persist pins, compare release age against `now`, or decide batch vs interactive behavior.
+
+Do not introduce shared npm-family, Python-family, or other ecosystem helper layers only to remove duplication. Shared code is acceptable only when it is needed by the current architecture and does not hide manager-specific ownership or command semantics.
 
 Manager behavior to preserve includes:
 - Brew: `brew update`, Homebrew-selected targets from outdated JSON, info JSON, tap git/GitHub commit target-age evidence, grouped formula/cask upgrades, `no_update`.
@@ -83,17 +87,19 @@ Execution planning must model the command shape, not just the displayed target. 
 
 Display plan and apply command shape may differ when the manager resolver is authoritative. This difference must be typed in `ExecutionPlan`; it must not be hidden in manager metadata or string fields.
 
+Per-item `ExecutionEligibility` owns exact/native/resolver eligibility. Manager-level capabilities only advertise global shortcuts such as native-global or resolver-native-global updates. Managers build shared `ExecutionCommand` values from resolved execution intents; there must not be a second manager-private execution command type.
+
 ## TUI Boundary
-TUI state is presentation state only: tabs, cursor, visible rows, selected ids, modal state. The TUI receives a view model derived from `UpdatePlan` and returns `PlanSelection`. It must not parse display notes, mutate plan strings, own apply closures, or persist pins.
+TUI state is presentation state only: tabs, cursor, visible rows, selected ids, modal state. The TUI receives a view model derived from `UpdatePlan` and returns `PlanSelection` with typed `SelectedTarget` and `PinTarget` values. It must not parse display notes, mutate plan strings, own apply closures, or persist pins.
 
 ## Config Boundary
-Config resolves manager mode, min release age, version policy, pins, Brew `no_update`, and scan old-age threshold before planning. Interactive pin persistence happens only after confirmed apply selection and before execution. CLI manager selection may override manager mode as current behavior does.
+Config resolves manager mode, min release age, version policy, pins, Brew `no_update`, and scan old-age threshold before planning. Resolved manager config is passed into concrete manager adapters instead of being threaded through adapter methods as loose settings. Package pins and manager-wide pins are typed; persisted `*` means the manager-wide pin. Interactive pin persistence happens only after confirmed apply selection and before execution. CLI manager selection may override manager mode as current behavior does.
 
 ## Error Handling
 Use typed errors below `app`: manager unavailable, discovery failed, release lookup failed, missing metadata, parse failed, unsupported policy, execution failed, interrupted. Planning supports item-level and manager-level errors. Execution errors attach to selected items. Signal interruption maps to exit `130`.
 
 ## Testing Strategy
-Use fixture tests for every manager command and HTTP payload parser. Use fake clock/process/HTTP clients for planner, release lookup, and execution command construction. Test version policy across SemVer, PEP 440, Brew-native versions, and same-track fallback. Test TUI reducers separately from rendering. Add batch renderer golden tests and integration tests with fake manager adapters.
+Use fixture-backed parser tests for manager command and HTTP payload shapes, plus stable-boundary tests for manager adapters, CLI behavior, planner outcomes, config persistence, and execution command construction. Do not keep broad fixture-shape tests that only lock incidental file layout. Use fake clock/process/HTTP clients for planner, release lookup, and execution command construction. Test version policy across SemVer, PEP 440, Brew-native versions, and same-track fallback. Test TUI reducers separately from rendering. Add batch renderer golden tests and integration tests with fake manager adapters.
 
 ## Reusable Old Code
 Reuse with cleanup: version classification and candidate evaluation, SemVer/PEP 440 timestamp parsing, manager parsers, config load/overrides/pin persistence, mutation-skip process runner behavior, HTTP defaults, parallel order-preserving helper, TUI visual components, terminal outcome formatting.
@@ -102,7 +108,7 @@ Reuse with cleanup: version classification and candidate evaluation, SemVer/PEP 
 Redesign `ManagerCtx`, `ManagerPlugin::scan/apply/interactive_apply`, `run_plan_apply_framework`, `PlannedUpdate`, `ApplyCandidate`, string display notes as metadata, `apply_spec_base`, outcome emission during planning, closure-owned interactive apply plans, `chosen_versions: Vec<Option<usize>>`, and manager soft-fail helpers that emit UI output.
 
 ## Rejected Approaches
-Reject preserving current wiring with typed wrappers; coupling remains. Reject a generic workflow engine; current managers are too irregular. Reject stringly typed plans and display-note parsing. Reject making the TUI authoritative for domain decisions. Reject always using exact per-item commands; native shortcuts are needed for speed and default behavior when semantically safe. Reject passing `now` into manager discovery so managers can do age planning. Reject trimming release timelines in manager code to steer generic planning. Reject hidden one-off uv, Mise, or Brew branches instead of a typed manager-selected target model.
+Reject preserving current wiring with typed wrappers; coupling remains. Reject a generic workflow engine; current managers are too irregular. Reject stringly typed plans and display-note parsing. Reject making the TUI authoritative for domain decisions. Reject always using exact per-item commands; native shortcuts are needed for speed and default behavior when semantically safe. Reject passing `now` into manager discovery so managers can do age planning. Reject trimming release timelines in manager code to steer generic planning. Reject hidden one-off uv, Mise, or Brew branches instead of a typed manager-selected target model. Reject shared ecosystem helper layers whose only current reason is reducing duplication between independent managers. Reject duplicate manager-private execution command types. Reject boolean forced-selection state in favor of typed selected targets. Reject broad fixture-shape tests that lock incidental structure instead of product behavior.
 
 ## Resolved Questions
 - `scan` behavior stays as-is.
@@ -113,6 +119,8 @@ Reject preserving current wiring with typed wrappers; coupling remains. Reject a
 - Release metadata failure blocks the item.
 - `any` policy is removed entirely and should be rejected as any other invalid policy.
 - Manager-selected targets are a first-class planning input. uv, Mise, and Brew must not be forced through planner-selectable timeline semantics.
+- Current migrated managers support batch scan/plan/apply through the new architecture.
+- Forced resolver-native age bypass is not implemented until a manager has explicit typed bypass command support.
 
 ## Constraints For Future Codex Agents
-Do not treat old `/src` architecture as a refactor target. Preserve observed behavior, commands, parsing rules, URLs, config behavior, and TUI UX where explicitly useful. Do not preserve accidental abstractions. Do not introduce traits without multiple real implementations. Prefer simple typed structs/enums over framework-like design. Keep manager-specific workarounds isolated and named.
+Do not treat old `/src` architecture as a refactor target. Preserve observed behavior, commands, parsing rules, URLs, config behavior, and TUI UX where explicitly useful. Do not preserve accidental abstractions. Do not introduce traits without multiple real implementations. Prefer simple typed structs/enums over framework-like design. Keep manager-specific workarounds isolated and named. Stop before moving manager semantics into app/CLI wiring or into shared family abstractions.
