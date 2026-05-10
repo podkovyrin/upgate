@@ -11,3 +11,4 @@ workspace = true
 [dependencies]
 upnow-domain = { path = "../upnow-domain" }
 upnow-execution = { path = "../upnow-execution" }
+upnow-planning = { path = "../upnow-planning" }

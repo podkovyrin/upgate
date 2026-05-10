@@ -1,11 +1,10 @@
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use upnow_domain::{
     DelayReason, ExecutionEligibility, ManagerCapabilities, ManagerConfig, ManagerId, ManagerMode,
     PackageName, PlanItem, PlanItemId, PlanSelection, SelectedItem, ToolId, UpdateCandidate,
-    UpdatePlan, VersionPolicy, VersionScheme, VersionText,
+    UpdatePlan, UpdateSelectionPolicy, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::resolve_selection_for_execution;
 use upnow_infra::{CommandOutput, ProcessRunner};
@@ -30,7 +29,7 @@ fn npm_manager(min_release_age: Duration, version_policy: VersionPolicy) -> NpmM
         min_release_age,
         version_policy,
         no_update: false,
-        pinned: BTreeSet::new(),
+        selection: UpdateSelectionPolicy::default(),
     })
 }
 
@@ -297,7 +296,8 @@ fn selection_for_plan(plan: &UpdatePlan, forced: bool) -> PlanSelection {
     } else {
         SelectedItem::recommended(plan_item_id())
     };
-    PlanSelection::new(plan, vec![selected], Vec::new()).expect("valid selection")
+    PlanSelection::new(plan, vec![selected], UpdateSelectionPolicy::default())
+        .expect("valid selection")
 }
 
 fn resolve(

@@ -1,8 +1,7 @@
-use std::collections::BTreeSet;
-
 use upnow_domain::{
-    ExecutionEligibility, ManagerId, PackageName, PinTarget, PlanItem, PlanItemId, SelectedTarget,
-    ToolId, UpdateCandidate, UpdatePlan, VersionScheme, VersionText,
+    ExecutionEligibility, ManagerId, PackageName, PlanItem, PlanItemId, SelectedTarget, ToolId,
+    UpdateCandidate, UpdatePlan, UpdateSelectionMode, UpdateSelectionPolicy, VersionScheme,
+    VersionText,
 };
 use upnow_planning::default_batch_selection;
 
@@ -43,15 +42,18 @@ fn plan() -> UpdatePlan {
 }
 
 #[test]
-fn default_batch_selection_excludes_package_pins() {
+fn default_batch_selection_include_mode_excludes_exceptions() {
     let plan = plan();
-    let selection = default_batch_selection(
-        &plan,
-        &BTreeSet::from([PinTarget::Package(
+    let policy = UpdateSelectionPolicy {
+        mode: UpdateSelectionMode::Include,
+        except: [
             PackageName::new("pinned-pkg").expect("valid package name"),
-        )]),
-    )
-    .expect("selection should be valid");
+            PackageName::new("stale-pkg").expect("valid package name"),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let selection = default_batch_selection(&plan, &policy).expect("selection should be valid");
 
     assert_eq!(selection.selected_items.len(), 1);
     assert_eq!(
@@ -65,10 +67,19 @@ fn default_batch_selection_excludes_package_pins() {
 }
 
 #[test]
-fn default_batch_selection_excludes_all_updates_when_globally_pinned() {
+fn default_batch_selection_skip_mode_selects_only_exceptions() {
     let plan = plan();
-    let selection = default_batch_selection(&plan, &BTreeSet::from([PinTarget::All]))
-        .expect("selection should be valid");
+    let policy = UpdateSelectionPolicy {
+        mode: UpdateSelectionMode::Skip,
+        except: [PackageName::new("pinned-pkg").expect("valid package name")]
+            .into_iter()
+            .collect(),
+    };
+    let selection = default_batch_selection(&plan, &policy).expect("selection should be valid");
 
-    assert!(selection.selected_items.is_empty());
+    assert_eq!(selection.selected_items.len(), 1);
+    assert_eq!(
+        selection.selected_items[0].plan_item_id.as_str(),
+        "pnpm:pinned-pkg"
+    );
 }

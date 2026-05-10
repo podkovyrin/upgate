@@ -66,7 +66,7 @@ No new command behavior. Fixture files and tests define expected parsing/config 
   - Gem list/outdated and RubyGems payloads.
   - Dotnet tool list and NuGet registration payloads.
   - Mise dry-run, registry, ls-remote, versions-host payloads.
-- Config fixture tests for policy, pins, mode, `no_update`, and scan age threshold.
+- Config fixture tests for policy, selection mode/exceptions, manager mode, `no_update`, and scan age threshold.
 
 ### What Must Not Be Included Yet
 - No production parser code unless needed to prove fixture shape.
@@ -98,9 +98,9 @@ No CLI behavior yet. Domain types compile and are unit-tested. This phase is now
 - Added installed and scan representation: `InstalledTool`, manager-owned metadata representation, `ScanReport`, `ScanItem`, `ScanIssue`.
 - Added release lookup representation: `ReleaseTimestamp`, `ReleaseTimeline`, `ReleaseLookupResult`.
 - Added plan representation: `UpdateSeed`, `UpdateCandidate`, `PlanItem`, `UpdatePlan`, policy block reasons, delay reasons, skip reasons, and execution eligibility.
-- Added selection representation: `PlanSelection`, `SelectedItem`, `PinChange`, and `PinOperation`.
+- Added selection representation: `PlanSelection`, `SelectedItem`, and `UpdateSelectionPolicy`.
 - Added domain error types for constructor validation and referential selection validation.
-- Stabilized `PlanSelection` to validate only stable references: selected item ids must exist in the plan, and pin-change packages must exist in the plan.
+- Stabilized `PlanSelection` to validate only stable references: selected item ids must exist in the plan, and selection-policy exception packages must exist in the plan.
 
 ### Modules/Files Likely Created Or Changed
 - `<new-workspace>/crates/upnow-domain/src/lib.rs`
@@ -118,7 +118,7 @@ No CLI behavior yet. Domain types compile and are unit-tested. This phase is now
 - `VersionPolicy` parse/display tests.
 - `PlanItem` state tests: update, current, delayed, blocked, skipped, resolver error.
 - `UpdateCandidate` representation tests for target and execution eligibility.
-- `PlanSelection` tests for selected item ids and pin changes.
+- `PlanSelection` tests for selected item ids and selection policy.
 - Release lookup representation tests.
 
 ### Intentionally Removed During Stabilization
@@ -148,7 +148,7 @@ Over-modeling or recreating old string fields under typed names. The remaining g
 - Forced delayed-update selection semantics are deferred until phase 3 and execution capability modeling.
 
 ### Stop Conditions
-Stop when the domain can represent scan rows, update candidates, policy decisions as plan item outcomes, release lookup results, pin changes, and execution eligibility without process, HTTP, rendering, TUI, manager discovery, or planner evaluation logic.
+Stop when the domain can represent scan rows, update candidates, policy decisions as plan item outcomes, release lookup results, selection policy, and execution eligibility without process, HTTP, rendering, TUI, manager discovery, or planner evaluation logic.
 
 ### Review Checklist
 - Domain types contain no terminal display strings.
@@ -248,7 +248,7 @@ Stop when managers and release lookups can use real or fake process/HTTP/clock d
 ## Phase 5: Config Boundary
 
 ### Goal
-Implement config loading, overrides, policy resolution, and pin persistence in the new workspace.
+Implement config loading, overrides, policy resolution, and selection-policy persistence in the new workspace.
 
 ### Behavior Delivered
 The new CLI can resolve config values into typed domain settings, but commands may still be incomplete.
@@ -264,10 +264,14 @@ The new CLI can resolve config values into typed domain settings, but commands m
 - Gem and Dotnet default `off`.
 - Brew-only `no_update`.
 - Manager mode override from CLI manager selection.
-- Pin persistence preserves unrelated TOML.
+- Selection-policy persistence preserves unrelated TOML.
+- Omitted `[manager.selection]` resolves to `mode = "include", except = []`.
+- `mode = "include"` selects eligible updates except package exceptions.
+- `mode = "skip"` skips eligible updates except package exceptions.
+- Invalid selection modes and old `pinned` keys are rejected.
 
 ### What Must Not Be Included Yet
-- No TUI pin persistence.
+- No TUI selection-policy persistence.
 - No manager execution.
 - No global app orchestration beyond config resolution.
 
@@ -275,11 +279,11 @@ The new CLI can resolve config values into typed domain settings, but commands m
 Letting config own runtime behavior decisions that belong to planning/execution.
 
 ### Stop Conditions
-Stop when config produces typed per-manager settings and can persist pins independently.
+Stop when config produces typed per-manager settings and can persist selection policy independently.
 
 ### Review Checklist
 - Config does not know about TUI state.
-- Pins are typed names, not rendered strings.
+- Selection-policy exceptions are typed package names, not rendered strings.
 - Unsupported policy per manager can be reported cleanly.
 
 ## Phase 6: First Manager Vertical Slice
@@ -295,7 +299,7 @@ For `pnpm`, support:
 - `scan`
 - `plan`
 - `apply` batch
-- pins
+- selection policy
 - exact target execution
 - native shortcut where valid
 
@@ -395,7 +399,7 @@ The new CLI supports selected managers, config, planning, execution, and batch r
 - `--managers` filtering.
 - `--set` overrides.
 - Batch output golden tests.
-- Batch apply with pins.
+- Batch apply with selection policy.
 - Missing command and unsupported manager behavior.
 - Exit code behavior.
 
@@ -500,7 +504,7 @@ All current managers have migrated batch scan/plan/apply coverage in the new arc
 - Per-item execution support is represented by `ExecutionEligibility`; manager-level capabilities only advertise global native or resolver-native shortcuts.
 - Manager-private execution command types were removed; managers now build shared `ExecutionCommand` values from `ResolvedExecutionPlan`.
 - Interactive selected targets are typed as recommended, forced candidate, or alternate exact target.
-- Pins are typed as package pins or manager-wide pins; persisted `*` represents the manager-wide pin.
+- Update selection is typed as `UpdateSelectionPolicy`; persisted config uses `[manager.selection]` with `mode` and optional `except`.
 - Broad fixture-shape tests were removed in favor of stable-boundary parser, manager adapter, planner, execution, config, and CLI tests.
 
 ### Tests Required
@@ -551,7 +555,7 @@ Stop each manager migration when it has scan/plan/apply batch behavior and no de
 Add typed interactive selection behavior and view-model state without rendering.
 
 ### Behavior Delivered
-Given an `UpdatePlan`, selection reducers can select, deselect, pin, unpin, choose typed selected targets, and return a typed `PlanSelection`. Existing typed domain pieces include `SelectedTarget` and package/global `PinTarget`; Phase 10 should build reducer behavior around those types rather than remodel execution.
+Given an `UpdatePlan`, selection reducers can select, deselect, pin, unpin, choose typed selected targets, and return a typed `PlanSelection`. Existing typed domain pieces include `SelectedTarget` and `UpdateSelectionPolicy`; Phase 10 should build reducer behavior around those types rather than remodel execution.
 
 ### Modules/Files Likely Created Or Changed
 - `<new-workspace>/crates/upnow-domain/src/selection.rs`
@@ -559,11 +563,15 @@ Given an `UpdatePlan`, selection reducers can select, deselect, pin, unpin, choo
 - `<new-workspace>/crates/upnow-presentation/src/tui/selection_state.rs`
 
 ### Tests Required
-- Default selected state excludes pinned items.
-- Deselecting recommended item adds pin.
-- Selecting pinned item removes pin.
-- Global pin removal behavior.
-- Forced candidate does not mutate pins.
+- Include mode exception starts unselected/skipped.
+- Skip mode exception starts selected.
+- Include mode deselect adds exception.
+- Include mode reselect removes exception.
+- Skip mode select adds exception.
+- Skip mode deselect removes exception.
+- Pin all produces `mode = "skip", except = []`.
+- Unpin all produces `mode = "include", except = []`.
+- Forced candidate does not mutate selection policy.
 - Alternate exact target marks selection as exact-required.
 - Managers without exact execution expose no forced candidates.
 - Alternate version choices are sourced from existing typed plan data or the phase stops for an explicit architecture decision.
@@ -619,7 +627,7 @@ Stop when interactive selection produces typed `PlanSelection` and no execution 
 
 ### Review Checklist
 - TUI does not mutate `UpdatePlan`.
-- TUI does not persist pins.
+- TUI does not persist selection policy.
 - TUI does not run manager commands.
 - View model is derived from domain plan.
 
@@ -629,7 +637,7 @@ Stop when interactive selection produces typed `PlanSelection` and no execution 
 Execute confirmed interactive selections with typed progress reporting.
 
 ### Behavior Delivered
-After user confirmation, pin changes persist, selected updates execute, and progress TUI shows pending/running/done/failed rows.
+After user confirmation, selection-policy changes persist, selected updates execute, and progress TUI shows pending/running/done/failed rows.
 
 ### Modules/Files Likely Created Or Changed
 - `<new-workspace>/crates/upnow-execution/src/progress.rs`
@@ -753,8 +761,8 @@ The rebuilt project is ready to replace the old implementation.
 ### Tests Required
 - `scan` with mixed managers.
 - `plan` with update/current/delayed/blocked/skipped/error items.
-- `apply` batch with pins and native shortcut.
-- `apply --interactive` with pin changes, forced candidates, alternate versions, and cancellation.
+- `apply` batch with selection policy and native shortcut.
+- `apply --interactive` with selection-policy changes, forced candidates, alternate versions, and cancellation.
 - Release metadata failure blocks only the item.
 - Manager-selected target plans preserve uv, Mise, and Brew selected targets.
 - Manager-selected target advisory latest metadata does not replace selected targets.
@@ -779,4 +787,4 @@ Stop when all approved workflows pass and behavior differences are intentional, 
 - Managers are isolated concrete adapters.
 - Release and target-age lookup is explicit and testable.
 - Manager-selected target planning is first-class and does not rely on trimmed timelines or hidden manager branches.
-- Config pin persistence timing matches the approved decision.
+- Config selection-policy persistence timing matches the approved decision.

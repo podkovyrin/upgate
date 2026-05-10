@@ -1,11 +1,10 @@
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use upnow_domain::{
     ExecutionEligibility, ManagerConfig, ManagerId, ManagerMode, ManagerScanInput,
     ManagerUpdateInput, PackageName, ReleaseLookupResult, TargetSelection, ToolId, UpdateCandidate,
-    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    UpdateSeed, UpdateSelectionPolicy, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_infra::{CommandOutput, Env, HttpClient, HttpResponse, ProcessRunner};
 use upnow_managers::adapter::ManagerAdapter;
@@ -28,7 +27,7 @@ fn gem_manager() -> GemManager {
         min_release_age: Duration::from_secs(7 * 86_400),
         version_policy: VersionPolicy::Stable,
         no_update: false,
-        pinned: BTreeSet::new(),
+        selection: UpdateSelectionPolicy::default(),
     })
 }
 

@@ -1,8 +1,7 @@
-use std::collections::BTreeSet;
 use std::fmt::{self, Display};
 use std::time::Duration;
 
-use crate::{ManagerId, PinTarget, VersionPolicy};
+use crate::{ManagerId, UpdateSelectionPolicy, VersionPolicy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagerMode {
@@ -39,5 +38,5 @@ pub struct ManagerConfig {
     pub min_release_age: Duration,
     pub version_policy: VersionPolicy,
     pub no_update: bool,
-    pub pinned: BTreeSet<PinTarget>,
+    pub selection: UpdateSelectionPolicy,
 }

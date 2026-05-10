@@ -1,10 +1,9 @@
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use upnow_cli::config::UpnowConfig;
 use upnow_cli::{BatchCommand, run_batch};
-use upnow_domain::{PackageName, PinTarget, VersionPolicy};
+use upnow_domain::{PackageName, UpdateSelectionMode, UpdateSelectionPolicy, VersionPolicy};
 use upnow_infra::{Clock, CommandOutput, ProcessRunner};
 
 fn fixtures_dir() -> PathBuf {
@@ -13,6 +12,16 @@ fn fixtures_dir() -> PathBuf {
 
 fn text(path: &str) -> String {
     std::fs::read_to_string(fixtures_dir().join(path)).expect("fixture should be readable")
+}
+
+fn include_except<const N: usize>(packages: [&str; N]) -> UpdateSelectionPolicy {
+    UpdateSelectionPolicy {
+        mode: UpdateSelectionMode::Include,
+        except: packages
+            .into_iter()
+            .map(|package| PackageName::new(package).expect("valid package"))
+            .collect(),
+    }
 }
 
 #[test]
@@ -95,12 +104,9 @@ fn apply_skips_pinned_packages_and_runs_exact_pnpm_command() {
         Ok(CommandOutput::from_parts(success_status(), "", "")),
     ]);
     let mut config = UpnowConfig::default();
-    let pins = BTreeSet::from([PinTarget::Package(
-        PackageName::new("pinned-pkg").expect("valid package"),
-    )]);
     config
-        .set_manager_pins("pnpm", pins)
-        .expect("pnpm pins can be set");
+        .set_manager_selection_policy("pnpm", include_except(["pinned-pkg"]))
+        .expect("pnpm selection policy can be set");
 
     let output = run_batch(
         BatchCommand::Apply,
@@ -177,8 +183,8 @@ fn apply_honors_wildcard_pin() {
     ]);
     let mut config = UpnowConfig::default();
     config
-        .set_manager_pins("pnpm", BTreeSet::from([PinTarget::All]))
-        .expect("pnpm pins can be set");
+        .set_manager_selection_policy("pnpm", UpdateSelectionPolicy::skip_all())
+        .expect("pnpm selection policy can be set");
 
     let output = run_batch(
         BatchCommand::Apply,

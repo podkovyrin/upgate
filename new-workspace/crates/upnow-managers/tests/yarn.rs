@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use upnow_domain::{
     ExecutionEligibility, ManagerId, PackageName, PlanItem, PlanItemId, PlanSelection,
-    SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionScheme, VersionText,
+    SelectedItem, ToolId, UpdateCandidate, UpdatePlan, UpdateSelectionPolicy, VersionScheme,
+    VersionText,
 };
 use upnow_infra::{CommandOutput, ProcessRunner};
 use upnow_managers::yarn::{
@@ -109,7 +110,7 @@ fn selection(plan: &UpdatePlan) -> PlanSelection {
         vec![SelectedItem::recommended(
             PlanItemId::new("yarn:alpha-ready").expect("valid id"),
         )],
-        Vec::new(),
+        UpdateSelectionPolicy::default(),
     )
     .expect("valid selection")
 }

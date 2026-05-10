@@ -1,10 +1,9 @@
-use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use upnow_domain::{
     ManagerConfig, ManagerId, ManagerMode, PackageName, PlanItemId, ReleaseLookupResult,
-    VersionPolicy, VersionText,
+    UpdateSelectionPolicy, VersionPolicy, VersionText,
 };
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
 use upnow_infra::{CommandOutput, Env, ProcessRunner};
@@ -29,7 +28,7 @@ fn go_manager() -> GoManager {
         min_release_age: Duration::from_secs(7 * 86_400),
         version_policy: VersionPolicy::None,
         no_update: false,
-        pinned: BTreeSet::new(),
+        selection: UpdateSelectionPolicy::default(),
     })
 }
 

@@ -1,8 +1,8 @@
 use upnow_domain::{
     BlockReason, DelayReason, ExecutionEligibility, ManagerCapabilities, ManagerId,
     ManagerSelectedTarget, PackageName, PlanItem, PlanItemId, PlanSelection, SelectedItem,
-    TargetAgeLookupResult, ToolId, UpdateCandidate, UpdatePlan, UpdateSeed, VersionPolicy,
-    VersionScheme, VersionText,
+    TargetAgeLookupResult, ToolId, UpdateCandidate, UpdatePlan, UpdateSeed, UpdateSelectionPolicy,
+    VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ExecutionSelectionError,
@@ -167,7 +167,7 @@ fn resolves_resolver_native_global_intent_for_complete_default_selection() {
             SelectedItem::recommended(plan_item_id()),
             SelectedItem::recommended(PlanItemId::new("pnpm:beta-ready").expect("valid id")),
         ],
-        Vec::new(),
+        UpdateSelectionPolicy::default(),
     )
     .expect("valid selection");
 
@@ -331,7 +331,7 @@ fn alternate_exact_selection_resolves_to_exact_target_version() {
             plan_item_id(),
             VersionText::new("1.1.0").expect("valid alternate version"),
         )],
-        Vec::new(),
+        UpdateSelectionPolicy::default(),
     )
     .expect("valid selection");
 
@@ -360,7 +360,7 @@ fn alternate_exact_selection_rejects_non_exact_capable_item() {
             plan_item_id(),
             VersionText::new("1.1.0").expect("valid alternate version"),
         )],
-        Vec::new(),
+        UpdateSelectionPolicy::default(),
     )
     .expect("valid selection");
 
@@ -399,7 +399,7 @@ fn policy_filtered_complete_exact_capable_selection_resolves_to_exact_intents() 
             SelectedItem::recommended(plan_item_id()),
             SelectedItem::recommended(PlanItemId::new("pnpm:beta-ready").expect("valid id")),
         ],
-        Vec::new(),
+        UpdateSelectionPolicy::default(),
     )
     .expect("valid selection");
 
@@ -437,7 +437,7 @@ fn policy_filtered_complete_native_only_selection_resolves_to_native_global() {
             SelectedItem::recommended(plan_item_id()),
             SelectedItem::recommended(PlanItemId::new("pnpm:beta-ready").expect("valid id")),
         ],
-        Vec::new(),
+        UpdateSelectionPolicy::default(),
     )
     .expect("valid selection");
 
@@ -512,7 +512,7 @@ fn recommended_selection(plan: &UpdatePlan) -> PlanSelection {
     PlanSelection::new(
         plan,
         vec![SelectedItem::recommended(plan_item_id())],
-        Vec::new(),
+        UpdateSelectionPolicy::default(),
     )
     .expect("valid selection")
 }
@@ -521,7 +521,7 @@ fn forced_selection(plan: &UpdatePlan) -> PlanSelection {
     PlanSelection::new(
         plan,
         vec![SelectedItem::forced_candidate(plan_item_id())],
-        Vec::new(),
+        UpdateSelectionPolicy::default(),
     )
     .expect("valid selection")
 }

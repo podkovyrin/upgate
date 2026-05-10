@@ -1,10 +1,9 @@
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use upnow_domain::{
     ManagerConfig, ManagerId, ManagerMode, ManagerUpdateInput, PackageName, PlanItemId,
-    TargetAgeLookupResult, TargetSelection, VersionPolicy, VersionText,
+    TargetAgeLookupResult, TargetSelection, UpdateSelectionPolicy, VersionPolicy, VersionText,
 };
 use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan};
 use upnow_infra::{CommandOutput, Env, HttpClient, HttpResponse, ProcessRunner};
@@ -30,7 +29,7 @@ fn mise_manager(version_policy: VersionPolicy) -> MiseManager {
         min_release_age: Duration::from_secs(7 * 86_400),
         version_policy,
         no_update: false,
-        pinned: BTreeSet::new(),
+        selection: UpdateSelectionPolicy::default(),
     })
 }
 

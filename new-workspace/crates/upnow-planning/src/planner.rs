@@ -1,9 +1,8 @@
-use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
-    DomainError, ManagerId, ManagerUpdateInput, PinChange, PinTarget, PlanItem, PlanItemId,
-    PlanSelection, SelectedItem, UpdatePlan, UpdateSeed, VersionPolicy,
+    DomainError, ManagerId, ManagerUpdateInput, PlanItem, PlanItemId, PlanSelection, SelectedItem,
+    UpdatePlan, UpdateSeed, UpdateSelectionPolicy, VersionPolicy,
 };
 
 use crate::evaluate_seed;
@@ -80,23 +79,21 @@ fn plan_item_id(manager_id: &ManagerId, package_name: &str) -> Result<PlanItemId
     PlanItemId::new(format!("{}:{package_name}", manager_id.as_str()))
 }
 
-/// Selects default batch apply items: update candidates not currently pinned.
+/// Selects default batch apply items according to the manager selection policy.
 ///
 /// # Errors
 ///
 /// Returns an error if the generated selection does not reference the plan.
 pub fn default_batch_selection(
     plan: &UpdatePlan,
-    pinned: &BTreeSet<PinTarget>,
+    selection_policy: &UpdateSelectionPolicy,
 ) -> Result<PlanSelection, DomainError> {
-    let pin_all = pinned.contains(&PinTarget::All);
     let selected_items = plan
         .items
         .iter()
         .filter_map(|item| match item {
             PlanItem::Update { id, candidate }
-                if !pin_all
-                    && !pinned.contains(&PinTarget::Package(candidate.package_name.clone())) =>
+                if selection_policy.includes(&candidate.package_name) =>
             {
                 Some(SelectedItem::recommended(id.clone()))
             }
@@ -104,5 +101,5 @@ pub fn default_batch_selection(
         })
         .collect();
 
-    PlanSelection::new(plan, selected_items, Vec::<PinChange>::new())
+    PlanSelection::new(plan, selected_items, selection_policy.clone())
 }

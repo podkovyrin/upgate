@@ -1,7 +1,7 @@
 use upnow_domain::{
-    DelayReason, DomainError, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata,
-    PackageName, PinChange, PinOperation, PinTarget, PlanItem, PlanItemId, PlanSelection,
-    SelectedItem, SelectedTarget, ToolId, ToolName, UpdateCandidate, UpdatePlan, VersionScheme,
+    DelayReason, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata, PackageName,
+    PlanItem, PlanItemId, PlanSelection, SelectedItem, SelectedTarget, ToolId, ToolName,
+    UpdateCandidate, UpdatePlan, UpdateSelectionMode, UpdateSelectionPolicy, VersionScheme,
     VersionText,
 };
 
@@ -55,21 +55,18 @@ fn plan() -> UpdatePlan {
 }
 
 #[test]
-fn plan_selection_accepts_selected_items_and_pin_changes() {
+fn plan_selection_accepts_selected_items_and_selection_policy() {
     let plan = plan();
+    let policy = UpdateSelectionPolicy {
+        mode: UpdateSelectionMode::Include,
+        except: [PackageName::new("fresh-tool").expect("valid package name")]
+            .into_iter()
+            .collect(),
+    };
     let selection = PlanSelection::new(
         &plan,
         vec![SelectedItem::forced_candidate(plan_item_id("alpha-ready"))],
-        vec![
-            PinChange::new(
-                PinTarget::Package(PackageName::new("fresh-tool").expect("valid package name")),
-                PinOperation::Pin,
-            ),
-            PinChange::new(
-                PinTarget::Package(PackageName::new("alpha-ready").expect("valid package name")),
-                PinOperation::Unpin,
-            ),
-        ],
+        policy,
     )
     .expect("selection should reference known plan items");
 
@@ -81,7 +78,12 @@ fn plan_selection_accepts_selected_items_and_pin_changes() {
         selection.selected_items[0].target,
         SelectedTarget::ForcedCandidate
     );
-    assert_eq!(selection.pin_changes.len(), 2);
+    assert!(
+        selection
+            .selection_policy
+            .except
+            .contains(&PackageName::new("fresh-tool").expect("valid package name"))
+    );
 }
 
 #[test]
@@ -97,31 +99,18 @@ fn selected_item_preserves_alternate_exact_target() {
 }
 
 #[test]
-fn forced_candidate_selection_does_not_create_pin_changes() {
+fn forced_candidate_selection_preserves_default_policy() {
     let plan = plan();
     let selection = PlanSelection::new(
         &plan,
         vec![SelectedItem::forced_candidate(plan_item_id(
             "delayed-exact",
         ))],
-        Vec::new(),
+        UpdateSelectionPolicy::default(),
     )
     .expect("forced candidate selection should be valid");
 
-    assert!(selection.pin_changes.is_empty());
-}
-
-#[test]
-fn plan_selection_accepts_global_pin_changes() {
-    let plan = plan();
-    let selection = PlanSelection::new(
-        &plan,
-        Vec::new(),
-        vec![PinChange::new(PinTarget::All, PinOperation::Unpin)],
-    )
-    .expect("global pin changes should not be validated as packages");
-
-    assert_eq!(selection.pin_changes[0].target, PinTarget::All);
+    assert!(selection.selection_policy.is_default());
 }
 
 #[test]
@@ -133,7 +122,7 @@ fn plan_selection_accepts_known_selected_item_ids() {
             SelectedItem::recommended(plan_item_id("delayed-exact")),
             SelectedItem::recommended(plan_item_id("fresh-tool")),
         ],
-        Vec::new(),
+        UpdateSelectionPolicy::default(),
     )
     .expect("known item ids should be selectable at this boundary");
 
@@ -141,21 +130,22 @@ fn plan_selection_accepts_known_selected_item_ids() {
 }
 
 #[test]
-fn plan_selection_rejects_pin_changes_for_unknown_packages() {
+fn plan_selection_accepts_stale_selection_exceptions() {
     let plan = plan();
-    let error = PlanSelection::new(
-        &plan,
-        Vec::new(),
-        vec![PinChange::new(
-            PinTarget::Package(PackageName::new("not-in-plan").expect("valid package name")),
-            PinOperation::Pin,
-        )],
-    )
-    .expect_err("pin change should target a package in the plan");
+    let policy = UpdateSelectionPolicy {
+        mode: UpdateSelectionMode::Include,
+        except: [PackageName::new("not-in-plan").expect("valid package name")]
+            .into_iter()
+            .collect(),
+    };
+    let selection =
+        PlanSelection::new(&plan, Vec::new(), policy).expect("stale exceptions are inert config");
 
     assert_eq!(
-        error,
-        DomainError::UnknownPinTarget("not-in-plan".to_owned())
+        selection.selection_policy.except,
+        [PackageName::new("not-in-plan").expect("valid package name")]
+            .into_iter()
+            .collect()
     );
 }
 
@@ -165,9 +155,35 @@ fn plan_selection_rejects_unknown_selected_items() {
     let error = PlanSelection::new(
         &plan,
         vec![SelectedItem::recommended(plan_item_id("missing"))],
-        Vec::new(),
+        UpdateSelectionPolicy::default(),
     )
     .expect_err("unknown selected item should fail");
 
     assert_eq!(error.to_string(), "unknown plan item id `missing`");
+}
+
+#[test]
+fn include_mode_includes_non_exceptions_and_excludes_exceptions() {
+    let policy = UpdateSelectionPolicy {
+        mode: UpdateSelectionMode::Include,
+        except: [PackageName::new("eslint").expect("valid package")]
+            .into_iter()
+            .collect(),
+    };
+
+    assert!(!policy.includes(&PackageName::new("eslint").expect("valid package")));
+    assert!(policy.includes(&PackageName::new("webpack").expect("valid package")));
+}
+
+#[test]
+fn skip_mode_excludes_non_exceptions_and_includes_exceptions() {
+    let policy = UpdateSelectionPolicy {
+        mode: UpdateSelectionMode::Skip,
+        except: [PackageName::new("typescript").expect("valid package")]
+            .into_iter()
+            .collect(),
+    };
+
+    assert!(policy.includes(&PackageName::new("typescript").expect("valid package")));
+    assert!(!policy.includes(&PackageName::new("webpack").expect("valid package")));
 }

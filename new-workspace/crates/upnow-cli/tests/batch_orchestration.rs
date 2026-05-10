@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -7,7 +6,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use upnow_cli::config::UpnowConfig;
 use upnow_cli::{BatchCommand, run_batch, run_batch_with_sources};
-use upnow_domain::{PackageName, PinTarget, VersionPolicy};
+use upnow_domain::{PackageName, UpdateSelectionMode, UpdateSelectionPolicy, VersionPolicy};
 use upnow_infra::{
     Clock, CommandOutput, Env, HttpBytesResponse, HttpClient, HttpResponse, ProcessRunner,
 };
@@ -20,6 +19,16 @@ fn fixtures_dir(manager: &str) -> PathBuf {
 
 fn text(manager: &str, path: &str) -> String {
     std::fs::read_to_string(fixtures_dir(manager).join(path)).expect("fixture should be readable")
+}
+
+fn include_except<const N: usize>(packages: [&str; N]) -> UpdateSelectionPolicy {
+    UpdateSelectionPolicy {
+        mode: UpdateSelectionMode::Include,
+        except: packages
+            .into_iter()
+            .map(|package| PackageName::new(package).expect("valid package"))
+            .collect(),
+    }
 }
 
 #[test]
@@ -176,13 +185,8 @@ fn selected_npm_apply_honors_pins() {
     ]);
     let mut config = UpnowConfig::default();
     config
-        .set_manager_pins(
-            "npm",
-            BTreeSet::from([PinTarget::Package(
-                PackageName::new("pinned-pkg").expect("valid package"),
-            )]),
-        )
-        .expect("npm pins can be set");
+        .set_manager_selection_policy("npm", include_except(["pinned-pkg"]))
+        .expect("npm selection policy can be set");
 
     let output = run_batch(
         BatchCommand::Apply,
@@ -1291,13 +1295,8 @@ fn selected_bun_apply_runs_exact_update_and_honors_pins() {
     ]);
     let mut config = UpnowConfig::default();
     config
-        .set_manager_pins(
-            "bun",
-            BTreeSet::from([PinTarget::Package(
-                PackageName::new("pinned-pkg").expect("valid package"),
-            )]),
-        )
-        .expect("bun pins can be set");
+        .set_manager_selection_policy("bun", include_except(["pinned-pkg"]))
+        .expect("bun selection policy can be set");
 
     let output = run_batch(
         BatchCommand::Apply,
@@ -2126,13 +2125,8 @@ fn selected_uv_apply_honors_pins_without_running_them() {
     ]);
     let mut config = UpnowConfig::default();
     config
-        .set_manager_pins(
-            "uv",
-            BTreeSet::from([PinTarget::Package(
-                PackageName::new("pinned-pkg").expect("valid package"),
-            )]),
-        )
-        .expect("uv pins can be set");
+        .set_manager_selection_policy("uv", include_except(["pinned-pkg"]))
+        .expect("uv selection policy can be set");
 
     let output = run_batch_with_sources(
         BatchCommand::Apply,
@@ -2388,13 +2382,8 @@ fn selected_brew_apply_groups_formula_updates_without_indices() {
         .apply_cli_override("brew.no_update=true")
         .expect("brew no_update override should apply");
     config
-        .set_manager_pins(
-            "brew",
-            BTreeSet::from([PinTarget::Package(
-                PackageName::new("pinned-pkg").expect("valid package"),
-            )]),
-        )
-        .expect("brew pins can be set");
+        .set_manager_selection_policy("brew", include_except(["pinned-pkg"]))
+        .expect("brew selection policy can be set");
 
     let output = run_batch_with_sources(
         BatchCommand::Apply,
@@ -2431,13 +2420,8 @@ fn selected_brew_apply_with_policy_still_uses_native_selected_update() {
         .apply_cli_override("brew.version_policy=stable")
         .expect("brew policy override should apply");
     config
-        .set_manager_pins(
-            "brew",
-            BTreeSet::from([PinTarget::Package(
-                PackageName::new("pinned-pkg").expect("valid package"),
-            )]),
-        )
-        .expect("brew pins can be set");
+        .set_manager_selection_policy("brew", include_except(["pinned-pkg"]))
+        .expect("brew selection policy can be set");
 
     let output = run_batch_with_sources(
         BatchCommand::Apply,
@@ -2471,14 +2455,8 @@ fn selected_brew_apply_honors_config_pins() {
         .apply_cli_override("brew.no_update=true")
         .expect("brew no_update override should apply");
     config
-        .set_manager_pins(
-            "brew",
-            BTreeSet::from([
-                PinTarget::Package(PackageName::new("alpha-ready").expect("valid package")),
-                PinTarget::Package(PackageName::new("pinned-pkg").expect("valid package")),
-            ]),
-        )
-        .expect("brew pins can be set");
+        .set_manager_selection_policy("brew", include_except(["alpha-ready", "pinned-pkg"]))
+        .expect("brew selection policy can be set");
 
     let output = run_batch_with_sources(
         BatchCommand::Apply,

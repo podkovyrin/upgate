@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use upnow_domain::{
     ExecutionEligibility, ManagerCapabilities, ManagerId, PackageName, PlanItem, PlanItemId,
-    PlanSelection, SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionScheme, VersionText,
+    PlanSelection, SelectedItem, ToolId, UpdateCandidate, UpdatePlan, UpdateSelectionPolicy,
+    VersionScheme, VersionText,
 };
 use upnow_execution::resolve_selection_for_execution;
 use upnow_managers::pnpm::{
@@ -105,7 +106,7 @@ fn selection(plan: &UpdatePlan) -> PlanSelection {
         vec![SelectedItem::recommended(
             PlanItemId::new("pnpm:alpha-ready").expect("valid id"),
         )],
-        Vec::new(),
+        UpdateSelectionPolicy::default(),
     )
     .expect("valid selection")
 }

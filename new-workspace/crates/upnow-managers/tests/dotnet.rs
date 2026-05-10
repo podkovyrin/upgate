@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -7,7 +6,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use upnow_domain::{
     ExecutionEligibility, ManagerConfig, ManagerId, ManagerMode, PackageName, ReleaseLookupResult,
-    ToolId, UpdateCandidate, VersionPolicy, VersionScheme, VersionText,
+    ToolId, UpdateCandidate, UpdateSelectionPolicy, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_infra::{CommandOutput, Env, HttpBytesResponse, HttpClient, ProcessRunner};
 use upnow_managers::adapter::{ManagerAdapter, ReleaseLookupSubject};
@@ -30,7 +29,7 @@ fn dotnet_manager() -> DotnetManager {
         min_release_age: Duration::from_secs(7 * 86_400),
         version_policy: VersionPolicy::None,
         no_update: false,
-        pinned: BTreeSet::new(),
+        selection: UpdateSelectionPolicy::default(),
     })
 }
 

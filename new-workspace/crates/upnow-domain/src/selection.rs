@@ -1,9 +1,11 @@
+use std::collections::BTreeSet;
+
 use crate::{DomainError, PackageName, PlanItemId, UpdatePlan, VersionText};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanSelection {
     pub selected_items: Vec<SelectedItem>,
-    pub pin_changes: Vec<PinChange>,
+    pub selection_policy: UpdateSelectionPolicy,
 }
 
 impl PlanSelection {
@@ -15,19 +17,8 @@ impl PlanSelection {
     pub fn new(
         plan: &UpdatePlan,
         selected_items: Vec<SelectedItem>,
-        pin_changes: Vec<PinChange>,
+        selection_policy: UpdateSelectionPolicy,
     ) -> Result<Self, DomainError> {
-        for pin_change in &pin_changes {
-            let PinTarget::Package(package_name) = &pin_change.target else {
-                continue;
-            };
-            if !plan.contains_package(package_name) {
-                return Err(DomainError::UnknownPinTarget(
-                    package_name.as_str().to_owned(),
-                ));
-            }
-        }
-
         for selected in &selected_items {
             if plan.item(&selected.plan_item_id).is_none() {
                 return Err(DomainError::UnknownPlanItemId(
@@ -38,7 +29,7 @@ impl PlanSelection {
 
         Ok(Self {
             selected_items,
-            pin_changes,
+            selection_policy,
         })
     }
 }
@@ -84,27 +75,66 @@ pub enum SelectedTarget {
     AlternateExact { target_version: VersionText },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum PinTarget {
-    Package(PackageName),
-    All,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PinChange {
-    pub target: PinTarget,
-    pub operation: PinOperation,
+pub struct UpdateSelectionPolicy {
+    pub mode: UpdateSelectionMode,
+    pub except: BTreeSet<PackageName>,
 }
 
-impl PinChange {
+impl UpdateSelectionPolicy {
     #[must_use]
-    pub fn new(target: PinTarget, operation: PinOperation) -> Self {
-        Self { target, operation }
+    pub fn include_all() -> Self {
+        Self {
+            mode: UpdateSelectionMode::Include,
+            except: BTreeSet::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn skip_all() -> Self {
+        Self {
+            mode: UpdateSelectionMode::Skip,
+            except: BTreeSet::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        self.mode == UpdateSelectionMode::Include && self.except.is_empty()
+    }
+
+    #[must_use]
+    pub fn includes(&self, package: &PackageName) -> bool {
+        let is_exception = self.except.contains(package);
+
+        match self.mode {
+            UpdateSelectionMode::Include => !is_exception,
+            UpdateSelectionMode::Skip => is_exception,
+        }
+    }
+
+    pub fn set_included(&mut self, package: PackageName, included: bool) {
+        let is_opposite_of_mode = match self.mode {
+            UpdateSelectionMode::Include => !included,
+            UpdateSelectionMode::Skip => included,
+        };
+
+        if is_opposite_of_mode {
+            self.except.insert(package);
+        } else {
+            self.except.remove(&package);
+        }
+    }
+}
+
+impl Default for UpdateSelectionPolicy {
+    fn default() -> Self {
+        Self::include_all()
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PinOperation {
-    Pin,
-    Unpin,
+pub enum UpdateSelectionMode {
+    Include,
+    Skip,
 }

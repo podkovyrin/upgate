@@ -30,6 +30,6 @@ pub use scan::{
     ManagerRuleReason, ManagerScanInput, ScanIssue, ScanItem, ScanReport, UnsupportedReason,
 };
 pub use selection::{
-    PinChange, PinOperation, PinTarget, PlanSelection, SelectedItem, SelectedTarget,
+    PlanSelection, SelectedItem, SelectedTarget, UpdateSelectionMode, UpdateSelectionPolicy,
 };
 pub use version::{VersionScheme, VersionText};

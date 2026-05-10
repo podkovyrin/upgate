@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use upnow_domain::{
     DelayReason, ExecutionEligibility, ManagerId, PackageName, PlanItem, PlanItemId, PlanSelection,
-    SelectedItem, ToolId, UpdateCandidate, UpdatePlan, VersionScheme, VersionText,
+    SelectedItem, ToolId, UpdateCandidate, UpdatePlan, UpdateSelectionPolicy, VersionScheme,
+    VersionText,
 };
 use upnow_managers::bun::{
     bun_global_cwd_from_values, exact_command, is_missing_global_manifest, parse_bun_time_json,
@@ -118,7 +119,7 @@ fn selection(plan: &UpdatePlan) -> PlanSelection {
         vec![SelectedItem::forced_candidate(
             PlanItemId::new("bun:alpha-ready").expect("valid id"),
         )],
-        Vec::new(),
+        UpdateSelectionPolicy::default(),
     )
     .expect("valid selection")
 }

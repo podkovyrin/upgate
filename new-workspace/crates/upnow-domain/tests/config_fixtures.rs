@@ -21,7 +21,7 @@ fn config_fixture_captures_global_scan_age_threshold() {
 }
 
 #[test]
-fn config_fixture_captures_brew_policy_pins_mode_and_no_update() {
+fn config_fixture_captures_brew_policy_selection_mode_and_no_update() {
     let config = load_current_behavior_config();
     let brew = &config["brew"];
 
@@ -29,28 +29,38 @@ fn config_fixture_captures_brew_policy_pins_mode_and_no_update() {
     assert_eq!(brew["min_release_age"].as_str(), Some("12h"));
     assert_eq!(brew["version_policy"].as_str(), Some("stable"));
     assert_eq!(brew["no_update"].as_bool(), Some(true));
+    assert_eq!(brew["selection"]["mode"].as_str(), Some("include"));
     assert_eq!(
-        brew["pinned"]
+        brew["selection"]["except"]
             .as_array()
-            .expect("brew pinned should be an array")
+            .expect("brew selection exceptions should be an array")
             .iter()
-            .map(|value| value.as_str().expect("pin should be a string"))
+            .map(|value| value.as_str().expect("exception should be a string"))
             .collect::<Vec<_>>(),
         vec!["aom", "docker"]
     );
 }
 
 #[test]
-fn config_fixture_captures_package_manager_modes_policies_and_pins() {
+fn config_fixture_captures_package_manager_modes_policies_and_selection() {
     let config = load_current_behavior_config();
 
     assert_eq!(config["npm"]["mode"].as_str(), Some("plan"));
     assert_eq!(config["npm"]["version_policy"].as_str(), Some("same-track"));
-    assert_eq!(config["npm"]["pinned"][0].as_str(), Some("npm"));
+    assert_eq!(
+        config["npm"]["selection"]["except"][0].as_str(),
+        Some("npm")
+    );
 
     assert_eq!(config["gem"]["mode"].as_str(), Some("off"));
-    assert_eq!(config["gem"]["pinned"][0].as_str(), Some("bundler"));
+    assert_eq!(
+        config["gem"]["selection"]["except"][0].as_str(),
+        Some("bundler")
+    );
 
     assert_eq!(config["dotnet"]["mode"].as_str(), Some("off"));
-    assert_eq!(config["dotnet"]["pinned"][0].as_str(), Some("serilog"));
+    assert_eq!(
+        config["dotnet"]["selection"]["except"][0].as_str(),
+        Some("serilog")
+    );
 }

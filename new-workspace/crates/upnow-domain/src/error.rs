@@ -12,7 +12,6 @@ pub enum DomainError {
     InvalidVersionPolicy(String),
     DuplicatePlanItemId(String),
     UnknownPlanItemId(String),
-    UnknownPinTarget(String),
 }
 
 impl Display for DomainError {
@@ -32,7 +31,6 @@ impl Display for DomainError {
                 write!(formatter, "duplicate plan item id `{value}`")
             }
             Self::UnknownPlanItemId(value) => write!(formatter, "unknown plan item id `{value}`"),
-            Self::UnknownPinTarget(value) => write!(formatter, "unknown pin target `{value}`"),
         }
     }
 }

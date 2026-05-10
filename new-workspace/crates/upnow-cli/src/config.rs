@@ -8,7 +8,10 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use toml_edit::{Array, DocumentMut, Item, Table, Value};
-use upnow_domain::{ManagerConfig, ManagerId, ManagerMode, PackageName, PinTarget, VersionPolicy};
+use upnow_domain::{
+    ManagerConfig, ManagerId, ManagerMode, PackageName, UpdateSelectionMode, UpdateSelectionPolicy,
+    VersionPolicy,
+};
 
 use crate::registry::{
     ManagerDefaultMode, ensure_known_manager, manager_defaults, supports_version_policy,
@@ -52,8 +55,12 @@ pub enum ConfigError {
         value: String,
     },
     NoUpdateOnlyBrew(String),
-    PinnedOverrideNotSupported(String),
-    InvalidPinnedName(String),
+    SelectionOverrideNotSupported(String),
+    InvalidSelectionMode {
+        manager_id: String,
+        value: String,
+    },
+    InvalidSelectionException(String),
     ConfigPathUnavailable,
     NonTableManagerSection(String),
 }
@@ -114,13 +121,21 @@ impl Display for ConfigError {
                     "invalid override `{raw}`: no_update is only valid for brew"
                 )
             }
-            Self::PinnedOverrideNotSupported(raw) => {
+            Self::SelectionOverrideNotSupported(raw) => {
                 write!(
                     formatter,
-                    "invalid override `{raw}`: pinned is interactive-only"
+                    "invalid override `{raw}`: selection is interactive-only"
                 )
             }
-            Self::InvalidPinnedName(value) => write!(formatter, "invalid pinned name `{value}`"),
+            Self::InvalidSelectionMode { manager_id, value } => {
+                write!(
+                    formatter,
+                    "invalid selection mode for [{manager_id}.selection]: `{value}`, expected one of include, skip"
+                )
+            }
+            Self::InvalidSelectionException(value) => {
+                write!(formatter, "invalid selection exception `{value}`")
+            }
             Self::ConfigPathUnavailable => {
                 formatter.write_str("cannot determine config path from environment")
             }
@@ -148,13 +163,20 @@ struct GlobalSectionConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct ManagerSectionConfig {
     min_release_age: Option<String>,
     version_policy: Option<String>,
     no_update: Option<bool>,
     mode: Option<String>,
-    pinned: Vec<String>,
+    selection: Option<SelectionSectionConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct SelectionSectionConfig {
+    mode: Option<String>,
+    except: Vec<String>,
 }
 
 impl UpnowConfig {
@@ -252,12 +274,10 @@ impl UpnowConfig {
             false
         };
 
-        let mut pinned = BTreeSet::new();
-        if let Some(section) = section {
-            for pin in &section.pinned {
-                pinned.insert(parse_pin_target(pin)?);
-            }
-        }
+        let selection = parse_optional_selection_policy(
+            manager_id,
+            section.and_then(|section| section.selection.as_ref()),
+        )?;
 
         Ok(ManagerConfig {
             manager_id: manager_id_value,
@@ -265,7 +285,7 @@ impl UpnowConfig {
             min_release_age,
             version_policy,
             no_update,
-            pinned,
+            selection,
         })
     }
 
@@ -331,7 +351,9 @@ impl UpnowConfig {
                     .version_policy = Some(parsed.to_string());
                 Ok(())
             }
-            "pinned" => Err(ConfigError::PinnedOverrideNotSupported(raw.to_owned())),
+            "selection" | "pinned" | "unpinned" => {
+                Err(ConfigError::SelectionOverrideNotSupported(raw.to_owned()))
+            }
             "no_update" => {
                 if section != "brew" {
                     return Err(ConfigError::NoUpdateOnlyBrew(raw.to_owned()));
@@ -381,15 +403,15 @@ impl UpnowConfig {
         Ok(())
     }
 
-    /// Replaces the in-memory pins for one manager.
+    /// Replaces the in-memory selection policy for one manager.
     ///
     /// # Errors
     ///
     /// Returns an error when the manager id is unknown.
-    pub fn set_manager_pins(
+    pub fn set_manager_selection_policy(
         &mut self,
         manager_id: &str,
-        pins: BTreeSet<PinTarget>,
+        selection_policy: UpdateSelectionPolicy,
     ) -> Result<(), ConfigError> {
         let manager_id_value = ManagerId::new(manager_id.to_owned())
             .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
@@ -399,33 +421,27 @@ impl UpnowConfig {
         self.sections
             .entry(manager_id.to_owned())
             .or_default()
-            .pinned = pins
-            .into_iter()
-            .map(|pin| match pin {
-                PinTarget::Package(package_name) => package_name.as_str().to_owned(),
-                PinTarget::All => "*".to_owned(),
-            })
-            .collect();
+            .selection = Some(selection_section_from_policy(selection_policy));
         Ok(())
     }
 
-    /// Persists pins for one manager to the standard user config path.
+    /// Persists the selection policy for one manager to the standard user config path.
     ///
     /// # Errors
     ///
     /// Returns an error when the config path cannot be resolved or the file
     /// cannot be read, parsed, or written.
-    pub fn persist_manager_pins(&self, manager_id: &str) -> Result<(), ConfigError> {
+    pub fn persist_manager_selection_policy(&self, manager_id: &str) -> Result<(), ConfigError> {
         let path = config_path().ok_or(ConfigError::ConfigPathUnavailable)?;
-        self.persist_manager_pins_to_path(manager_id, &path)
+        self.persist_manager_selection_policy_to_path(manager_id, &path)
     }
 
-    /// Persists pins for one manager to a specific config path.
+    /// Persists the selection policy for one manager to a specific config path.
     ///
     /// # Errors
     ///
     /// Returns an error when the file cannot be read, parsed, or written.
-    pub fn persist_manager_pins_to_path(
+    pub fn persist_manager_selection_policy_to_path(
         &self,
         manager_id: &str,
         path: &Path,
@@ -465,18 +481,20 @@ impl UpnowConfig {
             DocumentMut::new()
         };
 
-        let pins = self
+        let selection_policy = self
             .sections
             .get(manager_id)
-            .map(|section| section.pinned.clone())
+            .and_then(|section| section.selection.as_ref())
+            .map(|section| parse_selection_policy(manager_id, section))
+            .transpose()?
             .unwrap_or_default();
 
-        if pins.is_empty() {
+        if selection_policy.is_default() {
             if let Some(item) = doc.get_mut(manager_id) {
                 let table = item
                     .as_table_like_mut()
                     .ok_or_else(|| ConfigError::NonTableManagerSection(manager_id.to_owned()))?;
-                table.remove("pinned");
+                table.remove("selection");
             }
         } else {
             if !doc.contains_key(manager_id) {
@@ -485,11 +503,22 @@ impl UpnowConfig {
             let table = doc[manager_id]
                 .as_table_like_mut()
                 .ok_or_else(|| ConfigError::NonTableManagerSection(manager_id.to_owned()))?;
+            let mut selection_table = Table::new();
+            selection_table.insert(
+                "mode",
+                Item::Value(Value::from(match selection_policy.mode {
+                    UpdateSelectionMode::Include => "include",
+                    UpdateSelectionMode::Skip => "skip",
+                })),
+            );
             let mut array = Array::default();
-            for pin in pins {
-                array.push(Value::from(pin));
+            for package_name in selection_policy.except {
+                array.push(Value::from(package_name.as_str()));
             }
-            table.insert("pinned", Item::Value(Value::Array(array)));
+            if !array.is_empty() {
+                selection_table.insert("except", Item::Value(Value::Array(array)));
+            }
+            table.insert("selection", Item::Table(selection_table));
         }
 
         fs::write(path, doc.to_string()).map_err(|err| {
@@ -540,15 +569,59 @@ fn parse_optional_policy(
     raw.map_or(Ok(VersionPolicy::None), |raw| parse_policy(manager_id, raw))
 }
 
-fn parse_pin_target(raw: &str) -> Result<PinTarget, ConfigError> {
-    if raw == "*" {
-        return Ok(PinTarget::All);
+fn parse_optional_selection_policy(
+    manager_id: &str,
+    section: Option<&SelectionSectionConfig>,
+) -> Result<UpdateSelectionPolicy, ConfigError> {
+    section.map_or_else(
+        || Ok(UpdateSelectionPolicy::default()),
+        |section| parse_selection_policy(manager_id, section),
+    )
+}
+
+fn parse_selection_policy(
+    manager_id: &str,
+    section: &SelectionSectionConfig,
+) -> Result<UpdateSelectionPolicy, ConfigError> {
+    let mode = match section.mode.as_deref().unwrap_or("include") {
+        "include" => UpdateSelectionMode::Include,
+        "skip" => UpdateSelectionMode::Skip,
+        other => {
+            return Err(ConfigError::InvalidSelectionMode {
+                manager_id: manager_id.to_owned(),
+                value: other.to_owned(),
+            });
+        }
+    };
+
+    let mut except = BTreeSet::new();
+    for package_name in &section.except {
+        except.insert(
+            PackageName::new(package_name.to_owned())
+                .map_err(|_| ConfigError::InvalidSelectionException(package_name.to_owned()))?,
+        );
     }
 
-    Ok(PinTarget::Package(
-        PackageName::new(raw.to_owned())
-            .map_err(|_| ConfigError::InvalidPinnedName(raw.to_owned()))?,
-    ))
+    Ok(UpdateSelectionPolicy { mode, except })
+}
+
+fn selection_section_from_policy(
+    selection_policy: UpdateSelectionPolicy,
+) -> SelectionSectionConfig {
+    SelectionSectionConfig {
+        mode: Some(
+            match selection_policy.mode {
+                UpdateSelectionMode::Include => "include",
+                UpdateSelectionMode::Skip => "skip",
+            }
+            .to_owned(),
+        ),
+        except: selection_policy
+            .except
+            .into_iter()
+            .map(|package_name| package_name.as_str().to_owned())
+            .collect(),
+    }
 }
 
 fn parse_policy(manager_id: &str, raw: &str) -> Result<VersionPolicy, ConfigError> {

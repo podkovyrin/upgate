@@ -280,7 +280,7 @@ fn run_manager_batch(
             let manager = configured_manager(manager_config.clone()).map_err(map_manager_error)?;
             let plan =
                 build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config)?;
-            let selection = default_batch_selection(&plan, &manager_config.pinned)
+            let selection = default_batch_selection(&plan, &manager_config.selection)
                 .map_err(|err| AppError::Planning(err.to_string()))?;
             let execution_plan = resolve_selection_for_execution(
                 &plan,
