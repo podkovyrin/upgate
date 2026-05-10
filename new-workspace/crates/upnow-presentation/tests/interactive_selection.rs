@@ -207,10 +207,7 @@ fn delayed_picker_shows_only_real_actions_and_forces_on_first_option() {
     screen
         .handle_input(SelectionInput::OpenTargetPicker)
         .expect("picker should open");
-    assert_eq!(
-        screen.target_picker_options(),
-        ["force candidate", "exact 1.2.0"]
-    );
+    assert_eq!(screen.target_picker_options(), ["force candidate"]);
 
     screen
         .handle_input(SelectionInput::PickerConfirm)

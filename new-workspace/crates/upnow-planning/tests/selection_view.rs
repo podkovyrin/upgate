@@ -58,7 +58,9 @@ fn forced_candidates_require_exact_execution_support() {
 
     assert_eq!(exact.status, SelectionRowStatus::Delayed);
     assert!(exact.forced_candidate_available);
+    assert!(exact.alternate_exact_targets.is_empty());
     assert!(!native.forced_candidate_available);
+    assert!(native.alternate_exact_targets.is_empty());
 }
 
 #[test]

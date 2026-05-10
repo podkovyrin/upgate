@@ -11,6 +11,7 @@ pub enum DomainError {
     EmptyMetadataKey,
     InvalidVersionPolicy(String),
     DuplicatePlanItemId(String),
+    DuplicateSelectedPlanItemId(String),
     UnknownPlanItemId(String),
 }
 
@@ -29,6 +30,9 @@ impl Display for DomainError {
             }
             Self::DuplicatePlanItemId(value) => {
                 write!(formatter, "duplicate plan item id `{value}`")
+            }
+            Self::DuplicateSelectedPlanItemId(value) => {
+                write!(formatter, "duplicate selected plan item id `{value}`")
             }
             Self::UnknownPlanItemId(value) => write!(formatter, "unknown plan item id `{value}`"),
         }

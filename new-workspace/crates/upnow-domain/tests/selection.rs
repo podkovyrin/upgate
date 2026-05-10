@@ -163,6 +163,28 @@ fn plan_selection_rejects_unknown_selected_items() {
 }
 
 #[test]
+fn plan_selection_rejects_duplicate_selected_items() {
+    let plan = plan();
+    let error = PlanSelection::new(
+        &plan,
+        vec![
+            SelectedItem::recommended(plan_item_id("alpha-ready")),
+            SelectedItem::alternate_exact(
+                plan_item_id("alpha-ready"),
+                VersionText::new("1.1.0").expect("valid target"),
+            ),
+        ],
+        UpdateSelectionPolicy::default(),
+    )
+    .expect_err("duplicate selected item should fail");
+
+    assert_eq!(
+        error.to_string(),
+        "duplicate selected plan item id `alpha-ready`"
+    );
+}
+
+#[test]
 fn include_mode_includes_non_exceptions_and_excludes_exceptions() {
     let policy = UpdateSelectionPolicy {
         mode: UpdateSelectionMode::Include,

@@ -19,12 +19,19 @@ impl PlanSelection {
         selected_items: Vec<SelectedItem>,
         selection_policy: UpdateSelectionPolicy,
     ) -> Result<Self, DomainError> {
+        let mut seen = Vec::new();
         for selected in &selected_items {
             if plan.item(&selected.plan_item_id).is_none() {
                 return Err(DomainError::UnknownPlanItemId(
                     selected.plan_item_id.as_str().to_owned(),
                 ));
             }
+            if seen.contains(&selected.plan_item_id) {
+                return Err(DomainError::DuplicateSelectedPlanItemId(
+                    selected.plan_item_id.as_str().to_owned(),
+                ));
+            }
+            seen.push(selected.plan_item_id.clone());
         }
 
         Ok(Self {

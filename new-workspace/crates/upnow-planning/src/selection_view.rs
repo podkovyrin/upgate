@@ -78,21 +78,17 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
             forced_candidate_available: false,
             alternate_exact_targets: Vec::new(),
         },
-        PlanItem::Delayed { id, candidate, .. } => {
-            let alternate_exact_targets =
-                exact_targets(candidate.execution_eligibility, &candidate.target_version);
-            SelectionRow {
-                plan_item_id: id.clone(),
-                package_name: candidate.package_name.clone(),
-                installed_version: candidate.installed_version.clone(),
-                target_version: Some(candidate.target_version.clone()),
-                status: SelectionRowStatus::Delayed,
-                initially_selected: false,
-                policy_exception: selection_policy.except.contains(&candidate.package_name),
-                forced_candidate_available: candidate.execution_eligibility.supports_exact_target(),
-                alternate_exact_targets,
-            }
-        }
+        PlanItem::Delayed { id, candidate, .. } => SelectionRow {
+            plan_item_id: id.clone(),
+            package_name: candidate.package_name.clone(),
+            installed_version: candidate.installed_version.clone(),
+            target_version: Some(candidate.target_version.clone()),
+            status: SelectionRowStatus::Delayed,
+            initially_selected: false,
+            policy_exception: selection_policy.except.contains(&candidate.package_name),
+            forced_candidate_available: candidate.execution_eligibility.supports_exact_target(),
+            alternate_exact_targets: Vec::new(),
+        },
         PlanItem::Blocked { id, seed, .. } => SelectionRow {
             plan_item_id: id.clone(),
             package_name: seed.installed.package_name.clone(),
