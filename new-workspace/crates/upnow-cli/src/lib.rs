@@ -10,8 +10,8 @@ use clap::{Parser, Subcommand};
 use config::{ConfigError, UpnowConfig};
 use registry::{available_manager_ids, configured_manager, ensure_known_manager};
 use upnow_domain::{
-    InstalledTool, ManagerConfig, ManagerId, ManagerScanInput, PlanIssue, ReleaseLookupResult,
-    ScanIssue, ScanItem, ScanReport, UpdatePlan,
+    InstalledTool, ManagerConfig, ManagerId, ManagerScanInput, PlanIssue, PlanSelection,
+    ReleaseLookupResult, ScanIssue, ScanItem, ScanReport, UpdatePlan, UpdateSelectionPolicy,
 };
 use upnow_execution::{
     ExecutionReport, ExecutionSelectionError, ExecutionStatus, execute_commands,
@@ -19,7 +19,12 @@ use upnow_execution::{
 };
 use upnow_infra::{Clock, Env, HttpClient, HttpSettings, MutationMode, ProcessRunner};
 use upnow_managers::adapter::{ManagerAdapter, ManagerAdapterError, ReleaseLookupSubject};
-use upnow_planning::{PlanningSettings, default_batch_selection, update_plan_from_inputs};
+use upnow_planning::{
+    PlanningSettings, default_batch_selection, selection_view, update_plan_from_inputs,
+};
+use upnow_presentation::tui::{
+    InteractiveSelectionOutcome, InteractiveSelectionPlan, run_interactive_selection,
+};
 use upnow_presentation::{
     render_execution_report, render_manager_error, render_scan_report, render_update_plan,
 };
@@ -48,9 +53,11 @@ struct Cli {
     overrides: Vec<String>,
     #[arg(long, global = true)]
     verbose: bool,
+    #[arg(long, global = true)]
+    interactive: bool,
 }
 
-#[derive(Debug, Clone, Copy, Subcommand)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
 enum CliCommand {
     Scan,
     Plan,
@@ -145,6 +152,34 @@ pub fn run_batch(
     )
 }
 
+/// Runs interactive apply selection with real metadata sources.
+///
+/// This phase intentionally stops before config persistence or execution.
+///
+/// # Errors
+///
+/// Returns an error for config, discovery, planning, terminal, or selection failures.
+pub fn run_interactive_apply_selection(
+    config: UpnowConfig,
+    process: &ProcessRunner,
+    clock: Clock,
+    selected_managers: &[String],
+    overrides: &[String],
+) -> Result<Option<Vec<(ManagerId, PlanSelection)>>, AppError> {
+    let env = Env::real();
+    let http = HttpClient::real(&HttpSettings::default_client_settings())
+        .map_err(|err| AppError::Manager(err.to_string()))?;
+    run_interactive_apply_selection_with_sources(
+        config,
+        process,
+        &http,
+        &env,
+        clock,
+        selected_managers,
+        overrides,
+    )
+}
+
 /// Runs a batch command with explicit release metadata sources.
 ///
 /// # Errors
@@ -178,6 +213,108 @@ pub fn run_batch_with_sources(
         verbose,
         &manager_ids,
     )
+}
+
+/// Builds interactive apply plans without executing selected updates.
+///
+/// # Errors
+///
+/// Returns an error for config, discovery, or planning failures.
+pub fn build_interactive_apply_selection_plans_with_sources(
+    mut config: UpnowConfig,
+    process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
+    clock: Clock,
+    selected_managers: &[String],
+    overrides: &[String],
+) -> Result<Vec<(UpdatePlan, UpdateSelectionPolicy)>, AppError> {
+    if !selected_managers.is_empty() {
+        config.apply_selected_managers_cli_override(selected_managers)?;
+    }
+    for override_value in overrides {
+        config.apply_cli_override(override_value)?;
+    }
+    let manager_ids = selected_manager_ids(selected_managers)?;
+    let mut plans = Vec::new();
+    for manager_id in manager_ids {
+        ensure_known_manager(manager_id.as_str()).map_err(map_manager_error)?;
+        let manager_config = config.resolve_manager(manager_id.as_str())?;
+        if !manager_config.mode.allows_run(true) {
+            continue;
+        }
+        let manager = configured_manager(manager_config.clone()).map_err(map_manager_error)?;
+        let plan =
+            build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config)?;
+        plans.push((plan, manager_config.selection.clone()));
+    }
+    Ok(plans)
+}
+
+/// Runs interactive apply selection and returns the confirmed typed selection.
+///
+/// This phase intentionally stops before config persistence or execution.
+///
+/// # Errors
+///
+/// Returns an error for config, discovery, planning, terminal, or selection failures.
+pub fn run_interactive_apply_selection_with_sources(
+    config: UpnowConfig,
+    process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
+    clock: Clock,
+    selected_managers: &[String],
+    overrides: &[String],
+) -> Result<Option<Vec<(ManagerId, PlanSelection)>>, AppError> {
+    let plans = build_interactive_apply_selection_plans_with_sources(
+        config,
+        process,
+        http,
+        env,
+        clock,
+        selected_managers,
+        overrides,
+    )?;
+    let selection_plans = plans
+        .iter()
+        .map(|(plan, selection_policy)| {
+            InteractiveSelectionPlan::new(
+                selection_view(plan, selection_policy),
+                plan.issues.clone(),
+                selection_policy.clone(),
+            )
+        })
+        .collect();
+    match run_interactive_selection(selection_plans)
+        .map_err(|err| AppError::Planning(err.to_string()))?
+    {
+        InteractiveSelectionOutcome::Cancelled => Ok(None),
+        InteractiveSelectionOutcome::Confirmed(drafts) => {
+            if drafts.len() != plans.len() {
+                return Err(AppError::Planning(format!(
+                    "interactive selection count mismatch: expected {}, got {}",
+                    plans.len(),
+                    drafts.len()
+                )));
+            }
+            let mut selections = Vec::new();
+            for ((plan, _), draft) in plans.iter().zip(drafts) {
+                if plan.manager_id != draft.manager_id {
+                    return Err(AppError::Planning(format!(
+                        "interactive selection manager mismatch: expected {}, got {}",
+                        plan.manager_id.as_str(),
+                        draft.manager_id.as_str()
+                    )));
+                }
+                let selection =
+                    PlanSelection::new(plan, draft.selected_items, draft.selection_policy)
+                        .map_err(|err| AppError::Planning(err.to_string()))?;
+                selections.push((plan.manager_id.clone(), selection));
+            }
+            Ok(Some(selections))
+        }
+    }
 }
 
 fn run_batch_for_managers(
@@ -468,8 +605,24 @@ fn run_cli(cli: Cli) -> Result<String, AppError> {
     let config = UpnowConfig::load()?;
     let env = Env::real();
     let process = ProcessRunner::new(MutationMode::from_env(&env));
+    let command = cli.command.unwrap_or(CliCommand::Plan);
+    if cli.interactive {
+        if command != CliCommand::Apply {
+            return Err(AppError::InvalidArgs(
+                "--interactive is only supported with apply".to_owned(),
+            ));
+        }
+        let outcome = run_interactive_apply_selection(
+            config,
+            &process,
+            Clock::system(),
+            &cli.managers,
+            &cli.overrides,
+        )?;
+        return Ok(render_interactive_selection_outcome(&outcome));
+    }
     run_batch(
-        cli.command.unwrap_or(CliCommand::Plan).into(),
+        command.into(),
         config,
         &process,
         Clock::system(),
@@ -477,6 +630,26 @@ fn run_cli(cli: Cli) -> Result<String, AppError> {
         &cli.managers,
         &cli.overrides,
     )
+}
+
+fn render_interactive_selection_outcome(
+    outcome: &Option<Vec<(ManagerId, PlanSelection)>>,
+) -> String {
+    match outcome {
+        Some(selections) => {
+            let mut lines = vec!["interactive selection confirmed".to_owned()];
+            for (manager_id, selection) in selections {
+                lines.push(format!(
+                    "selected {} {}",
+                    manager_id.as_str(),
+                    selection.selected_items.len()
+                ));
+            }
+            lines.push(String::new());
+            lines.join("\n")
+        }
+        None => "interactive selection cancelled\n".to_owned(),
+    }
 }
 
 fn build_manager_plan(
@@ -616,5 +789,14 @@ mod tests {
         .expect("CLI should parse overrides");
 
         assert_eq!(cli.overrides, ["npm.version_policy=stable"]);
+    }
+
+    #[test]
+    fn parses_interactive_apply_flag() {
+        let cli = Cli::try_parse_from(["upnow", "--interactive", "apply"])
+            .expect("CLI should parse interactive apply");
+
+        assert!(matches!(cli.command, Some(CliCommand::Apply)));
+        assert!(cli.interactive);
     }
 }

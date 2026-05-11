@@ -62,6 +62,19 @@ impl InteractiveSelectionState {
         self.selected_targets.get(plan_item_id)
     }
 
+    #[must_use]
+    pub fn selected_items(&self) -> Vec<SelectedItem> {
+        self.selected_targets
+            .iter()
+            .map(|(plan_item_id, target)| SelectedItem::new(plan_item_id.clone(), target.clone()))
+            .collect()
+    }
+
+    #[must_use]
+    pub const fn selection_policy(&self) -> &UpdateSelectionPolicy {
+        &self.selection_policy
+    }
+
     /// Selects an update row's recommended target.
     ///
     /// # Errors
@@ -199,13 +212,7 @@ impl InteractiveSelectionState {
     /// Returns [`SelectionStateError::InvalidSelection`] if the generated selection no longer
     /// validates against the source plan.
     pub fn plan_selection(&self, plan: &UpdatePlan) -> Result<PlanSelection, SelectionStateError> {
-        let selected_items = self
-            .selected_targets
-            .iter()
-            .map(|(plan_item_id, target)| SelectedItem::new(plan_item_id.clone(), target.clone()))
-            .collect();
-
-        PlanSelection::new(plan, selected_items, self.selection_policy.clone())
+        PlanSelection::new(plan, self.selected_items(), self.selection_policy.clone())
             .map_err(|err| SelectionStateError::InvalidSelection(err.to_string()))
     }
 
