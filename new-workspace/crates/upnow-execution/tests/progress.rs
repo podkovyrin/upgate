@@ -129,6 +129,36 @@ fn stop_after_current_marks_pending_rows_skipped_on_finish() {
     assert!(state.summary().stopped_after_current);
 }
 
+#[test]
+fn fatal_progress_event_marks_active_and_pending_rows_failed() {
+    let mut state = ExecutionProgressState::from_execution_plans(vec![
+        (
+            manager_id("pnpm"),
+            ResolvedExecutionPlan {
+                intents: vec![ExecutionCommandIntent::Exact(item("pnpm:alpha", "alpha"))],
+            },
+        ),
+        (
+            manager_id("npm"),
+            ResolvedExecutionPlan {
+                intents: vec![ExecutionCommandIntent::Exact(item("npm:beta", "beta"))],
+            },
+        ),
+    ]);
+
+    state.apply_event(ExecutionProgressEvent::manager_started(manager_id("pnpm")));
+    state.apply_event(ExecutionProgressEvent::fatal("interrupted"));
+    state.apply_event(ExecutionProgressEvent::Finished);
+
+    assert!(state.rows.iter().all(|row| {
+        matches!(
+            row.status,
+            ExecutionProgressStatus::Failed { ref detail } if detail == "interrupted"
+        )
+    }));
+    assert!(state.summary().had_failure);
+}
+
 fn item(id: &str, package_name: &str) -> ResolvedExecutionItem {
     ResolvedExecutionItem {
         plan_item_id: PlanItemId::new(id).expect("valid plan item id"),

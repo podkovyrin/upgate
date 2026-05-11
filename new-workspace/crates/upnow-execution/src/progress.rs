@@ -57,6 +57,9 @@ pub enum ExecutionProgressEvent {
         manager_id: ManagerId,
         detail: String,
     },
+    Fatal {
+        detail: String,
+    },
     StopAfterCurrentRequested,
     Finished,
 }
@@ -146,6 +149,18 @@ impl ExecutionProgressState {
                     }
                 }
             }
+            ExecutionProgressEvent::Fatal { detail } => {
+                for row in &mut self.rows {
+                    if matches!(
+                        row.status,
+                        ExecutionProgressStatus::Pending | ExecutionProgressStatus::Running
+                    ) {
+                        row.status = ExecutionProgressStatus::Failed {
+                            detail: detail.clone(),
+                        };
+                    }
+                }
+            }
             ExecutionProgressEvent::StopAfterCurrentRequested => {
                 self.stop_after_current = true;
             }
@@ -192,6 +207,13 @@ impl ExecutionProgressEvent {
     pub fn manager_failed(manager_id: ManagerId, detail: impl Into<String>) -> Self {
         Self::ManagerFailed {
             manager_id,
+            detail: detail.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn fatal(detail: impl Into<String>) -> Self {
+        Self::Fatal {
             detail: detail.into(),
         }
     }

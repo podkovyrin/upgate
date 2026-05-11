@@ -89,7 +89,7 @@ pub(crate) fn render_selection_table(
     );
 }
 
-fn update_header_row(theme: &TuiTheme) -> Row<'static> {
+pub(crate) fn update_header_row(theme: &TuiTheme) -> Row<'static> {
     Row::new(vec!["", "Manager", "Name", "Current", "Target", "Note"]).style(theme.header)
 }
 
@@ -100,6 +100,17 @@ fn selection_update_columns() -> [Constraint; 6] {
         Constraint::Max(30),
         Constraint::Max(18),
         Constraint::Max(18),
+        Constraint::Fill(1),
+    ]
+}
+
+pub(crate) fn progress_update_columns() -> [Constraint; 6] {
+    [
+        Constraint::Length(4),
+        Constraint::Max(10),
+        Constraint::Min(12),
+        Constraint::Max(14),
+        Constraint::Max(14),
         Constraint::Fill(1),
     ]
 }

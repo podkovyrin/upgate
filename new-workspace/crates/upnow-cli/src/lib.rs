@@ -5,6 +5,10 @@ pub mod registry;
 
 use std::fmt::{self, Display};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::thread;
 use std::time::SystemTime;
 
 use clap::{Parser, Subcommand};
@@ -18,8 +22,8 @@ use upnow_execution::progress::{
     ExecutionProgressEvent, ExecutionProgressState, ExecutionProgressSummary,
 };
 use upnow_execution::{
-    ExecutionReport, ExecutionSelectionError, ExecutionStatus, execute_commands,
-    resolve_selection_for_execution,
+    ExecutionReport, ExecutionSelectionError, ExecutionStatus, ResolvedExecutionPlan,
+    execute_commands, resolve_selection_for_execution,
 };
 use upnow_infra::{
     Clock, Env, HttpClient, HttpSettings, MutationMode, ProcessRunner, REQUIRE_MUTATION_MODE_ENV,
@@ -30,7 +34,7 @@ use upnow_planning::{
     PlanningSettings, default_batch_selection, selection_view, update_plan_from_inputs,
 };
 use upnow_presentation::tui::{
-    InteractiveSelectionOutcome, InteractiveSelectionPlan, render_progress_state,
+    InteractiveSelectionOutcome, InteractiveSelectionPlan, run_interactive_progress,
     run_interactive_selection,
 };
 use upnow_presentation::{
@@ -281,9 +285,8 @@ pub fn run_interactive_apply_with_sources(
     )?;
     match run_confirmed_selection(prepared)? {
         Some((config, confirmed)) => {
-            let report =
-                execute_confirmed_interactive_apply_with_sources(config, process, env, confirmed)?;
-            Ok(render_progress_state(&report.progress))
+            execute_confirmed_interactive_apply_live(config, process, env, confirmed)?;
+            Ok(String::new())
         }
         None => Ok("interactive selection cancelled\n".to_owned()),
     }
@@ -599,8 +602,77 @@ fn execute_confirmed_interactive_apply(
     confirmed: Vec<ConfirmedInteractiveManagerApply>,
     config_path: Option<&Path>,
 ) -> Result<InteractiveApplyReport, AppError> {
+    let resolved = resolve_confirmed_execution_plans(&confirmed)?;
+    let mut progress = ExecutionProgressState::from_execution_plans(resolved.clone());
+    execute_confirmed_interactive_apply_resolved(
+        &mut config,
+        process,
+        env,
+        confirmed,
+        &resolved,
+        config_path,
+        None,
+        &mut |event| {
+            progress.apply_event(event);
+            Ok(())
+        },
+    )?;
+    let summary = progress.summary();
+    Ok(InteractiveApplyReport { progress, summary })
+}
+
+fn execute_confirmed_interactive_apply_live(
+    config: UpnowConfig,
+    process: &ProcessRunner,
+    env: &Env,
+    confirmed: Vec<ConfirmedInteractiveManagerApply>,
+) -> Result<ExecutionProgressSummary, AppError> {
+    let resolved = resolve_confirmed_execution_plans(&confirmed)?;
+    let initial_progress = ExecutionProgressState::from_execution_plans(resolved.clone());
+    let (tx, rx) = mpsc::channel();
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    let worker_stop = Arc::clone(&stop_requested);
+
+    thread::scope(|scope| {
+        let worker = scope.spawn(move || {
+            let mut config = config;
+            let result = execute_confirmed_interactive_apply_resolved(
+                &mut config,
+                process,
+                env,
+                confirmed,
+                &resolved,
+                None,
+                Some(&worker_stop),
+                &mut |event| {
+                    tx.send(event).map_err(|err| {
+                        AppError::Execution(format!("progress event stream closed: {err}"))
+                    })
+                },
+            );
+            if let Err(err) = &result {
+                let _ = tx.send(ExecutionProgressEvent::fatal(err.to_string()));
+                let _ = tx.send(ExecutionProgressEvent::Finished);
+            }
+            result
+        });
+
+        let tui_result = run_interactive_progress(initial_progress, &rx, stop_requested)
+            .map_err(|err| AppError::Planning(err.to_string()));
+        let worker_result = worker
+            .join()
+            .map_err(|_| AppError::Execution("interactive apply worker panicked".to_owned()))?;
+
+        worker_result?;
+        tui_result
+    })
+}
+
+fn resolve_confirmed_execution_plans(
+    confirmed: &[ConfirmedInteractiveManagerApply],
+) -> Result<Vec<(ManagerId, ResolvedExecutionPlan)>, AppError> {
     let mut resolved = Vec::new();
-    for manager in &confirmed {
+    for manager in confirmed {
         let execution_plan = resolve_selection_for_execution(
             &manager.plan,
             &manager.selection,
@@ -612,9 +684,20 @@ fn execute_confirmed_interactive_apply(
         .map_err(map_execution_selection_error)?;
         resolved.push((manager.plan.manager_id.clone(), execution_plan));
     }
+    Ok(resolved)
+}
 
-    let mut progress = ExecutionProgressState::from_execution_plans(resolved.clone());
-
+#[allow(clippy::too_many_arguments)]
+fn execute_confirmed_interactive_apply_resolved(
+    config: &mut UpnowConfig,
+    process: &ProcessRunner,
+    env: &Env,
+    confirmed: Vec<ConfirmedInteractiveManagerApply>,
+    resolved: &[(ManagerId, ResolvedExecutionPlan)],
+    config_path: Option<&Path>,
+    stop_requested: Option<&AtomicBool>,
+    emit: &mut impl FnMut(ExecutionProgressEvent) -> Result<(), AppError>,
+) -> Result<(), AppError> {
     for manager in &confirmed {
         config
             .set_manager_selection_policy(
@@ -634,9 +717,13 @@ fn execute_confirmed_interactive_apply(
     }
 
     for manager in confirmed {
-        progress.apply_event(ExecutionProgressEvent::manager_started(
+        if stop_requested.is_some_and(|stop| stop.load(Ordering::Relaxed)) {
+            break;
+        }
+
+        emit(ExecutionProgressEvent::manager_started(
             manager.plan.manager_id.clone(),
-        ));
+        ))?;
 
         let manager_adapter =
             configured_manager(manager.manager_config.clone()).map_err(map_manager_error)?;
@@ -654,10 +741,10 @@ fn execute_confirmed_interactive_apply(
                 Ok(commands) => commands,
                 Err(err) if err.is_interruption() => return Err(map_manager_error(err)),
                 Err(err) => {
-                    progress.apply_event(ExecutionProgressEvent::manager_failed(
+                    emit(ExecutionProgressEvent::manager_failed(
                         manager.plan.manager_id,
                         err.to_string(),
-                    ));
+                    ))?;
                     continue;
                 }
             };
@@ -670,12 +757,15 @@ fn execute_confirmed_interactive_apply(
                 }
             },
         )?;
-        progress.apply_event(ExecutionProgressEvent::manager_finished(report));
+        emit(ExecutionProgressEvent::manager_finished(report))?;
+
+        if stop_requested.is_some_and(|stop| stop.load(Ordering::Relaxed)) {
+            break;
+        }
     }
 
-    progress.apply_event(ExecutionProgressEvent::Finished);
-    let summary = progress.summary();
-    Ok(InteractiveApplyReport { progress, summary })
+    emit(ExecutionProgressEvent::Finished)?;
+    Ok(())
 }
 
 fn run_batch_for_managers(
