@@ -1,5 +1,7 @@
 //! Execution behavior for the `upnow` rebuild.
 
+pub mod progress;
+
 use std::fmt::{self, Display};
 
 use upnow_domain::{

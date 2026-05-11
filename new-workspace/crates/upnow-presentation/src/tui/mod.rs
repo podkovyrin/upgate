@@ -1,6 +1,8 @@
+pub mod progress;
 pub mod selection;
 pub mod selection_state;
 
+pub use progress::{render_progress_state, render_progress_summary};
 pub use selection::{
     InteractiveManagerSelectionDraft, InteractiveSelectionOutcome, InteractiveSelectionPlan,
     InteractiveSelectionScreen, SelectionControl, SelectionInput, run_interactive_selection,

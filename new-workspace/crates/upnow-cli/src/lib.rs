@@ -4,6 +4,7 @@ pub mod config;
 pub mod registry;
 
 use std::fmt::{self, Display};
+use std::path::Path;
 use std::time::SystemTime;
 
 use clap::{Parser, Subcommand};
@@ -12,6 +13,9 @@ use registry::{available_manager_ids, configured_manager, ensure_known_manager};
 use upnow_domain::{
     InstalledTool, ManagerConfig, ManagerId, ManagerScanInput, PlanIssue, PlanSelection,
     ReleaseLookupResult, ScanIssue, ScanItem, ScanReport, UpdatePlan, UpdateSelectionPolicy,
+};
+use upnow_execution::progress::{
+    ExecutionProgressEvent, ExecutionProgressState, ExecutionProgressSummary,
 };
 use upnow_execution::{
     ExecutionReport, ExecutionSelectionError, ExecutionStatus, execute_commands,
@@ -23,7 +27,8 @@ use upnow_planning::{
     PlanningSettings, default_batch_selection, selection_view, update_plan_from_inputs,
 };
 use upnow_presentation::tui::{
-    InteractiveSelectionOutcome, InteractiveSelectionPlan, run_interactive_selection,
+    InteractiveSelectionOutcome, InteractiveSelectionPlan, render_progress_state,
+    run_interactive_selection,
 };
 use upnow_presentation::{
     render_execution_report, render_manager_error, render_scan_report, render_update_plan,
@@ -122,6 +127,31 @@ impl From<ConfigError> for AppError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmedInteractiveManagerApply {
+    pub plan: UpdatePlan,
+    pub manager_config: ManagerConfig,
+    pub selection: PlanSelection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InteractiveApplyReport {
+    pub progress: ExecutionProgressState,
+    pub summary: ExecutionProgressSummary,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedInteractiveApply {
+    config: UpnowConfig,
+    managers: Vec<PreparedInteractiveManagerApply>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedInteractiveManagerApply {
+    plan: UpdatePlan,
+    manager_config: ManagerConfig,
+}
+
 /// Runs a batch command for the migrated managers selected by config and args.
 ///
 /// # Errors
@@ -180,6 +210,67 @@ pub fn run_interactive_apply_selection(
     )
 }
 
+/// Runs interactive apply through selection, config persistence, execution, and progress output.
+///
+/// # Errors
+///
+/// Returns an error for config, discovery, planning, terminal, selection, persistence, or
+/// interrupted execution failures.
+pub fn run_interactive_apply(
+    config: UpnowConfig,
+    process: &ProcessRunner,
+    clock: Clock,
+    selected_managers: &[String],
+    overrides: &[String],
+) -> Result<String, AppError> {
+    let env = Env::real();
+    let http = HttpClient::real(&HttpSettings::default_client_settings())
+        .map_err(|err| AppError::Manager(err.to_string()))?;
+    run_interactive_apply_with_sources(
+        config,
+        process,
+        &http,
+        &env,
+        clock,
+        selected_managers,
+        overrides,
+    )
+}
+
+/// Runs interactive apply with explicit metadata sources.
+///
+/// # Errors
+///
+/// Returns an error for config, discovery, planning, terminal, selection, persistence, or
+/// interrupted execution failures.
+pub fn run_interactive_apply_with_sources(
+    config: UpnowConfig,
+    process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
+    clock: Clock,
+    selected_managers: &[String],
+    overrides: &[String],
+) -> Result<String, AppError> {
+    let prepared = prepare_interactive_apply_with_sources(
+        config,
+        process,
+        http,
+        env,
+        clock,
+        selected_managers,
+        overrides,
+    )?;
+    match run_confirmed_selection(prepared)? {
+        Some((config, confirmed)) => {
+            let report =
+                execute_confirmed_interactive_apply_with_sources(config, process, env, confirmed)?;
+            Ok(render_progress_state(&report.progress))
+        }
+        None => Ok("interactive selection cancelled\n".to_owned()),
+    }
+}
+
 /// Runs a batch command with explicit release metadata sources.
 ///
 /// # Errors
@@ -221,7 +312,7 @@ pub fn run_batch_with_sources(
 ///
 /// Returns an error for config, discovery, or planning failures.
 pub fn build_interactive_apply_selection_plans_with_sources(
-    mut config: UpnowConfig,
+    config: UpnowConfig,
     process: &ProcessRunner,
     http: &HttpClient,
     env: &Env,
@@ -229,6 +320,34 @@ pub fn build_interactive_apply_selection_plans_with_sources(
     selected_managers: &[String],
     overrides: &[String],
 ) -> Result<Vec<(UpdatePlan, UpdateSelectionPolicy)>, AppError> {
+    let prepared = prepare_interactive_apply_with_sources(
+        config,
+        process,
+        http,
+        env,
+        clock,
+        selected_managers,
+        overrides,
+    )?;
+    Ok(prepared
+        .managers
+        .into_iter()
+        .map(|manager| {
+            let selection = manager.manager_config.selection.clone();
+            (manager.plan, selection)
+        })
+        .collect())
+}
+
+fn prepare_interactive_apply_with_sources(
+    mut config: UpnowConfig,
+    process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
+    clock: Clock,
+    selected_managers: &[String],
+    overrides: &[String],
+) -> Result<PreparedInteractiveApply, AppError> {
     if !selected_managers.is_empty() {
         config.apply_selected_managers_cli_override(selected_managers)?;
     }
@@ -236,7 +355,7 @@ pub fn build_interactive_apply_selection_plans_with_sources(
         config.apply_cli_override(override_value)?;
     }
     let manager_ids = selected_manager_ids(selected_managers)?;
-    let mut plans = Vec::new();
+    let mut managers = Vec::new();
     for manager_id in manager_ids {
         ensure_known_manager(manager_id.as_str()).map_err(map_manager_error)?;
         let manager_config = config.resolve_manager(manager_id.as_str())?;
@@ -246,9 +365,12 @@ pub fn build_interactive_apply_selection_plans_with_sources(
         let manager = configured_manager(manager_config.clone()).map_err(map_manager_error)?;
         let plan =
             build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config)?;
-        plans.push((plan, manager_config.selection.clone()));
+        managers.push(PreparedInteractiveManagerApply {
+            plan,
+            manager_config,
+        });
     }
-    Ok(plans)
+    Ok(PreparedInteractiveApply { config, managers })
 }
 
 /// Runs interactive apply selection and returns the confirmed typed selection.
@@ -315,6 +437,175 @@ pub fn run_interactive_apply_selection_with_sources(
             Ok(Some(selections))
         }
     }
+}
+
+fn run_confirmed_selection(
+    prepared: PreparedInteractiveApply,
+) -> Result<Option<(UpnowConfig, Vec<ConfirmedInteractiveManagerApply>)>, AppError> {
+    let selection_plans = prepared
+        .managers
+        .iter()
+        .map(|manager| {
+            InteractiveSelectionPlan::new(
+                selection_view(&manager.plan, &manager.manager_config.selection),
+                manager.plan.issues.clone(),
+                manager.manager_config.selection.clone(),
+            )
+        })
+        .collect();
+
+    match run_interactive_selection(selection_plans)
+        .map_err(|err| AppError::Planning(err.to_string()))?
+    {
+        InteractiveSelectionOutcome::Cancelled => Ok(None),
+        InteractiveSelectionOutcome::Confirmed(drafts) => {
+            if drafts.len() != prepared.managers.len() {
+                return Err(AppError::Planning(format!(
+                    "interactive selection count mismatch: expected {}, got {}",
+                    prepared.managers.len(),
+                    drafts.len()
+                )));
+            }
+
+            let mut confirmed = Vec::new();
+            for (manager, draft) in prepared.managers.into_iter().zip(drafts) {
+                if manager.plan.manager_id != draft.manager_id {
+                    return Err(AppError::Planning(format!(
+                        "interactive selection manager mismatch: expected {}, got {}",
+                        manager.plan.manager_id.as_str(),
+                        draft.manager_id.as_str()
+                    )));
+                }
+                let selection =
+                    PlanSelection::new(&manager.plan, draft.selected_items, draft.selection_policy)
+                        .map_err(|err| AppError::Planning(err.to_string()))?;
+                confirmed.push(ConfirmedInteractiveManagerApply {
+                    plan: manager.plan,
+                    manager_config: manager.manager_config,
+                    selection,
+                });
+            }
+
+            Ok(Some((prepared.config, confirmed)))
+        }
+    }
+}
+
+/// Executes confirmed interactive selections and persists selection policy to the default config.
+///
+/// # Errors
+///
+/// Returns an error for config persistence, selection resolution, or interrupted execution.
+/// Manager command construction and execution failures are reported in the progress report.
+pub fn execute_confirmed_interactive_apply_with_sources(
+    config: UpnowConfig,
+    process: &ProcessRunner,
+    env: &Env,
+    confirmed: Vec<ConfirmedInteractiveManagerApply>,
+) -> Result<InteractiveApplyReport, AppError> {
+    execute_confirmed_interactive_apply(config, process, env, confirmed, None)
+}
+
+/// Executes confirmed interactive selections and persists selection policy to a specific config.
+///
+/// # Errors
+///
+/// Returns an error for config persistence, selection resolution, or interrupted execution.
+/// Manager command construction and execution failures are reported in the progress report.
+pub fn execute_confirmed_interactive_apply_with_config_path(
+    config: UpnowConfig,
+    process: &ProcessRunner,
+    env: &Env,
+    confirmed: Vec<ConfirmedInteractiveManagerApply>,
+    config_path: &Path,
+) -> Result<InteractiveApplyReport, AppError> {
+    execute_confirmed_interactive_apply(config, process, env, confirmed, Some(config_path))
+}
+
+fn execute_confirmed_interactive_apply(
+    mut config: UpnowConfig,
+    process: &ProcessRunner,
+    env: &Env,
+    confirmed: Vec<ConfirmedInteractiveManagerApply>,
+    config_path: Option<&Path>,
+) -> Result<InteractiveApplyReport, AppError> {
+    let mut resolved = Vec::new();
+    for manager in &confirmed {
+        let execution_plan = resolve_selection_for_execution(
+            &manager.plan,
+            &manager.selection,
+            configured_manager(manager.manager_config.clone())
+                .map_err(map_manager_error)?
+                .capabilities(),
+            manager.manager_config.version_policy,
+        )
+        .map_err(map_execution_selection_error)?;
+        resolved.push((manager.plan.manager_id.clone(), execution_plan));
+    }
+
+    let mut progress = ExecutionProgressState::from_execution_plans(resolved.clone());
+
+    for manager in &confirmed {
+        config
+            .set_manager_selection_policy(
+                manager.plan.manager_id.as_str(),
+                manager.selection.selection_policy.clone(),
+            )
+            .map_err(AppError::from)?;
+        if let Some(path) = config_path {
+            config
+                .persist_manager_selection_policy_to_path(manager.plan.manager_id.as_str(), path)
+                .map_err(AppError::from)?;
+        } else {
+            config
+                .persist_manager_selection_policy(manager.plan.manager_id.as_str())
+                .map_err(AppError::from)?;
+        }
+    }
+
+    for manager in confirmed {
+        progress.apply_event(ExecutionProgressEvent::manager_started(
+            manager.plan.manager_id.clone(),
+        ));
+
+        let manager_adapter =
+            configured_manager(manager.manager_config.clone()).map_err(map_manager_error)?;
+        let Some((_, execution_plan)) = resolved
+            .iter()
+            .find(|(manager_id, _)| manager_id == &manager.plan.manager_id)
+        else {
+            return Err(AppError::Execution(format!(
+                "missing execution plan for {}",
+                manager.plan.manager_id.as_str()
+            )));
+        };
+        let commands =
+            match manager_adapter.commands_for_execution_plan(process, env, execution_plan) {
+                Ok(commands) => commands,
+                Err(err) if err.is_interruption() => return Err(map_manager_error(err)),
+                Err(err) => {
+                    progress.apply_event(ExecutionProgressEvent::manager_failed(
+                        manager.plan.manager_id,
+                        err.to_string(),
+                    ));
+                    continue;
+                }
+            };
+        let report = execute_commands(manager.plan.manager_id.clone(), commands, process).map_err(
+            |err| {
+                if err.is_interruption() {
+                    AppError::Interrupted(err.to_string())
+                } else {
+                    AppError::Execution(err.to_string())
+                }
+            },
+        )?;
+        progress.apply_event(ExecutionProgressEvent::manager_finished(report));
+    }
+
+    progress.apply_event(ExecutionProgressEvent::Finished);
+    let summary = progress.summary();
+    Ok(InteractiveApplyReport { progress, summary })
 }
 
 fn run_batch_for_managers(
@@ -612,14 +903,13 @@ fn run_cli(cli: Cli) -> Result<String, AppError> {
                 "--interactive is only supported with apply".to_owned(),
             ));
         }
-        let outcome = run_interactive_apply_selection(
+        return run_interactive_apply(
             config,
             &process,
             Clock::system(),
             &cli.managers,
             &cli.overrides,
-        )?;
-        return Ok(render_interactive_selection_outcome(&outcome));
+        );
     }
     run_batch(
         command.into(),
@@ -630,26 +920,6 @@ fn run_cli(cli: Cli) -> Result<String, AppError> {
         &cli.managers,
         &cli.overrides,
     )
-}
-
-fn render_interactive_selection_outcome(
-    outcome: &Option<Vec<(ManagerId, PlanSelection)>>,
-) -> String {
-    match outcome {
-        Some(selections) => {
-            let mut lines = vec!["interactive selection confirmed".to_owned()];
-            for (manager_id, selection) in selections {
-                lines.push(format!(
-                    "selected {} {}",
-                    manager_id.as_str(),
-                    selection.selected_items.len()
-                ));
-            }
-            lines.push(String::new());
-            lines.join("\n")
-        }
-        None => "interactive selection cancelled\n".to_owned(),
-    }
 }
 
 fn build_manager_plan(
