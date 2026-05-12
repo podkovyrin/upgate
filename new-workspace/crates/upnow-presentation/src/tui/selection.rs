@@ -14,8 +14,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row};
 use unicode_width::UnicodeWidthStr;
 use upnow_domain::{
-    ManagerId, PlanIssue, PolicyBlockReason, PolicyWarning, SelectedItem, SkipReason,
-    UpdateSelectionPolicy,
+    ManagerId, PlanIssue, PolicyBlockReason, PolicyWarning, SelectedItem, SelectedTarget,
+    SkipReason, UpdateSelectionPolicy,
 };
 use upnow_planning::{
     CandidateNoteKind, CandidateNotePart, SelectionRow, SelectionRowStatus, SelectionRowVisibility,
@@ -24,8 +24,8 @@ use upnow_planning::{
 
 use crate::outcome::version_label;
 use crate::tui::components::{
-    KeyBinding, app_block, key_footer, render_selection_table, render_separator, render_tabs,
-    visible_tabs,
+    KeyBinding, TuiTable, app_block, key_footer, render_modal_frame, render_selection_table,
+    render_separator, render_table, render_tabs, version_picker_columns, visible_tabs,
 };
 use crate::tui::layout::app_frame;
 use crate::tui::text::{truncate_with_ellipsis, version_diff_spans};
@@ -85,6 +85,10 @@ const PICKER_FOOTER_KEYS: &[KeyBinding<'static>] = &[
         label: "confirm",
     },
 ];
+const PICKER_MAIN_MOVE_KEY: KeyBinding<'static> = KeyBinding {
+    key: "shift+up/down J/K",
+    label: "row",
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractiveSelectionPlan {
@@ -134,6 +138,8 @@ pub enum SelectionInput {
     OpenTargetPicker,
     PickerUp,
     PickerDown,
+    PickerPreviousRow,
+    PickerNextRow,
     PickerConfirm,
     PickerCancel,
     RecommendedTarget,
@@ -187,6 +193,13 @@ struct SelectionRenderRow {
     target: String,
     note_parts: Vec<CandidateNotePart>,
     forced: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TargetPickerRenderRow {
+    option: String,
+    target: String,
+    note_parts: Vec<CandidateNotePart>,
 }
 
 impl InteractiveSelectionScreen {
@@ -322,6 +335,8 @@ impl InteractiveSelectionScreen {
             SelectionInput::Ignore
             | SelectionInput::PickerUp
             | SelectionInput::PickerDown
+            | SelectionInput::PickerPreviousRow
+            | SelectionInput::PickerNextRow
             | SelectionInput::PickerConfirm
             | SelectionInput::PickerCancel
             | SelectionInput::RecommendedTarget => {}
@@ -351,23 +366,37 @@ impl InteractiveSelectionScreen {
             SelectionInput::Cancel => return Ok(SelectionControl::Cancel),
             SelectionInput::PickerUp => self.move_picker_up(),
             SelectionInput::PickerDown => self.move_picker_down(),
+            SelectionInput::PickerPreviousRow => self.move_picker_to_row(-1),
+            SelectionInput::PickerNextRow => self.move_picker_to_row(1),
             SelectionInput::RecommendedTarget => self.choose_recommended_target()?,
             SelectionInput::PickerConfirm => self.confirm_picker_target()?,
-            SelectionInput::Confirm => return Ok(SelectionControl::Confirm),
             _ => {}
         }
         Ok(SelectionControl::Continue)
     }
 
     fn move_cursor_up(&mut self) {
-        self.cursor = self.cursor.saturating_sub(1);
+        let row_count = self.visible_row_refs().len();
+        if row_count == 0 {
+            return;
+        }
+        self.cursor = if self.cursor == 0 {
+            row_count - 1
+        } else {
+            self.cursor - 1
+        };
     }
 
     fn move_cursor_down(&mut self) {
         let row_count = self.visible_row_refs().len();
-        if self.cursor + 1 < row_count {
-            self.cursor += 1;
+        if row_count == 0 {
+            return;
         }
+        self.cursor = if self.cursor + 1 >= row_count {
+            0
+        } else {
+            self.cursor + 1
+        };
     }
 
     fn next_tab(&mut self) {
@@ -436,27 +465,86 @@ impl InteractiveSelectionScreen {
         if !row.target_options.is_empty() {
             self.target_picker = Some(TargetPickerState {
                 visible_row,
-                cursor: 0,
+                cursor: self.target_picker_initial_cursor(visible_row),
             });
         }
     }
 
     fn move_picker_up(&mut self) {
-        if let Some(picker) = &mut self.target_picker {
-            picker.cursor = picker.cursor.saturating_sub(1);
-        }
-    }
-
-    fn move_picker_down(&mut self) {
-        let Some(picker) = self.target_picker else {
+        let Some(mut picker) = self.target_picker else {
             return;
         };
         let option_count = self.target_option_count(picker.visible_row);
-        if picker.cursor + 1 < option_count {
-            self.target_picker = Some(TargetPickerState {
-                cursor: picker.cursor + 1,
-                ..picker
-            });
+        if option_count == 0 {
+            return;
+        }
+        picker.cursor = if picker.cursor == 0 {
+            option_count - 1
+        } else {
+            picker.cursor - 1
+        };
+        self.target_picker = Some(picker);
+    }
+
+    fn move_picker_down(&mut self) {
+        let Some(mut picker) = self.target_picker else {
+            return;
+        };
+        let option_count = self.target_option_count(picker.visible_row);
+        if option_count == 0 {
+            return;
+        }
+        picker.cursor = if picker.cursor + 1 >= option_count {
+            0
+        } else {
+            picker.cursor + 1
+        };
+        self.target_picker = Some(picker);
+    }
+
+    fn move_picker_to_row(&mut self, delta: isize) {
+        let Some(picker) = self.target_picker else {
+            return;
+        };
+        let visible_rows = self.visible_row_refs();
+        let Some(current_idx) = visible_rows
+            .iter()
+            .position(|row| *row == picker.visible_row)
+        else {
+            return;
+        };
+        if visible_rows.is_empty() {
+            return;
+        }
+
+        let mut next_idx = current_idx;
+        for _ in 0..visible_rows.len() {
+            next_idx = match delta.cmp(&0) {
+                std::cmp::Ordering::Less => {
+                    if next_idx == 0 {
+                        visible_rows.len() - 1
+                    } else {
+                        next_idx - 1
+                    }
+                }
+                std::cmp::Ordering::Equal => next_idx,
+                std::cmp::Ordering::Greater => {
+                    if next_idx + 1 >= visible_rows.len() {
+                        0
+                    } else {
+                        next_idx + 1
+                    }
+                }
+            };
+            let next_row = visible_rows[next_idx];
+            if self.target_option_count(next_row) > 0 {
+                self.cursor = next_idx;
+                self.target_picker = Some(TargetPickerState {
+                    visible_row: next_row,
+                    cursor: self.target_picker_initial_cursor(next_row),
+                });
+                return;
+            }
         }
     }
 
@@ -507,6 +595,25 @@ impl InteractiveSelectionScreen {
     fn target_option_count(&self, visible: VisibleRow) -> usize {
         let row = self.row(visible);
         row.target_options.len()
+    }
+
+    fn target_picker_initial_cursor(&self, visible: VisibleRow) -> usize {
+        let row = self.row(visible);
+        let selected_target = self.managers[visible.manager_idx]
+            .state
+            .selected_target(&row.plan_item_id);
+        selected_target
+            .and_then(|target| {
+                row.target_options
+                    .iter()
+                    .position(|option| target_option_matches_selected(option, target))
+            })
+            .unwrap_or_else(|| {
+                row.target_options
+                    .iter()
+                    .position(|option| matches!(option, TargetOption::Recommended { .. }))
+                    .unwrap_or(0)
+            })
     }
 
     fn clamp_cursor(&mut self) {
@@ -636,13 +743,24 @@ fn selection_input_from_event(event: &Event, target_picker_open: bool) -> Select
     };
 
     if target_picker_open {
+        match key.code {
+            KeyCode::Char('K') => return SelectionInput::PickerPreviousRow,
+            KeyCode::Char('J') => return SelectionInput::PickerNextRow,
+            KeyCode::Up | KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                return SelectionInput::PickerPreviousRow;
+            }
+            KeyCode::Down | KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                return SelectionInput::PickerNextRow;
+            }
+            _ => {}
+        }
+
         match input {
             SelectionInput::Up => SelectionInput::PickerUp,
             SelectionInput::Down => SelectionInput::PickerDown,
             SelectionInput::OpenTargetPicker => SelectionInput::PickerConfirm,
-            SelectionInput::Cancel if key.code != KeyCode::Char('c') => {
-                SelectionInput::PickerCancel
-            }
+            SelectionInput::Cancel if key.code == KeyCode::Esc => SelectionInput::PickerCancel,
+            SelectionInput::Cancel => SelectionInput::Ignore,
             _ => input,
         }
     } else {
@@ -681,6 +799,10 @@ fn draw_selection_with_theme(
 
     render_separator(frame, app_frame.footer_separator, theme);
     frame.render_widget(Paragraph::new(footer_line(screen, theme)), app_frame.footer);
+
+    if let Some(picker) = screen.target_picker {
+        draw_target_picker(frame, screen, picker, app_frame.outer, theme);
+    }
 }
 
 fn draw_tabs(
@@ -842,30 +964,176 @@ fn forced_note_cell(
 
 fn footer_line(screen: &InteractiveSelectionScreen, theme: &TuiTheme) -> Line<'static> {
     if screen.target_picker.is_some() {
-        return picker_footer_line(screen, theme);
+        return picker_footer_line(theme);
     }
 
     key_footer(FOOTER_KEYS, theme)
 }
 
-fn picker_footer_line(screen: &InteractiveSelectionScreen, theme: &TuiTheme) -> Line<'static> {
-    let options = screen
-        .target_picker_options()
-        .iter()
-        .map(target_option_label)
-        .collect::<Vec<_>>()
-        .join(" | ");
-    let mut spans = vec![Span::raw(format!("target: {options}  "))];
-    spans.extend(key_footer(PICKER_FOOTER_KEYS, theme).spans);
-    Line::from(spans)
+fn picker_footer_line(theme: &TuiTheme) -> Line<'static> {
+    key_footer(&[PICKER_MAIN_MOVE_KEY], theme)
 }
 
-fn target_option_label(option: &TargetOption) -> String {
-    let target = version_label(option.target_version().as_str());
+fn draw_target_picker(
+    frame: &mut ratatui::Frame<'_>,
+    screen: &InteractiveSelectionScreen,
+    picker: TargetPickerState,
+    area: Rect,
+    theme: &TuiTheme,
+) {
+    let row = screen.row(picker.visible_row);
+    let manager = &screen.managers[picker.visible_row.manager_idx];
+    let Some(inner) = render_modal_frame(
+        frame,
+        area,
+        target_picker_width(area),
+        target_picker_height(row.target_options.len()),
+        None,
+        theme,
+    ) else {
+        return;
+    };
+
+    if inner.height < 5 || inner.width < 20 {
+        frame.render_widget(Paragraph::new("Terminal too small"), inner);
+        return;
+    }
+
+    let [title_area, _, current_area, _, list_area, footer_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    let title = Line::from(Span::styled(
+        format!(
+            "{}: {}",
+            manager.manager_id.as_str(),
+            row.package_name.as_str()
+        ),
+        theme.header,
+    ))
+    .centered();
+    frame.render_widget(Paragraph::new(title), title_area);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Current: ", theme.header),
+            Span::raw(version_label(row.installed_version.as_str())),
+        ])),
+        current_area,
+    );
+
+    draw_target_picker_rows(frame, screen, picker, list_area, theme);
+    frame.render_widget(
+        Paragraph::new(key_footer(PICKER_FOOTER_KEYS, theme)),
+        footer_area,
+    );
+}
+
+fn draw_target_picker_rows(
+    frame: &mut ratatui::Frame<'_>,
+    screen: &InteractiveSelectionScreen,
+    picker: TargetPickerState,
+    area: Rect,
+    theme: &TuiTheme,
+) {
+    let row = screen.row(picker.visible_row);
+    let selected_target = screen.managers[picker.visible_row.manager_idx]
+        .state
+        .selected_target(&row.plan_item_id);
+    let current = version_label(row.installed_version.as_str());
+    let render_rows = target_picker_rows(&row.target_options);
+    let table_rows = render_rows
+        .iter()
+        .enumerate()
+        .map(|(idx, render_row)| {
+            let selected = selected_target.is_some_and(|target| {
+                target_option_matches_selected(&row.target_options[idx], target)
+            });
+            target_picker_table_row(&current, render_row, selected, idx == picker.cursor, theme)
+        })
+        .collect::<Vec<_>>();
+
+    let selected = (picker.cursor < render_rows.len()).then_some(picker.cursor);
+    render_table(
+        frame,
+        area,
+        TuiTable::new(table_rows, version_picker_columns())
+            .selected(selected)
+            .row_highlight_style(theme.selected),
+        theme,
+    );
+}
+
+fn target_picker_table_row(
+    current: &str,
+    row: &TargetPickerRenderRow,
+    selected: bool,
+    highlighted: bool,
+    theme: &TuiTheme,
+) -> Row<'static> {
+    let style = theme.row_for_selectable_state(highlighted, false);
+    let marker = if selected { "[x]" } else { "[ ]" };
+    let target = version_diff_spans(current, &row.target, style, theme, highlighted);
+    let mut target_spans = vec![
+        Span::styled(row.option.clone(), theme.emphasis(style)),
+        Span::styled(" ", style),
+    ];
+    target_spans.extend(target);
+    let note = note_line(&row.note_parts, theme.note_for(style), theme);
+
+    Row::new(vec![
+        Cell::new(marker).style(style),
+        Cell::new(Line::from(target_spans)).style(style),
+        Cell::new(note).style(theme.note_for(style)),
+    ])
+    .style(style)
+}
+
+fn target_picker_rows(options: &[TargetOption]) -> Vec<TargetPickerRenderRow> {
+    options
+        .iter()
+        .map(|option| TargetPickerRenderRow {
+            option: target_option_kind_label(option).to_owned(),
+            target: version_label(option.target_version().as_str()),
+            note_parts: option.note_parts().to_vec(),
+        })
+        .collect()
+}
+
+fn target_option_kind_label(option: &TargetOption) -> &'static str {
     match option {
-        TargetOption::Recommended { .. } => format!("recommended {target}"),
-        TargetOption::ForcedCandidate { .. } => format!("force {target}"),
-        TargetOption::AlternateExact { .. } => format!("exact {target}"),
+        TargetOption::Recommended { .. } => "recommended",
+        TargetOption::ForcedCandidate { .. } => "force",
+        TargetOption::AlternateExact { .. } => "exact",
+    }
+}
+
+fn target_picker_height(option_count: usize) -> u16 {
+    let body = u16::try_from(option_count.min(10)).unwrap_or(10);
+    body.saturating_add(8).clamp(9, 18)
+}
+
+fn target_picker_width(area: Rect) -> u16 {
+    area.width.saturating_sub(4).clamp(62, 96)
+}
+
+fn target_option_matches_selected(option: &TargetOption, target: &SelectedTarget) -> bool {
+    match (option, target) {
+        (TargetOption::Recommended { .. }, SelectedTarget::Recommended)
+        | (TargetOption::ForcedCandidate { .. }, SelectedTarget::ForcedCandidate) => true,
+        (
+            TargetOption::AlternateExact { target_version, .. },
+            SelectedTarget::AlternateExact {
+                target_version: selected,
+            },
+        ) => target_version == selected,
+        _ => false,
     }
 }
 
@@ -1060,7 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn picker_footer_keeps_typed_options_visible_until_modal_phase() {
+    fn picker_modal_renders_typed_options() {
         let plan = plan(
             "pnpm",
             vec![update(
@@ -1076,10 +1344,44 @@ mod tests {
             .expect("picker should open");
         let rendered = render_to_string(&mut screen, 140, 18);
 
-        assert!(rendered.contains("target:"));
-        assert!(rendered.contains("recommended v1.2.0"));
-        assert!(rendered.contains("exact v1.2.0"));
+        assert!(rendered.contains("pnpm: alpha"));
+        assert!(rendered.contains("Current:"));
+        assert!(rendered.contains("[x]"));
+        assert!(rendered.contains("[ ]"));
+        assert!(rendered.contains("recommended"));
+        assert!(rendered.contains("exact"));
+        assert!(rendered.contains("v1.2.0"));
+        assert!(rendered.contains("shift+up/down J/K"));
         assert!(rendered.contains("esc"));
+    }
+
+    #[test]
+    fn picker_open_event_mapping_keeps_q_local_to_picker() {
+        let confirm = selection_input_from_event(
+            &Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Char('C'),
+                KeyModifiers::NONE,
+            )),
+            true,
+        );
+        let quit = selection_input_from_event(
+            &Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Char('q'),
+                KeyModifiers::NONE,
+            )),
+            true,
+        );
+        let escape = selection_input_from_event(
+            &Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Esc,
+                KeyModifiers::NONE,
+            )),
+            true,
+        );
+
+        assert_eq!(confirm, SelectionInput::Confirm);
+        assert_eq!(quit, SelectionInput::Ignore);
+        assert_eq!(escape, SelectionInput::PickerCancel);
     }
 
     fn render_to_string(

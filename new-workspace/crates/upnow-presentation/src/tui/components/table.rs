@@ -1,9 +1,75 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
+use ratatui::style::Style;
 use ratatui::widgets::{Row, Table, TableState};
 
 use crate::tui::components::scrollbar::render_vertical_scrollbar;
 use crate::tui::theme::TuiTheme;
+
+pub(crate) struct TuiTable<const N: usize> {
+    rows: Vec<Row<'static>>,
+    columns: [Constraint; N],
+    header: Option<Row<'static>>,
+    selected: Option<usize>,
+    row_highlight_style: Option<Style>,
+}
+
+impl<const N: usize> TuiTable<N> {
+    pub(crate) fn new(rows: Vec<Row<'static>>, columns: [Constraint; N]) -> Self {
+        Self {
+            rows,
+            columns,
+            header: None,
+            selected: None,
+            row_highlight_style: None,
+        }
+    }
+
+    pub(crate) fn header(mut self, header: Row<'static>) -> Self {
+        self.header = Some(header);
+        self
+    }
+
+    pub(crate) fn selected(mut self, selected: Option<usize>) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    pub(crate) fn row_highlight_style(mut self, style: Style) -> Self {
+        self.row_highlight_style = Some(style);
+        self
+    }
+}
+
+pub(crate) fn render_table<const N: usize>(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    config: TuiTable<N>,
+    theme: &TuiTheme,
+) {
+    let content_length = config.rows.len();
+    let has_header = config.header.is_some();
+    let mut table = Table::new(config.rows, config.columns).column_spacing(2);
+    if let Some(header) = config.header {
+        table = table.header(header);
+    }
+    if let Some(style) = config.row_highlight_style {
+        table = table.row_highlight_style(style);
+    }
+
+    let mut state = TableState::default().with_selected(config.selected);
+    frame.render_stateful_widget(table, area, &mut state);
+
+    let header_height = usize::from(has_header);
+    render_vertical_scrollbar(
+        frame,
+        area,
+        content_length,
+        state.offset(),
+        usize::from(area.height).saturating_sub(header_height),
+        theme,
+    );
+}
 
 pub(crate) fn render_selection_table(
     frame: &mut Frame<'_>,
@@ -12,21 +78,13 @@ pub(crate) fn render_selection_table(
     selected: Option<usize>,
     theme: &TuiTheme,
 ) {
-    let content_length = rows.len();
-    let table = Table::new(rows, selection_update_columns())
-        .column_spacing(2)
-        .header(update_header_row(theme))
-        .row_highlight_style(theme.selected);
-
-    let mut state = TableState::default().with_selected(selected);
-    frame.render_stateful_widget(table, area, &mut state);
-
-    render_vertical_scrollbar(
+    render_table(
         frame,
         area,
-        content_length,
-        state.offset(),
-        usize::from(area.height).saturating_sub(1),
+        TuiTable::new(rows, selection_update_columns())
+            .header(update_header_row(theme))
+            .selected(selected)
+            .row_highlight_style(theme.selected),
         theme,
     );
 }
@@ -42,6 +100,14 @@ fn selection_update_columns() -> [Constraint; 6] {
         Constraint::Max(30),
         Constraint::Max(18),
         Constraint::Max(18),
+        Constraint::Fill(1),
+    ]
+}
+
+pub(crate) fn version_picker_columns() -> [Constraint; 3] {
+    [
+        Constraint::Length(4),
+        Constraint::Max(24),
         Constraint::Fill(1),
     ]
 }

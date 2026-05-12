@@ -171,6 +171,161 @@ fn picker_can_choose_alternate_exact_target() {
 }
 
 #[test]
+fn row_cursor_wraps_at_edges() {
+    let mut screen = screen(&plan(
+        "pnpm",
+        vec![
+            update("pnpm:alpha", "alpha", ExecutionEligibility::NativeOrExact),
+            update("pnpm:beta", "beta", ExecutionEligibility::NativeOrExact),
+        ],
+    ));
+
+    assert_eq!(screen.cursor(), 0);
+    screen
+        .handle_input(SelectionInput::Up)
+        .expect("up should wrap to the last row");
+    assert_eq!(screen.cursor(), 1);
+    screen
+        .handle_input(SelectionInput::Down)
+        .expect("down should wrap to the first row");
+    assert_eq!(screen.cursor(), 0);
+}
+
+#[test]
+fn picker_movement_wraps_and_confirms_wrapped_target() {
+    let mut screen = screen(&plan(
+        "pnpm",
+        vec![update(
+            "pnpm:alpha",
+            "alpha",
+            ExecutionEligibility::ExactOnly,
+        )],
+    ));
+
+    screen
+        .handle_input(SelectionInput::OpenTargetPicker)
+        .expect("picker should open");
+    screen
+        .handle_input(SelectionInput::PickerUp)
+        .expect("picker up should wrap to alternate exact");
+    screen
+        .handle_input(SelectionInput::PickerConfirm)
+        .expect("wrapped target should confirm");
+    let selections = screen.selection_drafts();
+
+    assert!(matches!(
+        selections[0].selected_items[0].target,
+        SelectedTarget::AlternateExact { ref target_version }
+            if target_version.as_str() == "1.2.0"
+    ));
+}
+
+#[test]
+fn recommended_shortcut_selects_recommended_target() {
+    let mut screen = screen(&plan(
+        "pnpm",
+        vec![update(
+            "pnpm:alpha",
+            "alpha",
+            ExecutionEligibility::ExactOnly,
+        )],
+    ));
+
+    screen
+        .handle_input(SelectionInput::OpenTargetPicker)
+        .expect("picker should open");
+    screen
+        .handle_input(SelectionInput::PickerDown)
+        .expect("picker should move to alternate exact");
+    screen
+        .handle_input(SelectionInput::RecommendedTarget)
+        .expect("recommended shortcut should select recommended target");
+    let selections = screen.selection_drafts();
+
+    assert_eq!(
+        selections[0].selected_items[0].target,
+        SelectedTarget::Recommended
+    );
+    assert!(!screen.target_picker_open());
+}
+
+#[test]
+fn picker_can_move_between_visible_rows() {
+    let mut screen = screen(&plan(
+        "pnpm",
+        vec![
+            update("pnpm:alpha", "alpha", ExecutionEligibility::ExactOnly),
+            delayed("pnpm:beta", "beta", ExecutionEligibility::ExactOnly),
+        ],
+    ));
+
+    screen
+        .handle_input(SelectionInput::OpenTargetPicker)
+        .expect("picker should open on first row");
+    screen
+        .handle_input(SelectionInput::PickerNextRow)
+        .expect("picker should move to delayed row");
+    screen
+        .handle_input(SelectionInput::PickerConfirm)
+        .expect("delayed row option should confirm");
+    let selections = screen.selection_drafts();
+    let beta = selections[0]
+        .selected_items
+        .iter()
+        .find(|item| item.plan_item_id == plan_item_id("pnpm:beta"))
+        .expect("beta should be selected");
+
+    assert_eq!(screen.cursor(), 1);
+    assert_eq!(beta.target, SelectedTarget::ForcedCandidate);
+}
+
+#[test]
+fn picker_row_navigation_skips_visible_rows_without_target_options() {
+    let mut screen = screen(&plan(
+        "pnpm",
+        vec![
+            update("pnpm:alpha", "alpha", ExecutionEligibility::ExactOnly),
+            current("pnpm:current", "current"),
+            delayed("pnpm:beta", "beta", ExecutionEligibility::ExactOnly),
+        ],
+    ));
+
+    screen
+        .handle_input(SelectionInput::ToggleViewAll)
+        .expect("view all should expose current row");
+    screen
+        .handle_input(SelectionInput::OpenTargetPicker)
+        .expect("picker should open on first row");
+    screen
+        .handle_input(SelectionInput::PickerNextRow)
+        .expect("picker should skip current row");
+
+    assert_eq!(screen.cursor(), 2);
+}
+
+#[test]
+fn picker_ignores_global_confirm_without_closing() {
+    let mut screen = screen(&plan(
+        "pnpm",
+        vec![update(
+            "pnpm:alpha",
+            "alpha",
+            ExecutionEligibility::NativeOrExact,
+        )],
+    ));
+
+    screen
+        .handle_input(SelectionInput::OpenTargetPicker)
+        .expect("picker should open");
+    let confirm = screen
+        .handle_input(SelectionInput::Confirm)
+        .expect("confirm should be ignored inside picker");
+
+    assert_eq!(confirm, SelectionControl::Continue);
+    assert!(screen.target_picker_open());
+}
+
+#[test]
 fn delayed_forced_candidate_is_visible_and_selectable_by_toggle() {
     let mut screen = screen(&plan(
         "pnpm",
