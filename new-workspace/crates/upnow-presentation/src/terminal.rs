@@ -1,0 +1,225 @@
+use std::time::Duration;
+
+use indicatif::{ProgressBar, ProgressFinish, ProgressStyle};
+
+use crate::{OutputTheme, TerminalCapabilities};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchTerminalAction {
+    Scan,
+    Plan,
+    Apply,
+}
+
+impl BatchTerminalAction {
+    const fn spinner_label(self) -> &'static str {
+        match self {
+            Self::Scan => "Scanning",
+            Self::Plan => "Planning",
+            Self::Apply => "Applying",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationNotice {
+    Skip,
+    Real,
+}
+
+impl MutationNotice {
+    #[must_use]
+    pub const fn render(self) -> &'static str {
+        match self {
+            Self::Skip => {
+                "note: apply runs in safe mode: mutating commands are skipped (safe mode)"
+            }
+            Self::Real => "warning: apply runs with real mutating commands are ENABLED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BatchTerminal {
+    theme: OutputTheme,
+    stderr_is_tty: bool,
+}
+
+impl BatchTerminal {
+    #[must_use]
+    pub const fn new(theme: OutputTheme, capabilities: TerminalCapabilities) -> Self {
+        Self {
+            theme,
+            stderr_is_tty: capabilities.stderr_is_tty,
+        }
+    }
+
+    #[must_use]
+    pub fn from_environment(theme: OutputTheme) -> Self {
+        Self {
+            theme,
+            stderr_is_tty: std::io::IsTerminal::is_terminal(&std::io::stderr()),
+        }
+    }
+
+    #[must_use]
+    pub const fn disabled(theme: OutputTheme) -> Self {
+        Self {
+            theme,
+            stderr_is_tty: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn spinner_enabled(self) -> bool {
+        !self.theme.is_plain() && self.stderr_is_tty
+    }
+
+    #[must_use]
+    pub const fn notice_enabled(self) -> bool {
+        self.stderr_is_tty
+    }
+
+    #[must_use]
+    pub fn start_manager_spinner(
+        self,
+        action: BatchTerminalAction,
+        manager_id: &str,
+    ) -> ManagerSpinner {
+        if !self.spinner_enabled() {
+            return ManagerSpinner(None);
+        }
+
+        let progress = ProgressBar::new_spinner().with_finish(ProgressFinish::AndClear);
+        progress.set_style(spinner_style(self.theme.color()));
+        progress.set_message(format!("{} {manager_id}...", action.spinner_label()));
+        progress.enable_steady_tick(Duration::from_millis(90));
+
+        ManagerSpinner(Some(progress))
+    }
+}
+
+#[derive(Debug)]
+pub struct ManagerSpinner(Option<ProgressBar>);
+
+impl Drop for ManagerSpinner {
+    fn drop(&mut self) {
+        if let Some(progress) = self.0.take() {
+            progress.finish_and_clear();
+        }
+    }
+}
+
+fn spinner_style(color: bool) -> ProgressStyle {
+    let (template, ticks): (&str, &[&str]) = if color {
+        (
+            "{spinner:.cyan} {msg}",
+            &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+        )
+    } else {
+        ("{spinner} {msg}", &["-", "\\", "|", "/"])
+    };
+
+    ProgressStyle::with_template(template)
+        .unwrap_or_else(|_| ProgressStyle::default_spinner())
+        .tick_strings(ticks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ThemeOptions;
+
+    #[test]
+    fn spinner_is_enabled_only_for_styled_stderr_tty() {
+        let terminal = BatchTerminal::new(
+            OutputTheme::styled(true, false),
+            TerminalCapabilities {
+                stdout_is_tty: true,
+                stderr_is_tty: true,
+                no_color_env: false,
+                term_is_dumb: false,
+            },
+        );
+
+        assert!(terminal.spinner_enabled());
+
+        let terminal = BatchTerminal::new(
+            OutputTheme::plain(false),
+            TerminalCapabilities {
+                stdout_is_tty: true,
+                stderr_is_tty: true,
+                no_color_env: false,
+                term_is_dumb: false,
+            },
+        );
+
+        assert!(!terminal.spinner_enabled());
+
+        let terminal = BatchTerminal::new(
+            OutputTheme::styled(true, false),
+            TerminalCapabilities {
+                stdout_is_tty: true,
+                stderr_is_tty: false,
+                no_color_env: false,
+                term_is_dumb: false,
+            },
+        );
+
+        assert!(!terminal.spinner_enabled());
+    }
+
+    #[test]
+    fn notices_follow_stderr_tty_without_requiring_styled_output() {
+        let theme = OutputTheme::from_terminal(
+            ThemeOptions {
+                plain: true,
+                no_color: false,
+                verbose: false,
+            },
+            TerminalCapabilities {
+                stdout_is_tty: true,
+                stderr_is_tty: true,
+                no_color_env: false,
+                term_is_dumb: false,
+            },
+        );
+
+        let terminal = BatchTerminal::new(
+            theme,
+            TerminalCapabilities {
+                stdout_is_tty: true,
+                stderr_is_tty: true,
+                no_color_env: false,
+                term_is_dumb: false,
+            },
+        );
+
+        assert!(terminal.notice_enabled());
+        assert!(!terminal.spinner_enabled());
+
+        let terminal = BatchTerminal::new(
+            OutputTheme::styled(false, false),
+            TerminalCapabilities {
+                stdout_is_tty: true,
+                stderr_is_tty: false,
+                no_color_env: false,
+                term_is_dumb: false,
+            },
+        );
+
+        assert!(!terminal.notice_enabled());
+    }
+
+    #[test]
+    fn mutation_notice_rendering_lives_at_presentation_boundary() {
+        assert_eq!(
+            MutationNotice::Skip.render(),
+            "note: apply runs in safe mode: mutating commands are skipped (safe mode)"
+        );
+        assert_eq!(
+            MutationNotice::Real.render(),
+            "warning: apply runs with real mutating commands are ENABLED"
+        );
+    }
+}

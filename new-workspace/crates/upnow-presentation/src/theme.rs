@@ -19,6 +19,7 @@ impl OutputTheme {
             options,
             TerminalCapabilities {
                 stdout_is_tty: std::io::stdout().is_terminal(),
+                stderr_is_tty: std::io::stderr().is_terminal(),
                 no_color_env: std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()),
                 term_is_dumb: std::env::var("TERM").is_ok_and(|value| value == "dumb"),
             },
@@ -84,6 +85,7 @@ pub struct ThemeOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalCapabilities {
     pub stdout_is_tty: bool,
+    pub stderr_is_tty: bool,
     pub no_color_env: bool,
     pub term_is_dumb: bool,
 }
@@ -113,6 +115,7 @@ mod tests {
             ThemeOptions::default(),
             TerminalCapabilities {
                 stdout_is_tty: false,
+                stderr_is_tty: true,
                 no_color_env: false,
                 term_is_dumb: false,
             },
@@ -143,6 +146,7 @@ mod tests {
             ThemeOptions::default(),
             TerminalCapabilities {
                 stdout_is_tty: true,
+                stderr_is_tty: true,
                 no_color_env: true,
                 term_is_dumb: false,
             },
@@ -158,6 +162,7 @@ mod tests {
             ThemeOptions::default(),
             TerminalCapabilities {
                 stdout_is_tty: true,
+                stderr_is_tty: true,
                 no_color_env: false,
                 term_is_dumb: true,
             },
@@ -178,6 +183,7 @@ mod tests {
     const fn tty_capabilities() -> TerminalCapabilities {
         TerminalCapabilities {
             stdout_is_tty: true,
+            stderr_is_tty: true,
             no_color_env: false,
             term_is_dumb: false,
         }

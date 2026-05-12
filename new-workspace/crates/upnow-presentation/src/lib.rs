@@ -2,6 +2,7 @@
 
 pub mod batch;
 pub mod outcome;
+pub mod terminal;
 pub mod theme;
 pub mod tui;
 

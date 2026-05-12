@@ -21,7 +21,10 @@ use upnow_execution::{
     ExecutionReport, ExecutionSelectionError, ExecutionStatus, execute_commands,
     resolve_selection_for_execution,
 };
-use upnow_infra::{Clock, Env, HttpClient, HttpSettings, MutationMode, ProcessRunner};
+use upnow_infra::{
+    Clock, Env, HttpClient, HttpSettings, MutationMode, ProcessRunner, REQUIRE_MUTATION_MODE_ENV,
+    SKIP_MUTATING_COMMANDS_ENV,
+};
 use upnow_managers::adapter::{ManagerAdapter, ManagerAdapterError, ReleaseLookupSubject};
 use upnow_planning::{
     PlanningSettings, default_batch_selection, selection_view, update_plan_from_inputs,
@@ -32,7 +35,9 @@ use upnow_presentation::tui::{
 };
 use upnow_presentation::{
     BatchRenderOptions, OutcomeTable, OutputTheme, ThemeOptions, execution_report_table,
-    manager_error_table, render_batch_table, scan_report_table, update_plan_table,
+    manager_error_table, render_batch_table, scan_report_table,
+    terminal::{BatchTerminal, BatchTerminalAction, MutationNotice},
+    update_plan_table,
 };
 use upnow_release::release_age_for_version;
 
@@ -90,6 +95,14 @@ impl BatchCommand {
             Self::Scan => "scan",
             Self::Plan => "plan",
             Self::Apply => "apply",
+        }
+    }
+
+    const fn terminal_action(self) -> BatchTerminalAction {
+        match self {
+            Self::Scan => BatchTerminalAction::Scan,
+            Self::Plan => BatchTerminalAction::Plan,
+            Self::Apply => BatchTerminalAction::Apply,
         }
     }
 }
@@ -307,12 +320,39 @@ pub fn run_batch_with_sources(
 
 fn run_batch_with_theme_and_sources(
     command: BatchCommand,
+    config: UpnowConfig,
+    process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
+    clock: Clock,
+    theme: OutputTheme,
+    selected_managers: &[String],
+    overrides: &[String],
+) -> Result<String, AppError> {
+    let terminal = BatchTerminal::disabled(theme);
+    run_batch_with_terminal_and_sources(
+        command,
+        config,
+        process,
+        http,
+        env,
+        clock,
+        theme,
+        terminal,
+        selected_managers,
+        overrides,
+    )
+}
+
+fn run_batch_with_terminal_and_sources(
+    command: BatchCommand,
     mut config: UpnowConfig,
     process: &ProcessRunner,
     http: &HttpClient,
     env: &Env,
     clock: Clock,
     theme: OutputTheme,
+    terminal: BatchTerminal,
     selected_managers: &[String],
     overrides: &[String],
 ) -> Result<String, AppError> {
@@ -331,6 +371,7 @@ fn run_batch_with_theme_and_sources(
         env,
         clock,
         theme,
+        terminal,
         &manager_ids,
     )
 }
@@ -645,13 +686,14 @@ fn run_batch_for_managers(
     env: &Env,
     clock: Clock,
     theme: OutputTheme,
+    terminal: BatchTerminal,
     manager_ids: &[ManagerId],
 ) -> Result<String, AppError> {
     let mut table = OutcomeTable::default();
     let mut had_error = false;
     for manager_id in manager_ids {
         match run_manager_batch(
-            command, config, process, http, env, clock, theme, manager_id,
+            command, config, process, http, env, clock, theme, terminal, manager_id,
         ) {
             Ok(manager_output) => {
                 had_error |= manager_output.failed;
@@ -687,6 +729,7 @@ fn run_manager_batch(
     env: &Env,
     clock: Clock,
     theme: OutputTheme,
+    terminal: BatchTerminal,
     manager_id: &ManagerId,
 ) -> Result<ManagerBatchOutput, AppError> {
     ensure_known_manager(manager_id.as_str()).map_err(map_manager_error)?;
@@ -700,6 +743,8 @@ fn run_manager_batch(
             failed: false,
         });
     }
+
+    let _spinner = terminal.start_manager_spinner(command.terminal_action(), manager_id.as_str());
 
     match command {
         BatchCommand::Scan if theme.verbose => {
@@ -948,7 +993,9 @@ fn run_cli(cli: Cli) -> Result<String, AppError> {
         no_color: cli.no_color,
         verbose: cli.verbose,
     });
-    run_batch_with_theme_and_sources(
+    let terminal = BatchTerminal::from_environment(theme);
+    maybe_emit_apply_mutation_mode_notice(command.into(), &process, &env, terminal)?;
+    run_batch_with_terminal_and_sources(
         command.into(),
         config,
         &process,
@@ -957,9 +1004,72 @@ fn run_cli(cli: Cli) -> Result<String, AppError> {
         &env,
         Clock::system(),
         theme,
+        terminal,
         &cli.managers,
         &cli.overrides,
     )
+}
+
+fn maybe_emit_apply_mutation_mode_notice(
+    command: BatchCommand,
+    process: &ProcessRunner,
+    env: &Env,
+    terminal: BatchTerminal,
+) -> Result<(), AppError> {
+    if let Some(notice) = apply_mutation_mode_notice(command, process, env, terminal)? {
+        eprintln!("{}", notice.render());
+    }
+    Ok(())
+}
+
+fn apply_mutation_mode_notice(
+    command: BatchCommand,
+    process: &ProcessRunner,
+    env: &Env,
+    terminal: BatchTerminal,
+) -> Result<Option<MutationNotice>, AppError> {
+    if command != BatchCommand::Apply {
+        return Ok(None);
+    }
+
+    let ProcessRunner::Real { mutation_mode } = process else {
+        return Ok(None);
+    };
+
+    validate_required_mutation_mode(env, *mutation_mode)?;
+
+    if !mutation_mode_notice_enabled(env) || !terminal.notice_enabled() {
+        return Ok(None);
+    }
+
+    Ok(Some(match mutation_mode {
+        MutationMode::Skip => MutationNotice::Skip,
+        MutationMode::Real => MutationNotice::Real,
+    }))
+}
+
+fn mutation_mode_notice_enabled(env: &Env) -> bool {
+    cfg!(debug_assertions) || env.non_empty_var(REQUIRE_MUTATION_MODE_ENV).is_some()
+}
+
+fn validate_required_mutation_mode(env: &Env, mutation_mode: MutationMode) -> Result<(), AppError> {
+    let Some(raw) = env.non_empty_var(REQUIRE_MUTATION_MODE_ENV) else {
+        return Ok(());
+    };
+
+    match raw.to_ascii_lowercase().as_str() {
+        "skip" if mutation_mode == MutationMode::Skip => Ok(()),
+        "real" if mutation_mode == MutationMode::Real => Ok(()),
+        "skip" => Err(AppError::InvalidArgs(format!(
+            "{REQUIRE_MUTATION_MODE_ENV}=skip requires effective skip mode (set {SKIP_MUTATING_COMMANDS_ENV}=1)"
+        ))),
+        "real" => Err(AppError::InvalidArgs(format!(
+            "{REQUIRE_MUTATION_MODE_ENV}=real requires effective real mode (set {SKIP_MUTATING_COMMANDS_ENV}=0)"
+        ))),
+        _ => Err(AppError::InvalidArgs(format!(
+            "{REQUIRE_MUTATION_MODE_ENV} must be one of: skip, real (got '{raw}')"
+        ))),
+    }
 }
 
 fn build_manager_plan(
@@ -1056,8 +1166,11 @@ fn selected_manager_ids(selected_managers: &[String]) -> Result<Vec<ManagerId>, 
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use upnow_presentation::{OutputTheme, TerminalCapabilities, terminal::BatchTerminal};
 
-    use super::{Cli, CliCommand};
+    use super::{AppError, BatchCommand, Cli, CliCommand, apply_mutation_mode_notice};
+    use upnow_infra::Env;
+    use upnow_infra::{MutationMode, ProcessRunner};
 
     #[test]
     fn parses_legacy_comma_delimited_managers_flag() {
@@ -1119,5 +1232,74 @@ mod tests {
         assert!(cli.plain);
         assert!(cli.no_color);
         assert!(cli.verbose);
+    }
+
+    #[test]
+    fn apply_mutation_notice_is_stderr_tty_only() {
+        let process = ProcessRunner::new(MutationMode::Skip);
+        let env = mutation_notice_env(MutationMode::Skip);
+
+        assert_eq!(
+            apply_mutation_mode_notice(BatchCommand::Apply, &process, &env, terminal(true))
+                .expect("notice gate should validate"),
+            Some(upnow_presentation::terminal::MutationNotice::Skip)
+        );
+        assert_eq!(
+            apply_mutation_mode_notice(BatchCommand::Plan, &process, &env, terminal(true))
+                .expect("non-apply command should not validate mutation mode"),
+            None
+        );
+        assert_eq!(
+            apply_mutation_mode_notice(BatchCommand::Apply, &process, &env, terminal(false))
+                .expect("notice gate should validate"),
+            None
+        );
+    }
+
+    #[test]
+    fn apply_mutation_notice_reports_real_mode() {
+        let process = ProcessRunner::new(MutationMode::Real);
+        let env = mutation_notice_env(MutationMode::Real);
+
+        assert_eq!(
+            apply_mutation_mode_notice(BatchCommand::Apply, &process, &env, terminal(true))
+                .expect("notice gate should validate"),
+            Some(upnow_presentation::terminal::MutationNotice::Real)
+        );
+    }
+
+    #[test]
+    fn apply_mutation_notice_validates_required_mode() {
+        let process = ProcessRunner::new(MutationMode::Real);
+        let env = Env::fixed([("UPNOW_REQUIRE_MUTATION_MODE".to_owned(), "skip".to_owned())]);
+
+        let err = apply_mutation_mode_notice(BatchCommand::Apply, &process, &env, terminal(true))
+            .expect_err("conflicting required mutation mode should fail");
+
+        assert!(matches!(err, AppError::InvalidArgs(_)));
+        assert!(err.to_string().contains("UPNOW_REQUIRE_MUTATION_MODE=skip"));
+    }
+
+    fn terminal(stderr_is_tty: bool) -> BatchTerminal {
+        BatchTerminal::new(
+            OutputTheme::plain(false),
+            TerminalCapabilities {
+                stdout_is_tty: false,
+                stderr_is_tty,
+                no_color_env: false,
+                term_is_dumb: false,
+            },
+        )
+    }
+
+    fn mutation_notice_env(mode: MutationMode) -> Env {
+        let required = match mode {
+            MutationMode::Skip => "skip",
+            MutationMode::Real => "real",
+        };
+        Env::fixed([(
+            "UPNOW_REQUIRE_MUTATION_MODE".to_owned(),
+            required.to_owned(),
+        )])
     }
 }

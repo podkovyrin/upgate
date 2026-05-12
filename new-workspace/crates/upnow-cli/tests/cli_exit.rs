@@ -72,6 +72,64 @@ esac
 }
 
 #[test]
+fn binary_apply_validates_required_mutation_mode_before_running() {
+    let sandbox = Sandbox::new("apply-mutation-require");
+    sandbox.write_executable(
+        "npm",
+        r#"#!/bin/sh
+echo "npm should not run" >&2
+exit 42
+"#,
+    );
+
+    let output = sandbox.run_with_env(
+        ["--manager", "npm", "apply"],
+        [("UPNOW_REQUIRE_MUTATION_MODE", "skip")],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr.contains("UPNOW_REQUIRE_MUTATION_MODE=skip"));
+    assert!(!stderr.contains("npm should not run"));
+}
+
+#[test]
+fn binary_apply_notice_gate_does_not_pollute_stdout_when_piped() {
+    let sandbox = Sandbox::new("apply-notice-stdout");
+    sandbox.write_executable(
+        "npm",
+        r#"#!/bin/sh
+case "$*" in
+  "outdated -g --json")
+    printf '%s\n' '{"alpha-ready":{"current":"1.0.0"}}'
+    ;;
+  "view alpha-ready time --json")
+    printf '%s\n' '{"1.0.0":"2021-01-01T00:00:00.000Z","1.2.0":"2021-12-01T00:00:00.000Z"}'
+    ;;
+  *)
+    echo "unexpected npm command: $*" >&2
+    exit 42
+    ;;
+esac
+"#,
+    );
+
+    let output = sandbox.run_with_env(
+        ["--manager", "npm", "apply"],
+        [
+            ("UPNOW_REQUIRE_MUTATION_MODE", "skip"),
+            ("UPNOW_SKIP_MUTATING_COMMANDS", "1"),
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success());
+    assert!(stdout.contains("[npm]"));
+    assert!(stdout.contains("+ Update"));
+    assert!(!stdout.contains("apply runs"));
+}
+
+#[test]
 fn binary_interruption_exits_130() {
     let sandbox = Sandbox::new("interruption");
     sandbox.write_executable(
@@ -125,13 +183,24 @@ impl Sandbox {
     }
 
     fn run<const N: usize>(&self, args: [&str; N]) -> std::process::Output {
-        Command::new(binary_path())
+        self.run_with_env(args, [])
+    }
+
+    fn run_with_env<const N: usize, const M: usize>(
+        &self,
+        args: [&str; N],
+        envs: [(&str, &str); M],
+    ) -> std::process::Output {
+        let mut command = Command::new(binary_path());
+        command
             .args(args)
             .env_clear()
             .env("PATH", &self.bin)
-            .env("XDG_CONFIG_HOME", &self.config_home)
-            .output()
-            .expect("upnow-cli binary should run")
+            .env("XDG_CONFIG_HOME", &self.config_home);
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        command.output().expect("upnow-cli binary should run")
     }
 }
 
