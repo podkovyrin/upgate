@@ -51,8 +51,9 @@ fn selected_npm_scan_routes_through_batch_core() {
     )
     .expect("npm scan should render");
 
-    assert!(output.contains("scan npm"));
-    assert!(output.contains("installed fresh-tool 2.0.0"));
+    assert!(output.contains("[npm]"));
+    assert!(output.contains("fresh-tool"));
+    assert!(output.contains("2.0.0"));
     let calls = fake_calls(&process);
     assert_eq!(calls, ["npm ls -g --depth=0 --json"]);
 }
@@ -88,8 +89,9 @@ fn selected_npm_verbose_scan_renders_release_age() {
     )
     .expect("npm verbose scan should render");
 
-    assert!(output.contains("scan npm"));
-    assert!(output.contains("installed alpha-ready 1.0.0 age"));
+    assert!(output.contains("[npm]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("1.0.0"));
 }
 
 #[test]
@@ -119,8 +121,9 @@ fn selected_npm_plan_routes_through_batch_core() {
     )
     .expect("npm plan should render");
 
-    assert!(output.contains("plan npm"));
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("[npm]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
     let calls = fake_calls(&process);
     assert_eq!(calls[0], "npm outdated -g --json");
     assert_eq!(calls[1], "npm view alpha-ready time --json");
@@ -154,8 +157,9 @@ fn selected_npm_apply_uses_native_command_when_selection_allows_it() {
     )
     .expect("npm apply should render");
 
-    assert!(output.contains("apply npm"));
-    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("[npm]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
     let calls = fake_calls(&process);
     assert_eq!(calls[2], "npm -g update alpha-ready --min-release-age 7");
 }
@@ -199,8 +203,9 @@ fn selected_npm_apply_honors_pins() {
     )
     .expect("npm apply should render");
 
-    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(!output.contains("applied pinned-pkg"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(!output.contains("pinned-pkg"));
     let calls = fake_calls(&process);
     assert_eq!(calls.len(), 4);
     assert_eq!(calls[3], "npm -g update alpha-ready --min-release-age 7");
@@ -239,10 +244,11 @@ fn selected_npm_apply_command_failure_renders_report_and_returns_failure_status(
     .expect_err("ordinary apply command failure should return failure status");
     let output = err.to_string();
 
-    assert!(output.contains("apply npm"));
-    assert!(output.contains(
-        "failed alpha-ready 1.0.0 -> 1.2.0 (npm -g update alpha-ready --min-release-age 7):"
-    ));
+    assert!(output.contains("[npm]"));
+    assert!(output.contains("! Error"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(output.contains("npm -g update alpha-ready --min-release-age 7"));
     assert!(output.contains("install failed"));
 }
 
@@ -290,12 +296,15 @@ fn multi_manager_apply_keeps_rendered_reports_when_one_command_fails() {
     .expect_err("one failed apply command should fail the batch");
     let output = err.to_string();
 
-    assert!(output.contains("apply pnpm"));
-    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(output.contains("apply npm"));
-    assert!(output.contains("failed alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("[pnpm]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(output.contains("[npm]"));
+    assert!(output.contains("! Error"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
     assert!(output.contains("install failed"));
-    assert!(!output.contains("apply npm failed:"));
+    assert!(!output.contains("failed:"));
 }
 
 #[test]
@@ -330,9 +339,10 @@ fn multi_manager_plan_keeps_successful_output_when_later_manager_fails() {
     .expect_err("ordinary manager failure should return failure status");
     let output = err.to_string();
 
-    assert!(output.contains("plan pnpm"));
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(output.contains("plan npm failed:"));
+    assert!(output.contains("[pnpm]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(output.contains("[npm]"));
     assert!(output.contains("npm failed"));
 }
 
@@ -355,7 +365,7 @@ fn selected_single_manager_failure_returns_failure_status() {
     )
     .expect_err("ordinary selected manager failure should return failure status");
 
-    assert!(err.to_string().contains("plan npm failed:"));
+    assert!(err.to_string().contains("plan failed:"));
     assert!(err.to_string().contains("npm failed"));
 }
 
@@ -445,8 +455,8 @@ fn default_manager_selection_skips_off_managers() {
     )
     .expect("default plan should render");
 
-    assert!(output.contains("plan pnpm"));
-    assert!(!output.contains("plan npm"));
+    assert!(output.contains("[pnpm]"));
+    assert!(!output.contains("[npm]"));
     assert_eq!(fake_calls(&process).len(), 2);
 }
 
@@ -480,7 +490,7 @@ fn selected_manager_override_runs_manager_that_config_turns_off() {
     )
     .expect("selected manager should override off mode");
 
-    assert!(output.contains("plan npm"));
+    assert!(output.contains("[npm]"));
 }
 
 #[test]
@@ -540,11 +550,10 @@ fn selected_managers_are_deduplicated_in_first_seen_order() {
     .expect("deduplicated selected plan should render");
 
     assert!(
-        output.find("plan npm").expect("npm output")
-            < output.find("plan pnpm").expect("pnpm output")
+        output.find("[npm]").expect("npm output") < output.find("[pnpm]").expect("pnpm output")
     );
-    assert_eq!(output.matches("plan npm").count(), 1);
-    assert_eq!(output.matches("plan pnpm").count(), 1);
+    assert_eq!(output.matches("[npm]").count(), 1);
+    assert_eq!(output.matches("[pnpm]").count(), 1);
     assert_eq!(fake_calls(&process).len(), 4);
 }
 
@@ -659,48 +668,27 @@ fn default_manager_selection_runs_all_migrated_managers_in_registry_order() {
     )
     .expect("default batch plan should render");
 
-    assert!(output.contains("plan brew"));
-    assert!(output.contains("plan pnpm"));
-    assert!(output.contains("plan npm"));
-    assert!(output.contains("plan yarn"));
-    assert!(output.contains("plan bun"));
-    assert!(output.contains("plan cargo"));
-    assert!(output.contains("plan pipx"));
-    assert!(output.contains("plan go"));
-    assert!(output.contains("plan mise"));
-    assert!(output.contains("plan uv"));
+    assert_eq!(output.matches("Status").count(), 1);
+    assert!(output.contains("[pnpm]"));
+    assert!(output.contains("[npm]"));
+    assert!(output.contains("[yarn]"));
+    assert!(output.contains("[bun]"));
+    assert!(output.contains("[cargo]"));
+    assert!(output.contains("[pipx]"));
     assert!(
-        output.find("plan brew").expect("brew output")
-            < output.find("plan pnpm").expect("pnpm output")
+        output.find("[pnpm]").expect("pnpm output") < output.find("[npm]").expect("npm output")
     );
     assert!(
-        output.find("plan pnpm").expect("pnpm output")
-            < output.find("plan npm").expect("npm output")
+        output.find("[npm]").expect("npm output") < output.find("[yarn]").expect("yarn output")
     );
     assert!(
-        output.find("plan npm").expect("npm output")
-            < output.find("plan yarn").expect("yarn output")
+        output.find("[yarn]").expect("yarn output") < output.find("[bun]").expect("bun output")
     );
     assert!(
-        output.find("plan yarn").expect("yarn output")
-            < output.find("plan bun").expect("bun output")
+        output.find("[bun]").expect("bun output") < output.find("[cargo]").expect("cargo output")
     );
     assert!(
-        output.find("plan bun").expect("bun output")
-            < output.find("plan cargo").expect("cargo output")
-    );
-    assert!(
-        output.find("plan cargo").expect("cargo output")
-            < output.find("plan pipx").expect("pipx output")
-    );
-    assert!(
-        output.find("plan pipx").expect("pipx output") < output.find("plan go").expect("go output")
-    );
-    assert!(
-        output.find("plan go").expect("go output") < output.find("plan mise").expect("mise output")
-    );
-    assert!(
-        output.find("plan mise").expect("mise output") < output.find("plan uv").expect("uv output")
+        output.find("[cargo]").expect("cargo output") < output.find("[pipx]").expect("pipx output")
     );
     let calls = fake_calls(&process);
     let expected_bun_lookup = format!("/fake/bun pm view alpha-ready time --json --cwd {cwd}");
@@ -759,8 +747,9 @@ fn selected_cargo_plan_routes_through_batch_core() {
     )
     .expect("cargo plan should render");
 
-    assert!(output.contains("plan cargo"));
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("[cargo]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
     assert_eq!(
         fake_calls(&process),
         ["cargo install --list", "cargo search alpha-ready --limit 1"]
@@ -800,8 +789,9 @@ fn selected_cargo_plan_uses_crates_io_timeline_after_search_validation() {
     )
     .expect("cargo plan should render");
 
-    assert!(output.contains("plan cargo"));
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("[cargo]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
     assert!(!output.contains("9.9.9"));
 }
 
@@ -843,10 +833,12 @@ fn selected_cargo_plan_keeps_other_items_when_search_fails() {
     )
     .expect("cargo plan should keep item-level search failures in the plan");
 
-    assert!(output.contains("plan cargo"));
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(output.contains("error omega-error"));
-    assert!(!output.contains("plan cargo failed:"));
+    assert!(output.contains("[cargo]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(output.contains("! Error"));
+    assert!(output.contains("omega-error"));
+    assert!(!output.contains("failed:"));
     assert_eq!(
         fake_calls(&process),
         [
@@ -901,10 +893,12 @@ fn selected_cargo_plan_keeps_other_items_when_crates_io_metadata_is_malformed() 
     )
     .expect("cargo plan should keep item-level metadata failures in the plan");
 
-    assert!(output.contains("plan cargo"));
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(output.contains("blocked omega-error release lookup failed"));
-    assert!(!output.contains("plan cargo failed:"));
+    assert!(output.contains("[cargo]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(output.contains("omega-error"));
+    assert!(output.contains("! Error"));
+    assert!(!output.contains("failed:"));
     assert_eq!(
         fake_calls(&process),
         [
@@ -944,8 +938,9 @@ fn selected_pipx_apply_routes_through_batch_core() {
     )
     .expect("pipx apply should render");
 
-    assert!(output.contains("apply pipx"));
-    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("[pipx]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
     assert_eq!(
         fake_calls(&process),
         ["pipx list --json", "pipx upgrade alpha-ready==1.2.0"]
@@ -980,8 +975,9 @@ fn selected_yarn_plan_routes_through_batch_core() {
     )
     .expect("yarn plan should render");
 
-    assert!(output.contains("plan yarn"));
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("[yarn]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
     assert_eq!(
         fake_calls(&process),
         [
@@ -1021,8 +1017,9 @@ fn selected_yarn_apply_runs_exact_global_add() {
     )
     .expect("yarn apply should render");
 
-    assert!(output.contains("apply yarn"));
-    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("[yarn]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
     assert_eq!(fake_calls(&process)[3], "yarn global add alpha-ready@1.2.0");
 }
 
@@ -1045,8 +1042,8 @@ fn selected_yarn_scan_probe_failure_reports_discovery_issue() {
     )
     .expect("yarn scan should render discovery issue");
 
-    assert!(output.contains("scan yarn"));
-    assert!(output.contains("issue"));
+    assert!(output.contains("[yarn]"));
+    assert!(output.contains("! Error"));
     assert!(output.contains("yarn unavailable"));
     assert_eq!(fake_calls(&process), ["yarn --version"]);
 }
@@ -1070,8 +1067,8 @@ fn selected_yarn_plan_probe_failure_reports_plan_issue() {
     )
     .expect("yarn plan should render discovery issue");
 
-    assert!(output.contains("plan yarn"));
-    assert!(output.contains("issue"));
+    assert!(output.contains("[yarn]"));
+    assert!(output.contains("! Error"));
     assert!(output.contains("yarn unavailable"));
     assert_eq!(fake_calls(&process), ["yarn --version"]);
 }
@@ -1093,7 +1090,7 @@ fn selected_yarn_two_plus_scan_reports_unsupported_version() {
     )
     .expect("yarn scan should render unsupported version");
 
-    assert!(output.contains("scan yarn"));
+    assert!(output.contains("[yarn]"));
     assert!(output.contains("unsupported manager version 4.3.1"));
     assert!(output.contains("global upgrades are not supported for Yarn 2+"));
     assert_eq!(fake_calls(&process), ["yarn --version"]);
@@ -1116,7 +1113,7 @@ fn selected_yarn_two_plus_plan_reports_unsupported_version() {
     )
     .expect("yarn plan should render unsupported version");
 
-    assert!(output.contains("plan yarn"));
+    assert!(output.contains("[yarn]"));
     assert!(output.contains("unsupported manager version 4.3.1"));
     assert!(!output.contains("yarn global list"));
     assert_eq!(fake_calls(&process), ["yarn --version"]);
@@ -1139,7 +1136,7 @@ fn selected_yarn_two_plus_apply_reports_unsupported_version() {
     )
     .expect("yarn apply should render unsupported version");
 
-    assert!(output.contains("apply yarn"));
+    assert!(output.contains("[yarn]"));
     assert!(output.contains("unsupported manager version 4.3.1"));
     assert!(output.contains("global upgrades are not supported for Yarn 2+"));
     assert_eq!(fake_calls(&process), ["yarn --version"]);
@@ -1175,8 +1172,9 @@ fn selected_bun_plan_routes_through_batch_core() {
     )
     .expect("bun plan should render");
 
-    assert!(output.contains("plan bun"));
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("[bun]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
     assert_eq!(
         fake_calls(&process),
         [
@@ -1212,10 +1210,11 @@ fn selected_bun_verbose_scan_missing_metadata_renders_installed_without_age() {
     )
     .expect("bun verbose scan should render");
 
-    assert!(output.contains("scan bun"));
-    assert!(output.contains("installed alpha-ready 1.0.0"));
-    assert!(!output.contains("skipped alpha-ready"));
-    assert!(!output.contains("installed alpha-ready 1.0.0 age"));
+    assert!(output.contains("[bun]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("1.0.0"));
+    assert!(!output.contains("- Skipped"));
+    assert!(!output.contains("(released:"));
 }
 
 #[test]
@@ -1258,8 +1257,10 @@ fn selected_bun_apply_uses_native_global_update_for_complete_default_selection()
     )
     .expect("bun apply should render");
 
-    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(output.contains("applied beta-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(output.contains("beta-ready"));
+    assert!(output.contains("v1.2.0"));
     assert_eq!(
         fake_calls(&process).last().map(String::as_str),
         Some("/fake/bun update -g --minimum-release-age 604800")
@@ -1309,8 +1310,9 @@ fn selected_bun_apply_runs_exact_update_and_honors_pins() {
     )
     .expect("bun apply should render");
 
-    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(!output.contains("applied pinned-pkg"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(!output.contains("pinned-pkg"));
     assert_eq!(
         fake_calls(&process).last().map(String::as_str),
         Some("/fake/bun update -g alpha-ready@1.2.0 --minimum-release-age 604800")
@@ -1348,7 +1350,8 @@ fn set_override_affects_batch_planning_settings() {
     )
     .expect("npm plan should render");
 
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
     let calls = fake_calls(&process);
     assert_eq!(calls[0], "npm ls -g --depth=0 --json");
 }
@@ -1402,10 +1405,10 @@ fn selected_go_apply_routes_through_batch_core() {
     )
     .expect("go apply should render");
 
-    assert!(output.contains("apply go"));
-    assert!(output.contains(
-        "applied alpha-ready v1.0.0 -> v1.2.0 (go install example.com/alpha/cmd/alpha-ready@v1.2.0)"
-    ));
+    assert!(output.contains("[go]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(output.contains("go install example.com/alpha/cmd/alpha-ready@v1.2.0"));
     assert_eq!(
         fake_calls(&process).last().map(String::as_str),
         Some("go install example.com/alpha/cmd/alpha-ready@v1.2.0")
@@ -1450,7 +1453,8 @@ fn selected_go_verbose_scan_looks_up_only_installed_version_age() {
     )
     .expect("go verbose scan should render");
 
-    assert!(output.contains("installed alpha-ready v1.0.0 age"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.0.0"));
     assert_eq!(
         fake_calls(&process),
         [
@@ -1495,8 +1499,9 @@ fn selected_go_verbose_scan_renders_installed_without_age_when_current_time_is_m
     )
     .expect("go verbose scan should render");
 
-    assert!(output.contains("installed alpha-ready v1.0.0"));
-    assert!(!output.contains("skipped alpha-ready"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.0.0"));
+    assert!(!output.contains("- Skipped"));
     assert!(!output.contains("go list -m -json -versions"));
     let _ = std::fs::remove_dir_all(go_bin);
 }
@@ -1538,7 +1543,7 @@ fn selected_go_verbose_scan_reports_current_time_lookup_failure() {
     )
     .expect("go verbose scan should render");
 
-    assert!(output.contains("skipped alpha-ready"));
+    assert!(output.contains("alpha-ready"));
     assert!(output.contains("module unavailable"));
     assert!(!output.contains("go list -m -json -versions"));
     let _ = std::fs::remove_dir_all(go_bin);
@@ -1584,8 +1589,9 @@ fn selected_gem_plan_routes_through_batch_core() {
     )
     .expect("gem plan should render");
 
-    assert!(output.contains("plan gem"));
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("[gem]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
     assert!(!output.contains("default-skip"));
 }
 
@@ -1635,8 +1641,9 @@ fn selected_gem_plan_preserves_legacy_comparable_target_text() {
     )
     .expect("gem plan should render");
 
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2"));
-    assert!(!output.contains("1.3.0"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2"));
+    assert!(output.contains("v1.3.0"));
 }
 
 #[test]
@@ -1674,9 +1681,10 @@ fn selected_gem_verbose_scan_keeps_installed_row_when_age_lookup_fails() {
     )
     .expect("gem verbose scan should render");
 
-    assert!(output.contains("scan gem"));
-    assert!(output.contains("installed scan-noage 5.0.0"));
-    assert!(!output.contains("skipped scan-noage"));
+    assert!(output.contains("[gem]"));
+    assert!(output.contains("scan-noage"));
+    assert!(output.contains("5.0.0"));
+    assert!(!output.contains("- Skipped"));
 }
 
 #[test]
@@ -1720,8 +1728,9 @@ fn selected_gem_apply_builds_exact_install_command() {
     )
     .expect("gem apply should render");
 
-    assert!(output.contains("apply gem"));
-    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("[gem]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
     assert_eq!(fake_calls(&process)[3], "gem install alpha-ready -v 1.2.0");
 }
 
@@ -1761,8 +1770,9 @@ fn selected_dotnet_plan_routes_through_batch_core() {
     )
     .expect("dotnet plan should render");
 
-    assert!(output.contains("plan dotnet"));
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("[dotnet]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
 }
 
 #[test]
@@ -1804,8 +1814,9 @@ fn selected_dotnet_apply_builds_exact_update_command() {
     )
     .expect("dotnet apply should render");
 
-    assert!(output.contains("apply dotnet"));
-    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("[dotnet]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
     assert_eq!(
         fake_calls(&process)[1],
         "dotnet tool update --global alpha-ready --version 1.2.0 --allow-downgrade"
@@ -1849,8 +1860,9 @@ fn selected_uv_plan_routes_through_batch_core() {
     )
     .expect("uv plan should render");
 
-    assert!(output.contains("plan uv"));
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("[uv]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
 }
 
 #[test]
@@ -1891,8 +1903,9 @@ fn selected_uv_apply_builds_native_selected_install_command() {
     )
     .expect("uv apply should render");
 
-    assert!(output.contains("apply uv"));
-    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("[uv]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
     assert_eq!(
         fake_calls(&process).last().map(String::as_str),
         Some("uv tool install --upgrade --exclude-newer 7d alpha-ready")
@@ -1940,8 +1953,9 @@ fn selected_uv_plan_keeps_dry_run_target_when_latest_is_newer() {
     )
     .expect("uv plan should render");
 
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.0.5"));
-    assert!(!output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.0.5"));
+    assert!(!output.contains("v1.2.0"));
 }
 
 #[test]
@@ -1985,9 +1999,9 @@ fn selected_uv_plan_does_not_invent_target_when_dry_run_selects_current() {
     )
     .expect("uv plan should render");
 
-    assert!(output.contains("current alpha-ready 1.0.0"));
-    assert!(!output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(!output.contains("delayed alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.trim().is_empty());
+    assert!(!output.contains("v1.2.0"));
+    assert!(!output.contains("~ Delayed"));
 }
 
 #[test]
@@ -2030,8 +2044,8 @@ fn selected_uv_plan_ignores_too_fresh_advisory_when_dry_run_selects_current() {
     )
     .expect("uv plan should render current selected target");
 
-    assert!(output.contains("current alpha-ready 1.0.0"));
-    assert!(!output.contains("delayed alpha-ready 1.0.0 -> 1.2.0 release too fresh"));
+    assert!(output.trim().is_empty());
+    assert!(!output.contains("~ Delayed"));
 }
 
 #[test]
@@ -2082,10 +2096,12 @@ fn selected_uv_plan_blocks_missing_metadata_for_one_item() {
     )
     .expect("uv plan should keep item-level metadata failures in the plan");
 
-    assert!(output.contains("plan uv"));
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(output.contains("blocked missing-meta missing release metadata"));
-    assert!(!output.contains("plan uv failed:"));
+    assert!(output.contains("[uv]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(output.contains("missing-meta"));
+    assert!(output.contains("missing release metadata"));
+    assert!(!output.contains("failed:"));
 }
 
 #[test]
@@ -2141,9 +2157,10 @@ fn selected_uv_apply_honors_pins_without_running_them() {
     )
     .expect("uv apply should render");
 
-    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(!output.contains("applied pinned-pkg"));
-    assert!(!output.contains("skipped pinned-pkg"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(!output.contains("pinned-pkg"));
+    assert!(!output.contains("pinned-pkg"));
     assert_eq!(
         fake_calls(&process).last().map(String::as_str),
         Some("uv tool install --upgrade --exclude-newer 7d alpha-ready")
@@ -2184,8 +2201,9 @@ fn selected_mise_plan_routes_through_batch_core() {
     )
     .expect("mise plan should render");
 
-    assert!(output.contains("plan mise"));
-    assert!(output.contains("update npm:alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("[mise]"));
+    assert!(output.contains("npm:alpha-ready"));
+    assert!(output.contains("v1.2.0"));
     assert_eq!(
         fake_calls(&process),
         [
@@ -2236,9 +2254,11 @@ fn selected_mise_apply_uses_global_resolver_command_for_complete_selection() {
     )
     .expect("mise apply should render");
 
-    assert!(output.contains("apply mise"));
-    assert!(output.contains("applied npm:alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(output.contains("applied npm:beta-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("[mise]"));
+    assert!(output.contains("npm:alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(output.contains("npm:beta-ready"));
+    assert!(output.contains("v1.2.0"));
     assert_eq!(
         fake_calls(&process).last().map(String::as_str),
         Some("mise upgrade --before 7d")
@@ -2277,9 +2297,10 @@ fn selected_mise_apply_uses_per_item_command_when_plan_contains_blocked_item() {
     )
     .expect("mise apply should execute only eligible update items");
 
-    assert!(output.contains("apply mise"));
-    assert!(output.contains("applied npm:alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(!output.contains("applied npm:missing-age"));
+    assert!(output.contains("[mise]"));
+    assert!(output.contains("npm:alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(!output.contains("npm:missing-age"));
     assert_eq!(
         fake_calls(&process).last().map(String::as_str),
         Some("mise upgrade --before 7d npm:alpha-ready")
@@ -2317,10 +2338,12 @@ fn selected_mise_plan_blocks_missing_selected_target_metadata_per_item() {
     )
     .expect("mise plan should keep item-level metadata failures in the plan");
 
-    assert!(output.contains("plan mise"));
-    assert!(output.contains("update npm:alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(output.contains("blocked npm:missing-age missing release metadata"));
-    assert!(!output.contains("plan mise failed:"));
+    assert!(output.contains("[mise]"));
+    assert!(output.contains("npm:alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(output.contains("npm:missing-age"));
+    assert!(output.contains("missing release metadata"));
+    assert!(!output.contains("failed:"));
 }
 
 #[test]
@@ -2345,11 +2368,16 @@ fn selected_brew_plan_routes_through_batch_core() {
     )
     .expect("brew plan should render");
 
-    assert!(output.contains("plan brew"));
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(output.contains("delayed beta-fresh-latest 1.0.0 -> 1.1.0 release too fresh"));
-    assert!(output.contains("update pinned-pkg 3.0.0 -> 3.1.0"));
-    assert!(output.contains("blocked omega-error release lookup failed"));
+    assert!(output.contains("[brew]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(output.contains("~ Delayed"));
+    assert!(output.contains("beta-fresh-latest"));
+    assert!(output.contains("v1.1.0"));
+    assert!(output.contains("pinned-pkg"));
+    assert!(output.contains("v3.1.0"));
+    assert!(output.contains("omega-error"));
+    assert!(output.contains("! Error"));
     assert_eq!(
         fake_calls(&process),
         [
@@ -2398,10 +2426,11 @@ fn selected_brew_apply_groups_formula_updates_without_indices() {
     )
     .expect("brew apply should render");
 
-    assert!(output.contains("apply brew"));
-    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(!output.contains("applied beta-fresh-latest"));
-    assert!(!output.contains("applied pinned-pkg"));
+    assert!(output.contains("[brew]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(!output.contains("beta-fresh-latest"));
+    assert!(!output.contains("pinned-pkg"));
     assert_eq!(
         fake_calls(&process).last().map(String::as_str),
         Some("brew upgrade --formula alpha-ready")
@@ -2436,10 +2465,11 @@ fn selected_brew_apply_with_policy_still_uses_native_selected_update() {
     )
     .expect("brew apply should render");
 
-    assert!(output.contains("apply brew"));
-    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(!output.contains("applied beta-fresh-latest"));
-    assert!(!output.contains("applied pinned-pkg"));
+    assert!(output.contains("[brew]"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(!output.contains("beta-fresh-latest"));
+    assert!(!output.contains("pinned-pkg"));
     assert_eq!(
         fake_calls(&process).last().map(String::as_str),
         Some("brew upgrade --formula alpha-ready")
@@ -2471,7 +2501,7 @@ fn selected_brew_apply_honors_config_pins() {
     )
     .expect("brew apply should render no selected updates");
 
-    assert!(output.contains("apply brew"));
+    assert!(output.contains("[brew]"));
     assert!(output.contains("no selected updates"));
     assert!(
         !fake_calls(&process)

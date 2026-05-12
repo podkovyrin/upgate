@@ -31,7 +31,8 @@ use upnow_presentation::tui::{
     run_interactive_selection,
 };
 use upnow_presentation::{
-    render_execution_report, render_manager_error, render_scan_report, render_update_plan,
+    BatchRenderOptions, OutcomeTable, OutputTheme, ThemeOptions, execution_report_table,
+    manager_error_table, render_batch_table, scan_report_table, update_plan_table,
 };
 use upnow_release::release_age_for_version;
 
@@ -58,6 +59,10 @@ struct Cli {
     overrides: Vec<String>,
     #[arg(long, global = true)]
     verbose: bool,
+    #[arg(long, global = true)]
+    no_color: bool,
+    #[arg(long, global = true)]
+    plain: bool,
     #[arg(long, global = true)]
     interactive: bool,
 }
@@ -169,14 +174,14 @@ pub fn run_batch(
     let env = Env::real();
     let http = HttpClient::real(&HttpSettings::default_client_settings())
         .map_err(|err| AppError::Manager(err.to_string()))?;
-    run_batch_with_sources(
+    run_batch_with_theme_and_sources(
         command,
         config,
         process,
         &http,
         &env,
         clock,
-        verbose,
+        OutputTheme::plain(verbose),
         selected_managers,
         overrides,
     )
@@ -278,12 +283,36 @@ pub fn run_interactive_apply_with_sources(
 /// Returns an error for config, discovery, planning, or execution failures.
 pub fn run_batch_with_sources(
     command: BatchCommand,
-    mut config: UpnowConfig,
+    config: UpnowConfig,
     process: &ProcessRunner,
     http: &HttpClient,
     env: &Env,
     clock: Clock,
     verbose: bool,
+    selected_managers: &[String],
+    overrides: &[String],
+) -> Result<String, AppError> {
+    run_batch_with_theme_and_sources(
+        command,
+        config,
+        process,
+        http,
+        env,
+        clock,
+        OutputTheme::plain(verbose),
+        selected_managers,
+        overrides,
+    )
+}
+
+fn run_batch_with_theme_and_sources(
+    command: BatchCommand,
+    mut config: UpnowConfig,
+    process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
+    clock: Clock,
+    theme: OutputTheme,
     selected_managers: &[String],
     overrides: &[String],
 ) -> Result<String, AppError> {
@@ -301,7 +330,7 @@ pub fn run_batch_with_sources(
         http,
         env,
         clock,
-        verbose,
+        theme,
         &manager_ids,
     )
 }
@@ -615,30 +644,29 @@ fn run_batch_for_managers(
     http: &HttpClient,
     env: &Env,
     clock: Clock,
-    verbose: bool,
+    theme: OutputTheme,
     manager_ids: &[ManagerId],
 ) -> Result<String, AppError> {
-    let mut output = String::new();
+    let mut table = OutcomeTable::default();
     let mut had_error = false;
     for manager_id in manager_ids {
         match run_manager_batch(
-            command, config, process, http, env, clock, verbose, manager_id,
+            command, config, process, http, env, clock, theme, manager_id,
         ) {
             Ok(manager_output) => {
                 had_error |= manager_output.failed;
-                output.push_str(&manager_output.rendered);
+                table.rows.extend(manager_output.table.rows);
             }
             Err(err) if err.is_interruption() => return Err(err),
             Err(err) => {
                 had_error = true;
-                output.push_str(&render_manager_error(
-                    manager_id,
-                    command.as_str(),
-                    &err.to_string(),
-                ));
+                table.rows.extend(
+                    manager_error_table(manager_id, command.as_str(), &err.to_string()).rows,
+                );
             }
         }
     }
+    let output = render_batch_table(&table, theme);
     if had_error {
         Err(AppError::Manager(output))
     } else {
@@ -647,7 +675,7 @@ fn run_batch_for_managers(
 }
 
 struct ManagerBatchOutput {
-    rendered: String,
+    table: OutcomeTable,
     failed: bool,
 }
 
@@ -658,7 +686,7 @@ fn run_manager_batch(
     http: &HttpClient,
     env: &Env,
     clock: Clock,
-    verbose: bool,
+    theme: OutputTheme,
     manager_id: &ManagerId,
 ) -> Result<ManagerBatchOutput, AppError> {
     ensure_known_manager(manager_id.as_str()).map_err(map_manager_error)?;
@@ -668,19 +696,20 @@ fn run_manager_batch(
         .allows_run(command == BatchCommand::Apply)
     {
         return Ok(ManagerBatchOutput {
-            rendered: String::new(),
+            table: OutcomeTable::default(),
             failed: false,
         });
     }
 
     match command {
-        BatchCommand::Scan if verbose => {
+        BatchCommand::Scan if theme.verbose => {
             let manager = configured_manager(manager_config).map_err(map_manager_error)?;
             let old_age_threshold = config.scan_old_age_threshold()?;
+            let options = BatchRenderOptions::new(theme).with_old_age_threshold(old_age_threshold);
             Ok(ManagerBatchOutput {
-                rendered: render_scan_report(
+                table: scan_report_table(
                     &build_verbose_scan_report(manager.as_ref(), process, http, env, clock.now())?,
-                    Some(old_age_threshold),
+                    options,
                 ),
                 failed: false,
             })
@@ -688,9 +717,9 @@ fn run_manager_batch(
         BatchCommand::Scan => {
             let manager = configured_manager(manager_config).map_err(map_manager_error)?;
             Ok(ManagerBatchOutput {
-                rendered: render_scan_report(
+                table: scan_report_table(
                     &build_scan_report(manager.as_ref(), process, env)?,
-                    None,
+                    BatchRenderOptions::new(theme),
                 ),
                 failed: false,
             })
@@ -700,7 +729,11 @@ fn run_manager_batch(
             let plan =
                 build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config)?;
             Ok(ManagerBatchOutput {
-                rendered: render_update_plan(&plan),
+                table: update_plan_table(
+                    &plan,
+                    BatchRenderOptions::new(theme)
+                        .with_version_policy(manager_config.version_policy),
+                ),
                 failed: false,
             })
         }
@@ -728,9 +761,8 @@ fn run_manager_batch(
                         AppError::Execution(err.to_string())
                     }
                 })?;
-            let output = render_execution_report(&report, &plan.issues);
             Ok(ManagerBatchOutput {
-                rendered: output,
+                table: execution_report_table(&report, &plan.issues),
                 failed: execution_report_has_failures(&report),
             })
         }
@@ -911,12 +943,20 @@ fn run_cli(cli: Cli) -> Result<String, AppError> {
             &cli.overrides,
         );
     }
-    run_batch(
+    let theme = OutputTheme::from_environment(ThemeOptions {
+        plain: cli.plain,
+        no_color: cli.no_color,
+        verbose: cli.verbose,
+    });
+    run_batch_with_theme_and_sources(
         command.into(),
         config,
         &process,
+        &HttpClient::real(&HttpSettings::default_client_settings())
+            .map_err(|err| AppError::Manager(err.to_string()))?,
+        &env,
         Clock::system(),
-        cli.verbose,
+        theme,
         &cli.managers,
         &cli.overrides,
     )
@@ -1068,5 +1108,16 @@ mod tests {
 
         assert!(matches!(cli.command, Some(CliCommand::Apply)));
         assert!(cli.interactive);
+    }
+
+    #[test]
+    fn parses_plain_and_no_color_flags() {
+        let cli = Cli::try_parse_from(["upnow", "--plain", "--no-color", "--verbose", "plan"])
+            .expect("CLI should parse output flags");
+
+        assert!(matches!(cli.command, Some(CliCommand::Plan)));
+        assert!(cli.plain);
+        assert!(cli.no_color);
+        assert!(cli.verbose);
     }
 }

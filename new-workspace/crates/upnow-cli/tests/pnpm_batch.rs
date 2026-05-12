@@ -74,10 +74,16 @@ fn plan_reports_update_current_delayed_and_lookup_failure_items() {
     )
     .expect("plan should render");
 
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(output.contains("delayed gamma-delayed 2.0.0 -> 2.1.0 release too fresh"));
-    assert!(output.contains("current scan-noage 5.0.0"));
-    assert!(output.contains("blocked omega-error release lookup failed"));
+    assert!(output.contains("+ Update"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.0.0"));
+    assert!(output.contains("v1.2.0"));
+    assert!(output.contains("~ Delayed"));
+    assert!(output.contains("gamma-delayed"));
+    assert!(output.contains("(no eligible release yet; latest v2.1.0 too fresh)"));
+    assert!(!output.contains("scan-noage"));
+    assert!(output.contains("! Error"));
+    assert!(output.contains("omega-error"));
 }
 
 #[test]
@@ -119,8 +125,10 @@ fn apply_skips_pinned_packages_and_runs_exact_pnpm_command() {
     )
     .expect("apply should render");
 
-    assert!(output.contains("applied alpha-ready 1.0.0 -> 1.2.0"));
-    assert!(!output.contains("applied pinned-pkg"));
+    assert!(output.contains("+ Update"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
+    assert!(!output.contains("pinned-pkg"));
     let calls = match &process {
         ProcessRunner::Fake(fake) => fake.calls(),
         ProcessRunner::Real { .. } => panic!("expected fake process"),
@@ -159,7 +167,9 @@ fn plan_with_no_policy_uses_pnpm_outdated_instead_of_installed_list() {
     )
     .expect("plan should render");
 
-    assert!(output.contains("update alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(output.contains("+ Update"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.2.0"));
     let calls = match &process {
         ProcessRunner::Fake(fake) => fake.calls(),
         ProcessRunner::Real { .. } => panic!("expected fake process"),
@@ -198,7 +208,7 @@ fn apply_honors_wildcard_pin() {
     .expect("apply should render");
 
     assert!(output.contains("no selected updates"));
-    assert!(!output.contains("applied alpha-ready"));
+    assert!(!output.contains("alpha-ready"));
 }
 
 #[test]
@@ -234,8 +244,10 @@ fn verbose_scan_renders_release_age_when_available() {
     )
     .expect("scan should render");
 
-    assert!(output.contains("installed alpha-ready 1.0.0 age "));
-    assert!(output.contains(" old"));
+    assert!(output.contains("= Current"));
+    assert!(output.contains("alpha-ready"));
+    assert!(output.contains("v1.0.0"));
+    assert!(output.contains("(released: "));
 }
 
 #[test]
@@ -277,9 +289,12 @@ fn verbose_scan_reports_release_lookup_failures_without_hiding_installed_package
     .expect("scan should render");
 
     assert!(!output.contains("issue"));
-    assert!(output.contains("skipped alpha-ready"));
+    assert!(output.contains("! Error"));
+    assert!(output.contains("alpha-ready"));
     assert!(output.contains("lookup failed"));
-    assert!(output.contains("installed pinned-pkg 3.0.0 age"));
+    assert!(output.contains("pinned-pkg"));
+    assert!(output.contains("v3.0.0"));
+    assert!(output.contains("(released: "));
 }
 
 #[cfg(unix)]

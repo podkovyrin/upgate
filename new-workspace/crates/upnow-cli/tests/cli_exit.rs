@@ -30,7 +30,9 @@ esac
     let output = sandbox.run(["--manager", "npm", "plan"]);
 
     assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("plan npm"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("[npm]"));
+    assert!(stdout.contains("+ Update"));
 }
 
 #[test]
@@ -62,8 +64,10 @@ esac
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr.contains("apply npm"));
-    assert!(stderr.contains("failed alpha-ready 1.0.0 -> 1.2.0"));
+    assert!(stderr.contains("[npm]"));
+    assert!(stderr.contains("! Error"));
+    assert!(stderr.contains("alpha-ready"));
+    assert!(stderr.contains("v1.2.0"));
     assert!(stderr.contains("install failed"));
 }
 

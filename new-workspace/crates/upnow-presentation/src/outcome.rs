@@ -151,6 +151,15 @@ impl OutcomeNote {
     }
 
     #[must_use]
+    pub fn warning(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            tone: OutcomeNoteTone::Warning,
+            visibility: OutcomeVisibility::Always,
+        }
+    }
+
+    #[must_use]
     pub const fn with_visibility(mut self, visibility: OutcomeVisibility) -> Self {
         self.visibility = visibility;
         self
@@ -162,6 +171,7 @@ pub enum OutcomeNoteTone {
     Normal,
     Metadata,
     Emphasized,
+    Warning,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -296,6 +306,7 @@ fn render_note(note: &OutcomeNote, color: bool) -> String {
         OutcomeNoteTone::Normal => note.text.italic().to_string(),
         OutcomeNoteTone::Metadata => note.text.dimmed().to_string(),
         OutcomeNoteTone::Emphasized => note.text.bold().to_string(),
+        OutcomeNoteTone::Warning => note.text.red().bold().to_string(),
     }
 }
 
