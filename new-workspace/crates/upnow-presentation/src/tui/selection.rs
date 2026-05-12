@@ -8,16 +8,83 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Tabs};
-use upnow_domain::{ManagerId, PlanIssue, SelectedItem, UpdateSelectionPolicy};
+use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Cell, Paragraph, Row};
+use unicode_width::UnicodeWidthStr;
+use upnow_domain::{
+    ManagerId, PlanIssue, PolicyBlockReason, PolicyWarning, SelectedItem, SkipReason,
+    UpdateSelectionPolicy,
+};
 use upnow_planning::{
-    SelectionRow, SelectionRowStatus, SelectionRowVisibility, SelectionView, TargetOption,
+    CandidateNoteKind, CandidateNotePart, SelectionRow, SelectionRowStatus, SelectionRowVisibility,
+    SelectionView, TargetOption,
 };
 
+use crate::outcome::version_label;
+use crate::tui::components::{
+    KeyBinding, app_block, key_footer, render_selection_table, render_separator, render_tabs,
+    visible_tabs,
+};
+use crate::tui::layout::app_frame;
+use crate::tui::text::{truncate_with_ellipsis, version_diff_spans};
+use crate::tui::theme::TuiTheme;
 use crate::tui::{InteractiveSelectionState, SelectionStateError};
+
+const TAB_KEY_LABEL: &str = " ⇥ ";
+const FOOTER_KEYS: &[KeyBinding<'static>] = &[
+    KeyBinding {
+        key: "up/down j/k",
+        label: "move",
+    },
+    KeyBinding {
+        key: "space x",
+        label: "toggle",
+    },
+    KeyBinding {
+        key: "a",
+        label: "all",
+    },
+    KeyBinding {
+        key: "n",
+        label: "none",
+    },
+    KeyBinding {
+        key: "v",
+        label: "view all",
+    },
+    KeyBinding {
+        key: "enter",
+        label: "details",
+    },
+    KeyBinding {
+        key: "C",
+        label: "confirm",
+    },
+    KeyBinding {
+        key: "q",
+        label: "quit",
+    },
+];
+const PICKER_FOOTER_KEYS: &[KeyBinding<'static>] = &[
+    KeyBinding {
+        key: "up/down j/k",
+        label: "target",
+    },
+    KeyBinding {
+        key: "r",
+        label: "recommended",
+    },
+    KeyBinding {
+        key: "esc",
+        label: "cancel",
+    },
+    KeyBinding {
+        key: "enter",
+        label: "confirm",
+    },
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractiveSelectionPlan {
@@ -86,6 +153,7 @@ pub enum SelectionControl {
 pub struct InteractiveSelectionScreen {
     managers: Vec<ManagerSelectionState>,
     active_tab: usize,
+    tab_offset: usize,
     cursor: usize,
     show_all: bool,
     target_picker: Option<TargetPickerState>,
@@ -110,6 +178,17 @@ struct TargetPickerState {
     cursor: usize,
 }
 
+#[derive(Debug, Clone)]
+struct SelectionRenderRow {
+    selected: bool,
+    manager: String,
+    name: String,
+    current: String,
+    target: String,
+    note_parts: Vec<CandidateNotePart>,
+    forced: bool,
+}
+
 impl InteractiveSelectionScreen {
     #[must_use]
     pub fn new(plans: Vec<InteractiveSelectionPlan>) -> Self {
@@ -130,6 +209,7 @@ impl InteractiveSelectionScreen {
         let mut screen = Self {
             managers,
             active_tab: 0,
+            tab_offset: 0,
             cursor: 0,
             show_all: false,
             target_picker: None,
@@ -151,6 +231,11 @@ impl InteractiveSelectionScreen {
     #[must_use]
     pub fn show_all(&self) -> bool {
         self.show_all
+    }
+
+    #[must_use]
+    pub fn tab_offset(&self) -> usize {
+        self.tab_offset
     }
 
     #[must_use]
@@ -565,97 +650,311 @@ fn selection_input_from_event(event: &Event, target_picker_open: bool) -> Select
     }
 }
 
-fn draw_selection(frame: &mut ratatui::Frame<'_>, screen: &InteractiveSelectionScreen) {
-    let area = frame.area();
-    let [tabs_area, body_area, footer_area] = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Fill(1),
-        Constraint::Length(2),
-    ])
-    .areas(area);
+fn draw_selection(frame: &mut ratatui::Frame<'_>, screen: &mut InteractiveSelectionScreen) {
+    let theme = TuiTheme::current();
+    draw_selection_with_theme(frame, screen, &theme);
+}
 
-    let titles = std::iter::once(Line::from("All"))
+fn draw_selection_with_theme(
+    frame: &mut ratatui::Frame<'_>,
+    screen: &mut InteractiveSelectionScreen,
+    theme: &TuiTheme,
+) {
+    let area = frame.area();
+    let block = app_block(theme);
+    let Some(app_frame) = app_frame(area) else {
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        frame.render_widget(Paragraph::new("Terminal too small"), inner);
+        return;
+    };
+    frame.render_widget(block, app_frame.outer);
+
+    draw_tabs(frame, screen, app_frame.header, theme);
+    render_separator(frame, app_frame.header_separator, theme);
+
+    if let Some(message) = screen.placeholder_message() {
+        draw_centered_placeholder(frame, app_frame.body, &message, theme.muted);
+    } else {
+        draw_list_content(frame, screen, app_frame.body, theme);
+    }
+
+    render_separator(frame, app_frame.footer_separator, theme);
+    frame.render_widget(Paragraph::new(footer_line(screen, theme)), app_frame.footer);
+}
+
+fn draw_tabs(
+    frame: &mut ratatui::Frame<'_>,
+    screen: &mut InteractiveSelectionScreen,
+    area: Rect,
+    theme: &TuiTheme,
+) {
+    let tab_key_width = UnicodeWidthStr::width(TAB_KEY_LABEL);
+    let key_area_width = u16::try_from(tab_key_width)
+        .unwrap_or(u16::MAX)
+        .min(area.width);
+    let [tabs_area, key_area] =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Length(key_area_width)]).areas(area);
+    let titles = std::iter::once(Line::raw("All"))
         .chain(
             screen
                 .managers
                 .iter()
-                .map(|manager| Line::from(manager.manager_id.as_str().to_owned())),
+                .map(|manager| Line::raw(manager.manager_id.as_str().to_owned())),
         )
         .collect::<Vec<_>>();
-    let tabs = Tabs::new(titles)
-        .select(screen.active_tab)
-        .block(Block::new().borders(Borders::ALL).title("upnow apply"));
-    frame.render_widget(tabs, tabs_area);
 
-    if let Some(message) = screen.placeholder_message() {
-        frame.render_widget(
-            Paragraph::new(message).block(Block::new().borders(Borders::ALL)),
-            body_area,
-        );
-    } else {
-        let rows = screen
-            .visible_row_refs()
-            .into_iter()
-            .map(|visible| {
-                let manager = &screen.managers[visible.manager_idx];
-                let row = screen.row(visible);
-                let selected = manager.state.selected_target(&row.plan_item_id).is_some();
-                let target = row
-                    .target_version
-                    .as_ref()
-                    .map_or("-", upnow_domain::VersionText::as_str);
-                Row::new([
-                    Cell::from(if selected { "x" } else { " " }),
-                    Cell::from(manager.manager_id.as_str().to_owned()),
-                    Cell::from(row.package_name.as_str().to_owned()),
-                    Cell::from(row.installed_version.as_str().to_owned()),
-                    Cell::from(target.to_owned()),
-                    Cell::from(status_label(row)),
-                ])
-            })
-            .collect::<Vec<_>>();
+    let tabs = visible_tabs(
+        &titles,
+        screen.active_tab,
+        screen.tab_offset,
+        tabs_area.width,
+    );
+    screen.tab_offset = tabs.start;
+    render_tabs(frame, tabs_area, &tabs, theme);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(TAB_KEY_LABEL, theme.keycap))),
+        key_area,
+    );
+}
 
-        let table = Table::new(
-            rows,
-            [
-                Constraint::Length(3),
-                Constraint::Length(10),
-                Constraint::Percentage(30),
-                Constraint::Length(14),
-                Constraint::Length(14),
-                Constraint::Length(12),
-            ],
-        )
-        .header(Row::new([
-            "", "manager", "package", "current", "target", "status",
-        ]))
-        .block(Block::new().borders(Borders::ALL))
-        .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
-        .highlight_symbol(">");
-
-        let mut table_state = ratatui::widgets::TableState::default();
-        if !screen.visible_row_refs().is_empty() {
-            table_state.select(Some(screen.cursor));
-        }
-        frame.render_stateful_widget(table, body_area, &mut table_state);
+fn draw_list_content(
+    frame: &mut ratatui::Frame<'_>,
+    screen: &mut InteractiveSelectionScreen,
+    area: Rect,
+    theme: &TuiTheme,
+) {
+    if area.height < 2 {
+        frame.render_widget(Paragraph::new("Terminal too small"), area);
+        return;
     }
 
-    let footer = if screen.target_picker.is_some() {
-        let options = screen
-            .target_picker_options()
-            .iter()
-            .map(target_option_label)
-            .collect::<Vec<_>>()
-            .join(" | ");
-        format!(
-            "target: {options}\nup/down choose target  enter confirm  r recommended  esc cancel"
-        )
-    } else if screen.has_selectable_rows() {
-        "up/down move  tab manager  space toggle  a all  n none  v view all  enter target  C confirm  q quit".to_owned()
+    screen.clamp_cursor();
+    let render_rows = selection_render_rows(screen);
+    let table_rows = render_rows
+        .iter()
+        .enumerate()
+        .map(|(idx, row)| selection_table_row(row, idx == screen.cursor, theme))
+        .collect::<Vec<_>>();
+
+    let selected = (screen.cursor < render_rows.len()).then_some(screen.cursor);
+    render_selection_table(frame, area, table_rows, selected, theme);
+}
+
+fn draw_centered_placeholder(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    message: &str,
+    style: Style,
+) {
+    let [line_area] = Layout::vertical([Constraint::Length(1)])
+        .flex(Flex::Center)
+        .areas(area);
+    let line = Line::from(Span::styled(
+        truncate_with_ellipsis(message, usize::from(area.width)),
+        style,
+    ))
+    .centered();
+    frame.render_widget(Paragraph::new(line), line_area);
+}
+
+fn selection_render_rows(screen: &InteractiveSelectionScreen) -> Vec<SelectionRenderRow> {
+    screen
+        .visible_row_refs()
+        .into_iter()
+        .map(|visible| {
+            let manager = &screen.managers[visible.manager_idx];
+            let row = screen.row(visible);
+            let selected = manager.state.selected_target(&row.plan_item_id).is_some();
+            let target = row
+                .target_version
+                .as_ref()
+                .map_or_else(|| "-".to_owned(), |version| version_label(version.as_str()));
+            let forced = row
+                .target_options
+                .iter()
+                .any(|option| matches!(option, TargetOption::ForcedCandidate { .. }));
+
+            SelectionRenderRow {
+                selected,
+                manager: manager.manager_id.as_str().to_owned(),
+                name: row.package_name.as_str().to_owned(),
+                current: version_label(row.installed_version.as_str()),
+                target,
+                note_parts: row.notes.clone(),
+                forced,
+            }
+        })
+        .collect()
+}
+
+fn selection_table_row(
+    row: &SelectionRenderRow,
+    highlighted: bool,
+    theme: &TuiTheme,
+) -> Row<'static> {
+    let style = theme.row_for_selectable_state(highlighted, row.forced && !row.selected);
+    let marker = if row.selected { "[x]" } else { "[ ]" };
+    let target = if row.target == "-" {
+        Line::from(Span::styled(row.target.clone(), style))
     } else {
-        "v view all  C confirm  q quit".to_owned()
+        Line::from(version_diff_spans(
+            &row.current,
+            &row.target,
+            style,
+            theme,
+            highlighted,
+        ))
     };
-    frame.render_widget(Paragraph::new(footer), footer_area);
+    let note = if row.forced {
+        forced_note_cell(&row.note_parts, style, highlighted, theme)
+    } else {
+        Cell::new(note_line(&row.note_parts, theme.note_for(style), theme))
+            .style(theme.note_for(style))
+    };
+
+    Row::new(vec![
+        Cell::new(marker).style(style),
+        Cell::new(row.manager.clone()).style(style),
+        Cell::new(row.name.clone()).style(theme.emphasis(style)),
+        Cell::new(row.current.clone()).style(style),
+        Cell::new(target).style(style),
+        note,
+    ])
+    .style(style)
+}
+
+fn forced_note_cell(
+    note_parts: &[CandidateNotePart],
+    base_style: Style,
+    highlighted: bool,
+    theme: &TuiTheme,
+) -> Cell<'static> {
+    let mut spans = vec![Span::styled("forced", theme.forced_note_for(highlighted))];
+    let note = note_text(note_parts);
+    if !note.is_empty() {
+        spans.push(Span::styled(", ", theme.note_for(base_style)));
+        spans.push(Span::styled(note, theme.note_for(base_style)));
+    }
+
+    Cell::new(Line::from(spans)).style(theme.note_for(base_style))
+}
+
+fn footer_line(screen: &InteractiveSelectionScreen, theme: &TuiTheme) -> Line<'static> {
+    if screen.target_picker.is_some() {
+        return picker_footer_line(screen, theme);
+    }
+
+    key_footer(FOOTER_KEYS, theme)
+}
+
+fn picker_footer_line(screen: &InteractiveSelectionScreen, theme: &TuiTheme) -> Line<'static> {
+    let options = screen
+        .target_picker_options()
+        .iter()
+        .map(target_option_label)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let mut spans = vec![Span::raw(format!("target: {options}  "))];
+    spans.extend(key_footer(PICKER_FOOTER_KEYS, theme).spans);
+    Line::from(spans)
+}
+
+fn target_option_label(option: &TargetOption) -> String {
+    let target = version_label(option.target_version().as_str());
+    match option {
+        TargetOption::Recommended { .. } => format!("recommended {target}"),
+        TargetOption::ForcedCandidate { .. } => format!("force {target}"),
+        TargetOption::AlternateExact { .. } => format!("exact {target}"),
+    }
+}
+
+fn note_line(note_parts: &[CandidateNotePart], style: Style, theme: &TuiTheme) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (idx, part) in note_parts.iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::styled("; ", style));
+        }
+        let part_style = if part.violation {
+            style.patch(theme.forced)
+        } else {
+            style
+        };
+        spans.push(Span::styled(note_part_text(part), part_style));
+    }
+
+    Line::from(spans)
+}
+
+fn note_text(note_parts: &[CandidateNotePart]) -> String {
+    note_parts
+        .iter()
+        .map(note_part_text)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn note_part_text(part: &CandidateNotePart) -> String {
+    match &part.kind {
+        CandidateNoteKind::Released { age } => format!("released {}", human_age(*age)),
+        CandidateNoteKind::TooFresh { age, required_age } => match age {
+            Some(age) => format!(
+                "too fresh: {} old, need {}",
+                human_age(*age),
+                human_age(*required_age)
+            ),
+            None => format!("too fresh: need {}", human_age(*required_age)),
+        },
+        CandidateNoteKind::VersionPolicyBlocked(reason) => policy_block_reason_text(reason),
+        CandidateNoteKind::PolicyWarning(warning) => policy_warning_text(*warning).to_owned(),
+        CandidateNoteKind::MissingReleaseMetadata => "missing release metadata".to_owned(),
+        CandidateNoteKind::ReleaseLookupFailed { error } => error.as_ref().map_or_else(
+            || "release lookup failed".to_owned(),
+            |error| format!("release lookup failed: {}", error.detail),
+        ),
+        CandidateNoteKind::Skipped(reason) => skip_reason_text(reason),
+        CandidateNoteKind::ResolverError { message } => message.clone(),
+    }
+}
+
+fn policy_block_reason_text(reason: &PolicyBlockReason) -> String {
+    match reason {
+        PolicyBlockReason::PreReleaseBlocked => "pre-release blocked by policy".to_owned(),
+        PolicyBlockReason::TrackRegression => "track regression blocked by policy".to_owned(),
+        PolicyBlockReason::UnknownStability => "unknown stability blocked by policy".to_owned(),
+    }
+}
+
+fn policy_warning_text(warning: PolicyWarning) -> &'static str {
+    match warning {
+        PolicyWarning::InstalledTrackUnknownFallbackStable => {
+            "same-track fell back to stable because installed track is unknown"
+        }
+    }
+}
+
+fn skip_reason_text(reason: &SkipReason) -> String {
+    match reason {
+        SkipReason::Pinned => "pinned".to_owned(),
+        SkipReason::ManagerRule(detail) => detail.clone(),
+    }
+}
+
+fn human_age(age: Duration) -> String {
+    let seconds = age.as_secs();
+    let days = seconds / (24 * 60 * 60);
+    if days > 0 {
+        return format!("{days}d");
+    }
+    let hours = seconds / (60 * 60);
+    if hours > 0 {
+        return format!("{hours}h");
+    }
+    let minutes = seconds / 60;
+    if minutes > 0 {
+        return format!("{minutes}m");
+    }
+    format!("{seconds}s")
 }
 
 fn plan_issue_label(issue: &PlanIssue) -> String {
@@ -671,32 +970,192 @@ fn plan_issue_label(issue: &PlanIssue) -> String {
     }
 }
 
-fn target_option_label(option: &TargetOption) -> String {
-    match option {
-        TargetOption::Recommended { .. } => "recommended".to_owned(),
-        TargetOption::ForcedCandidate { .. } => "force candidate".to_owned(),
-        TargetOption::AlternateExact { target_version, .. } => {
-            format!("exact {}", target_version.as_str())
+#[cfg(test)]
+mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use upnow_domain::{
+        DelayReason, ExecutionEligibility, ManagerId, PackageName, PlanItem, PlanItemId, ToolId,
+        UpdateCandidate, UpdatePlan, VersionScheme, VersionText,
+    };
+    use upnow_planning::selection_view;
+
+    use super::*;
+
+    #[test]
+    fn renders_old_style_selection_shell_from_typed_rows() {
+        let plan = plan(
+            "pnpm",
+            vec![update(
+                "pnpm:alpha",
+                "alpha",
+                ExecutionEligibility::NativeOrExact,
+            )],
+        );
+        let mut screen = screen_from_plan(&plan);
+
+        let rendered = render_to_string(&mut screen, 96, 18);
+
+        assert!(rendered.contains("All"));
+        assert!(rendered.contains("pnpm"));
+        assert!(rendered.contains("Manager"));
+        assert!(rendered.contains("Name"));
+        assert!(rendered.contains("Current"));
+        assert!(rendered.contains("Target"));
+        assert!(rendered.contains("Note"));
+        assert!(rendered.contains("[x]"));
+        assert!(rendered.contains("alpha"));
+        assert!(rendered.contains("v1.0.0"));
+        assert!(rendered.contains("v1.2.0"));
+        assert!(rendered.contains("space x"));
+        assert!(rendered.contains("confirm"));
+        assert!(rendered.contains("─"));
+        assert!(rendered.contains("⇥"));
+    }
+
+    #[test]
+    fn renders_forced_note_from_typed_note_parts() {
+        let plan = plan(
+            "pnpm",
+            vec![delayed(
+                "pnpm:alpha",
+                "alpha",
+                ExecutionEligibility::ExactOnly,
+            )],
+        );
+        let policy = UpdateSelectionPolicy::default();
+        let mut view = selection_view(&plan, &policy);
+        view.rows[0].notes = vec![CandidateNotePart::violation(
+            CandidateNoteKind::MissingReleaseMetadata,
+        )];
+        let mut screen = InteractiveSelectionScreen::new(vec![InteractiveSelectionPlan::new(
+            view,
+            Vec::new(),
+            policy,
+        )]);
+
+        let rendered = render_to_string(&mut screen, 140, 18);
+
+        assert!(rendered.contains("[ ]"));
+        assert!(rendered.contains("forced"), "{rendered}");
+        assert!(rendered.contains("missing"), "{rendered}");
+    }
+
+    #[test]
+    fn renders_small_terminal_placeholder() {
+        let plan = plan(
+            "pnpm",
+            vec![update(
+                "pnpm:alpha",
+                "alpha",
+                ExecutionEligibility::NativeOrExact,
+            )],
+        );
+        let mut screen = screen_from_plan(&plan);
+
+        let rendered = render_to_string(&mut screen, 30, 4);
+
+        assert!(rendered.contains("Terminal too small"));
+    }
+
+    #[test]
+    fn picker_footer_keeps_typed_options_visible_until_modal_phase() {
+        let plan = plan(
+            "pnpm",
+            vec![update(
+                "pnpm:alpha",
+                "alpha",
+                ExecutionEligibility::ExactOnly,
+            )],
+        );
+        let mut screen = screen_from_plan(&plan);
+
+        screen
+            .handle_input(SelectionInput::OpenTargetPicker)
+            .expect("picker should open");
+        let rendered = render_to_string(&mut screen, 140, 18);
+
+        assert!(rendered.contains("target:"));
+        assert!(rendered.contains("recommended v1.2.0"));
+        assert!(rendered.contains("exact v1.2.0"));
+        assert!(rendered.contains("esc"));
+    }
+
+    fn render_to_string(
+        screen: &mut InteractiveSelectionScreen,
+        width: u16,
+        height: u16,
+    ) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw_selection_with_theme(frame, screen, &TuiTheme::plain()))
+            .expect("draw should succeed");
+        buffer_to_string(terminal.backend().buffer())
+    }
+
+    fn buffer_to_string(buffer: &Buffer) -> String {
+        let area = buffer.area;
+        let mut output = String::new();
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                output.push_str(buffer[(x, y)].symbol());
+            }
+            output.push('\n');
+        }
+        output
+    }
+
+    fn screen_from_plan(plan: &UpdatePlan) -> InteractiveSelectionScreen {
+        let policy = UpdateSelectionPolicy::default();
+        let view = selection_view(plan, &policy);
+        InteractiveSelectionScreen::new(vec![InteractiveSelectionPlan::new(
+            view,
+            plan.issues.clone(),
+            policy,
+        )])
+    }
+
+    fn plan(manager: &str, items: Vec<PlanItem>) -> UpdatePlan {
+        UpdatePlan::new(ManagerId::new(manager).expect("valid manager"), items).expect("valid plan")
+    }
+
+    fn update(id: &str, name: &str, execution_eligibility: ExecutionEligibility) -> PlanItem {
+        PlanItem::Update {
+            id: plan_item_id(id),
+            candidate: candidate(id, name, execution_eligibility),
         }
     }
-}
 
-fn status_label(row: &SelectionRow) -> String {
-    let suffix = if row
-        .target_options
-        .iter()
-        .any(|option| matches!(option, TargetOption::ForcedCandidate { .. }))
-    {
-        " force"
-    } else {
-        ""
-    };
-    match row.status {
-        SelectionRowStatus::Update => "update".to_owned(),
-        SelectionRowStatus::Current => "current".to_owned(),
-        SelectionRowStatus::Delayed => format!("delayed{suffix}"),
-        SelectionRowStatus::Blocked => "blocked".to_owned(),
-        SelectionRowStatus::Skipped => "skipped".to_owned(),
-        SelectionRowStatus::ResolverError => "error".to_owned(),
+    fn delayed(id: &str, name: &str, execution_eligibility: ExecutionEligibility) -> PlanItem {
+        PlanItem::Delayed {
+            id: plan_item_id(id),
+            candidate: candidate(id, name, execution_eligibility),
+            reason: DelayReason::ReleaseTooFresh,
+        }
+    }
+
+    fn candidate(
+        id: &str,
+        name: &str,
+        execution_eligibility: ExecutionEligibility,
+    ) -> UpdateCandidate {
+        UpdateCandidate::new(
+            ToolId::new(id).expect("valid tool"),
+            package(name),
+            VersionText::new("1.0.0").expect("valid installed version"),
+            VersionText::new("1.2.0").expect("valid target version"),
+            VersionScheme::SemVer,
+            execution_eligibility,
+        )
+    }
+
+    fn package(name: &str) -> PackageName {
+        PackageName::new(name).expect("valid package")
+    }
+
+    fn plan_item_id(id: &str) -> PlanItemId {
+        PlanItemId::new(id).expect("valid plan item id")
     }
 }
