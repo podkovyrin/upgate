@@ -1,7 +1,10 @@
 use upnow_domain::{
-    ExecutionEligibility, ManagerId, PackageName, PlanItem, PlanItemId, UpdatePlan,
-    UpdateSelectionPolicy, VersionText,
+    AdvisoryLatestFact, BlockReason, CandidateAgeFact, DelayReason, ManagerId, PackageName,
+    PlanDiagnostics, PlanItem, PlanItemId, PolicyBlockReason, PolicyWarning, ReleaseLookupError,
+    SkipReason, UpdateCandidate, UpdatePlan, UpdateSelectionPolicy, VersionText,
 };
+
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectionView {
@@ -16,10 +19,11 @@ pub struct SelectionRow {
     pub installed_version: VersionText,
     pub target_version: Option<VersionText>,
     pub status: SelectionRowStatus,
+    pub default_visibility: SelectionRowVisibility,
+    pub notes: Vec<CandidateNotePart>,
     pub initially_selected: bool,
     pub policy_exception: bool,
-    pub forced_candidate_available: bool,
-    pub alternate_exact_targets: Vec<VersionText>,
+    pub target_options: Vec<TargetOption>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +34,98 @@ pub enum SelectionRowStatus {
     Blocked,
     Skipped,
     ResolverError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionRowVisibility {
+    Visible,
+    HiddenUntilViewAll,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetOption {
+    Recommended {
+        target_version: VersionText,
+        note_parts: Vec<CandidateNotePart>,
+    },
+    ForcedCandidate {
+        target_version: VersionText,
+        note_parts: Vec<CandidateNotePart>,
+    },
+    AlternateExact {
+        target_version: VersionText,
+        note_parts: Vec<CandidateNotePart>,
+    },
+}
+
+impl TargetOption {
+    #[must_use]
+    pub fn target_version(&self) -> &VersionText {
+        match self {
+            Self::Recommended { target_version, .. }
+            | Self::ForcedCandidate { target_version, .. }
+            | Self::AlternateExact { target_version, .. } => target_version,
+        }
+    }
+
+    #[must_use]
+    pub fn note_parts(&self) -> &[CandidateNotePart] {
+        match self {
+            Self::Recommended { note_parts, .. }
+            | Self::ForcedCandidate { note_parts, .. }
+            | Self::AlternateExact { note_parts, .. } => note_parts,
+        }
+    }
+
+    #[must_use]
+    pub fn has_violation(&self) -> bool {
+        self.note_parts().iter().any(|part| part.violation)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateNotePart {
+    pub kind: CandidateNoteKind,
+    pub violation: bool,
+}
+
+impl CandidateNotePart {
+    #[must_use]
+    pub const fn normal(kind: CandidateNoteKind) -> Self {
+        Self {
+            kind,
+            violation: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn violation(kind: CandidateNoteKind) -> Self {
+        Self {
+            kind,
+            violation: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CandidateNoteKind {
+    Released {
+        age: Duration,
+    },
+    TooFresh {
+        age: Option<Duration>,
+        required_age: Duration,
+    },
+    VersionPolicyBlocked(PolicyBlockReason),
+    PolicyWarning(PolicyWarning),
+    MissingReleaseMetadata,
+    ReleaseLookupFailed {
+        error: Option<ReleaseLookupError>,
+    },
+    Skipped(SkipReason),
+    ResolverError {
+        message: String,
+    },
 }
 
 #[must_use]
@@ -53,18 +149,19 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
     match item {
         PlanItem::Update { id, candidate } => {
             let selected = selection_policy.includes(&candidate.package_name);
-            let alternate_exact_targets =
-                exact_targets(candidate.execution_eligibility, &candidate.target_version);
+            let notes = update_notes(candidate);
+            let target_options = update_target_options(candidate, notes.clone());
             SelectionRow {
                 plan_item_id: id.clone(),
                 package_name: candidate.package_name.clone(),
                 installed_version: candidate.installed_version.clone(),
                 target_version: Some(candidate.target_version.clone()),
                 status: SelectionRowStatus::Update,
+                default_visibility: SelectionRowVisibility::Visible,
+                notes,
                 initially_selected: selected,
                 policy_exception: selection_policy.except.contains(&candidate.package_name),
-                forced_candidate_available: false,
-                alternate_exact_targets,
+                target_options,
             }
         }
         PlanItem::Current { id, installed } => SelectionRow {
@@ -73,67 +170,243 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
             installed_version: installed.installed_version.clone(),
             target_version: None,
             status: SelectionRowStatus::Current,
+            default_visibility: SelectionRowVisibility::HiddenUntilViewAll,
+            notes: Vec::new(),
             initially_selected: false,
             policy_exception: selection_policy.except.contains(&installed.package_name),
-            forced_candidate_available: false,
-            alternate_exact_targets: Vec::new(),
+            target_options: Vec::new(),
         },
-        PlanItem::Delayed { id, candidate, .. } => SelectionRow {
-            plan_item_id: id.clone(),
-            package_name: candidate.package_name.clone(),
-            installed_version: candidate.installed_version.clone(),
-            target_version: Some(candidate.target_version.clone()),
-            status: SelectionRowStatus::Delayed,
-            initially_selected: false,
-            policy_exception: selection_policy.except.contains(&candidate.package_name),
-            forced_candidate_available: candidate.execution_eligibility.supports_exact_target(),
-            alternate_exact_targets: Vec::new(),
-        },
-        PlanItem::Blocked { id, seed, .. } => SelectionRow {
+        PlanItem::Delayed {
+            id,
+            candidate,
+            reason,
+        } => {
+            let notes = delayed_notes(reason, &candidate.diagnostics);
+            let target_options = delayed_target_options(candidate, notes.clone());
+            SelectionRow {
+                plan_item_id: id.clone(),
+                package_name: candidate.package_name.clone(),
+                installed_version: candidate.installed_version.clone(),
+                target_version: Some(candidate.target_version.clone()),
+                status: SelectionRowStatus::Delayed,
+                default_visibility: if target_options.is_empty() {
+                    SelectionRowVisibility::HiddenUntilViewAll
+                } else {
+                    SelectionRowVisibility::Visible
+                },
+                notes,
+                initially_selected: false,
+                policy_exception: selection_policy.except.contains(&candidate.package_name),
+                target_options,
+            }
+        }
+        PlanItem::Blocked {
+            id,
+            seed,
+            reason,
+            policy_warnings,
+            diagnostics,
+        } => SelectionRow {
             plan_item_id: id.clone(),
             package_name: seed.installed.package_name.clone(),
             installed_version: seed.installed.installed_version.clone(),
             target_version: Some(seed.target_selection.target_version().clone()),
             status: SelectionRowStatus::Blocked,
+            default_visibility: SelectionRowVisibility::HiddenUntilViewAll,
+            notes: blocked_notes(reason, policy_warnings, diagnostics),
             initially_selected: false,
             policy_exception: selection_policy
                 .except
                 .contains(&seed.installed.package_name),
-            forced_candidate_available: false,
-            alternate_exact_targets: Vec::new(),
+            target_options: Vec::new(),
         },
-        PlanItem::Skipped { id, installed, .. } => SelectionRow {
+        PlanItem::Skipped {
+            id,
+            installed,
+            reason,
+        } => SelectionRow {
             plan_item_id: id.clone(),
             package_name: installed.package_name.clone(),
             installed_version: installed.installed_version.clone(),
             target_version: None,
             status: SelectionRowStatus::Skipped,
+            default_visibility: SelectionRowVisibility::HiddenUntilViewAll,
+            notes: vec![CandidateNotePart::normal(CandidateNoteKind::Skipped(
+                reason.clone(),
+            ))],
             initially_selected: false,
             policy_exception: selection_policy.except.contains(&installed.package_name),
-            forced_candidate_available: false,
-            alternate_exact_targets: Vec::new(),
+            target_options: Vec::new(),
         },
-        PlanItem::ResolverError { id, installed, .. } => SelectionRow {
+        PlanItem::ResolverError {
+            id,
+            installed,
+            message,
+        } => SelectionRow {
             plan_item_id: id.clone(),
             package_name: installed.package_name.clone(),
             installed_version: installed.installed_version.clone(),
             target_version: None,
             status: SelectionRowStatus::ResolverError,
+            default_visibility: SelectionRowVisibility::HiddenUntilViewAll,
+            notes: vec![CandidateNotePart::violation(
+                CandidateNoteKind::ResolverError {
+                    message: message.clone(),
+                },
+            )],
             initially_selected: false,
             policy_exception: selection_policy.except.contains(&installed.package_name),
-            forced_candidate_available: false,
-            alternate_exact_targets: Vec::new(),
+            target_options: Vec::new(),
         },
     }
 }
 
-fn exact_targets(
-    execution_eligibility: ExecutionEligibility,
-    target_version: &VersionText,
-) -> Vec<VersionText> {
-    if execution_eligibility.supports_exact_target() {
-        vec![target_version.clone()]
-    } else {
-        Vec::new()
+fn update_target_options(
+    candidate: &UpdateCandidate,
+    notes: Vec<CandidateNotePart>,
+) -> Vec<TargetOption> {
+    let mut options = vec![TargetOption::Recommended {
+        target_version: candidate.target_version.clone(),
+        note_parts: notes.clone(),
+    }];
+    if candidate.execution_eligibility.supports_exact_target() {
+        options.push(TargetOption::AlternateExact {
+            target_version: candidate.target_version.clone(),
+            note_parts: notes,
+        });
+    }
+    options
+}
+
+fn delayed_target_options(
+    candidate: &UpdateCandidate,
+    notes: Vec<CandidateNotePart>,
+) -> Vec<TargetOption> {
+    if candidate.execution_eligibility.supports_exact_target() {
+        return vec![TargetOption::ForcedCandidate {
+            target_version: candidate.target_version.clone(),
+            note_parts: notes,
+        }];
+    }
+    Vec::new()
+}
+
+fn update_notes(candidate: &UpdateCandidate) -> Vec<CandidateNotePart> {
+    let mut notes = Vec::new();
+    if let Some(target) = candidate.diagnostics.selected_target.as_ref() {
+        notes.push(CandidateNotePart::normal(CandidateNoteKind::Released {
+            age: target.age,
+        }));
+    }
+    if let Some(latest) = latest_too_fresh(&candidate.diagnostics) {
+        notes.push(CandidateNotePart::normal(CandidateNoteKind::TooFresh {
+            age: Some(latest.age),
+            required_age: candidate.diagnostics.required_age,
+        }));
+    }
+    notes.extend(policy_notes(&candidate.diagnostics));
+    notes.extend(
+        candidate
+            .policy_warnings
+            .iter()
+            .copied()
+            .map(|warning| CandidateNotePart::normal(CandidateNoteKind::PolicyWarning(warning))),
+    );
+    notes
+}
+
+fn delayed_notes(reason: &DelayReason, diagnostics: &PlanDiagnostics) -> Vec<CandidateNotePart> {
+    match reason {
+        DelayReason::ReleaseTooFresh => {
+            let mut notes = Vec::new();
+            if let Some(target) = diagnostics.selected_target.as_ref() {
+                notes.push(CandidateNotePart::normal(CandidateNoteKind::Released {
+                    age: target.age,
+                }));
+            }
+            notes.push(CandidateNotePart::violation(CandidateNoteKind::TooFresh {
+                age: diagnostics
+                    .selected_target
+                    .as_ref()
+                    .map(|target| target.age),
+                required_age: diagnostics.required_age,
+            }));
+            notes
+        }
+    }
+}
+
+fn blocked_notes(
+    reason: &BlockReason,
+    policy_warnings: &[PolicyWarning],
+    diagnostics: &PlanDiagnostics,
+) -> Vec<CandidateNotePart> {
+    let mut notes = match reason {
+        BlockReason::MissingReleaseMetadata => {
+            vec![CandidateNotePart::violation(
+                CandidateNoteKind::MissingReleaseMetadata,
+            )]
+        }
+        BlockReason::ReleaseLookupFailed => {
+            vec![CandidateNotePart::violation(
+                CandidateNoteKind::ReleaseLookupFailed {
+                    error: diagnostics.lookup_failure.clone(),
+                },
+            )]
+        }
+        BlockReason::VersionPolicy(reason) => vec![CandidateNotePart::violation(
+            CandidateNoteKind::VersionPolicyBlocked(reason.clone()),
+        )],
+    };
+    notes.extend(policy_notes(diagnostics));
+    notes.extend(
+        policy_warnings
+            .iter()
+            .copied()
+            .map(|warning| CandidateNotePart::normal(CandidateNoteKind::PolicyWarning(warning))),
+    );
+    notes
+}
+
+fn policy_notes(diagnostics: &PlanDiagnostics) -> Vec<CandidateNotePart> {
+    diagnostics
+        .candidates
+        .iter()
+        .filter_map(|candidate| {
+            candidate
+                .policy_block_reason
+                .clone()
+                .map(CandidateNoteKind::VersionPolicyBlocked)
+                .map(CandidateNotePart::violation)
+        })
+        .collect()
+}
+
+fn latest_too_fresh(diagnostics: &PlanDiagnostics) -> Option<&CandidateAgeFact> {
+    diagnostics
+        .latest_overall
+        .as_ref()
+        .filter(|latest| latest.age < diagnostics.required_age)
+        .or_else(|| {
+            diagnostics
+                .advisory_latest
+                .as_ref()
+                .and_then(advisory_latest_age_fact)
+                .filter(|latest| latest.age < diagnostics.required_age)
+        })
+}
+
+fn advisory_latest_age_fact(advisory: &AdvisoryLatestFact) -> Option<&CandidateAgeFact> {
+    match advisory {
+        AdvisoryLatestFact::Known {
+            latest_version,
+            candidates,
+        } => candidates
+            .iter()
+            .find(|candidate| &candidate.version == latest_version)
+            .or_else(|| candidates.first()),
+        AdvisoryLatestFact::MissingMetadata { .. } | AdvisoryLatestFact::LookupFailed { .. } => {
+            None
+        }
     }
 }

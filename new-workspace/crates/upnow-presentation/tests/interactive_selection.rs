@@ -3,7 +3,7 @@ use upnow_domain::{
     SelectedTarget, ToolId, UpdateCandidate, UpdatePlan, UpdateSelectionPolicy, VersionScheme,
     VersionText,
 };
-use upnow_planning::selection_view;
+use upnow_planning::{TargetOption, selection_view};
 use upnow_presentation::tui::{
     InteractiveSelectionPlan, InteractiveSelectionScreen, SelectionControl, SelectionInput,
 };
@@ -149,10 +149,11 @@ fn picker_can_choose_alternate_exact_target() {
     screen
         .handle_input(SelectionInput::OpenTargetPicker)
         .expect("picker should open");
-    assert_eq!(
-        screen.target_picker_options(),
-        ["recommended", "exact 1.2.0"]
-    );
+    let options = screen.target_picker_options();
+    assert_eq!(options.len(), 2);
+    assert!(matches!(options[0], TargetOption::Recommended { .. }));
+    assert!(matches!(options[1], TargetOption::AlternateExact { .. }));
+    assert_eq!(options[1].target_version().as_str(), "1.2.0");
     screen
         .handle_input(SelectionInput::PickerDown)
         .expect("picker should move");
@@ -194,6 +195,43 @@ fn delayed_forced_candidate_is_visible_and_selectable_by_toggle() {
 }
 
 #[test]
+fn bulk_all_does_not_select_force_candidate_rows() {
+    let mut screen = screen(&plan(
+        "pnpm",
+        vec![delayed(
+            "pnpm:alpha",
+            "alpha",
+            ExecutionEligibility::ExactOnly,
+        )],
+    ));
+
+    screen
+        .handle_input(SelectionInput::SelectVisible)
+        .expect("bulk select should ignore force-only rows");
+    let selections = screen.selection_drafts();
+
+    assert!(selections[0].selected_items.is_empty());
+}
+
+#[test]
+fn bulk_none_deselects_updates_but_leaves_forced_candidates_unselected() {
+    let mut screen = screen(&plan(
+        "pnpm",
+        vec![
+            update("pnpm:ready", "ready", ExecutionEligibility::NativeOnly),
+            delayed("pnpm:fresh", "fresh", ExecutionEligibility::ExactOnly),
+        ],
+    ));
+
+    screen
+        .handle_input(SelectionInput::SelectNoneVisible)
+        .expect("bulk none should deselect recommended updates");
+    let selections = screen.selection_drafts();
+
+    assert!(selections[0].selected_items.is_empty());
+}
+
+#[test]
 fn delayed_picker_shows_only_real_actions_and_forces_on_first_option() {
     let mut screen = screen(&plan(
         "pnpm",
@@ -207,7 +245,9 @@ fn delayed_picker_shows_only_real_actions_and_forces_on_first_option() {
     screen
         .handle_input(SelectionInput::OpenTargetPicker)
         .expect("picker should open");
-    assert_eq!(screen.target_picker_options(), ["force candidate"]);
+    let options = screen.target_picker_options();
+    assert_eq!(options.len(), 1);
+    assert!(matches!(options[0], TargetOption::ForcedCandidate { .. }));
 
     screen
         .handle_input(SelectionInput::PickerConfirm)

@@ -13,7 +13,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Tabs};
 use upnow_domain::{ManagerId, PlanIssue, SelectedItem, UpdateSelectionPolicy};
-use upnow_planning::{SelectionRow, SelectionRowStatus, SelectionView};
+use upnow_planning::{
+    SelectionRow, SelectionRowStatus, SelectionRowVisibility, SelectionView, TargetOption,
+};
 
 use crate::tui::{InteractiveSelectionState, SelectionStateError};
 
@@ -157,24 +159,12 @@ impl InteractiveSelectionScreen {
     }
 
     #[must_use]
-    pub fn target_picker_options(&self) -> Vec<String> {
+    pub fn target_picker_options(&self) -> Vec<TargetOption> {
         let Some(picker) = self.target_picker else {
             return Vec::new();
         };
         let row = self.row(picker.visible_row);
-        let mut options = Vec::new();
-        if row.status == SelectionRowStatus::Update {
-            options.push("recommended".to_owned());
-        }
-        if row.forced_candidate_available {
-            options.push("force candidate".to_owned());
-        }
-        options.extend(
-            row.alternate_exact_targets
-                .iter()
-                .map(|target| format!("exact {}", target.as_str())),
-        );
-        options
+        row.target_options.clone()
     }
 
     #[must_use]
@@ -189,7 +179,11 @@ impl InteractiveSelectionScreen {
     pub fn has_selectable_rows(&self) -> bool {
         self.managers.iter().any(|manager| {
             manager.state.rows().iter().any(|row| {
-                row.status == SelectionRowStatus::Update || row.forced_candidate_available
+                row.status == SelectionRowStatus::Update
+                    || row
+                        .target_options
+                        .iter()
+                        .any(|option| matches!(option, TargetOption::ForcedCandidate { .. }))
             })
         })
     }
@@ -323,7 +317,11 @@ impl InteractiveSelectionScreen {
             manager.state.deselect(&row.plan_item_id)?;
         } else if row.status == SelectionRowStatus::Update {
             manager.state.select_recommended(&row.plan_item_id)?;
-        } else if row.forced_candidate_available {
+        } else if row
+            .target_options
+            .iter()
+            .any(|option| matches!(option, TargetOption::ForcedCandidate { .. }))
+        {
             manager.state.force_candidate(&row.plan_item_id)?;
         }
         Ok(())
@@ -350,10 +348,7 @@ impl InteractiveSelectionScreen {
             return;
         };
         let row = self.row(visible_row);
-        if row.status == SelectionRowStatus::Update
-            || row.forced_candidate_available
-            || !row.alternate_exact_targets.is_empty()
-        {
+        if !row.target_options.is_empty() {
             self.target_picker = Some(TargetPickerState {
                 visible_row,
                 cursor: 0,
@@ -385,7 +380,11 @@ impl InteractiveSelectionScreen {
             return Ok(());
         };
         let row = self.row(picker.visible_row).clone();
-        if row.status == SelectionRowStatus::Update {
+        if row
+            .target_options
+            .iter()
+            .any(|option| matches!(option, TargetOption::Recommended { .. }))
+        {
             self.managers[picker.visible_row.manager_idx]
                 .state
                 .select_recommended(&row.plan_item_id)?;
@@ -400,30 +399,20 @@ impl InteractiveSelectionScreen {
         };
         let row = self.row(picker.visible_row).clone();
         let manager = &mut self.managers[picker.visible_row.manager_idx];
-        let mut cursor = picker.cursor;
-
-        if row.status == SelectionRowStatus::Update && cursor == 0 {
-            manager.state.select_recommended(&row.plan_item_id)?;
-            self.target_picker = None;
-            return Ok(());
-        }
-        if row.status == SelectionRowStatus::Update {
-            cursor -= 1;
-        }
-
-        if row.forced_candidate_available && cursor == 0 {
-            manager.state.force_candidate(&row.plan_item_id)?;
-            self.target_picker = None;
-            return Ok(());
-        }
-        if row.forced_candidate_available {
-            cursor -= 1;
-        }
-
-        if let Some(target_version) = row.alternate_exact_targets.get(cursor) {
-            manager
-                .state
-                .choose_alternate_exact(&row.plan_item_id, target_version.clone())?;
+        if let Some(option) = row.target_options.get(picker.cursor) {
+            match option {
+                TargetOption::Recommended { .. } => {
+                    manager.state.select_recommended(&row.plan_item_id)?;
+                }
+                TargetOption::ForcedCandidate { .. } => {
+                    manager.state.force_candidate(&row.plan_item_id)?;
+                }
+                TargetOption::AlternateExact { target_version, .. } => {
+                    manager
+                        .state
+                        .choose_alternate_exact(&row.plan_item_id, target_version.clone())?;
+                }
+            }
         }
 
         self.target_picker = None;
@@ -432,9 +421,7 @@ impl InteractiveSelectionScreen {
 
     fn target_option_count(&self, visible: VisibleRow) -> usize {
         let row = self.row(visible);
-        usize::from(row.status == SelectionRowStatus::Update)
-            + usize::from(row.forced_candidate_available)
-            + row.alternate_exact_targets.len()
+        row.target_options.len()
     }
 
     fn clamp_cursor(&mut self) {
@@ -458,8 +445,8 @@ impl InteractiveSelectionScreen {
             }
             for (row_idx, row) in manager.state.rows().iter().enumerate() {
                 if self.show_all
-                    || row.status == SelectionRowStatus::Update
-                    || row.forced_candidate_available
+                    || row.default_visibility == SelectionRowVisibility::Visible
+                    || manager.state.selected_target(&row.plan_item_id).is_some()
                 {
                     rows.push(VisibleRow {
                         manager_idx,
@@ -654,7 +641,12 @@ fn draw_selection(frame: &mut ratatui::Frame<'_>, screen: &InteractiveSelectionS
     }
 
     let footer = if screen.target_picker.is_some() {
-        let options = screen.target_picker_options().join(" | ");
+        let options = screen
+            .target_picker_options()
+            .iter()
+            .map(target_option_label)
+            .collect::<Vec<_>>()
+            .join(" | ");
         format!(
             "target: {options}\nup/down choose target  enter confirm  r recommended  esc cancel"
         )
@@ -679,8 +671,22 @@ fn plan_issue_label(issue: &PlanIssue) -> String {
     }
 }
 
+fn target_option_label(option: &TargetOption) -> String {
+    match option {
+        TargetOption::Recommended { .. } => "recommended".to_owned(),
+        TargetOption::ForcedCandidate { .. } => "force candidate".to_owned(),
+        TargetOption::AlternateExact { target_version, .. } => {
+            format!("exact {}", target_version.as_str())
+        }
+    }
+}
+
 fn status_label(row: &SelectionRow) -> String {
-    let suffix = if row.forced_candidate_available {
+    let suffix = if row
+        .target_options
+        .iter()
+        .any(|option| matches!(option, TargetOption::ForcedCandidate { .. }))
+    {
         " force"
     } else {
         ""

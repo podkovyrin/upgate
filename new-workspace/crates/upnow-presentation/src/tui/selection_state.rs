@@ -5,7 +5,7 @@ use upnow_domain::{
     PlanItemId, PlanSelection, SelectedItem, SelectedTarget, UpdatePlan, UpdateSelectionPolicy,
     VersionText,
 };
-use upnow_planning::{SelectionRow, SelectionRowStatus, SelectionView};
+use upnow_planning::{SelectionRow, SelectionRowStatus, SelectionView, TargetOption};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractiveSelectionState {
@@ -126,7 +126,11 @@ impl InteractiveSelectionState {
         plan_item_id: &PlanItemId,
     ) -> Result<(), SelectionStateError> {
         let row = self.row(plan_item_id)?;
-        if !row.forced_candidate_available {
+        if !row
+            .target_options
+            .iter()
+            .any(|option| matches!(option, TargetOption::ForcedCandidate { .. }))
+        {
             return Err(SelectionStateError::TargetUnavailable(
                 plan_item_id.as_str().to_owned(),
             ));
@@ -149,7 +153,15 @@ impl InteractiveSelectionState {
         target_version: VersionText,
     ) -> Result<(), SelectionStateError> {
         let row = self.row(plan_item_id)?;
-        if !row.alternate_exact_targets.contains(&target_version) {
+        if !row.target_options.iter().any(|option| {
+            matches!(
+                option,
+                TargetOption::AlternateExact {
+                    target_version: option_target,
+                    ..
+                } if option_target == &target_version
+            )
+        }) {
             return Err(SelectionStateError::TargetUnavailable(
                 plan_item_id.as_str().to_owned(),
             ));
