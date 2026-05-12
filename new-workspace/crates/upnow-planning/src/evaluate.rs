@@ -4,10 +4,11 @@ use std::time::{Duration, SystemTime};
 use pep440_rs::{PrereleaseKind as Pep440PrereleaseKind, Version as Pep440Version};
 use semver::Version as SemverVersion;
 use upnow_domain::{
-    BlockReason, DelayReason, ManagerSelectedTarget, PlanItem, PlanItemId, PolicyBlockReason,
-    PolicyWarning, ReleaseEntry, ReleaseLookupResult, ReleaseTimeline, TargetAgeEvidence,
-    TargetAgeLookupResult, TargetSelection, UpdateCandidate, UpdateSeed, VersionPolicy,
-    VersionScheme, VersionText,
+    AdvisoryLatestFact, AdvisoryReleaseLookup, BlockReason, CandidateAgeFact, CandidateAgeSource,
+    CandidateEvaluationFact, DelayReason, ManagerSelectedTarget, MissingMetadataKind,
+    PlanDiagnostics, PlanItem, PlanItemId, PolicyBlockReason, PolicyWarning, ReleaseEntry,
+    ReleaseLookupResult, ReleaseTimeline, TargetAgeEvidence, TargetAgeLookupResult,
+    TargetSelection, UpdateCandidate, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +48,25 @@ enum PolicyDecision {
         reason: PolicyBlockReason,
         warning: Option<PolicyWarning>,
     },
+}
+
+impl PolicyDecision {
+    const fn allowed(&self) -> bool {
+        matches!(self, Self::Allowed { .. })
+    }
+
+    const fn warning(&self) -> Option<PolicyWarning> {
+        match self {
+            Self::Allowed { warning } | Self::Blocked { warning, .. } => *warning,
+        }
+    }
+
+    fn block_reason(&self) -> Option<PolicyBlockReason> {
+        match self {
+            Self::Allowed { .. } => None,
+            Self::Blocked { reason, .. } => Some(reason.clone()),
+        }
+    }
 }
 
 /// Evaluate one manager-discovered update seed into a typed plan item.
@@ -93,12 +113,15 @@ fn evaluate_planner_selectable_seed(
             seed,
             reason: BlockReason::MissingReleaseMetadata,
             policy_warnings: Vec::new(),
+            diagnostics: PlanDiagnostics::new(min_release_age)
+                .with_missing_metadata(MissingMetadataKind::ReleaseTimeline),
         },
-        ReleaseLookupResult::LookupFailed(_) => PlanItem::Blocked {
+        ReleaseLookupResult::LookupFailed(err) => PlanItem::Blocked {
             id,
             seed,
             reason: BlockReason::ReleaseLookupFailed,
             policy_warnings: Vec::new(),
+            diagnostics: PlanDiagnostics::new(min_release_age).with_lookup_failure(err),
         },
         ReleaseLookupResult::Known(timeline) => match seed.version_scheme {
             VersionScheme::SemVer => evaluate_semver_seed(
@@ -137,6 +160,9 @@ fn evaluate_manager_selected_seed(
     now: SystemTime,
     min_release_age: Duration,
 ) -> PlanItem {
+    let mut diagnostics = PlanDiagnostics::new(min_release_age);
+    diagnostics.advisory_latest =
+        advisory_latest_diagnostics(target.advisory_release_lookup.as_ref(), now);
     let selected_target = target.target_version.clone();
     match selected_target_is_update(&seed, &selected_target) {
         Ok(false) => {
@@ -161,6 +187,14 @@ fn evaluate_manager_selected_seed(
     );
     let target_class = classify_release(seed.version_scheme, selected_target.as_str());
     let policy_decision = evaluate_policy(policy, installed_class, target_class);
+    diagnostics.candidates.push(CandidateEvaluationFact {
+        version: selected_target.clone(),
+        age: target_age_duration(&target.target_age, now),
+        policy_allowed: policy_decision.allowed(),
+        age_allowed: target_age_is_old_enough(&target.target_age, now, min_release_age),
+        policy_block_reason: policy_decision.block_reason(),
+        policy_warning: policy_decision.warning(),
+    });
     let policy_warning = match policy_decision {
         PolicyDecision::Allowed { warning } => warning,
         PolicyDecision::Blocked { reason, warning } => {
@@ -169,32 +203,46 @@ fn evaluate_manager_selected_seed(
                 seed,
                 reason: BlockReason::VersionPolicy(reason),
                 policy_warnings: warning.into_iter().collect(),
+                diagnostics,
             };
         }
     };
 
     let target_age = match target.target_age {
-        TargetAgeLookupResult::Known(evidence) => evidence,
+        TargetAgeLookupResult::Known(evidence) => {
+            diagnostics.selected_target = Some(CandidateAgeFact::new(
+                selected_target.clone(),
+                evidence_age(&evidence, now),
+                candidate_age_source(&evidence),
+            ));
+            evidence
+        }
         TargetAgeLookupResult::MissingMetadata => {
             return PlanItem::Blocked {
                 id,
                 seed,
                 reason: BlockReason::MissingReleaseMetadata,
                 policy_warnings: Vec::new(),
+                diagnostics: diagnostics.with_missing_metadata(MissingMetadataKind::SelectedTarget),
             };
         }
-        TargetAgeLookupResult::LookupFailed(_) => {
+        TargetAgeLookupResult::LookupFailed(err) => {
             return PlanItem::Blocked {
                 id,
                 seed,
                 reason: BlockReason::ReleaseLookupFailed,
                 policy_warnings: Vec::new(),
+                diagnostics: diagnostics.with_lookup_failure(err),
             };
         }
     };
 
-    let candidate =
-        candidate_from_seed(&seed, selected_target, policy_warning.into_iter().collect());
+    let candidate = candidate_from_seed(
+        &seed,
+        selected_target,
+        policy_warning.into_iter().collect(),
+        diagnostics,
+    );
 
     if is_evidence_old_enough(&target_age, now, min_release_age) {
         PlanItem::Update { id, candidate }
@@ -251,12 +299,15 @@ fn evaluate_semver_seed(
             seed,
             reason: BlockReason::MissingReleaseMetadata,
             policy_warnings: Vec::new(),
+            diagnostics: PlanDiagnostics::new(min_release_age)
+                .with_missing_metadata(MissingMetadataKind::DiscoveredTarget),
         };
     }
 
     let mut newest_overall = None::<(SemverVersion, CandidateFact)>;
     let mut newest_policy_eligible = None::<(SemverVersion, CandidateFact)>;
     let mut newest_age_eligible = None::<(SemverVersion, CandidateFact)>;
+    let mut candidate_facts = Vec::<(SemverVersion, CandidateFact)>::new();
     let installed_class = classify_semver_release(seed.installed.installed_version.as_str());
 
     for entry in &timeline.versions {
@@ -273,12 +324,10 @@ fn evaluate_semver_seed(
         }
 
         let candidate_class = classify_semver_release(entry.version.as_str());
-        let (policy_allowed, warning) =
-            match evaluate_policy(policy, installed_class, candidate_class) {
-                PolicyDecision::Allowed { warning } => (true, warning),
-                PolicyDecision::Blocked { warning, .. } => (false, warning),
-            };
-        let fact = CandidateFact::new(entry, warning);
+        let policy_decision = evaluate_policy(policy, installed_class, candidate_class);
+        let policy_allowed = policy_decision.allowed();
+        let fact = CandidateFact::new(entry, now, min_release_age, policy_decision);
+        candidate_facts.push((parsed.clone(), fact.clone()));
         if newest_overall
             .as_ref()
             .is_none_or(|(current, _)| parsed > *current)
@@ -293,7 +342,7 @@ fn evaluate_semver_seed(
             {
                 newest_policy_eligible = Some((parsed.clone(), fact.clone()));
             }
-            if is_old_enough(entry, now, min_release_age)
+            if fact.age_allowed
                 && newest_age_eligible
                     .as_ref()
                     .is_none_or(|(current, _)| parsed > *current)
@@ -302,6 +351,14 @@ fn evaluate_semver_seed(
             }
         }
     }
+
+    let diagnostics = diagnostics_from_candidate_facts(
+        min_release_age,
+        candidate_facts,
+        newest_overall.as_ref().map(|(_, fact)| fact),
+        newest_policy_eligible.as_ref().map(|(_, fact)| fact),
+        newest_age_eligible.as_ref().map(|(_, fact)| fact),
+    );
 
     let Some((_, newest_overall)) = newest_overall else {
         return PlanItem::Current {
@@ -322,10 +379,16 @@ fn evaluate_semver_seed(
             seed,
             reason: BlockReason::VersionPolicy(reason),
             policy_warnings: newest_overall.warnings,
+            diagnostics,
         };
     };
 
-    let candidate = candidate_from_seed(&seed, policy_candidate.version, policy_candidate.warnings);
+    let candidate = candidate_from_seed(
+        &seed,
+        policy_candidate.version,
+        policy_candidate.warnings,
+        diagnostics.clone(),
+    );
 
     let Some((_, age_candidate)) = newest_age_eligible else {
         return PlanItem::Delayed {
@@ -337,7 +400,12 @@ fn evaluate_semver_seed(
 
     PlanItem::Update {
         id,
-        candidate: candidate_from_seed(&seed, age_candidate.version, age_candidate.warnings),
+        candidate: candidate_from_seed(
+            &seed,
+            age_candidate.version,
+            age_candidate.warnings,
+            diagnostics,
+        ),
     }
 }
 
@@ -385,12 +453,15 @@ fn evaluate_pep440_seed(
             seed,
             reason: BlockReason::MissingReleaseMetadata,
             policy_warnings: Vec::new(),
+            diagnostics: PlanDiagnostics::new(min_release_age)
+                .with_missing_metadata(MissingMetadataKind::DiscoveredTarget),
         };
     }
 
     let mut newest_overall = None::<(Pep440Version, CandidateFact)>;
     let mut newest_policy_eligible = None::<(Pep440Version, CandidateFact)>;
     let mut newest_age_eligible = None::<(Pep440Version, CandidateFact)>;
+    let mut candidate_facts = Vec::<(Pep440Version, CandidateFact)>::new();
     let installed_class = classify_pep440_release(seed.installed.installed_version.as_str());
 
     for entry in &timeline.versions {
@@ -407,12 +478,10 @@ fn evaluate_pep440_seed(
         }
 
         let candidate_class = classify_pep440_release(entry.version.as_str());
-        let (policy_allowed, warning) =
-            match evaluate_policy(policy, installed_class, candidate_class) {
-                PolicyDecision::Allowed { warning } => (true, warning),
-                PolicyDecision::Blocked { warning, .. } => (false, warning),
-            };
-        let fact = CandidateFact::new(entry, warning);
+        let policy_decision = evaluate_policy(policy, installed_class, candidate_class);
+        let policy_allowed = policy_decision.allowed();
+        let fact = CandidateFact::new(entry, now, min_release_age, policy_decision);
+        candidate_facts.push((parsed.clone(), fact.clone()));
         if newest_overall
             .as_ref()
             .is_none_or(|(current, _)| parsed > *current)
@@ -427,7 +496,7 @@ fn evaluate_pep440_seed(
             {
                 newest_policy_eligible = Some((parsed.clone(), fact.clone()));
             }
-            if is_old_enough(entry, now, min_release_age)
+            if fact.age_allowed
                 && newest_age_eligible
                     .as_ref()
                     .is_none_or(|(current, _)| parsed > *current)
@@ -436,6 +505,14 @@ fn evaluate_pep440_seed(
             }
         }
     }
+
+    let diagnostics = diagnostics_from_candidate_facts(
+        min_release_age,
+        candidate_facts,
+        newest_overall.as_ref().map(|(_, fact)| fact),
+        newest_policy_eligible.as_ref().map(|(_, fact)| fact),
+        newest_age_eligible.as_ref().map(|(_, fact)| fact),
+    );
 
     let Some((_, newest_overall)) = newest_overall else {
         return PlanItem::Current {
@@ -456,10 +533,16 @@ fn evaluate_pep440_seed(
             seed,
             reason: BlockReason::VersionPolicy(reason),
             policy_warnings: newest_overall.warnings,
+            diagnostics,
         };
     };
 
-    let candidate = candidate_from_seed(&seed, policy_candidate.version, policy_candidate.warnings);
+    let candidate = candidate_from_seed(
+        &seed,
+        policy_candidate.version,
+        policy_candidate.warnings,
+        diagnostics.clone(),
+    );
 
     let Some((_, age_candidate)) = newest_age_eligible else {
         return PlanItem::Delayed {
@@ -471,7 +554,12 @@ fn evaluate_pep440_seed(
 
     PlanItem::Update {
         id,
-        candidate: candidate_from_seed(&seed, age_candidate.version, age_candidate.warnings),
+        candidate: candidate_from_seed(
+            &seed,
+            age_candidate.version,
+            age_candidate.warnings,
+            diagnostics,
+        ),
     }
 }
 
@@ -479,6 +567,7 @@ fn candidate_from_seed(
     seed: &UpdateSeed,
     target_version: VersionText,
     policy_warnings: Vec<PolicyWarning>,
+    diagnostics: PlanDiagnostics,
 ) -> UpdateCandidate {
     UpdateCandidate::new(
         seed.installed.tool_id.clone(),
@@ -490,6 +579,7 @@ fn candidate_from_seed(
     )
     .with_execution_target_kind(seed.execution_target_kind)
     .with_policy_warnings(policy_warnings)
+    .with_diagnostics(diagnostics)
 }
 
 fn evaluate_policy(
@@ -582,18 +672,44 @@ fn evaluate_stable_policy(
     }
 }
 
-fn is_old_enough(entry: &ReleaseEntry, now: SystemTime, min_release_age: Duration) -> bool {
-    release_age(entry, now) >= min_release_age
-}
-
 fn is_evidence_old_enough(
     evidence: &TargetAgeEvidence,
     now: SystemTime,
     min_release_age: Duration,
 ) -> bool {
+    evidence_age(evidence, now) >= min_release_age
+}
+
+fn target_age_is_old_enough(
+    target_age: &TargetAgeLookupResult,
+    now: SystemTime,
+    min_release_age: Duration,
+) -> bool {
+    match target_age {
+        TargetAgeLookupResult::Known(evidence) => {
+            is_evidence_old_enough(evidence, now, min_release_age)
+        }
+        TargetAgeLookupResult::MissingMetadata | TargetAgeLookupResult::LookupFailed(_) => false,
+    }
+}
+
+fn target_age_duration(target_age: &TargetAgeLookupResult, now: SystemTime) -> Option<Duration> {
+    match target_age {
+        TargetAgeLookupResult::Known(evidence) => Some(evidence_age(evidence, now)),
+        TargetAgeLookupResult::MissingMetadata | TargetAgeLookupResult::LookupFailed(_) => None,
+    }
+}
+
+fn evidence_age(evidence: &TargetAgeEvidence, now: SystemTime) -> Duration {
     now.duration_since(*evidence.timestamp().as_system_time())
         .unwrap_or_default()
-        >= min_release_age
+}
+
+fn candidate_age_source(evidence: &TargetAgeEvidence) -> CandidateAgeSource {
+    match evidence {
+        TargetAgeEvidence::PublishedAt(_) => CandidateAgeSource::PublishedAt,
+        TargetAgeEvidence::ManagerNativeTimestamp(_) => CandidateAgeSource::ManagerNativeTimestamp,
+    }
 }
 
 fn release_age(entry: &ReleaseEntry, now: SystemTime) -> Duration {
@@ -601,17 +717,106 @@ fn release_age(entry: &ReleaseEntry, now: SystemTime) -> Duration {
         .unwrap_or_default()
 }
 
+fn advisory_latest_diagnostics(
+    advisory: Option<&AdvisoryReleaseLookup>,
+    now: SystemTime,
+) -> Option<AdvisoryLatestFact> {
+    advisory.map(|advisory| match &advisory.release_lookup {
+        ReleaseLookupResult::Known(timeline) => AdvisoryLatestFact::Known {
+            latest_version: advisory.latest_version.clone(),
+            candidates: timeline
+                .versions
+                .iter()
+                .map(|entry| {
+                    CandidateAgeFact::new(
+                        entry.version.clone(),
+                        release_age(entry, now),
+                        CandidateAgeSource::ReleaseTimeline,
+                    )
+                })
+                .collect(),
+        },
+        ReleaseLookupResult::MissingMetadata => AdvisoryLatestFact::MissingMetadata {
+            latest_version: advisory.latest_version.clone(),
+        },
+        ReleaseLookupResult::LookupFailed(error) => AdvisoryLatestFact::LookupFailed {
+            latest_version: advisory.latest_version.clone(),
+            error: error.clone(),
+        },
+    })
+}
+
+fn diagnostics_from_candidate_facts<T>(
+    required_age: Duration,
+    mut candidates: Vec<(T, CandidateFact)>,
+    latest_overall: Option<&CandidateFact>,
+    latest_policy_eligible: Option<&CandidateFact>,
+    latest_age_eligible: Option<&CandidateFact>,
+) -> PlanDiagnostics
+where
+    T: Ord,
+{
+    candidates.sort_by(|(left, _), (right, _)| right.cmp(left));
+    PlanDiagnostics {
+        required_age,
+        candidates: candidates
+            .iter()
+            .map(|(_, fact)| fact.candidate_evaluation())
+            .collect(),
+        selected_target: None,
+        latest_overall: latest_overall.map(CandidateFact::candidate_age),
+        latest_policy_eligible: latest_policy_eligible.map(CandidateFact::candidate_age),
+        latest_age_eligible: latest_age_eligible.map(CandidateFact::candidate_age),
+        missing_metadata: None,
+        lookup_failure: None,
+        advisory_latest: None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CandidateFact {
     version: VersionText,
+    age: Duration,
+    age_allowed: bool,
+    policy_allowed: bool,
+    policy_block_reason: Option<PolicyBlockReason>,
     warnings: Vec<PolicyWarning>,
 }
 
 impl CandidateFact {
-    fn new(entry: &ReleaseEntry, warning: Option<PolicyWarning>) -> Self {
+    fn new(
+        entry: &ReleaseEntry,
+        now: SystemTime,
+        min_release_age: Duration,
+        policy_decision: PolicyDecision,
+    ) -> Self {
+        let age = release_age(entry, now);
         Self {
             version: entry.version.clone(),
-            warnings: warning.into_iter().collect(),
+            age,
+            age_allowed: age >= min_release_age,
+            policy_allowed: policy_decision.allowed(),
+            policy_block_reason: policy_decision.block_reason(),
+            warnings: policy_decision.warning().into_iter().collect(),
+        }
+    }
+
+    fn candidate_age(&self) -> CandidateAgeFact {
+        CandidateAgeFact::new(
+            self.version.clone(),
+            self.age,
+            CandidateAgeSource::ReleaseTimeline,
+        )
+    }
+
+    fn candidate_evaluation(&self) -> CandidateEvaluationFact {
+        CandidateEvaluationFact {
+            version: self.version.clone(),
+            age: Some(self.age),
+            policy_allowed: self.policy_allowed,
+            age_allowed: self.age_allowed,
+            policy_block_reason: self.policy_block_reason.clone(),
+            policy_warning: self.warnings.first().copied(),
         }
     }
 }

@@ -1,9 +1,10 @@
 use upnow_domain::{
-    BlockReason, DelayReason, DomainError, ExecutionEligibility, InstalledTool, ManagerId,
-    ManagerMetadata, ManagerSelectedTarget, PackageName, PlanItem, PlanItemId, PolicyBlockReason,
-    ReleaseLookupError, ReleaseLookupResult, ReleaseTimestamp, SkipReason, TargetAgeEvidence,
-    TargetAgeLookupResult, TargetSelection, ToolId, ToolName, UpdateCandidate, UpdatePlan,
-    UpdateSeed, VersionScheme, VersionText,
+    AdvisoryLatestFact, BlockReason, CandidateAgeFact, CandidateAgeSource, CandidateEvaluationFact,
+    DelayReason, DomainError, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata,
+    ManagerSelectedTarget, MissingMetadataKind, PackageName, PlanDiagnostics, PlanItem, PlanItemId,
+    PolicyBlockReason, ReleaseLookupError, ReleaseLookupResult, ReleaseTimestamp, SkipReason,
+    TargetAgeEvidence, TargetAgeLookupResult, TargetSelection, ToolId, ToolName, UpdateCandidate,
+    UpdatePlan, UpdateSeed, VersionScheme, VersionText,
 };
 
 fn manager_id() -> ManagerId {
@@ -71,6 +72,7 @@ fn plan_item_variants_represent_phase_two_states() {
         seed: seed("missing-age"),
         reason: BlockReason::VersionPolicy(PolicyBlockReason::PreReleaseBlocked),
         policy_warnings: Vec::new(),
+        diagnostics: PlanDiagnostics::new(std::time::Duration::from_secs(86_400)),
     };
     let skipped = PlanItem::Skipped {
         id: item_id("skipped"),
@@ -89,6 +91,54 @@ fn plan_item_variants_represent_phase_two_states() {
     assert_eq!(blocked.id().as_str(), "blocked");
     assert_eq!(skipped.id().as_str(), "skipped");
     assert_eq!(resolver_error.id().as_str(), "resolver-error");
+}
+
+#[test]
+fn plan_diagnostics_preserve_typed_candidate_and_lookup_facts() {
+    let lookup_error = ReleaseLookupError::new("registry timeout");
+    let diagnostics = PlanDiagnostics {
+        required_age: std::time::Duration::from_secs(86_400),
+        candidates: vec![CandidateEvaluationFact {
+            version: VersionText::new("1.2.0-beta.1").expect("valid version"),
+            age: Some(std::time::Duration::from_secs(3_600)),
+            policy_allowed: false,
+            age_allowed: false,
+            policy_block_reason: Some(PolicyBlockReason::PreReleaseBlocked),
+            policy_warning: None,
+        }],
+        selected_target: Some(CandidateAgeFact::new(
+            VersionText::new("1.2.0").expect("valid version"),
+            std::time::Duration::from_secs(90_000),
+            CandidateAgeSource::PublishedAt,
+        )),
+        latest_overall: Some(CandidateAgeFact::new(
+            VersionText::new("1.2.0-beta.1").expect("valid version"),
+            std::time::Duration::from_secs(3_600),
+            CandidateAgeSource::ReleaseTimeline,
+        )),
+        latest_policy_eligible: None,
+        latest_age_eligible: None,
+        missing_metadata: Some(MissingMetadataKind::DiscoveredTarget),
+        lookup_failure: Some(lookup_error.clone()),
+        advisory_latest: Some(AdvisoryLatestFact::LookupFailed {
+            latest_version: VersionText::new("1.2.0").expect("valid version"),
+            error: lookup_error,
+        }),
+    };
+
+    assert_eq!(diagnostics.required_age.as_secs(), 86_400);
+    assert_eq!(
+        diagnostics.candidates[0].policy_block_reason,
+        Some(PolicyBlockReason::PreReleaseBlocked)
+    );
+    assert_eq!(
+        diagnostics.missing_metadata,
+        Some(MissingMetadataKind::DiscoveredTarget)
+    );
+    assert!(matches!(
+        diagnostics.advisory_latest,
+        Some(AdvisoryLatestFact::LookupFailed { .. })
+    ));
 }
 
 #[test]
@@ -186,9 +236,10 @@ fn manager_selected_target_keeps_advisory_metadata_separate_from_required_age_ev
             std::time::SystemTime::UNIX_EPOCH,
         ))),
     )
-    .with_advisory_release_lookup(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
-        "advisory latest unavailable",
-    )));
+    .with_advisory_release_lookup(
+        VersionText::new("1.2.0").expect("valid advisory latest"),
+        ReleaseLookupResult::LookupFailed(ReleaseLookupError::new("advisory latest unavailable")),
+    );
 
     assert!(matches!(
         selected_target.target_age,
@@ -196,6 +247,9 @@ fn manager_selected_target_keeps_advisory_metadata_separate_from_required_age_ev
     ));
     assert!(matches!(
         selected_target.advisory_release_lookup,
-        Some(ReleaseLookupResult::LookupFailed(_))
+        Some(upnow_domain::AdvisoryReleaseLookup {
+            release_lookup: ReleaseLookupResult::LookupFailed(_),
+            ..
+        })
     ));
 }

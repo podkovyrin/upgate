@@ -1,6 +1,9 @@
+use std::time::Duration;
+
 use crate::{
-    DomainError, InstalledTool, ManagerId, PackageName, PolicyWarning, ReleaseLookupResult,
-    TargetAgeLookupResult, ToolId, UnsupportedReason, VersionScheme, VersionText,
+    DomainError, InstalledTool, ManagerId, PackageName, PolicyWarning, ReleaseLookupError,
+    ReleaseLookupResult, TargetAgeLookupResult, ToolId, UnsupportedReason, VersionScheme,
+    VersionText,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -124,7 +127,7 @@ impl TargetSelection {
 pub struct ManagerSelectedTarget {
     pub target_version: VersionText,
     pub target_age: TargetAgeLookupResult,
-    pub advisory_release_lookup: Option<ReleaseLookupResult>,
+    pub advisory_release_lookup: Option<AdvisoryReleaseLookup>,
 }
 
 impl ManagerSelectedTarget {
@@ -140,11 +143,21 @@ impl ManagerSelectedTarget {
     #[must_use]
     pub fn with_advisory_release_lookup(
         mut self,
+        latest_version: VersionText,
         advisory_release_lookup: ReleaseLookupResult,
     ) -> Self {
-        self.advisory_release_lookup = Some(advisory_release_lookup);
+        self.advisory_release_lookup = Some(AdvisoryReleaseLookup {
+            latest_version,
+            release_lookup: advisory_release_lookup,
+        });
         self
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdvisoryReleaseLookup {
+    pub latest_version: VersionText,
+    pub release_lookup: ReleaseLookupResult,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +183,7 @@ pub struct UpdateCandidate {
     pub execution_eligibility: ExecutionEligibility,
     pub execution_target_kind: ExecutionTargetKind,
     pub policy_warnings: Vec<PolicyWarning>,
+    pub diagnostics: PlanDiagnostics,
 }
 
 impl UpdateCandidate {
@@ -191,6 +205,7 @@ impl UpdateCandidate {
             execution_eligibility,
             execution_target_kind: ExecutionTargetKind::Standard,
             policy_warnings: Vec::new(),
+            diagnostics: PlanDiagnostics::default(),
         }
     }
 
@@ -206,6 +221,12 @@ impl UpdateCandidate {
     #[must_use]
     pub fn with_policy_warnings(mut self, policy_warnings: Vec<PolicyWarning>) -> Self {
         self.policy_warnings = policy_warnings;
+        self
+    }
+
+    #[must_use]
+    pub fn with_diagnostics(mut self, diagnostics: PlanDiagnostics) -> Self {
+        self.diagnostics = diagnostics;
         self
     }
 
@@ -292,6 +313,7 @@ pub enum PlanItem {
         seed: UpdateSeed,
         reason: BlockReason,
         policy_warnings: Vec<PolicyWarning>,
+        diagnostics: PlanDiagnostics,
     },
     Skipped {
         id: PlanItemId,
@@ -406,6 +428,98 @@ pub enum BlockReason {
     MissingReleaseMetadata,
     ReleaseLookupFailed,
     VersionPolicy(PolicyBlockReason),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PlanDiagnostics {
+    pub required_age: Duration,
+    pub candidates: Vec<CandidateEvaluationFact>,
+    pub selected_target: Option<CandidateAgeFact>,
+    pub latest_overall: Option<CandidateAgeFact>,
+    pub latest_policy_eligible: Option<CandidateAgeFact>,
+    pub latest_age_eligible: Option<CandidateAgeFact>,
+    pub missing_metadata: Option<MissingMetadataKind>,
+    pub lookup_failure: Option<ReleaseLookupError>,
+    pub advisory_latest: Option<AdvisoryLatestFact>,
+}
+
+impl PlanDiagnostics {
+    #[must_use]
+    pub fn new(required_age: Duration) -> Self {
+        Self {
+            required_age,
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn with_missing_metadata(mut self, missing_metadata: MissingMetadataKind) -> Self {
+        self.missing_metadata = Some(missing_metadata);
+        self
+    }
+
+    #[must_use]
+    pub fn with_lookup_failure(mut self, lookup_failure: ReleaseLookupError) -> Self {
+        self.lookup_failure = Some(lookup_failure);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateAgeFact {
+    pub version: VersionText,
+    pub age: Duration,
+    pub age_source: CandidateAgeSource,
+}
+
+impl CandidateAgeFact {
+    #[must_use]
+    pub const fn new(version: VersionText, age: Duration, age_source: CandidateAgeSource) -> Self {
+        Self {
+            version,
+            age,
+            age_source,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateAgeSource {
+    ReleaseTimeline,
+    PublishedAt,
+    ManagerNativeTimestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateEvaluationFact {
+    pub version: VersionText,
+    pub age: Option<Duration>,
+    pub policy_allowed: bool,
+    pub age_allowed: bool,
+    pub policy_block_reason: Option<PolicyBlockReason>,
+    pub policy_warning: Option<PolicyWarning>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingMetadataKind {
+    ReleaseTimeline,
+    DiscoveredTarget,
+    SelectedTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdvisoryLatestFact {
+    Known {
+        latest_version: VersionText,
+        candidates: Vec<CandidateAgeFact>,
+    },
+    MissingMetadata {
+        latest_version: VersionText,
+    },
+    LookupFailed {
+        latest_version: VersionText,
+        error: ReleaseLookupError,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

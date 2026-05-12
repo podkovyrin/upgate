@@ -1,11 +1,11 @@
 use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
-    BlockReason, DelayReason, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata,
-    ManagerSelectedTarget, PackageName, PlanItem, PlanItemId, PolicyBlockReason, PolicyWarning,
-    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
-    TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy,
-    VersionScheme, VersionText,
+    AdvisoryLatestFact, BlockReason, CandidateAgeSource, DelayReason, ExecutionEligibility,
+    InstalledTool, ManagerId, ManagerMetadata, ManagerSelectedTarget, MissingMetadataKind,
+    PackageName, PlanItem, PlanItemId, PolicyBlockReason, PolicyWarning, ReleaseEntry,
+    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
+    TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_planning::evaluate_seed;
 
@@ -258,9 +258,12 @@ fn manager_selected_target_ignores_failed_advisory_metadata_when_target_evidence
     let seed = UpdateSeed::manager_selected(
         installed_tool("alpha", "1.0.0"),
         ManagerSelectedTarget::new(version("1.1.0"), known_target_age(10_000))
-            .with_advisory_release_lookup(ReleaseLookupResult::LookupFailed(
-                ReleaseLookupError::new("advisory latest unavailable"),
-            )),
+            .with_advisory_release_lookup(
+                version("1.2.0"),
+                ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
+                    "advisory latest unavailable",
+                )),
+            ),
         VersionScheme::SemVer,
         ExecutionEligibility::NativeOrExact,
     );
@@ -271,6 +274,15 @@ fn manager_selected_target_ignores_failed_advisory_metadata_when_target_evidence
         panic!("expected update from selected target evidence");
     };
     assert_eq!(candidate.target_version.as_str(), "1.1.0");
+    let Some(AdvisoryLatestFact::LookupFailed {
+        latest_version,
+        error,
+    }) = candidate.diagnostics.advisory_latest
+    else {
+        panic!("expected advisory lookup failure");
+    };
+    assert_eq!(latest_version.as_str(), "1.2.0");
+    assert_eq!(error.detail, "advisory latest unavailable");
 }
 
 #[test]
@@ -632,13 +644,26 @@ fn too_fresh_policy_eligible_versions_are_delayed() {
         3_600,
     );
 
-    assert!(matches!(
-        item,
-        PlanItem::Delayed {
-            reason: DelayReason::ReleaseTooFresh,
-            ..
-        }
-    ));
+    let PlanItem::Delayed {
+        candidate, reason, ..
+    } = item
+    else {
+        panic!("expected delayed item");
+    };
+    assert_eq!(reason, DelayReason::ReleaseTooFresh);
+    assert_eq!(candidate.diagnostics.required_age.as_secs(), 3_600);
+    assert_eq!(
+        candidate
+            .diagnostics
+            .latest_policy_eligible
+            .expect("latest policy eligible")
+            .version
+            .as_str(),
+        "1.1.0"
+    );
+    assert_eq!(candidate.diagnostics.latest_age_eligible, None);
+    assert_eq!(candidate.diagnostics.candidates.len(), 1);
+    assert!(!candidate.diagnostics.candidates[0].age_allowed);
 }
 
 #[test]
@@ -670,13 +695,20 @@ fn failed_release_lookup_blocks_the_item() {
         ExecutionEligibility::NativeOrExact,
     );
 
-    assert!(matches!(
-        evaluate(seed, VersionPolicy::Stable, 0),
-        PlanItem::Blocked {
-            reason: BlockReason::ReleaseLookupFailed,
-            ..
-        }
-    ));
+    let PlanItem::Blocked {
+        reason,
+        diagnostics,
+        ..
+    } = evaluate(seed, VersionPolicy::Stable, 0)
+    else {
+        panic!("expected blocked item");
+    };
+
+    assert_eq!(reason, BlockReason::ReleaseLookupFailed);
+    assert_eq!(
+        diagnostics.lookup_failure.expect("lookup failure").detail,
+        "registry timeout"
+    );
 }
 
 #[test]
@@ -744,11 +776,202 @@ fn missing_discovered_target_metadata_blocks_the_item() {
         0,
     );
 
-    assert!(matches!(
-        item,
-        PlanItem::Blocked {
-            reason: BlockReason::MissingReleaseMetadata,
-            ..
-        }
-    ));
+    let PlanItem::Blocked {
+        reason,
+        diagnostics,
+        ..
+    } = item
+    else {
+        panic!("expected blocked item");
+    };
+
+    assert_eq!(reason, BlockReason::MissingReleaseMetadata);
+    assert_eq!(
+        diagnostics.missing_metadata,
+        Some(MissingMetadataKind::DiscoveredTarget)
+    );
+}
+
+#[test]
+fn planner_selectable_diagnostics_preserve_policy_and_age_facts() {
+    let item = evaluate(
+        known_seed(
+            "alpha",
+            "1.0.0",
+            "1.2.0",
+            VersionScheme::SemVer,
+            vec![("1.1.0", 10_000), ("1.2.0-beta.1", 10_000), ("1.2.0", 60)],
+        ),
+        VersionPolicy::Stable,
+        3_600,
+    );
+
+    let PlanItem::Update { candidate, .. } = item else {
+        panic!("expected update");
+    };
+
+    assert_eq!(candidate.target_version.as_str(), "1.1.0");
+    assert_eq!(
+        candidate
+            .diagnostics
+            .latest_overall
+            .expect("latest overall")
+            .version
+            .as_str(),
+        "1.2.0"
+    );
+    assert_eq!(
+        candidate
+            .diagnostics
+            .latest_policy_eligible
+            .expect("latest policy eligible")
+            .version
+            .as_str(),
+        "1.2.0"
+    );
+    assert_eq!(
+        candidate
+            .diagnostics
+            .latest_age_eligible
+            .expect("latest age eligible")
+            .version
+            .as_str(),
+        "1.1.0"
+    );
+    let prerelease = candidate
+        .diagnostics
+        .candidates
+        .iter()
+        .find(|candidate| candidate.version.as_str() == "1.2.0-beta.1")
+        .expect("prerelease candidate fact");
+    assert!(!prerelease.policy_allowed);
+    assert_eq!(
+        prerelease.policy_block_reason,
+        Some(PolicyBlockReason::PreReleaseBlocked)
+    );
+    assert_eq!(
+        candidate
+            .diagnostics
+            .candidates
+            .iter()
+            .map(|candidate| candidate.version.as_str())
+            .collect::<Vec<_>>(),
+        vec!["1.2.0", "1.2.0-beta.1", "1.1.0"]
+    );
+}
+
+#[test]
+fn pep440_diagnostics_preserve_newest_first_candidate_order() {
+    let item = evaluate(
+        known_seed(
+            "alpha",
+            "1.0.0",
+            "1.10.0",
+            VersionScheme::Pep440,
+            vec![("1.9.0", 10_000), ("1.10.0", 60), ("1.2.0", 10_000)],
+        ),
+        VersionPolicy::None,
+        3_600,
+    );
+
+    let PlanItem::Update { candidate, .. } = item else {
+        panic!("expected update");
+    };
+
+    assert_eq!(candidate.target_version.as_str(), "1.9.0");
+    assert_eq!(
+        candidate
+            .diagnostics
+            .candidates
+            .iter()
+            .map(|candidate| candidate.version.as_str())
+            .collect::<Vec<_>>(),
+        vec!["1.10.0", "1.9.0", "1.2.0"]
+    );
+    assert_eq!(
+        candidate
+            .diagnostics
+            .latest_overall
+            .expect("latest overall")
+            .version
+            .as_str(),
+        "1.10.0"
+    );
+}
+
+#[test]
+fn manager_selected_diagnostics_preserve_selected_target_age_fact() {
+    let item = evaluate(
+        manager_selected_seed(
+            "alpha",
+            "1.0.0",
+            "1.1.0",
+            VersionScheme::SemVer,
+            known_target_age(60),
+        ),
+        VersionPolicy::None,
+        3_600,
+    );
+
+    let PlanItem::Delayed { candidate, .. } = item else {
+        panic!("expected delayed selected target");
+    };
+
+    assert_eq!(
+        candidate
+            .diagnostics
+            .selected_target
+            .as_ref()
+            .expect("selected target")
+            .version
+            .as_str(),
+        "1.1.0"
+    );
+    assert_eq!(candidate.diagnostics.latest_overall, None);
+    assert_eq!(candidate.diagnostics.latest_policy_eligible, None);
+    assert_eq!(candidate.diagnostics.latest_age_eligible, None);
+    assert_eq!(
+        candidate.diagnostics.candidates[0].age,
+        Some(Duration::from_secs(60))
+    );
+    assert_eq!(
+        candidate
+            .diagnostics
+            .selected_target
+            .as_ref()
+            .expect("selected target")
+            .age_source,
+        CandidateAgeSource::PublishedAt
+    );
+    assert!(!candidate.diagnostics.candidates[0].age_allowed);
+}
+
+#[test]
+fn manager_selected_missing_target_metadata_is_typed() {
+    let item = evaluate(
+        manager_selected_seed(
+            "alpha",
+            "1.0.0",
+            "1.1.0",
+            VersionScheme::SemVer,
+            TargetAgeLookupResult::MissingMetadata,
+        ),
+        VersionPolicy::None,
+        0,
+    );
+
+    let PlanItem::Blocked {
+        reason,
+        diagnostics,
+        ..
+    } = item
+    else {
+        panic!("expected blocked selected target");
+    };
+
+    assert_eq!(reason, BlockReason::MissingReleaseMetadata);
+    assert_eq!(
+        diagnostics.missing_metadata,
+        Some(MissingMetadataKind::SelectedTarget)
+    );
 }

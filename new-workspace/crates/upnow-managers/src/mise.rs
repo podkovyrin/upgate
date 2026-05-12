@@ -424,13 +424,10 @@ pub fn update_inputs(
                 if latest == &item.to_version {
                     selected
                 } else {
-                    selected.with_advisory_release_lookup(lookup_release_for_tool(
-                        process,
-                        http,
-                        env,
-                        &item.tool,
-                        Some(latest),
-                    ))
+                    selected.with_advisory_release_lookup(
+                        latest.clone(),
+                        lookup_release_for_tool(process, http, env, &item.tool, Some(latest)),
+                    )
                 }
             });
         inputs.push(ManagerUpdateInput::Seed(UpdateSeed::manager_selected(

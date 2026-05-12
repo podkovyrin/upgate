@@ -1,8 +1,8 @@
 use upnow_domain::{
     BlockReason, DelayReason, ExecutionEligibility, ManagerCapabilities, ManagerId,
-    ManagerSelectedTarget, PackageName, PlanItem, PlanItemId, PlanSelection, SelectedItem,
-    TargetAgeLookupResult, ToolId, UpdateCandidate, UpdatePlan, UpdateSeed, UpdateSelectionPolicy,
-    VersionPolicy, VersionScheme, VersionText,
+    ManagerSelectedTarget, PackageName, PlanDiagnostics, PlanItem, PlanItemId, PlanSelection,
+    SelectedItem, TargetAgeLookupResult, ToolId, UpdateCandidate, UpdatePlan, UpdateSeed,
+    UpdateSelectionPolicy, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ExecutionSelectionError,
@@ -197,6 +197,7 @@ fn resolver_native_global_is_not_used_when_plan_contains_blocked_items() {
             seed: seed_for("missing-age"),
             reason: BlockReason::MissingReleaseMetadata,
             policy_warnings: Vec::new(),
+            diagnostics: PlanDiagnostics::default(),
         },
     ]);
     let selection = recommended_selection(&plan);
@@ -277,6 +278,7 @@ fn native_only_policy_filtered_update_stays_native_selected() {
             seed: seed_for("missing-age"),
             reason: BlockReason::MissingReleaseMetadata,
             policy_warnings: Vec::new(),
+            diagnostics: PlanDiagnostics::default(),
         },
     ]);
     let selection = recommended_selection(&plan);
