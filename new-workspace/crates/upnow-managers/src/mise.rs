@@ -14,14 +14,13 @@ use upnow_domain::{
     TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
-    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
-    ResolvedExecutionPlan,
+    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionPlan,
 };
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
-    ReleaseLookupSubject,
+    ReleaseLookupSubject, validate_version_policy,
 };
 
 pub const MANAGER_ID: &str = "mise";
@@ -114,20 +113,19 @@ impl MiseManager {
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
+
+    pub fn id() -> ManagerId {
+        ManagerId::from_static(MANAGER_ID)
+    }
 }
 impl ManagerAdapter for MiseManager {
-    fn id(&self) -> &'static str {
-        MANAGER_ID
+    fn supports_version_policy(policy: VersionPolicy) -> bool {
+        policy == VersionPolicy::None
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
         ManagerCapabilities::new().with_resolver_native_global_update(true)
     }
-
-    fn supports_version_policy(&self, policy: VersionPolicy) -> bool {
-        policy == VersionPolicy::None
-    }
-
     fn scan_inputs(
         &self,
         process: &ProcessRunner,
@@ -170,7 +168,11 @@ impl ManagerAdapter for MiseManager {
         http: &HttpClient,
         env: &Env,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
-        self.validate_version_policy(self.config.version_policy)?;
+        validate_version_policy(
+            &self.config.manager_id,
+            Self::supports_version_policy(self.config.version_policy),
+            self.config.version_policy,
+        )?;
         update_inputs(process, http, env, self.config.min_release_age)
             .map_err(|err| adapter_error(&err))
     }
@@ -441,13 +443,13 @@ pub fn commands_for_execution_plan(
         match intent {
             ExecutionCommandIntent::ResolverNative(item) => {
                 commands.push(ExecutionCommand {
-                    items: vec![execution_item(item)],
+                    items: vec![ExecutionCommandItem::from(item)],
                     command: selected_upgrade_command(&min_age_arg, &item.package_name),
                 });
             }
             ExecutionCommandIntent::ResolverNativeGlobal(items) => {
                 commands.push(ExecutionCommand {
-                    items: items.iter().map(execution_item).collect(),
+                    items: items.iter().map(ExecutionCommandItem::from).collect(),
                     command: global_upgrade_command(&min_age_arg),
                 });
             }
@@ -874,7 +876,7 @@ fn strip_v_prefix(value: &str) -> &str {
 
 fn installed_tool(tool: &MiseInstalledTool) -> Result<InstalledTool, MiseError> {
     Ok(InstalledTool::new(
-        manager_id(),
+        MiseManager::id(),
         ToolId::new(tool.tool.as_str().to_owned())?,
         tool.tool.clone(),
         ToolName::new(tool.tool.as_str().to_owned())?,
@@ -885,26 +887,13 @@ fn installed_tool(tool: &MiseInstalledTool) -> Result<InstalledTool, MiseError> 
 
 fn installed_tool_from_plan_item(item: &MisePlanItem) -> Result<InstalledTool, MiseError> {
     Ok(InstalledTool::new(
-        manager_id(),
+        MiseManager::id(),
         ToolId::new(item.tool.as_str().to_owned())?,
         item.tool.clone(),
         ToolName::new(item.tool.as_str().to_owned())?,
         item.from_version.clone(),
         ManagerMetadata::empty(),
     ))
-}
-
-fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
-    ExecutionCommandItem {
-        plan_item_id: item.plan_item_id.clone(),
-        package_name: item.package_name.clone(),
-        installed_version: item.installed_version.clone(),
-        target_version: item.target_version.clone(),
-    }
-}
-
-fn manager_id() -> ManagerId {
-    ManagerId::new(MANAGER_ID).expect("static mise manager id should be valid")
 }
 
 fn duration_arg(duration: Duration) -> String {

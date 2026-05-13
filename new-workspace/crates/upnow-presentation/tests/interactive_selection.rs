@@ -2,11 +2,11 @@ use upnow_domain::{
     ExecutionEligibility, ManagerId, PackageName, PlanIssue, PlanItem, PlanItemId, SelectedTarget,
     ToolId, UpdateCandidate, UpdatePlan, UpdateSelectionPolicy, VersionScheme, VersionText,
 };
-use upnow_planning::{TargetOption, selection_view};
 use upnow_presentation::tui::{
     InteractiveSelectionPlan, InteractiveSelectionPlanningEvent, InteractiveSelectionScreen,
     SelectionControl, SelectionInput,
 };
+use upnow_presentation::{TargetOption, selection_view};
 
 #[test]
 fn confirm_returns_typed_selection() {

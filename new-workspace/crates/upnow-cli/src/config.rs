@@ -12,9 +12,11 @@ use upnow_domain::{
     ManagerConfig, ManagerId, ManagerMode, PackageName, UpdateSelectionMode, UpdateSelectionPolicy,
     VersionPolicy,
 };
+use upnow_managers::adapter::ManagerConfigRuleError;
 
 use crate::registry::{
-    ManagerDefaultMode, ensure_known_manager, manager_defaults, supports_version_policy,
+    accepts_no_update, ensure_known_manager, manager_defaults, min_release_age_rule_error,
+    supports_version_policy,
 };
 
 const CONFIG_RELATIVE_PATH: &str = "upnow/config.toml";
@@ -248,12 +250,11 @@ impl UpnowConfig {
             Some(raw) => parse_duration_key(&format!("[{manager_id}].min_release_age"), raw)?,
             None => defaults.min_release_age,
         };
-        if manager_id == "npm" && min_release_age.as_secs() % (24 * 60 * 60) != 0 {
-            return Err(ConfigError::InvalidDuration {
-                key: "[npm].min_release_age".to_owned(),
-                value: min_release_age_raw.unwrap_or("<default>").to_owned(),
-            });
-        }
+        validate_min_release_age_rule(
+            manager_id,
+            min_release_age,
+            min_release_age_raw.unwrap_or("<default>"),
+        )?;
 
         let version_policy = parse_optional_policy(
             manager_id,
@@ -263,10 +264,10 @@ impl UpnowConfig {
 
         let mode = match section.and_then(|section| section.mode.as_deref()) {
             Some(raw) => parse_manager_mode(manager_id, raw)?,
-            None => manager_mode_from_default(defaults.mode),
+            None => defaults.mode,
         };
 
-        let no_update = if manager_id == "brew" {
+        let no_update = if manager_accepts_no_update(manager_id)? {
             section
                 .and_then(|section| section.no_update)
                 .unwrap_or(false)
@@ -330,12 +331,7 @@ impl UpnowConfig {
             "min_release_age" => {
                 let parsed_duration =
                     parse_duration_key(&format!("[{section}].min_release_age"), value)?;
-                if section == "npm" && parsed_duration.as_secs() % (24 * 60 * 60) != 0 {
-                    return Err(ConfigError::InvalidDuration {
-                        key: "[npm].min_release_age".to_owned(),
-                        value: value.to_owned(),
-                    });
-                }
+                validate_min_release_age_rule(section, parsed_duration, value)?;
                 self.sections
                     .entry(section.to_owned())
                     .or_default()
@@ -355,7 +351,7 @@ impl UpnowConfig {
                 Err(ConfigError::SelectionOverrideNotSupported(raw.to_owned()))
             }
             "no_update" => {
-                if section != "brew" {
+                if !manager_accepts_no_update(section)? {
                     return Err(ConfigError::NoUpdateOnlyBrew(raw.to_owned()));
                 }
                 let parsed = value
@@ -542,13 +538,6 @@ fn parse_manager_mode(manager_id: &str, raw: &str) -> Result<ManagerMode, Config
     }
 }
 
-const fn manager_mode_from_default(mode: ManagerDefaultMode) -> ManagerMode {
-    match mode {
-        ManagerDefaultMode::Off => ManagerMode::Off,
-        ManagerDefaultMode::Apply => ManagerMode::Apply,
-    }
-}
-
 fn validate_policy_support(manager_id: &str, policy: VersionPolicy) -> Result<(), ConfigError> {
     let manager_id = ManagerId::new(manager_id.to_owned())
         .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
@@ -561,6 +550,28 @@ fn validate_policy_support(manager_id: &str, policy: VersionPolicy) -> Result<()
             manager_id: manager_id.as_str().to_owned(),
             policy,
         })
+    }
+}
+
+fn manager_accepts_no_update(manager_id: &str) -> Result<bool, ConfigError> {
+    accepts_no_update(manager_id).map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))
+}
+
+fn validate_min_release_age_rule(
+    manager_id: &str,
+    min_release_age: Duration,
+    raw_value: &str,
+) -> Result<(), ConfigError> {
+    match min_release_age_rule_error(manager_id, min_release_age)
+        .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?
+    {
+        Some(ManagerConfigRuleError::MinReleaseAgeMustBeWholeDays) => {
+            Err(ConfigError::InvalidDuration {
+                key: format!("[{manager_id}].min_release_age"),
+                value: raw_value.to_owned(),
+            })
+        }
+        None => Ok(()),
     }
 }
 

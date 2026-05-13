@@ -30,6 +30,15 @@ impl ManagerCapabilities {
 pub struct ManagerId(String);
 
 impl ManagerId {
+    /// Creates a manager id from a static manager-owned id.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the static id is blank.
+    pub fn from_static(value: &'static str) -> Self {
+        Self::new(value).expect("static manager id should be valid")
+    }
+
     /// Creates a manager id.
     ///
     /// # Errors

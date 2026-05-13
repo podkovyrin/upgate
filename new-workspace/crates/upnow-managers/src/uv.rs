@@ -14,14 +14,13 @@ use upnow_domain::{
     TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
-    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
-    ResolvedExecutionPlan,
+    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionPlan,
 };
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
-    ReleaseLookupSubject,
+    ReleaseLookupSubject, validate_version_policy,
 };
 
 pub const MANAGER_ID: &str = "uv";
@@ -101,20 +100,19 @@ impl UvManager {
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
+
+    pub fn id() -> ManagerId {
+        ManagerId::from_static(MANAGER_ID)
+    }
 }
 impl ManagerAdapter for UvManager {
-    fn id(&self) -> &'static str {
-        MANAGER_ID
+    fn supports_version_policy(policy: VersionPolicy) -> bool {
+        policy == VersionPolicy::None
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
         ManagerCapabilities::new()
     }
-
-    fn supports_version_policy(&self, policy: VersionPolicy) -> bool {
-        policy == VersionPolicy::None
-    }
-
     fn scan_inputs(
         &self,
         process: &ProcessRunner,
@@ -147,7 +145,11 @@ impl ManagerAdapter for UvManager {
         http: &HttpClient,
         env: &Env,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
-        self.validate_version_policy(self.config.version_policy)?;
+        validate_version_policy(
+            &self.config.manager_id,
+            Self::supports_version_policy(self.config.version_policy),
+            self.config.version_policy,
+        )?;
         update_inputs(process, http, env, self.config.min_release_age)
             .map_err(|err| adapter_error(&err))
     }
@@ -348,7 +350,7 @@ pub fn commands_for_execution_plan(
         match intent {
             ExecutionCommandIntent::ResolverNative(item) => {
                 commands.push(ExecutionCommand {
-                    items: vec![execution_item(item)],
+                    items: vec![ExecutionCommandItem::from(item)],
                     command: tool_install_command(&item.package_name, &min_age_arg),
                 });
             }
@@ -494,26 +496,13 @@ fn resolve_target_with_exclude_newer(
 
 fn installed_tool(tool: &UvTool) -> Result<InstalledTool, UvError> {
     Ok(InstalledTool::new(
-        manager_id(),
+        UvManager::id(),
         ToolId::new(tool.name.as_str().to_owned())?,
         tool.name.clone(),
         ToolName::new(tool.name.as_str().to_owned())?,
         tool.current.clone(),
         ManagerMetadata::empty(),
     ))
-}
-
-fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
-    ExecutionCommandItem {
-        plan_item_id: item.plan_item_id.clone(),
-        package_name: item.package_name.clone(),
-        installed_version: item.installed_version.clone(),
-        target_version: item.target_version.clone(),
-    }
-}
-
-fn manager_id() -> ManagerId {
-    ManagerId::new(MANAGER_ID).expect("static uv manager id should be valid")
 }
 
 #[derive(Debug, Deserialize)]

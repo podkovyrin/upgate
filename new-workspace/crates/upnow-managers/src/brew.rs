@@ -9,7 +9,7 @@ use upnow_domain::{
     ManagerId, ManagerMetadata, ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput,
     PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
     ReleaseTimestamp, SkipReason, TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName,
-    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    UpdateSeed, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -19,7 +19,7 @@ use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, Proces
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
-    ReleaseLookupSubject,
+    ManagerConfigDefaults, ReleaseLookupSubject, validate_version_policy,
 };
 
 pub const MANAGER_ID: &str = "brew";
@@ -224,20 +224,26 @@ impl BrewManager {
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
+
+    pub fn id() -> ManagerId {
+        ManagerId::from_static(MANAGER_ID)
+    }
 }
 impl ManagerAdapter for BrewManager {
-    fn id(&self) -> &'static str {
-        MANAGER_ID
+    fn default_config() -> ManagerConfigDefaults {
+        ManagerConfigDefaults {
+            min_release_age: Duration::from_secs(12 * 60 * 60),
+            mode: upnow_domain::ManagerMode::Apply,
+        }
+    }
+
+    fn accepts_no_update() -> bool {
+        true
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
         ManagerCapabilities::new().with_native_global_update(true)
     }
-
-    fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
-        true
-    }
-
     fn scan_inputs(
         &self,
         process: &ProcessRunner,
@@ -274,7 +280,11 @@ impl ManagerAdapter for BrewManager {
         http: &HttpClient,
         env: &Env,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
-        self.validate_version_policy(self.config.version_policy)?;
+        validate_version_policy(
+            &self.config.manager_id,
+            Self::supports_version_policy(self.config.version_policy),
+            self.config.version_policy,
+        )?;
         update_inputs(process, http, env, self.config.no_update).map_err(|err| adapter_error(&err))
     }
 
@@ -808,7 +818,7 @@ fn first_version(versions: Vec<String>) -> String {
 
 fn installed_tool(package: &BrewInstalledPackage) -> Result<InstalledTool, BrewError> {
     Ok(InstalledTool::new(
-        manager_id(),
+        BrewManager::id(),
         ToolId::new(package.name.as_str().to_owned())?,
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
@@ -819,7 +829,7 @@ fn installed_tool(package: &BrewInstalledPackage) -> Result<InstalledTool, BrewE
 
 fn installed_tool_for_outdated(package: &BrewOutdatedPackage) -> Result<InstalledTool, BrewError> {
     Ok(InstalledTool::new(
-        manager_id(),
+        BrewManager::id(),
         ToolId::new(package.name.as_str().to_owned())?,
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
@@ -863,22 +873,9 @@ fn grouped_upgrade_command(kind_arg: &str, items: &[ResolvedExecutionItem]) -> E
             .map(|item| item.package_name.as_str().to_owned()),
     );
     ExecutionCommand {
-        items: items.iter().map(execution_item).collect(),
+        items: items.iter().map(ExecutionCommandItem::from).collect(),
         command: CommandSpec::new("brew", args).mutating(),
     }
-}
-
-fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
-    ExecutionCommandItem {
-        plan_item_id: item.plan_item_id.clone(),
-        package_name: item.package_name.clone(),
-        installed_version: item.installed_version.clone(),
-        target_version: item.target_version.clone(),
-    }
-}
-
-fn manager_id() -> ManagerId {
-    ManagerId::new(MANAGER_ID).expect("static brew manager id should be valid")
 }
 
 fn adapter_error(err: &BrewError) -> ManagerAdapterError {

@@ -11,7 +11,7 @@ use upnow_domain::{
     DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
     ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
-    VersionPolicy, VersionScheme, VersionText,
+    VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -22,7 +22,7 @@ use upnow_release::newest_semver_version;
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
-    ReleaseLookupSubject,
+    ReleaseLookupSubject, validate_version_policy,
 };
 
 pub const MANAGER_ID: &str = "cargo";
@@ -131,20 +131,15 @@ impl CargoManager {
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
+
+    pub fn id() -> ManagerId {
+        ManagerId::from_static(MANAGER_ID)
+    }
 }
 impl ManagerAdapter for CargoManager {
-    fn id(&self) -> &'static str {
-        MANAGER_ID
-    }
-
     fn capabilities(&self) -> ManagerCapabilities {
         ManagerCapabilities::new()
     }
-
-    fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
-        true
-    }
-
     fn scan_inputs(
         &self,
         process: &ProcessRunner,
@@ -171,7 +166,11 @@ impl ManagerAdapter for CargoManager {
         http: &HttpClient,
         env: &Env,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
-        self.validate_version_policy(self.config.version_policy)?;
+        validate_version_policy(
+            &self.config.manager_id,
+            Self::supports_version_policy(self.config.version_policy),
+            self.config.version_policy,
+        )?;
         update_inputs(process, http, env).map_err(|err| adapter_error(&err))
     }
 
@@ -385,7 +384,7 @@ pub fn commands_for_execution_plan(
             ExecutionCommandIntent::Exact(item) => {
                 let meta = install_meta.get(item.package_name.as_str());
                 commands.push(ExecutionCommand {
-                    items: vec![execution_item(item)],
+                    items: vec![ExecutionCommandItem::from(item)],
                     command: exact_command_for_item(item, meta),
                 });
             }
@@ -526,22 +525,9 @@ fn trimmed(value: &str) -> Option<String> {
     }
 }
 
-fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
-    ExecutionCommandItem {
-        plan_item_id: item.plan_item_id.clone(),
-        package_name: item.package_name.clone(),
-        installed_version: item.installed_version.clone(),
-        target_version: item.target_version.clone(),
-    }
-}
-
-fn manager_id() -> ManagerId {
-    ManagerId::new(MANAGER_ID).expect("static cargo manager id should be valid")
-}
-
 fn installed_tool(package: InstalledCrate) -> Result<InstalledTool, CargoError> {
     Ok(InstalledTool::new(
-        manager_id(),
+        CargoManager::id(),
         ToolId::new(package.name.as_str().to_owned())?,
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,

@@ -19,7 +19,7 @@ use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, Proces
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
-    ReleaseLookupSubject,
+    ManagerConfigDefaults, ReleaseLookupSubject, validate_version_policy,
 };
 
 pub const MANAGER_ID: &str = "gem";
@@ -115,20 +115,23 @@ impl GemManager {
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
+
+    pub fn id() -> ManagerId {
+        ManagerId::from_static(MANAGER_ID)
+    }
 }
 impl ManagerAdapter for GemManager {
-    fn id(&self) -> &'static str {
-        MANAGER_ID
+    fn default_config() -> ManagerConfigDefaults {
+        ManagerConfigDefaults::off_after_days(7)
+    }
+
+    fn supports_version_policy(policy: VersionPolicy) -> bool {
+        matches!(policy, VersionPolicy::None | VersionPolicy::Stable)
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
         ManagerCapabilities::new()
     }
-
-    fn supports_version_policy(&self, policy: VersionPolicy) -> bool {
-        matches!(policy, VersionPolicy::None | VersionPolicy::Stable)
-    }
-
     fn scan_inputs(
         &self,
         process: &ProcessRunner,
@@ -161,7 +164,11 @@ impl ManagerAdapter for GemManager {
         http: &HttpClient,
         env: &Env,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
-        self.validate_version_policy(self.config.version_policy)?;
+        validate_version_policy(
+            &self.config.manager_id,
+            Self::supports_version_policy(self.config.version_policy),
+            self.config.version_policy,
+        )?;
         update_inputs(process, http, env).map_err(|err| adapter_error(&err))
     }
 
@@ -391,7 +398,7 @@ pub fn commands_for_execution_plan(
         match intent {
             ExecutionCommandIntent::Exact(item) => {
                 commands.push(ExecutionCommand {
-                    items: vec![execution_item(item)],
+                    items: vec![ExecutionCommandItem::from(item)],
                     command: exact_command_for_item(item),
                 });
             }
@@ -550,22 +557,9 @@ fn exact_command_parts(package_name: &PackageName, target_version: &VersionText)
     .mutating()
 }
 
-fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
-    ExecutionCommandItem {
-        plan_item_id: item.plan_item_id.clone(),
-        package_name: item.package_name.clone(),
-        installed_version: item.installed_version.clone(),
-        target_version: item.target_version.clone(),
-    }
-}
-
-fn manager_id() -> ManagerId {
-    ManagerId::new(MANAGER_ID).expect("static gem manager id should be valid")
-}
-
 fn installed_tool(package: GemInstalledPackage) -> Result<InstalledTool, GemError> {
     Ok(InstalledTool::new(
-        manager_id(),
+        GemManager::id(),
         ToolId::new(package.name.as_str().to_owned())?,
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
@@ -576,7 +570,7 @@ fn installed_tool(package: GemInstalledPackage) -> Result<InstalledTool, GemErro
 
 fn installed_tool_from_outdated(package: GemOutdatedPackage) -> Result<InstalledTool, GemError> {
     Ok(InstalledTool::new(
-        manager_id(),
+        GemManager::id(),
         ToolId::new(package.name.as_str().to_owned())?,
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,

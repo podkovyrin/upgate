@@ -2020,7 +2020,6 @@ dependencies = [
  "unicode-width",
  "upnow-domain",
  "upnow-execution",
- "upnow-planning",
 ]
 
 [[package]]

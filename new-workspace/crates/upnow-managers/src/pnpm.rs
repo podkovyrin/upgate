@@ -19,7 +19,7 @@ use upnow_release::newest_semver_version;
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
-    ReleaseLookupSubject,
+    ReleaseLookupSubject, validate_version_policy,
 };
 
 pub const MANAGER_ID: &str = "pnpm";
@@ -104,20 +104,15 @@ impl PnpmManager {
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
+
+    pub fn id() -> ManagerId {
+        ManagerId::from_static(MANAGER_ID)
+    }
 }
 impl ManagerAdapter for PnpmManager {
-    fn id(&self) -> &'static str {
-        MANAGER_ID
-    }
-
     fn capabilities(&self) -> ManagerCapabilities {
         ManagerCapabilities::new()
     }
-
-    fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
-        true
-    }
-
     fn scan_inputs(
         &self,
         process: &ProcessRunner,
@@ -144,7 +139,11 @@ impl ManagerAdapter for PnpmManager {
         _http: &HttpClient,
         _env: &Env,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
-        self.validate_version_policy(self.config.version_policy)?;
+        validate_version_policy(
+            &self.config.manager_id,
+            Self::supports_version_policy(self.config.version_policy),
+            self.config.version_policy,
+        )?;
         update_inputs(process, self.config.version_policy).map_err(adapter_error)
     }
 
@@ -361,7 +360,7 @@ pub fn exact_commands_for_execution_plan(
         match intent {
             ExecutionCommandIntent::Exact(item) => {
                 commands.push(ExecutionCommand {
-                    items: vec![execution_item(item)],
+                    items: vec![ExecutionCommandItem::from(item)],
                     command: exact_command_for_item(item),
                 });
             }
@@ -404,22 +403,9 @@ fn exact_command_parts(package_name: &PackageName, target_version: &VersionText)
     CommandSpec::new("pnpm", ["add", "-g", &spec]).mutating()
 }
 
-fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
-    ExecutionCommandItem {
-        plan_item_id: item.plan_item_id.clone(),
-        package_name: item.package_name.clone(),
-        installed_version: item.installed_version.clone(),
-        target_version: item.target_version.clone(),
-    }
-}
-
-fn manager_id() -> ManagerId {
-    ManagerId::new(MANAGER_ID).expect("static pnpm manager id should be valid")
-}
-
 fn installed_tool(package: PnpmInstalledPackage) -> Result<InstalledTool, PnpmError> {
     Ok(InstalledTool::new(
-        manager_id(),
+        PnpmManager::id(),
         ToolId::new(package.name.as_str().to_owned())?,
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
@@ -430,7 +416,7 @@ fn installed_tool(package: PnpmInstalledPackage) -> Result<InstalledTool, PnpmEr
 
 fn installed_tool_from_outdated(package: PnpmOutdatedPackage) -> Result<InstalledTool, PnpmError> {
     Ok(InstalledTool::new(
-        manager_id(),
+        PnpmManager::id(),
         ToolId::new(package.name.as_str().to_owned())?,
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,

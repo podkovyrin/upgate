@@ -5,7 +5,8 @@ use upnow_domain::{
     PlanItemId, PlanSelection, SelectedItem, SelectedTarget, UpdatePlan, UpdateSelectionPolicy,
     VersionText,
 };
-use upnow_planning::{SelectionRow, SelectionRowStatus, SelectionView, TargetOption};
+
+use crate::{SelectionRow, SelectionRowStatus, SelectionView, TargetOption};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractiveSelectionState {

@@ -16,4 +16,3 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm"]
 unicode-width = "0.2"
 upnow-domain = { path = "../upnow-domain" }
 upnow-execution = { path = "../upnow-execution" }
-upnow-planning = { path = "../upnow-planning" }

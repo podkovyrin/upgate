@@ -32,9 +32,7 @@ use upnow_infra::{
     SKIP_MUTATING_COMMANDS_ENV,
 };
 use upnow_managers::adapter::{ManagerAdapter, ManagerAdapterError, ReleaseLookupSubject};
-use upnow_planning::{
-    PlanningSettings, default_batch_selection, selection_view, update_plan_from_inputs,
-};
+use upnow_planning::{PlanningSettings, default_batch_selection, update_plan_from_inputs};
 use upnow_presentation::tui::{
     InteractiveManagerSelectionDraft, InteractiveSelectionOutcome, InteractiveSelectionPlan,
     InteractiveSelectionPlanningEvent, run_interactive_progress, run_interactive_selection,
@@ -42,7 +40,7 @@ use upnow_presentation::tui::{
 };
 use upnow_presentation::{
     BatchRenderOptions, OutcomeTable, OutputTheme, ThemeOptions, execution_report_table,
-    manager_error_table, render_batch_table, scan_report_table,
+    manager_error_table, render_batch_table, scan_report_table, selection_view,
     terminal::{BatchTerminal, BatchTerminalAction, MutationNotice},
     update_plan_table,
 };
@@ -982,7 +980,14 @@ fn run_manager_batch(
             let options = BatchRenderOptions::new(theme).with_old_age_threshold(old_age_threshold);
             Ok(ManagerBatchOutput {
                 table: scan_report_table(
-                    &build_verbose_scan_report(manager.as_ref(), process, http, env, clock.now())?,
+                    &build_verbose_scan_report(
+                        manager_id.clone(),
+                        manager.as_ref(),
+                        process,
+                        http,
+                        env,
+                        clock.now(),
+                    )?,
                     options,
                 ),
                 failed: false,
@@ -992,7 +997,7 @@ fn run_manager_batch(
             let manager = configured_manager(manager_config).map_err(map_manager_error)?;
             Ok(ManagerBatchOutput {
                 table: scan_report_table(
-                    &build_scan_report(manager.as_ref(), process, env)?,
+                    &build_scan_report(manager_id.clone(), manager.as_ref(), process, env)?,
                     BatchRenderOptions::new(theme),
                 ),
                 failed: false,
@@ -1044,11 +1049,11 @@ fn run_manager_batch(
 }
 
 fn build_scan_report(
+    manager_id: ManagerId,
     manager: &dyn ManagerAdapter,
     process: &ProcessRunner,
     env: &Env,
 ) -> Result<ScanReport, AppError> {
-    let manager_id = manager.manager_id();
     match manager.unsupported_manager_version(process) {
         Ok(Some(unsupported)) => {
             return Ok(ScanReport::new(
@@ -1090,13 +1095,13 @@ fn build_scan_report(
 }
 
 fn build_verbose_scan_report(
+    manager_id: ManagerId,
     manager: &dyn ManagerAdapter,
     process: &ProcessRunner,
     http: &HttpClient,
     env: &Env,
     now: SystemTime,
 ) -> Result<ScanReport, AppError> {
-    let manager_id = manager.manager_id();
     match manager.unsupported_manager_version(process) {
         Ok(Some(unsupported)) => {
             return Ok(ScanReport::new(
@@ -1382,13 +1387,7 @@ fn map_execution_selection_error(err: ExecutionSelectionError) -> AppError {
 
 fn selected_manager_ids(selected_managers: &[String]) -> Result<Vec<ManagerId>, AppError> {
     if selected_managers.is_empty() {
-        return available_manager_ids()
-            .into_iter()
-            .map(|manager_id| {
-                ManagerId::new(manager_id.to_owned())
-                    .map_err(|err| AppError::InvalidArgs(err.to_string()))
-            })
-            .collect();
+        return Ok(available_manager_ids().collect());
     }
 
     let mut manager_ids = Vec::new();

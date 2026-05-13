@@ -19,7 +19,7 @@ use upnow_release::newest_semver_version;
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
-    ReleaseLookupSubject,
+    ManagerConfigRuleError, ReleaseLookupSubject, validate_version_policy,
 };
 
 pub const MANAGER_ID: &str = "npm";
@@ -120,20 +120,25 @@ impl NpmManager {
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
+
+    pub fn id() -> ManagerId {
+        ManagerId::from_static(MANAGER_ID)
+    }
 }
 impl ManagerAdapter for NpmManager {
-    fn id(&self) -> &'static str {
-        MANAGER_ID
+    fn validate_min_release_age_rule(
+        min_release_age: Duration,
+    ) -> Result<(), ManagerConfigRuleError> {
+        if min_release_age.as_secs().is_multiple_of(24 * 60 * 60) {
+            Ok(())
+        } else {
+            Err(ManagerConfigRuleError::MinReleaseAgeMustBeWholeDays)
+        }
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
         ManagerCapabilities::new()
     }
-
-    fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
-        true
-    }
-
     fn scan_inputs(
         &self,
         process: &ProcessRunner,
@@ -160,7 +165,11 @@ impl ManagerAdapter for NpmManager {
         _http: &HttpClient,
         _env: &Env,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
-        self.validate_version_policy(self.config.version_policy)?;
+        validate_version_policy(
+            &self.config.manager_id,
+            Self::supports_version_policy(self.config.version_policy),
+            self.config.version_policy,
+        )?;
         update_inputs(process, self.config.version_policy).map_err(adapter_error)
     }
 
@@ -330,7 +339,7 @@ pub fn commands_for_execution_plan(
         match intent {
             ExecutionCommandIntent::NativeSelected(item) => {
                 commands.push(ExecutionCommand {
-                    items: vec![execution_item(item)],
+                    items: vec![ExecutionCommandItem::from(item)],
                     command: selected_native_update_command_for_item(
                         item,
                         whole_days(min_release_age),
@@ -339,7 +348,7 @@ pub fn commands_for_execution_plan(
             }
             ExecutionCommandIntent::Exact(item) => {
                 commands.push(ExecutionCommand {
-                    items: vec![execution_item(item)],
+                    items: vec![ExecutionCommandItem::from(item)],
                     command: exact_command_for_item(
                         item,
                         whole_days(min_release_age),
@@ -370,15 +379,6 @@ pub fn commands_for_execution_plan(
         }
     }
     Ok(commands)
-}
-
-fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
-    ExecutionCommandItem {
-        plan_item_id: item.plan_item_id.clone(),
-        package_name: item.package_name.clone(),
-        installed_version: item.installed_version.clone(),
-        target_version: item.target_version.clone(),
-    }
 }
 
 fn exact_command_for_item(
@@ -439,13 +439,9 @@ const fn whole_days(duration: Duration) -> u64 {
     duration.as_secs() / 86_400
 }
 
-fn manager_id() -> ManagerId {
-    ManagerId::new(MANAGER_ID).expect("static npm manager id should be valid")
-}
-
 fn installed_tool(package: NpmInstalledPackage) -> Result<InstalledTool, NpmError> {
     Ok(InstalledTool::new(
-        manager_id(),
+        NpmManager::id(),
         ToolId::new(package.name.as_str().to_owned())?,
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
@@ -456,7 +452,7 @@ fn installed_tool(package: NpmInstalledPackage) -> Result<InstalledTool, NpmErro
 
 fn installed_tool_from_outdated(package: NpmOutdatedPackage) -> Result<InstalledTool, NpmError> {
     Ok(InstalledTool::new(
-        manager_id(),
+        NpmManager::id(),
         ToolId::new(package.name.as_str().to_owned())?,
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,

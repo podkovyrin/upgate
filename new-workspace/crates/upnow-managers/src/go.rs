@@ -12,7 +12,7 @@ use upnow_domain::{
     DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerRuleReason, ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry,
     ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ScanIssue,
-    SkipReason, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    SkipReason, ToolId, ToolName, UpdateSeed, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -22,7 +22,7 @@ use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, Proces
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
-    ReleaseLookupSubject,
+    ReleaseLookupSubject, validate_version_policy,
 };
 
 pub const MANAGER_ID: &str = "go";
@@ -127,20 +127,15 @@ impl GoManager {
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
+
+    pub fn id() -> ManagerId {
+        ManagerId::from_static(MANAGER_ID)
+    }
 }
 impl ManagerAdapter for GoManager {
-    fn id(&self) -> &'static str {
-        MANAGER_ID
-    }
-
     fn capabilities(&self) -> ManagerCapabilities {
         ManagerCapabilities::new()
     }
-
-    fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
-        true
-    }
-
     fn scan_inputs(
         &self,
         process: &ProcessRunner,
@@ -169,7 +164,11 @@ impl ManagerAdapter for GoManager {
         _http: &HttpClient,
         env: &Env,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
-        self.validate_version_policy(self.config.version_policy)?;
+        validate_version_policy(
+            &self.config.manager_id,
+            Self::supports_version_policy(self.config.version_policy),
+            self.config.version_policy,
+        )?;
         update_inputs(process, env).map_err(|err| adapter_error(&err))
     }
 
@@ -440,7 +439,7 @@ pub fn commands_for_execution_plan(
         match intent {
             ExecutionCommandIntent::Exact(item) => {
                 commands.push(ExecutionCommand {
-                    items: vec![execution_item(item)],
+                    items: vec![ExecutionCommandItem::from(item)],
                     command: exact_command_for_item(item, &install_paths)?,
                 });
             }
@@ -531,7 +530,7 @@ fn first_path_entry(raw: &str) -> Option<PathBuf> {
 
 fn installed_tool(tool: &GoManagedTool) -> InstalledTool {
     InstalledTool::new(
-        manager_id(),
+        GoManager::id(),
         ToolId::new(tool.binary_name.as_str().to_owned()).expect("valid package is valid tool id"),
         tool.binary_name.clone(),
         ToolName::new(tool.binary_name.as_str().to_owned())
@@ -543,7 +542,7 @@ fn installed_tool(tool: &GoManagedTool) -> InstalledTool {
 
 fn placeholder_installed_tool(name: &PackageName) -> Result<InstalledTool, GoError> {
     Ok(InstalledTool::new(
-        manager_id(),
+        GoManager::id(),
         ToolId::new(name.as_str().to_owned())?,
         name.clone(),
         ToolName::new(name.as_str().to_owned())?,
@@ -659,24 +658,11 @@ fn lookup_installed_release_by_module(
     }
 }
 
-fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
-    ExecutionCommandItem {
-        plan_item_id: item.plan_item_id.clone(),
-        package_name: item.package_name.clone(),
-        installed_version: item.installed_version.clone(),
-        target_version: item.target_version.clone(),
-    }
-}
-
 const fn discovered_name(discovered: &GoDiscoveredTool) -> &PackageName {
     match discovered {
         GoDiscoveredTool::Managed(tool) => &tool.binary_name,
         GoDiscoveredTool::Skipped { name, .. } => name,
     }
-}
-
-fn manager_id() -> ManagerId {
-    ManagerId::new(MANAGER_ID).expect("static go manager id should be valid")
 }
 
 fn system_time_from_datetime(datetime: DateTime<chrono::FixedOffset>) -> SystemTime {

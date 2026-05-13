@@ -153,6 +153,17 @@ pub struct ExecutionCommandItem {
     pub target_version: VersionText,
 }
 
+impl From<&ResolvedExecutionItem> for ExecutionCommandItem {
+    fn from(item: &ResolvedExecutionItem) -> Self {
+        Self {
+            plan_item_id: item.plan_item_id.clone(),
+            package_name: item.package_name.clone(),
+            installed_version: item.installed_version.clone(),
+            target_version: item.target_version.clone(),
+        }
+    }
+}
+
 /// Executes concrete commands produced by a manager.
 ///
 /// # Errors

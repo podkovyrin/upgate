@@ -2,6 +2,10 @@ use std::io;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
+use crate::{
+    CandidateNoteKind, CandidateNotePart, SelectionRow, SelectionRowStatus, SelectionRowVisibility,
+    SelectionView, TargetOption,
+};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -17,10 +21,6 @@ use unicode_width::UnicodeWidthStr;
 use upnow_domain::{
     ManagerId, PlanIssue, PolicyBlockReason, PolicyWarning, SelectedItem, SelectedTarget,
     SkipReason, UpdateSelectionPolicy,
-};
-use upnow_planning::{
-    CandidateNoteKind, CandidateNotePart, SelectionRow, SelectionRowStatus, SelectionRowVisibility,
-    SelectionView, TargetOption,
 };
 
 use crate::outcome::version_label;

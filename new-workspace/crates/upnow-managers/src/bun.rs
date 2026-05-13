@@ -8,18 +8,17 @@ use upnow_domain::{
     DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
     ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
-    VersionPolicy, VersionScheme, VersionText,
+    VersionScheme, VersionText,
 };
 use upnow_execution::{
-    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
-    ResolvedExecutionPlan,
+    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionPlan,
 };
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
 use upnow_release::newest_semver_version;
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
-    ReleaseLookupSubject,
+    ReleaseLookupSubject, validate_version_policy,
 };
 
 pub const MANAGER_ID: &str = "bun";
@@ -116,20 +115,15 @@ impl BunManager {
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
+
+    pub fn id() -> ManagerId {
+        ManagerId::from_static(MANAGER_ID)
+    }
 }
 impl ManagerAdapter for BunManager {
-    fn id(&self) -> &'static str {
-        MANAGER_ID
-    }
-
     fn capabilities(&self) -> ManagerCapabilities {
         ManagerCapabilities::new().with_native_global_update(true)
     }
-
-    fn supports_version_policy(&self, _policy: VersionPolicy) -> bool {
-        true
-    }
-
     fn scan_inputs(
         &self,
         process: &ProcessRunner,
@@ -158,7 +152,11 @@ impl ManagerAdapter for BunManager {
         _http: &HttpClient,
         env: &Env,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
-        self.validate_version_policy(self.config.version_policy)?;
+        validate_version_policy(
+            &self.config.manager_id,
+            Self::supports_version_policy(self.config.version_policy),
+            self.config.version_policy,
+        )?;
         update_inputs(process, env).map_err(|err| adapter_error(&err))
     }
 
@@ -382,13 +380,13 @@ pub fn commands_for_execution_plan(
             }
             ExecutionCommandIntent::NativeGlobal(items) => {
                 commands.push(ExecutionCommand {
-                    items: items.iter().map(execution_item).collect(),
+                    items: items.iter().map(ExecutionCommandItem::from).collect(),
                     command: global_update_command(runtime.executable(), min_release_age),
                 });
             }
             ExecutionCommandIntent::Exact(item) => {
                 commands.push(ExecutionCommand {
-                    items: vec![execution_item(item)],
+                    items: vec![ExecutionCommandItem::from(item)],
                     command: exact_command_with_program(
                         runtime.executable(),
                         &item.package_name,
@@ -454,15 +452,6 @@ impl BunRuntime {
     }
 }
 
-fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
-    ExecutionCommandItem {
-        plan_item_id: item.plan_item_id.clone(),
-        package_name: item.package_name.clone(),
-        installed_version: item.installed_version.clone(),
-        target_version: item.target_version.clone(),
-    }
-}
-
 fn bun_executable(process: &ProcessRunner) -> String {
     if let Ok(path) = std::env::var("UPNOW_BUN_BIN")
         && let Some(trimmed) = trim_non_empty(&path)
@@ -495,13 +484,9 @@ fn trim_non_empty(value: &str) -> Option<&str> {
     }
 }
 
-fn manager_id() -> ManagerId {
-    ManagerId::new(MANAGER_ID).expect("static bun manager id should be valid")
-}
-
 fn installed_tool(package: BunInstalledPackage) -> Result<InstalledTool, BunError> {
     Ok(InstalledTool::new(
-        manager_id(),
+        BunManager::id(),
         ToolId::new(package.name.as_str().to_owned())?,
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,

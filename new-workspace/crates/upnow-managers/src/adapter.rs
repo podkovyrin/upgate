@@ -1,7 +1,8 @@
 use std::fmt::{self, Display};
+use std::time::Duration;
 
 use upnow_domain::{
-    InstalledTool, ManagerId, ManagerScanInput, ManagerUpdateInput, PackageName,
+    InstalledTool, ManagerId, ManagerMode, ManagerScanInput, ManagerUpdateInput, PackageName,
     ReleaseLookupResult, UnsupportedReason, VersionPolicy, VersionText,
 };
 use upnow_execution::{ExecutionCommand, ResolvedExecutionPlan};
@@ -82,12 +83,72 @@ impl Display for ManagerAdapterError {
 
 impl std::error::Error for ManagerAdapterError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManagerConfigDefaults {
+    pub min_release_age: Duration,
+    pub mode: ManagerMode,
+}
+
+impl ManagerConfigDefaults {
+    pub const fn apply_after_days(days: u64) -> Self {
+        Self {
+            min_release_age: Duration::from_secs(days * 24 * 60 * 60),
+            mode: ManagerMode::Apply,
+        }
+    }
+
+    pub const fn off_after_days(days: u64) -> Self {
+        Self {
+            min_release_age: Duration::from_secs(days * 24 * 60 * 60),
+            mode: ManagerMode::Off,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagerConfigRuleError {
+    MinReleaseAgeMustBeWholeDays,
+}
+
 pub trait ManagerAdapter {
-    fn id(&self) -> &'static str;
+    fn default_config() -> ManagerConfigDefaults
+    where
+        Self: Sized,
+    {
+        ManagerConfigDefaults::apply_after_days(7)
+    }
+
+    fn accepts_no_update() -> bool
+    where
+        Self: Sized,
+    {
+        false
+    }
+
+    fn supports_version_policy(policy: VersionPolicy) -> bool
+    where
+        Self: Sized,
+    {
+        let _ = policy;
+        true
+    }
+
+    /// Validates manager-specific release-age config.
+    ///
+    /// # Errors
+    ///
+    /// Returns a rule error when the manager rejects the duration.
+    fn validate_min_release_age_rule(
+        min_release_age: Duration,
+    ) -> Result<(), ManagerConfigRuleError>
+    where
+        Self: Sized,
+    {
+        let _ = min_release_age;
+        Ok(())
+    }
 
     fn capabilities(&self) -> ManagerCapabilities;
-
-    fn supports_version_policy(&self, policy: VersionPolicy) -> bool;
 
     /// Returns the installed manager version when it cannot support migrated behavior.
     ///
@@ -148,24 +209,24 @@ pub trait ManagerAdapter {
         env: &Env,
         plan: &ResolvedExecutionPlan,
     ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError>;
+}
 
-    fn manager_id(&self) -> ManagerId {
-        ManagerId::new(self.id()).expect("static manager id should be valid")
-    }
-
-    /// Validates that a manager supports the resolved version policy.
-    ///
-    /// # Errors
-    ///
-    /// Returns an unsupported-policy error when the policy is not supported.
-    fn validate_version_policy(&self, policy: VersionPolicy) -> Result<(), ManagerAdapterError> {
-        if self.supports_version_policy(policy) {
-            Ok(())
-        } else {
-            Err(ManagerAdapterError::UnsupportedPolicy {
-                manager_id: self.id().to_owned(),
-                policy,
-            })
-        }
+/// Validates a manager-owned version-policy support decision.
+///
+/// # Errors
+///
+/// Returns an unsupported-policy error when the manager rule rejects the policy.
+pub fn validate_version_policy(
+    id: &ManagerId,
+    supported: bool,
+    policy: VersionPolicy,
+) -> Result<(), ManagerAdapterError> {
+    if supported {
+        Ok(())
+    } else {
+        Err(ManagerAdapterError::UnsupportedPolicy {
+            manager_id: id.as_str().to_owned(),
+            policy,
+        })
     }
 }
