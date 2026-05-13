@@ -1,6 +1,7 @@
 use upnow_domain::{
-    DomainError, ExecutionEligibility, PackageName, PlanItem, PlanItemId, ToolId, UpdateCandidate,
-    UpdatePlan, VersionScheme, VersionText,
+    DomainError, ExecutionEligibility, PackageName, PlanItem, PlanItemId, PlanSelection,
+    SelectedItem, ToolId, UpdateCandidate, UpdatePlan, UpdateSelectionMode, UpdateSelectionPolicy,
+    VersionScheme, VersionText,
 };
 
 fn candidate(name: &str) -> UpdateCandidate {
@@ -34,5 +35,32 @@ fn update_plan_rejects_duplicate_item_ids() {
     assert_eq!(
         result,
         Err(DomainError::DuplicatePlanItemId("same-id".to_owned()))
+    );
+}
+
+#[test]
+fn plan_selection_rejects_policy_exception_outside_plan() {
+    let plan = UpdatePlan::new(
+        upnow_domain::ManagerId::new("pnpm").expect("valid manager id"),
+        vec![PlanItem::Update {
+            id: PlanItemId::new("pnpm:alpha").expect("valid plan item id"),
+            candidate: candidate("alpha"),
+        }],
+    )
+    .expect("plan should be valid");
+    let policy = UpdateSelectionPolicy {
+        mode: UpdateSelectionMode::Include,
+        except: std::iter::once(PackageName::new("beta").expect("valid package name")).collect(),
+    };
+
+    assert_eq!(
+        PlanSelection::new(
+            &plan,
+            vec![SelectedItem::recommended(
+                PlanItemId::new("pnpm:alpha").expect("valid plan item id")
+            )],
+            policy,
+        ),
+        Err(DomainError::UnknownSelectionPackage("beta".to_owned()))
     );
 }

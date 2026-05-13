@@ -1,7 +1,7 @@
 use upnow_domain::{
-    ExecutionEligibility, ManagerCapabilities, ManagerId, PackageName, PlanItem, PlanItemId,
-    PlanSelection, SelectedItem, ToolId, UpdateCandidate, UpdatePlan, UpdateSelectionPolicy,
-    VersionPolicy, VersionScheme, VersionText,
+    ExecutionEligibility, ExecutionTargetKind, ManagerCapabilities, ManagerId, PackageName,
+    PlanItem, PlanItemId, PlanSelection, SelectedItem, ToolId, UpdateCandidate, UpdatePlan,
+    UpdateSelectionPolicy, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ExecutionStatus,
@@ -69,6 +69,124 @@ fn resolves_native_global_intent_for_complete_native_only_selection() {
 }
 
 #[test]
+fn does_not_resolve_native_global_for_exact_only_items() {
+    let plan = plan(vec![
+        update_item(
+            "pnpm:alpha-ready",
+            "alpha-ready",
+            ExecutionEligibility::ExactOnly,
+        ),
+        update_item(
+            "pnpm:beta-ready",
+            "beta-ready",
+            ExecutionEligibility::ExactOnly,
+        ),
+    ]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![
+            SelectedItem::recommended(PlanItemId::new("pnpm:alpha-ready").expect("valid id")),
+            SelectedItem::recommended(PlanItemId::new("pnpm:beta-ready").expect("valid id")),
+        ],
+        UpdateSelectionPolicy::default(),
+    )
+    .expect("valid selection");
+
+    let resolved = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        ManagerCapabilities::new().with_native_global_update(true),
+        VersionPolicy::None,
+    )
+    .expect("selection should resolve");
+
+    assert!(
+        resolved
+            .intents
+            .iter()
+            .all(|intent| { matches!(intent, ExecutionCommandIntent::Exact(_)) })
+    );
+}
+
+#[test]
+fn resolves_native_global_for_exact_or_native_global_items_with_no_policy() {
+    let plan = plan(vec![
+        update_item(
+            "pnpm:alpha-ready",
+            "alpha-ready",
+            ExecutionEligibility::ExactOrNativeGlobal,
+        ),
+        update_item(
+            "pnpm:beta-ready",
+            "beta-ready",
+            ExecutionEligibility::ExactOrNativeGlobal,
+        ),
+    ]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![
+            SelectedItem::recommended(PlanItemId::new("pnpm:alpha-ready").expect("valid id")),
+            SelectedItem::recommended(PlanItemId::new("pnpm:beta-ready").expect("valid id")),
+        ],
+        UpdateSelectionPolicy::default(),
+    )
+    .expect("valid selection");
+
+    let resolved = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        ManagerCapabilities::new().with_native_global_update(true),
+        VersionPolicy::None,
+    )
+    .expect("selection should resolve");
+
+    assert!(matches!(
+        resolved.intents.as_slice(),
+        [ExecutionCommandIntent::NativeGlobal(items)] if items.len() == 2
+    ));
+}
+
+#[test]
+fn resolves_grouped_native_intent_for_brew_target_kinds() {
+    let plan = plan(vec![
+        update_item_with_target_kind(
+            "brew:alpha-ready",
+            "alpha-ready",
+            ExecutionEligibility::NativeOnly,
+            ExecutionTargetKind::BrewFormula,
+        ),
+        update_item_with_target_kind(
+            "brew:beta-ready",
+            "beta-ready",
+            ExecutionEligibility::NativeOnly,
+            ExecutionTargetKind::BrewCask,
+        ),
+    ]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![
+            SelectedItem::recommended(PlanItemId::new("brew:alpha-ready").expect("valid id")),
+            SelectedItem::recommended(PlanItemId::new("brew:beta-ready").expect("valid id")),
+        ],
+        UpdateSelectionPolicy::default(),
+    )
+    .expect("valid selection");
+
+    let resolved = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        ManagerCapabilities::new(),
+        VersionPolicy::Stable,
+    )
+    .expect("selection should resolve");
+
+    assert!(matches!(
+        resolved.intents.as_slice(),
+        [ExecutionCommandIntent::GroupedNative(items)] if items.len() == 2
+    ));
+}
+
+#[test]
 fn resolves_exact_intent_for_policy_filtered_update() {
     let plan = plan(vec![update_item(
         "pnpm:alpha-ready",
@@ -99,6 +217,15 @@ fn resolves_exact_intent_for_policy_filtered_update() {
 }
 
 fn update_item(id: &str, package: &str, eligibility: ExecutionEligibility) -> PlanItem {
+    update_item_with_target_kind(id, package, eligibility, ExecutionTargetKind::Standard)
+}
+
+fn update_item_with_target_kind(
+    id: &str,
+    package: &str,
+    eligibility: ExecutionEligibility,
+    target_kind: ExecutionTargetKind,
+) -> PlanItem {
     PlanItem::Update {
         id: PlanItemId::new(id).expect("valid id"),
         candidate: UpdateCandidate::new(
@@ -108,7 +235,8 @@ fn update_item(id: &str, package: &str, eligibility: ExecutionEligibility) -> Pl
             VersionText::new("1.2.0").expect("valid version"),
             VersionScheme::SemVer,
             eligibility,
-        ),
+        )
+        .with_execution_target_kind(target_kind),
     }
 }
 

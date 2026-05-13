@@ -406,14 +406,7 @@ pub fn update_inputs(
     let mut inputs = Vec::new();
     for item in plan_items {
         let installed = installed_tool_from_plan_item(&item)?;
-        let target_age = lookup_target_age(
-            process,
-            http,
-            env,
-            &item.tool,
-            &item.from_version,
-            &item.to_version,
-        );
+        let target_age = lookup_target_age(process, http, env, &item.tool, &item.to_version);
         let mut selected = ManagerSelectedTarget::new(item.to_version.clone(), target_age);
         if let Some(latest) = advisory_latest.get(&item.tool)
             && latest != &item.to_version
@@ -460,6 +453,11 @@ pub fn commands_for_execution_plan(
             }
             ExecutionCommandIntent::Exact(_) => {
                 return Err(MiseError::UnsupportedCommandIntent("exact".to_owned()));
+            }
+            ExecutionCommandIntent::GroupedNative(_) => {
+                return Err(MiseError::UnsupportedCommandIntent(
+                    "grouped-native".to_owned(),
+                ));
             }
             ExecutionCommandIntent::NativeGlobal(_) => {
                 return Err(MiseError::UnsupportedCommandIntent(
@@ -515,10 +513,9 @@ fn lookup_target_age(
     http: &HttpClient,
     env: &Env,
     tool: &PackageName,
-    current: &VersionText,
     target: &VersionText,
 ) -> TargetAgeLookupResult {
-    match lookup_target_release_for_tool(process, http, env, tool, current, target) {
+    match lookup_target_release_for_tool(process, http, env, tool, target) {
         ReleaseLookupResult::Known(timeline) => matching_entry(&timeline, target).map_or(
             TargetAgeLookupResult::MissingMetadata,
             |entry| {
@@ -537,14 +534,13 @@ fn lookup_target_release_for_tool(
     http: &HttpClient,
     env: &Env,
     tool: &PackageName,
-    current: &VersionText,
     target: &VersionText,
 ) -> ReleaseLookupResult {
     if tool.as_str().starts_with("npm:") {
         return lookup_release_for_tool(process, http, env, tool, Some(target));
     }
 
-    match mise_target_release_timeline(process, http, env, tool.as_str(), current, target) {
+    match mise_target_release_timeline(process, http, env, tool.as_str(), target) {
         Ok(Some(timeline)) if timeline.versions.is_empty() => ReleaseLookupResult::MissingMetadata,
         Ok(Some(timeline)) => ReleaseLookupResult::Known(timeline),
         Ok(None) | Err(MiseError::MissingReleaseMetadata(_)) => {
@@ -650,7 +646,6 @@ fn mise_target_release_timeline(
     http: &HttpClient,
     env: &Env,
     tool: &str,
-    current: &VersionText,
     target: &VersionText,
 ) -> Result<Option<ReleaseTimeline>, MiseError> {
     if tool.contains(':') {
@@ -658,7 +653,7 @@ fn mise_target_release_timeline(
         if matching_entry(&timeline, target).is_some() {
             return Ok(Some(timeline));
         }
-        return versions_host_timeline_for_backend(process, http, env, tool, Some(current));
+        return versions_host_timeline_for_backend(process, http, env, tool, Some(target));
     }
 
     for backend in registry_backends(process, tool)? {

@@ -13,7 +13,9 @@ impl PlanSelection {
     ///
     /// # Errors
     ///
-    /// Returns [`DomainError::UnknownPlanItemId`] when a selected item is not in the plan.
+    /// Returns [`DomainError::UnknownPlanItemId`] when a selected item is not in the plan, or
+    /// [`DomainError::UnknownSelectionPackage`] when a selection-policy exception package is not
+    /// represented in the plan.
     pub fn new(
         plan: &UpdatePlan,
         selected_items: Vec<SelectedItem>,
@@ -32,6 +34,13 @@ impl PlanSelection {
                 ));
             }
             seen.push(selected.plan_item_id.clone());
+        }
+        for package_name in &selection_policy.except {
+            if !plan.contains_package(package_name) {
+                return Err(DomainError::UnknownSelectionPackage(
+                    package_name.as_str().to_owned(),
+                ));
+            }
         }
 
         Ok(Self {

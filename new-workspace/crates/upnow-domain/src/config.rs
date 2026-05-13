@@ -10,16 +10,6 @@ pub enum ManagerMode {
     Apply,
 }
 
-impl ManagerMode {
-    pub const fn allows_run(self, applying: bool) -> bool {
-        match self {
-            Self::Off => false,
-            Self::Plan => !applying,
-            Self::Apply => true,
-        }
-    }
-}
-
 impl Display for ManagerMode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {

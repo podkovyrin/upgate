@@ -8,6 +8,10 @@ license.workspace = true
 [lints]
 workspace = true
 
+[[bin]]
+name = "upnow"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }

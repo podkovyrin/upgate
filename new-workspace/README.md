@@ -1,11 +1,11 @@
 # upnow Rebuild Workspace
 
-This workspace is the phase 0 shell for the `upnow` rebuild. It is independent
-from the existing root crate; the old `/src` tree is behavioral reference only.
+This directory contains the rebuilt `upnow` crates. The repository root now owns
+the active Cargo workspace; the old `/src` tree is behavioral reference only.
 
 ## Local Checks
 
-Run these commands from this directory:
+Run these commands from the repository root:
 
 ```sh
 cargo check --workspace

@@ -73,7 +73,7 @@ fn manager_ready_with_rows_clears_placeholder_and_shows_rows() {
 }
 
 #[test]
-fn planning_failure_shows_detail_and_allows_confirm_exit() {
+fn planning_failure_shows_detail_and_confirm_is_fatal() {
     let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![manager_id("pnpm")]);
 
     screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerStarted {
@@ -87,10 +87,27 @@ fn planning_failure_shows_detail_and_allows_confirm_exit() {
         screen.placeholder_message().as_deref(),
         Some("planning worker stopped")
     );
-    let control = screen
+    let err = screen
         .handle_input(SelectionInput::Confirm)
-        .expect("confirm after terminal planning failure should exit");
-    assert_eq!(control, SelectionControl::Confirm);
+        .expect_err("confirm after planning failure should fail");
+    assert_eq!(err.to_string(), "planning worker stopped");
+}
+
+#[test]
+fn manager_planning_error_confirm_is_fatal() {
+    let mut screen =
+        InteractiveSelectionScreen::from_manager_ids(vec![manager_id("pnpm"), manager_id("npm")]);
+
+    screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerError {
+        manager_id: manager_id("pnpm"),
+        detail: "outdated failed".to_owned(),
+    });
+    screen.apply_planning_event(InteractiveSelectionPlanningEvent::Finished);
+
+    let err = screen
+        .handle_input(SelectionInput::Confirm)
+        .expect_err("confirm with a manager planning error should fail");
+    assert_eq!(err.to_string(), "pnpm: outdated failed");
 }
 
 #[test]

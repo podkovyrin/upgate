@@ -483,6 +483,9 @@ impl InteractiveSelectionScreen {
             }
             SelectionInput::OpenTargetPicker => self.open_target_picker(),
             SelectionInput::Confirm if self.planning_finished => {
+                if let Some(detail) = self.planning_error_detail() {
+                    return Err(SelectionStateError::PlanningFailed(detail));
+                }
                 return Ok(SelectionControl::Confirm);
             }
             SelectionInput::Confirm
@@ -508,6 +511,23 @@ impl InteractiveSelectionScreen {
                 selection_policy: manager.state.selection_policy().clone(),
             })
             .collect()
+    }
+
+    fn planning_error_detail(&self) -> Option<String> {
+        if let Some(detail) = &self.planning_failure {
+            return Some(detail.clone());
+        }
+        let details = self
+            .managers
+            .iter()
+            .filter_map(|manager| {
+                if let ManagerPlanningStatus::Error { detail } = &manager.planning_status {
+                    return Some(format!("{}: {detail}", manager.manager_id.as_str()));
+                }
+                None
+            })
+            .collect::<Vec<_>>();
+        (!details.is_empty()).then(|| details.join("; "))
     }
 
     fn replace_manager_state(

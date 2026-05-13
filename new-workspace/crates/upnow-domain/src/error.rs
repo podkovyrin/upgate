@@ -13,6 +13,7 @@ pub enum DomainError {
     DuplicatePlanItemId(String),
     DuplicateSelectedPlanItemId(String),
     UnknownPlanItemId(String),
+    UnknownSelectionPackage(String),
 }
 
 impl Display for DomainError {
@@ -35,6 +36,9 @@ impl Display for DomainError {
                 write!(formatter, "duplicate selected plan item id `{value}`")
             }
             Self::UnknownPlanItemId(value) => write!(formatter, "unknown plan item id `{value}`"),
+            Self::UnknownSelectionPackage(value) => {
+                write!(formatter, "unknown selection package `{value}`")
+            }
         }
     }
 }

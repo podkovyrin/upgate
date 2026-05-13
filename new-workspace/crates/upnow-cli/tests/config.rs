@@ -110,6 +110,34 @@ fn explicit_cli_mode_override_wins_after_selected_manager_override() {
 }
 
 #[test]
+fn default_selection_policy_is_omitted_when_persisted() {
+    let path = temp_config_path("persist-default-selection");
+    write_config(
+        &path,
+        r#"
+[npm]
+mode = "apply"
+
+[npm.selection]
+mode = "skip"
+"#,
+    );
+    let mut config = UpnowConfig::load_from_path(&path).expect("config should load");
+
+    config
+        .set_manager_selection_policy("npm", UpdateSelectionPolicy::default())
+        .expect("selection policy should be set");
+    config
+        .persist_manager_selection_policy_to_path("npm", &path)
+        .expect("selection policy should persist");
+
+    let value: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&path).expect("config should be readable"))
+            .expect("persisted TOML should parse");
+    assert!(value["npm"].get("selection").is_none());
+}
+
+#[test]
 fn config_rejects_removed_any_policy() {
     let config: UpnowConfig =
         toml::from_str("[npm]\nversion_policy = \"any\"\n").expect("TOML should parse");

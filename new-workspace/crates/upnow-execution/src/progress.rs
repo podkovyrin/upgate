@@ -214,7 +214,8 @@ fn execution_intent_items(intent: ExecutionCommandIntent) -> Vec<ResolvedExecuti
         ExecutionCommandIntent::Exact(item)
         | ExecutionCommandIntent::NativeSelected(item)
         | ExecutionCommandIntent::ResolverNative(item) => vec![item],
-        ExecutionCommandIntent::NativeGlobal(items)
+        ExecutionCommandIntent::GroupedNative(items)
+        | ExecutionCommandIntent::NativeGlobal(items)
         | ExecutionCommandIntent::ResolverNativeGlobal(items) => items,
     }
 }

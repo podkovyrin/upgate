@@ -552,7 +552,9 @@ const fn manager_mode_from_default(mode: ManagerDefaultMode) -> ManagerMode {
 fn validate_policy_support(manager_id: &str, policy: VersionPolicy) -> Result<(), ConfigError> {
     let manager_id = ManagerId::new(manager_id.to_owned())
         .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
-    if supports_version_policy(manager_id.as_str(), policy) {
+    let supported = supports_version_policy(manager_id.as_str(), policy)
+        .map_err(|_| ConfigError::UnknownManager(manager_id.as_str().to_owned()))?;
+    if supported {
         Ok(())
     } else {
         Err(ConfigError::UnsupportedVersionPolicy {

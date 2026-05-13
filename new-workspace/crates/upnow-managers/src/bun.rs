@@ -375,6 +375,11 @@ pub fn commands_for_execution_plan(
                     "resolver-native-global".to_owned(),
                 ));
             }
+            ExecutionCommandIntent::GroupedNative(_) => {
+                return Err(BunError::UnsupportedCommandIntent(
+                    "grouped-native".to_owned(),
+                ));
+            }
             ExecutionCommandIntent::NativeGlobal(items) => {
                 commands.push(ExecutionCommand {
                     items: items.iter().map(execution_item).collect(),
@@ -519,7 +524,7 @@ fn update_input(tool: InstalledTool, lookup: ReleaseLookupResult) -> ManagerUpda
         discovered_target,
         VersionScheme::SemVer,
         lookup,
-        ExecutionEligibility::ExactOnly,
+        ExecutionEligibility::ExactOrNativeGlobal,
     ))
 }
 

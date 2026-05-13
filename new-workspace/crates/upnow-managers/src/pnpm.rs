@@ -380,6 +380,11 @@ pub fn exact_commands_for_execution_plan(
                     "resolver-native-global".to_owned(),
                 ));
             }
+            ExecutionCommandIntent::GroupedNative(_) => {
+                return Err(PnpmError::UnsupportedCommandIntent(
+                    "grouped-native".to_owned(),
+                ));
+            }
             ExecutionCommandIntent::NativeGlobal(_) => {
                 return Err(PnpmError::UnsupportedCommandIntent(
                     "native-global".to_owned(),

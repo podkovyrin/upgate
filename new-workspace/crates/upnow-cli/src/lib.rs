@@ -16,8 +16,9 @@ use clap::{Parser, Subcommand};
 use config::{ConfigError, UpnowConfig};
 use registry::{available_manager_ids, configured_manager, ensure_known_manager};
 use upnow_domain::{
-    InstalledTool, ManagerConfig, ManagerId, ManagerScanInput, PlanIssue, PlanSelection,
-    ReleaseLookupResult, ScanIssue, ScanItem, ScanReport, UpdatePlan, UpdateSelectionPolicy,
+    InstalledTool, ManagerConfig, ManagerId, ManagerMode, ManagerScanInput, PlanIssue,
+    PlanSelection, ReleaseLookupResult, ScanIssue, ScanItem, ScanReport, UpdatePlan,
+    UpdateSelectionPolicy,
 };
 use upnow_execution::progress::{
     ExecutionProgressEvent, ExecutionProgressState, ExecutionProgressSummary,
@@ -455,7 +456,7 @@ fn prepare_interactive_manager_configs(
     for manager_id in manager_ids {
         ensure_known_manager(manager_id.as_str()).map_err(map_manager_error)?;
         let manager_config = config.resolve_manager(manager_id.as_str())?;
-        if !manager_config.mode.allows_run(true) {
+        if !manager_mode_allows_run(manager_config.mode, true) {
             continue;
         }
         manager_configs.push(manager_config);
@@ -965,10 +966,7 @@ fn run_manager_batch(
 ) -> Result<ManagerBatchOutput, AppError> {
     ensure_known_manager(manager_id.as_str()).map_err(map_manager_error)?;
     let manager_config = config.resolve_manager(manager_id.as_str())?;
-    if !manager_config
-        .mode
-        .allows_run(command == BatchCommand::Apply)
-    {
+    if !manager_mode_allows_run(manager_config.mode, command == BatchCommand::Apply) {
         return Ok(ManagerBatchOutput {
             table: OutcomeTable::default(),
             failed: false,
@@ -1357,6 +1355,14 @@ fn execution_report_has_failures(report: &ExecutionReport) -> bool {
         .items
         .iter()
         .any(|item| matches!(item.status, ExecutionStatus::Failed { .. }))
+}
+
+const fn manager_mode_allows_run(mode: ManagerMode, is_apply: bool) -> bool {
+    match mode {
+        ManagerMode::Off => false,
+        ManagerMode::Plan => !is_apply,
+        ManagerMode::Apply => true,
+    }
 }
 
 #[expect(clippy::needless_pass_by_value)]

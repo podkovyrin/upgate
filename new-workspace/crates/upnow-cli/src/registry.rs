@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use upnow_domain::{ManagerConfig, VersionPolicy};
+use upnow_domain::{ManagerConfig, ManagerId, ManagerMode, UpdateSelectionPolicy, VersionPolicy};
 use upnow_managers::adapter::{ManagerAdapter, ManagerAdapterError};
 use upnow_managers::brew::BrewManager;
 use upnow_managers::bun::BunManager;
@@ -56,13 +56,29 @@ pub fn manager_defaults(manager_id: &str) -> Result<ManagerDefaults, ManagerAdap
         other => Err(ManagerAdapterError::UnknownManager(other.to_owned())),
     }
 }
-pub fn supports_version_policy(manager_id: &str, policy: VersionPolicy) -> bool {
-    match manager_id {
-        "gem" => !matches!(policy, VersionPolicy::SameTrack),
-        "mise" | "uv" => matches!(policy, VersionPolicy::None),
-        "brew" | "pnpm" | "npm" | "yarn" | "bun" | "cargo" | "pipx" | "go" | "dotnet" => true,
-        _ => false,
-    }
+/// Checks whether the concrete manager adapter supports a version policy.
+///
+/// # Errors
+///
+/// Returns an error when `manager_id` is not a known migrated manager.
+pub fn supports_version_policy(
+    manager_id: &str,
+    policy: VersionPolicy,
+) -> Result<bool, ManagerAdapterError> {
+    let defaults = manager_defaults(manager_id)?;
+    let config = ManagerConfig {
+        manager_id: ManagerId::new(manager_id.to_owned())
+            .map_err(|_| ManagerAdapterError::UnknownManager(manager_id.to_owned()))?,
+        mode: match defaults.mode {
+            ManagerDefaultMode::Off => ManagerMode::Off,
+            ManagerDefaultMode::Apply => ManagerMode::Apply,
+        },
+        min_release_age: defaults.min_release_age,
+        version_policy: policy,
+        no_update: false,
+        selection: UpdateSelectionPolicy::default(),
+    };
+    configured_manager(config).map(|manager| manager.supports_version_policy(policy))
 }
 
 /// Validates that a manager id is known by the CLI registry.

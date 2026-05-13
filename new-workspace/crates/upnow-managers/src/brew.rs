@@ -6,11 +6,10 @@ use chrono::DateTime;
 use serde::Deserialize;
 use upnow_domain::{
     DomainError, ExecutionEligibility, ExecutionTargetKind, InstalledTool, ManagerConfig,
-    ManagerId, ManagerMetadata, ManagerMetadataField, ManagerMetadataKey, ManagerMetadataValue,
-    ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput, PackageName, ReleaseEntry,
-    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, SkipReason,
-    TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy,
-    VersionScheme, VersionText,
+    ManagerId, ManagerMetadata, ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput,
+    PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
+    ReleaseTimestamp, SkipReason, TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName,
+    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -24,9 +23,6 @@ use crate::adapter::{
 };
 
 pub const MANAGER_ID: &str = "brew";
-
-const META_TAP: &str = "brew_tap";
-const META_SOURCE_PATH: &str = "brew_source_path";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrewError {
@@ -437,7 +433,7 @@ pub fn update_inputs(
     let mut inputs = Vec::new();
     for package in outdated {
         let metadata = package_info.get(&package.name);
-        let installed = installed_tool_for_outdated(&package, metadata)?;
+        let installed = installed_tool_for_outdated(&package)?;
         if package.pinned {
             inputs.push(ManagerUpdateInput::Skipped {
                 installed,
@@ -482,10 +478,15 @@ pub fn commands_for_execution_plan(
             ExecutionCommandIntent::NativeSelected(item) => {
                 push_brew_item(item, &mut formulae, &mut casks)?;
             }
-            ExecutionCommandIntent::NativeGlobal(items) => {
+            ExecutionCommandIntent::GroupedNative(items) => {
                 for item in items {
                     push_brew_item(item, &mut formulae, &mut casks)?;
                 }
+            }
+            ExecutionCommandIntent::NativeGlobal(_) => {
+                return Err(BrewError::UnsupportedCommandIntent(
+                    "native-global".to_owned(),
+                ));
             }
             ExecutionCommandIntent::Exact(_) => {
                 return Err(BrewError::UnsupportedCommandIntent("exact".to_owned()));
@@ -533,12 +534,19 @@ fn package_info_for_outdated(
     process: &ProcessRunner,
     packages: &[BrewOutdatedPackage],
 ) -> Result<BTreeMap<PackageName, BrewPackageMetadata>, BrewError> {
+    let names = packages
+        .iter()
+        .map(|package| package.name.clone())
+        .collect::<Vec<_>>();
+    package_info_for_names(process, &names)
+}
+
+fn package_info_for_names(
+    process: &ProcessRunner,
+    names: &[PackageName],
+) -> Result<BTreeMap<PackageName, BrewPackageMetadata>, BrewError> {
     let mut args = vec!["info".to_owned(), "--json=v2".to_owned()];
-    args.extend(
-        packages
-            .iter()
-            .map(|package| package.name.as_str().to_owned()),
-    );
+    args.extend(names.iter().map(|name| name.as_str().to_owned()));
     let output = process.run(&CommandSpec::new("brew", args), &CommandCheck::Success)?;
     parse_package_info_json(output.stdout()?)
 }
@@ -617,12 +625,14 @@ fn release_lookup_for_installed(
     env: &Env,
     tool: &InstalledTool,
 ) -> ReleaseLookupResult {
-    let metadata = BrewPackageMetadata {
-        tap: metadata_text(&tool.metadata, META_TAP),
-        source_path: metadata_text(&tool.metadata, META_SOURCE_PATH),
+    let metadata = match package_info_for_names(process, std::slice::from_ref(&tool.package_name)) {
+        Ok(mut packages) => packages.remove(&tool.package_name),
+        Err(err) => {
+            return ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(err.to_string()));
+        }
     };
     let taps = tap_metadata(process).unwrap_or_default();
-    match lookup_target_age(process, http, env, Some(&metadata), &taps) {
+    match lookup_target_age(process, http, env, metadata.as_ref(), &taps) {
         TargetAgeLookupResult::Known(evidence) => {
             ReleaseLookupResult::Known(ReleaseTimeline::new(vec![ReleaseEntry::new(
                 tool.installed_version.clone(),
@@ -803,24 +813,18 @@ fn installed_tool(package: &BrewInstalledPackage) -> Result<InstalledTool, BrewE
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
         package.version.clone(),
-        metadata(package.tap.clone(), package.source_path.clone())?,
+        ManagerMetadata::empty(),
     ))
 }
 
-fn installed_tool_for_outdated(
-    package: &BrewOutdatedPackage,
-    metadata: Option<&BrewPackageMetadata>,
-) -> Result<InstalledTool, BrewError> {
+fn installed_tool_for_outdated(package: &BrewOutdatedPackage) -> Result<InstalledTool, BrewError> {
     Ok(InstalledTool::new(
         manager_id(),
         ToolId::new(package.name.as_str().to_owned())?,
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
         package.installed.clone(),
-        metadata
-            .map(metadata_fields)
-            .transpose()?
-            .unwrap_or_else(ManagerMetadata::empty),
+        ManagerMetadata::empty(),
     ))
 }
 
@@ -829,41 +833,6 @@ const fn execution_target_kind(kind: &BrewPackageKind) -> ExecutionTargetKind {
         BrewPackageKind::Formula => ExecutionTargetKind::BrewFormula,
         BrewPackageKind::Cask => ExecutionTargetKind::BrewCask,
     }
-}
-
-fn metadata(
-    tap: Option<String>,
-    source_path: Option<String>,
-) -> Result<ManagerMetadata, BrewError> {
-    metadata_fields(&BrewPackageMetadata { tap, source_path })
-}
-
-fn metadata_fields(metadata: &BrewPackageMetadata) -> Result<ManagerMetadata, BrewError> {
-    let mut fields = Vec::new();
-    if let Some(tap) = &metadata.tap {
-        fields.push(ManagerMetadataField::new(
-            ManagerMetadataKey::new(META_TAP)?,
-            ManagerMetadataValue::Text(tap.clone()),
-        ));
-    }
-    if let Some(source_path) = &metadata.source_path {
-        fields.push(ManagerMetadataField::new(
-            ManagerMetadataKey::new(META_SOURCE_PATH)?,
-            ManagerMetadataValue::Text(source_path.clone()),
-        ));
-    }
-    Ok(ManagerMetadata::new(fields))
-}
-
-fn metadata_text(metadata: &ManagerMetadata, key: &str) -> Option<String> {
-    metadata.fields.iter().find_map(|field| {
-        if field.key.as_str() == key
-            && let ManagerMetadataValue::Text(value) = &field.value
-        {
-            return Some(value.clone());
-        }
-        None
-    })
 }
 
 fn push_brew_item(

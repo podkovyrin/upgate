@@ -21,6 +21,7 @@ pub struct ResolvedExecutionPlan {
 pub enum ExecutionCommandIntent {
     Exact(ResolvedExecutionItem),
     NativeSelected(ResolvedExecutionItem),
+    GroupedNative(Vec<ResolvedExecutionItem>),
     NativeGlobal(Vec<ResolvedExecutionItem>),
     ResolverNative(ResolvedExecutionItem),
     ResolverNativeGlobal(Vec<ResolvedExecutionItem>),
@@ -87,11 +88,14 @@ pub fn resolve_selection_for_execution(
     }
 
     let mut intents = Vec::new();
+    let mut grouped_native = Vec::new();
     for item in selected {
         if item.exact_target_required {
             intents.push(ExecutionCommandIntent::Exact(item));
         } else if should_use_resolver_native_update(&item, version_policy) {
             intents.push(ExecutionCommandIntent::ResolverNative(item));
+        } else if should_use_grouped_native_update(&item) {
+            grouped_native.push(item);
         } else if should_use_native_selected_update(&item, version_policy) {
             intents.push(ExecutionCommandIntent::NativeSelected(item));
         } else if supports_exact_target(&item) {
@@ -101,6 +105,9 @@ pub fn resolve_selection_for_execution(
                 item.plan_item_id.as_str().to_owned(),
             ));
         }
+    }
+    if !grouped_native.is_empty() {
+        intents.push(ExecutionCommandIntent::GroupedNative(grouped_native));
     }
     Ok(ResolvedExecutionPlan { intents })
 }
@@ -275,6 +282,12 @@ fn should_use_native_global_update(
         || selected.is_empty()
         || selected.iter().any(|item| item.bypass_min_release_age)
         || selected.iter().any(|item| item.exact_target_required)
+        || !selected
+            .iter()
+            .all(|item| item.execution_eligibility.supports_native_global())
+        || !selected
+            .iter()
+            .all(|item| item.execution_target_kind == ExecutionTargetKind::Standard)
     {
         return false;
     }
@@ -342,10 +355,24 @@ fn should_use_native_selected_update(
     }
 
     match item.execution_eligibility {
-        upnow_domain::ExecutionEligibility::NativeOnly => true,
-        upnow_domain::ExecutionEligibility::NativeOrExact => version_policy == VersionPolicy::None,
-        upnow_domain::ExecutionEligibility::ExactOnly
-        | upnow_domain::ExecutionEligibility::ResolverNativeOnly => false,
+        ExecutionEligibility::NativeOnly => true,
+        ExecutionEligibility::NativeOrExact => version_policy == VersionPolicy::None,
+        ExecutionEligibility::ExactOnly
+        | ExecutionEligibility::ExactOrNativeGlobal
+        | ExecutionEligibility::ResolverNativeOnly => false,
+    }
+}
+
+fn should_use_grouped_native_update(item: &ResolvedExecutionItem) -> bool {
+    if item.bypass_min_release_age || item.exact_target_required {
+        return false;
+    }
+
+    match item.execution_target_kind {
+        ExecutionTargetKind::Standard => false,
+        ExecutionTargetKind::BrewFormula | ExecutionTargetKind::BrewCask => {
+            item.execution_eligibility.supports_native_target()
+        }
     }
 }
 

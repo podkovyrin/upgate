@@ -200,7 +200,7 @@ impl Sandbox {
         for (key, value) in envs {
             command.env(key, value);
         }
-        command.output().expect("upnow-cli binary should run")
+        command.output().expect("upnow binary should run")
     }
 }
 
@@ -210,6 +210,10 @@ impl Drop for Sandbox {
     }
 }
 
-fn binary_path() -> &'static Path {
-    Path::new(env!("CARGO_BIN_EXE_upnow-cli"))
+fn binary_path() -> PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_upnow")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target/debug/upnow")
+        })
 }

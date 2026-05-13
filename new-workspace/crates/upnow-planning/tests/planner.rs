@@ -33,8 +33,8 @@ fn plan() -> UpdatePlan {
                 candidate: candidate("alpha-ready"),
             },
             PlanItem::Update {
-                id: item_id("pnpm:pinned-pkg"),
-                candidate: candidate("pinned-pkg"),
+                id: item_id("pnpm:exception-pkg"),
+                candidate: candidate("exception-pkg"),
             },
         ],
     )
@@ -46,7 +46,7 @@ fn default_batch_selection_include_mode_excludes_exceptions() {
     let plan = plan();
     let policy = UpdateSelectionPolicy {
         mode: UpdateSelectionMode::Include,
-        except: std::iter::once(PackageName::new("pinned-pkg").expect("valid package name"))
+        except: std::iter::once(PackageName::new("exception-pkg").expect("valid package name"))
             .collect(),
     };
     let selection = default_batch_selection(&plan, &policy).expect("selection should be valid");
@@ -55,6 +55,27 @@ fn default_batch_selection_include_mode_excludes_exceptions() {
     assert_eq!(
         selection.selected_items[0].plan_item_id.as_str(),
         "pnpm:alpha-ready"
+    );
+    assert_eq!(
+        selection.selected_items[0].target,
+        SelectedTarget::Recommended
+    );
+}
+
+#[test]
+fn default_batch_selection_skip_mode_includes_only_exceptions() {
+    let plan = plan();
+    let policy = UpdateSelectionPolicy {
+        mode: UpdateSelectionMode::Skip,
+        except: std::iter::once(PackageName::new("exception-pkg").expect("valid package name"))
+            .collect(),
+    };
+    let selection = default_batch_selection(&plan, &policy).expect("selection should be valid");
+
+    assert_eq!(selection.selected_items.len(), 1);
+    assert_eq!(
+        selection.selected_items[0].plan_item_id.as_str(),
+        "pnpm:exception-pkg"
     );
     assert_eq!(
         selection.selected_items[0].target,

@@ -19,6 +19,7 @@ pub enum SelectionStateError {
     UnknownPlanItem(String),
     TargetUnavailable(String),
     InvalidSelection(String),
+    PlanningFailed(String),
 }
 
 impl Display for SelectionStateError {
@@ -29,6 +30,7 @@ impl Display for SelectionStateError {
                 write!(formatter, "selection target is unavailable for `{id}`")
             }
             Self::InvalidSelection(message) => write!(formatter, "{message}"),
+            Self::PlanningFailed(message) => write!(formatter, "{message}"),
         }
     }
 }

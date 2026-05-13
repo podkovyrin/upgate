@@ -236,6 +236,7 @@ impl UpdateCandidate {
 pub enum ExecutionEligibility {
     NativeOrExact,
     ExactOnly,
+    ExactOrNativeGlobal,
     NativeOnly,
     ResolverNativeOnly,
 }
@@ -249,7 +250,19 @@ pub enum ExecutionTargetKind {
 
 impl ExecutionEligibility {
     pub const fn supports_exact_target(self) -> bool {
-        matches!(self, Self::NativeOrExact | Self::ExactOnly)
+        matches!(
+            self,
+            Self::NativeOrExact | Self::ExactOnly | Self::ExactOrNativeGlobal
+        )
+    }
+    pub const fn supports_native_target(self) -> bool {
+        matches!(self, Self::NativeOrExact | Self::NativeOnly)
+    }
+    pub const fn supports_native_global(self) -> bool {
+        matches!(
+            self,
+            Self::NativeOrExact | Self::NativeOnly | Self::ExactOrNativeGlobal
+        )
     }
     pub const fn supports_resolver_native(self) -> bool {
         matches!(self, Self::ResolverNativeOnly)
