@@ -8,7 +8,7 @@ use upnow_domain::{
     DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
     ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UnsupportedReason,
-    UpdateCandidate, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -33,7 +33,6 @@ pub enum YarnError {
     InvalidTimestamp { version: String, value: String },
     MissingReleaseMetadata(String),
     InvalidMajorVersion(String),
-    UnsupportedMajorVersion(u64),
     UnsupportedCommandIntent(String),
 }
 
@@ -55,12 +54,6 @@ impl Display for YarnError {
                 write!(
                     formatter,
                     "failed to parse yarn major version from `{value}`"
-                )
-            }
-            Self::UnsupportedMajorVersion(version) => {
-                write!(
-                    formatter,
-                    "global upgrades are not supported for Yarn {version}+"
                 )
             }
             Self::UnsupportedCommandIntent(kind) => {
@@ -92,7 +85,6 @@ impl From<DomainError> for YarnError {
 }
 
 impl YarnError {
-    #[must_use]
     pub const fn is_interruption(&self) -> bool {
         matches!(self, Self::Interrupted(_))
     }
@@ -139,7 +131,6 @@ pub struct YarnManager {
 }
 
 impl YarnManager {
-    #[must_use]
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
@@ -203,8 +194,6 @@ impl ManagerAdapter for YarnManager {
         commands_for_execution_plan(plan).map_err(|err| adapter_error(&err))
     }
 }
-
-#[must_use]
 pub fn parse_yarn_major_version(text: &str) -> Option<u64> {
     let first_token = text.split_whitespace().next()?;
     let trimmed = first_token.strip_prefix('v').unwrap_or(first_token);
@@ -382,11 +371,6 @@ pub fn commands_for_execution_plan(
     Ok(commands)
 }
 
-#[must_use]
-pub fn exact_command(candidate: &UpdateCandidate) -> CommandSpec {
-    exact_command_parts(&candidate.package_name, &candidate.target_version)
-}
-
 fn exact_command_for_item(item: &ResolvedExecutionItem) -> CommandSpec {
     exact_command_parts(&item.package_name, &item.target_version)
 }
@@ -558,9 +542,7 @@ fn adapter_error(err: &YarnError) -> ManagerAdapterError {
         | &YarnError::MissingReleaseMetadata(_)
         | &YarnError::InvalidMajorVersion(_) => ManagerAdapterErrorKind::Parse,
         &YarnError::UnsupportedCommandIntent(_) => ManagerAdapterErrorKind::CommandConstruction,
-        &YarnError::Infra(_) | &YarnError::UnsupportedMajorVersion(_) => {
-            ManagerAdapterErrorKind::Infra
-        }
+        &YarnError::Infra(_) => ManagerAdapterErrorKind::Infra,
     };
     ManagerAdapterError::Manager {
         manager_id: MANAGER_ID.to_owned(),

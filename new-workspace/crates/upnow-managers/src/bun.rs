@@ -7,8 +7,8 @@ use serde::Deserialize;
 use upnow_domain::{
     DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate,
-    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
+    VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -78,7 +78,6 @@ impl From<DomainError> for BunError {
 }
 
 impl BunError {
-    #[must_use]
     pub const fn is_interruption(&self) -> bool {
         matches!(self, Self::Interrupted(_))
     }
@@ -114,7 +113,6 @@ pub struct BunManager {
 }
 
 impl BunManager {
-    #[must_use]
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
@@ -208,8 +206,6 @@ pub fn parse_pm_ls_json(raw: &str) -> Result<Vec<BunInstalledPackage>, BunError>
         })
         .collect()
 }
-
-#[must_use]
 pub fn is_missing_global_manifest(text: &str) -> bool {
     text.contains("missing package.json")
         || text.contains("MissingPackageJSON")
@@ -345,8 +341,6 @@ pub fn parse_bun_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTi
         serde_json::from_str(raw).map_err(|err| BunError::Json(err.to_string()))?;
     time_map_to_timeline(package, timestamps)
 }
-
-#[must_use]
 pub fn bun_global_cwd_from_values(bun_install: Option<&str>, home: Option<&str>) -> Option<String> {
     bun_install
         .and_then(trim_non_empty)
@@ -408,24 +402,7 @@ pub fn commands_for_execution_plan(
     }
     Ok(commands)
 }
-
-#[must_use]
-pub fn exact_command(
-    candidate: &UpdateCandidate,
-    min_release_age: Duration,
-    bypass_min_release_age: bool,
-) -> CommandSpec {
-    exact_command_with_program(
-        "bun",
-        &candidate.package_name,
-        &candidate.target_version,
-        min_release_age,
-        bypass_min_release_age,
-    )
-}
-
-#[must_use]
-pub fn exact_command_with_program(
+fn exact_command_with_program(
     bun: &str,
     package_name: &PackageName,
     target_version: &VersionText,
@@ -441,9 +418,7 @@ pub fn exact_command_with_program(
     }
     CommandSpec::new(bun, args).mutating()
 }
-
-#[must_use]
-pub fn global_update_command(bun: &str, min_release_age: Duration) -> CommandSpec {
+fn global_update_command(bun: &str, min_release_age: Duration) -> CommandSpec {
     let min_age_secs = min_release_age.as_secs().to_string();
     CommandSpec::new(
         bun,
@@ -489,17 +464,21 @@ fn bun_executable(process: &ProcessRunner) -> String {
     {
         return trimmed.to_owned();
     }
-    match process.run(
-        &CommandSpec::new("mise", ["which", "bun"]),
-        &CommandCheck::Success,
-    ) {
-        Ok(output) => output
-            .stdout()
-            .ok()
-            .and_then(trim_non_empty)
-            .map_or_else(|| MANAGER_ID.to_owned(), ToOwned::to_owned),
-        Err(_) => MANAGER_ID.to_owned(),
-    }
+    process
+        .run(
+            &CommandSpec::new("mise", ["which", "bun"]),
+            &CommandCheck::Success,
+        )
+        .map_or_else(
+            |_| MANAGER_ID.to_owned(),
+            |output| {
+                output
+                    .stdout()
+                    .ok()
+                    .and_then(trim_non_empty)
+                    .map_or_else(|| MANAGER_ID.to_owned(), ToOwned::to_owned)
+            },
+        )
 }
 
 fn trim_non_empty(value: &str) -> Option<&str> {

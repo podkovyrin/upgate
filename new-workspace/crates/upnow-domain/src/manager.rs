@@ -7,21 +7,16 @@ pub struct ManagerCapabilities {
 }
 
 impl ManagerCapabilities {
-    #[must_use]
     pub const fn new() -> Self {
         Self {
             native_global_update: false,
             resolver_native_global_update: false,
         }
     }
-
-    #[must_use]
     pub const fn with_native_global_update(mut self, native_global_update: bool) -> Self {
         self.native_global_update = native_global_update;
         self
     }
-
-    #[must_use]
     pub const fn with_resolver_native_global_update(
         mut self,
         resolver_native_global_update: bool,
@@ -47,8 +42,6 @@ impl ManagerId {
         }
         Ok(Self(value))
     }
-
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -70,8 +63,6 @@ impl ToolId {
         }
         Ok(Self(value))
     }
-
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -93,8 +84,6 @@ impl PackageName {
         }
         Ok(Self(value))
     }
-
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -116,8 +105,6 @@ impl ToolName {
         }
         Ok(Self(value))
     }
-
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -134,8 +121,7 @@ pub struct InstalledTool {
 }
 
 impl InstalledTool {
-    #[must_use]
-    pub fn new(
+    pub const fn new(
         manager_id: ManagerId,
         tool_id: ToolId,
         package_name: PackageName,
@@ -160,13 +146,10 @@ pub struct ManagerMetadata {
 }
 
 impl ManagerMetadata {
-    #[must_use]
     pub fn empty() -> Self {
         Self::default()
     }
-
-    #[must_use]
-    pub fn new(fields: Vec<ManagerMetadataField>) -> Self {
+    pub const fn new(fields: Vec<ManagerMetadataField>) -> Self {
         Self { fields }
     }
 }
@@ -178,8 +161,7 @@ pub struct ManagerMetadataField {
 }
 
 impl ManagerMetadataField {
-    #[must_use]
-    pub fn new(key: ManagerMetadataKey, value: ManagerMetadataValue) -> Self {
+    pub const fn new(key: ManagerMetadataKey, value: ManagerMetadataValue) -> Self {
         Self { key, value }
     }
 }
@@ -200,8 +182,6 @@ impl ManagerMetadataKey {
         }
         Ok(Self(value))
     }
-
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }

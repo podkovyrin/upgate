@@ -11,7 +11,6 @@ pub enum ManagerMode {
 }
 
 impl ManagerMode {
-    #[must_use]
     pub const fn allows_run(self, applying: bool) -> bool {
         match self {
             Self::Off => false,

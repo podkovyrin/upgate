@@ -134,10 +134,10 @@ fn binary_interruption_exits_130() {
     let sandbox = Sandbox::new("interruption");
     sandbox.write_executable(
         "npm",
-        r#"#!/bin/sh
+        r"#!/bin/sh
 kill -INT $$
 sleep 1
-"#,
+",
     );
 
     let output = sandbox.run(["--manager", "npm", "plan"]);

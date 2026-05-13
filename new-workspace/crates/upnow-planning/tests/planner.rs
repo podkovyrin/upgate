@@ -46,8 +46,7 @@ fn default_batch_selection_include_mode_excludes_exceptions() {
     let plan = plan();
     let policy = UpdateSelectionPolicy {
         mode: UpdateSelectionMode::Include,
-        except: [PackageName::new("pinned-pkg").expect("valid package name")]
-            .into_iter()
+        except: std::iter::once(PackageName::new("pinned-pkg").expect("valid package name"))
             .collect(),
     };
     let selection = default_batch_selection(&plan, &policy).expect("selection should be valid");

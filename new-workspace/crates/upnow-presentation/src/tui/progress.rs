@@ -66,7 +66,6 @@ enum ProgressPhase {
 }
 
 impl InteractiveProgressScreen {
-    #[must_use]
     pub const fn new(state: ExecutionProgressState) -> Self {
         Self {
             state,
@@ -74,23 +73,17 @@ impl InteractiveProgressScreen {
             spinner_tick: 0,
         }
     }
-
-    #[must_use]
     pub const fn state(&self) -> &ExecutionProgressState {
         &self.state
     }
-
-    #[must_use]
     pub const fn quit_confirmation_open(&self) -> bool {
         matches!(self.phase, ProgressPhase::QuitConfirm)
     }
-
-    #[must_use]
     pub const fn finished(&self) -> bool {
         matches!(self.phase, ProgressPhase::Done)
     }
 
-    pub fn tick(&mut self) {
+    pub const fn tick(&mut self) {
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
     }
 
@@ -137,6 +130,7 @@ impl InteractiveProgressScreen {
 /// # Errors
 ///
 /// Returns an I/O error for terminal setup, rendering, event reading, or cleanup failures.
+#[expect(clippy::needless_pass_by_value)]
 pub fn run_interactive_progress(
     state: ExecutionProgressState,
     rx: &Receiver<ExecutionProgressEvent>,
@@ -164,8 +158,7 @@ pub fn run_interactive_progress(
     let cleanup = cleanup_terminal(&mut terminal);
     match (result, cleanup) {
         (Ok(()), Ok(())) => Ok(screen.state.summary()),
-        (Err(err), Ok(())) | (Ok(()), Err(err)) => Err(err),
-        (Err(err), Err(_)) => Err(err),
+        (Err(err), Ok(()) | Err(_)) | (Ok(()), Err(err)) => Err(err),
     }
 }
 
@@ -209,7 +202,6 @@ fn drain_progress_events(
         screen.apply_event(event);
     }
 }
-
 pub fn progress_input_from_event(event: &Event, quit_confirmation_open: bool) -> ProgressInput {
     let Event::Key(key) = event else {
         return ProgressInput::Ignore;
@@ -344,7 +336,7 @@ fn progress_table_row(
     .style(style)
 }
 
-fn progress_row_style(status: &ExecutionProgressStatus, theme: &TuiTheme) -> Style {
+const fn progress_row_style(status: &ExecutionProgressStatus, theme: &TuiTheme) -> Style {
     match status {
         ExecutionProgressStatus::Pending => theme.pending,
         ExecutionProgressStatus::Running => theme.running,
@@ -368,7 +360,7 @@ fn status_label(status: &ExecutionProgressStatus, spinner_tick: usize) -> &'stat
     }
 }
 
-fn progress_summary_label(summary: ExecutionProgressSummary) -> &'static str {
+const fn progress_summary_label(summary: ExecutionProgressSummary) -> &'static str {
     match (summary.had_failure, summary.stopped_after_current) {
         (false, false) => "ok",
         (true, false) => "failed",
@@ -390,8 +382,8 @@ fn status_note(status: &ExecutionProgressStatus) -> String {
                 String::new()
             }
         }
-        ExecutionProgressStatus::Failed { detail } => detail.clone(),
-        ExecutionProgressStatus::Skipped { detail } => detail.clone(),
+        ExecutionProgressStatus::Failed { detail }
+        | ExecutionProgressStatus::Skipped { detail } => detail.clone(),
     }
 }
 

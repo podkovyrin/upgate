@@ -1,4 +1,5 @@
 //! Manager-agnostic release metadata behavior for the `upnow` rebuild.
+#![allow(clippy::must_use_candidate, clippy::return_self_not_must_use)]
 
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
@@ -6,8 +7,6 @@ use std::time::{Duration, SystemTime};
 use pep440_rs::Version as Pep440Version;
 use semver::Version;
 use upnow_domain::{ReleaseTimeline, VersionText};
-
-#[must_use]
 pub fn release_age_for_version(
     timeline: &ReleaseTimeline,
     version: &VersionText,
@@ -22,8 +21,6 @@ pub fn release_age_for_version(
                 .unwrap_or(Duration::ZERO)
         })
 }
-
-#[must_use]
 pub fn newest_semver_version(timeline: &ReleaseTimeline) -> Option<VersionText> {
     timeline
         .versions
@@ -52,8 +49,6 @@ pub fn newest_semver_version(timeline: &ReleaseTimeline) -> Option<VersionText> 
         .max_by(|(left, _), (right, _)| left.cmp(right))
         .map(|(_, version)| version)
 }
-
-#[must_use]
 pub fn newest_pep440_version(timeline: &ReleaseTimeline) -> Option<VersionText> {
     timeline
         .versions

@@ -1,4 +1,5 @@
 //! Infrastructure crate for the `upnow` rebuild.
+#![allow(clippy::must_use_candidate, clippy::return_self_not_must_use)]
 
 use std::fmt;
 
@@ -63,7 +64,6 @@ pub enum InfraError {
 }
 
 impl InfraError {
-    #[must_use]
     pub fn is_interruption(&self) -> bool {
         matches!(self, Self::CommandFailed(failure) if failure.is_interruption())
     }

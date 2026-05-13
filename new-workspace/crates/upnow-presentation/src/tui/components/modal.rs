@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Clear};
 
 use crate::tui::theme::TuiTheme;
 
-pub(crate) fn render_modal_frame(
+pub fn render_modal_frame(
     frame: &mut Frame<'_>,
     area: Rect,
     width: u16,

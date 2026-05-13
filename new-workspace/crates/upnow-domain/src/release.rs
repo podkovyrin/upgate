@@ -8,8 +8,7 @@ pub struct ReleaseTimeline {
 }
 
 impl ReleaseTimeline {
-    #[must_use]
-    pub fn new(versions: Vec<ReleaseEntry>) -> Self {
+    pub const fn new(versions: Vec<ReleaseEntry>) -> Self {
         Self { versions }
     }
 }
@@ -21,8 +20,7 @@ pub struct ReleaseEntry {
 }
 
 impl ReleaseEntry {
-    #[must_use]
-    pub fn new(version: VersionText, published_at: ReleaseTimestamp) -> Self {
+    pub const fn new(version: VersionText, published_at: ReleaseTimestamp) -> Self {
         Self {
             version,
             published_at,
@@ -34,13 +32,10 @@ impl ReleaseEntry {
 pub struct ReleaseTimestamp(SystemTime);
 
 impl ReleaseTimestamp {
-    #[must_use]
-    pub fn new(value: SystemTime) -> Self {
+    pub const fn new(value: SystemTime) -> Self {
         Self(value)
     }
-
-    #[must_use]
-    pub fn as_system_time(&self) -> &SystemTime {
+    pub const fn as_system_time(&self) -> &SystemTime {
         &self.0
     }
 }
@@ -66,8 +61,7 @@ pub enum TargetAgeEvidence {
 }
 
 impl TargetAgeEvidence {
-    #[must_use]
-    pub fn timestamp(&self) -> &ReleaseTimestamp {
+    pub const fn timestamp(&self) -> &ReleaseTimestamp {
         match self {
             Self::PublishedAt(timestamp) | Self::ManagerNativeTimestamp(timestamp) => timestamp,
         }
@@ -80,7 +74,6 @@ pub struct ReleaseLookupError {
 }
 
 impl ReleaseLookupError {
-    #[must_use]
     pub fn new(detail: impl Into<String>) -> Self {
         Self {
             detail: detail.into(),

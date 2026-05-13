@@ -28,7 +28,6 @@ pub enum MutationNotice {
 }
 
 impl MutationNotice {
-    #[must_use]
     pub const fn render(self) -> &'static str {
         match self {
             Self::Skip => {
@@ -46,41 +45,30 @@ pub struct BatchTerminal {
 }
 
 impl BatchTerminal {
-    #[must_use]
     pub const fn new(theme: OutputTheme, capabilities: TerminalCapabilities) -> Self {
         Self {
             theme,
             stderr_is_tty: capabilities.stderr_is_tty,
         }
     }
-
-    #[must_use]
     pub fn from_environment(theme: OutputTheme) -> Self {
         Self {
             theme,
             stderr_is_tty: std::io::IsTerminal::is_terminal(&std::io::stderr()),
         }
     }
-
-    #[must_use]
     pub const fn disabled(theme: OutputTheme) -> Self {
         Self {
             theme,
             stderr_is_tty: false,
         }
     }
-
-    #[must_use]
     pub const fn spinner_enabled(self) -> bool {
         !self.theme.is_plain() && self.stderr_is_tty
     }
-
-    #[must_use]
     pub const fn notice_enabled(self) -> bool {
         self.stderr_is_tty
     }
-
-    #[must_use]
     pub fn start_manager_spinner(
         self,
         action: BatchTerminalAction,

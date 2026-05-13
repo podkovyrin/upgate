@@ -8,8 +8,8 @@ use serde::Deserialize;
 use upnow_domain::{
     DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate,
-    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
+    VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -80,7 +80,6 @@ impl From<DomainError> for GemError {
 }
 
 impl GemError {
-    #[must_use]
     pub const fn is_interruption(&self) -> bool {
         matches!(self, Self::Interrupted(_))
     }
@@ -113,7 +112,6 @@ pub struct GemManager {
 }
 
 impl GemManager {
-    #[must_use]
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
@@ -331,7 +329,6 @@ pub fn update_inputs(
 }
 
 /// Looks up `RubyGems` release metadata.
-#[must_use]
 pub fn lookup_release(
     http: &HttpClient,
     env: &Env,
@@ -344,7 +341,7 @@ pub fn lookup_release(
     match http.get_text(&url) {
         Ok(response) => match parse_rubygems_json(package, &response.body, ruby_runtime) {
             Ok(timeline) => ReleaseLookupResult::Known(timeline),
-            Err(GemError::MissingReleaseMetadata(_)) | Err(GemError::InvalidTimestamp { .. }) => {
+            Err(GemError::MissingReleaseMetadata(_) | GemError::InvalidTimestamp { .. }) => {
                 ReleaseLookupResult::MissingMetadata
             }
             Err(err) => ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(err.to_string())),
@@ -421,11 +418,6 @@ pub fn commands_for_execution_plan(
         }
     }
     Ok(commands)
-}
-
-#[must_use]
-pub fn exact_command(candidate: &UpdateCandidate) -> CommandSpec {
-    exact_command_parts(&candidate.package_name, &candidate.target_version)
 }
 
 fn ruby_runtime_version(process: &ProcessRunner) -> Result<Version, GemError> {
@@ -588,7 +580,7 @@ fn installed_tool_from_outdated(package: GemOutdatedPackage) -> Result<Installed
     ))
 }
 
-fn update_input(
+const fn update_input(
     tool: InstalledTool,
     discovered_target: VersionText,
     lookup: ReleaseLookupResult,

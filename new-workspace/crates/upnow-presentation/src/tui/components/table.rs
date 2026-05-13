@@ -6,7 +6,7 @@ use ratatui::widgets::{Row, Table, TableState};
 use crate::tui::components::scrollbar::render_vertical_scrollbar;
 use crate::tui::theme::TuiTheme;
 
-pub(crate) struct TuiTable<const N: usize> {
+pub struct TuiTable<const N: usize> {
     rows: Vec<Row<'static>>,
     columns: [Constraint; N],
     header: Option<Row<'static>>,
@@ -15,7 +15,7 @@ pub(crate) struct TuiTable<const N: usize> {
 }
 
 impl<const N: usize> TuiTable<N> {
-    pub(crate) fn new(rows: Vec<Row<'static>>, columns: [Constraint; N]) -> Self {
+    pub(crate) const fn new(rows: Vec<Row<'static>>, columns: [Constraint; N]) -> Self {
         Self {
             rows,
             columns,
@@ -30,18 +30,18 @@ impl<const N: usize> TuiTable<N> {
         self
     }
 
-    pub(crate) fn selected(mut self, selected: Option<usize>) -> Self {
+    pub(crate) const fn selected(mut self, selected: Option<usize>) -> Self {
         self.selected = selected;
         self
     }
 
-    pub(crate) fn row_highlight_style(mut self, style: Style) -> Self {
+    pub(crate) const fn row_highlight_style(mut self, style: Style) -> Self {
         self.row_highlight_style = Some(style);
         self
     }
 }
 
-pub(crate) fn render_table<const N: usize>(
+pub fn render_table<const N: usize>(
     frame: &mut Frame<'_>,
     area: Rect,
     config: TuiTable<N>,
@@ -71,7 +71,7 @@ pub(crate) fn render_table<const N: usize>(
     );
 }
 
-pub(crate) fn render_selection_table(
+pub fn render_selection_table(
     frame: &mut Frame<'_>,
     area: Rect,
     rows: Vec<Row<'static>>,
@@ -89,11 +89,11 @@ pub(crate) fn render_selection_table(
     );
 }
 
-pub(crate) fn update_header_row(theme: &TuiTheme) -> Row<'static> {
+pub fn update_header_row(theme: &TuiTheme) -> Row<'static> {
     Row::new(vec!["", "Manager", "Name", "Current", "Target", "Note"]).style(theme.header)
 }
 
-fn selection_update_columns() -> [Constraint; 6] {
+const fn selection_update_columns() -> [Constraint; 6] {
     [
         Constraint::Length(4),
         Constraint::Max(10),
@@ -104,7 +104,7 @@ fn selection_update_columns() -> [Constraint; 6] {
     ]
 }
 
-pub(crate) fn progress_update_columns() -> [Constraint; 6] {
+pub const fn progress_update_columns() -> [Constraint; 6] {
     [
         Constraint::Length(4),
         Constraint::Max(10),
@@ -115,7 +115,7 @@ pub(crate) fn progress_update_columns() -> [Constraint; 6] {
     ]
 }
 
-pub(crate) fn version_picker_columns() -> [Constraint; 3] {
+pub const fn version_picker_columns() -> [Constraint; 3] {
     [
         Constraint::Length(4),
         Constraint::Max(24),

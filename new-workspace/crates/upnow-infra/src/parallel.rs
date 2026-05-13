@@ -1,8 +1,6 @@
 use rayon::prelude::*;
 
 use crate::InfraError;
-
-#[must_use]
 pub fn effective_parallelism(requested: usize, manager_cap: usize) -> usize {
     requested.clamp(1, manager_cap.max(1))
 }

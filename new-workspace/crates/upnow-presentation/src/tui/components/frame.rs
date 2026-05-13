@@ -4,14 +4,14 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::tui::theme::TuiTheme;
 
-pub(crate) fn app_block(theme: &TuiTheme) -> Block<'static> {
+pub fn app_block(theme: &TuiTheme) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.frame_border)
 }
 
-pub(crate) fn render_separator(frame: &mut Frame<'_>, area: Rect, theme: &TuiTheme) {
+pub fn render_separator(frame: &mut Frame<'_>, area: Rect, theme: &TuiTheme) {
     if area.is_empty() {
         return;
     }

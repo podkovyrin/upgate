@@ -21,7 +21,6 @@ pub struct BatchRenderOptions {
 }
 
 impl BatchRenderOptions {
-    #[must_use]
     pub const fn new(theme: OutputTheme) -> Self {
         Self {
             theme,
@@ -29,31 +28,21 @@ impl BatchRenderOptions {
             version_policy: None,
         }
     }
-
-    #[must_use]
     pub const fn with_old_age_threshold(mut self, old_age_threshold: Duration) -> Self {
         self.old_age_threshold = Some(old_age_threshold);
         self
     }
-
-    #[must_use]
     pub const fn with_version_policy(mut self, version_policy: VersionPolicy) -> Self {
         self.version_policy = Some(version_policy);
         self
     }
 }
-
-#[must_use]
 pub fn render_scan_report(report: &ScanReport, options: BatchRenderOptions) -> String {
     render_batch_table(&scan_report_table(report, options), options.theme)
 }
-
-#[must_use]
 pub fn render_update_plan(plan: &UpdatePlan, options: BatchRenderOptions) -> String {
     render_batch_table(&update_plan_table(plan, options), options.theme)
 }
-
-#[must_use]
 pub fn render_execution_report(
     report: &ExecutionReport,
     issues: &[PlanIssue],
@@ -61,8 +50,6 @@ pub fn render_execution_report(
 ) -> String {
     render_batch_table(&execution_report_table(report, issues), options.theme)
 }
-
-#[must_use]
 pub fn render_manager_error(
     manager_id: &ManagerId,
     command: &str,
@@ -71,8 +58,6 @@ pub fn render_manager_error(
 ) -> String {
     render_batch_table(&manager_error_table(manager_id, command, detail), theme)
 }
-
-#[must_use]
 pub fn render_batch_table(table: &OutcomeTable, theme: OutputTheme) -> String {
     let rendered = render_outcome_table(table, theme);
     if rendered.is_empty() {
@@ -80,15 +65,11 @@ pub fn render_batch_table(table: &OutcomeTable, theme: OutputTheme) -> String {
     }
     format!("{rendered}\n")
 }
-
-#[must_use]
 pub fn manager_error_table(manager_id: &ManagerId, command: &str, detail: &str) -> OutcomeTable {
     let row = OutcomeRow::manager(OutcomeStatusView::Error, manager_id.clone())
         .with_note(OutcomeNote::normal(format!("({command} failed: {detail})")));
     OutcomeTable::new(vec![row])
 }
-
-#[must_use]
 pub fn scan_report_table(report: &ScanReport, options: BatchRenderOptions) -> OutcomeTable {
     let mut rows = report
         .issues
@@ -107,11 +88,12 @@ pub fn scan_report_table(report: &ScanReport, options: BatchRenderOptions) -> Ou
 
 fn scan_issue_row(manager_id: &ManagerId, issue: &ScanIssue) -> OutcomeRow {
     let status = match issue {
-        ScanIssue::UnsupportedManagerVersion { .. } => OutcomeStatusView::Skipped,
         ScanIssue::DiscoveryFailed { .. }
         | ScanIssue::ReleaseLookupFailed { .. }
         | ScanIssue::MissingReleaseMetadata => OutcomeStatusView::Error,
-        ScanIssue::ExcludedByManagerRule(_) => OutcomeStatusView::Skipped,
+        ScanIssue::UnsupportedManagerVersion { .. } | ScanIssue::ExcludedByManagerRule(_) => {
+            OutcomeStatusView::Skipped
+        }
     };
     OutcomeRow::manager(status, manager_id.clone())
         .with_note(OutcomeNote::normal(parenthesized(scan_issue_text(issue))))
@@ -155,7 +137,7 @@ fn current_scan_row(manager_id: &ManagerId, tool: &InstalledTool) -> OutcomeRow 
     )
 }
 
-fn scan_issue_status(issue: &ScanIssue) -> OutcomeStatusView {
+const fn scan_issue_status(issue: &ScanIssue) -> OutcomeStatusView {
     match issue {
         ScanIssue::ReleaseLookupFailed { .. }
         | ScanIssue::DiscoveryFailed { .. }
@@ -165,8 +147,6 @@ fn scan_issue_status(issue: &ScanIssue) -> OutcomeStatusView {
         }
     }
 }
-
-#[must_use]
 pub fn update_plan_table(plan: &UpdatePlan, options: BatchRenderOptions) -> OutcomeTable {
     let mut rows = plan
         .issues
@@ -285,9 +265,9 @@ fn blocked_row(
             seed.installed.package_name.clone(),
             versions,
         )
-        .with_note(OutcomeNote::normal(parenthesized(missing_metadata_text(
-            diagnostics,
-        )))),
+        .with_note(OutcomeNote::normal(parenthesized(
+            "missing release metadata",
+        ))),
         BlockReason::ReleaseLookupFailed => OutcomeRow::item(
             OutcomeStatusView::Error,
             manager_id.clone(),
@@ -348,8 +328,6 @@ fn candidate_row(
         ),
     )
 }
-
-#[must_use]
 pub fn execution_report_table(report: &ExecutionReport, issues: &[PlanIssue]) -> OutcomeTable {
     let mut rows = issues
         .iter()
@@ -526,13 +504,6 @@ fn release_age_note(age: Duration, is_old: bool) -> OutcomeNote {
     OutcomeNote::metadata(text)
 }
 
-fn missing_metadata_text(diagnostics: &PlanDiagnostics) -> String {
-    match diagnostics.missing_metadata {
-        Some(_) => "missing release metadata".to_owned(),
-        None => "missing release metadata".to_owned(),
-    }
-}
-
 fn lookup_failure_text(diagnostics: &PlanDiagnostics) -> String {
     diagnostics.lookup_failure.as_ref().map_or_else(
         || "release lookup failed".to_owned(),
@@ -572,7 +543,7 @@ fn plan_issue_text(issue: &PlanIssue) -> String {
     }
 }
 
-fn unsupported_reason_text(reason: &UnsupportedReason) -> &'static str {
+const fn unsupported_reason_text(reason: &UnsupportedReason) -> &'static str {
     match reason {
         UnsupportedReason::YarnModernGlobalUnsupported => {
             "global upgrades are not supported for Yarn 2+"
@@ -595,7 +566,7 @@ fn skip_reason_text(reason: &SkipReason) -> String {
     }
 }
 
-fn policy_warning_text(warning: PolicyWarning) -> &'static str {
+const fn policy_warning_text(warning: PolicyWarning) -> &'static str {
     match warning {
         PolicyWarning::InstalledTrackUnknownFallbackStable => {
             "same-track fell back to stable because installed track is unknown"

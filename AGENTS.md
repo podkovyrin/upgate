@@ -22,10 +22,6 @@ This project values architectural clarity over forward motion. Treat the impleme
 
 The test suite is presumed guilty. A test survives or is added only when it protects behavior that would intentionally survive a valid redesign. The burden of proof is on the test, not on the person deleting it.
 
-Every new or retained test must have this one-line proof:
-
-`This test must exist because it protects <specific stable behavior> that would otherwise be at meaningful regression risk.`
-
 Allowed reasons to add or keep a test:
 
 - It protects user-visible CLI behavior.

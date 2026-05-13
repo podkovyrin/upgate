@@ -29,13 +29,9 @@ impl HttpClient {
     pub fn real(settings: &HttpSettings) -> Result<Self, InfraError> {
         Ok(Self::Real(blocking_client(settings)?))
     }
-
-    #[must_use]
     pub fn fake(responses: impl IntoIterator<Item = (String, HttpResponse)>) -> Self {
         Self::Fake(FakeHttpClient::new(responses))
     }
-
-    #[must_use]
     pub fn fake_bytes(responses: impl IntoIterator<Item = (String, HttpBytesResponse)>) -> Self {
         Self::Fake(FakeHttpClient::new_bytes(responses))
     }
@@ -116,7 +112,6 @@ pub struct FakeHttpClient {
 }
 
 impl FakeHttpClient {
-    #[must_use]
     pub fn new(responses: impl IntoIterator<Item = (String, HttpResponse)>) -> Self {
         Self {
             responses: responses
@@ -133,8 +128,6 @@ impl FakeHttpClient {
                 .collect(),
         }
     }
-
-    #[must_use]
     pub fn new_bytes(responses: impl IntoIterator<Item = (String, HttpBytesResponse)>) -> Self {
         Self {
             responses: responses.into_iter().collect(),
@@ -197,7 +190,6 @@ impl Default for HttpSettings {
 }
 
 impl HttpSettings {
-    #[must_use]
     pub fn default_client_settings() -> Self {
         Self::default()
     }
@@ -217,8 +209,6 @@ pub fn blocking_client(settings: &HttpSettings) -> Result<Client, InfraError> {
             detail: err.to_string(),
         })
 }
-
-#[must_use]
 pub fn env_base_url(env: &Env, var_name: &str, default: &str) -> String {
     env.var(var_name)
         .and_then(|value| {

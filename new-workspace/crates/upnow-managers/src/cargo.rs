@@ -10,8 +10,8 @@ use serde::Deserialize;
 use upnow_domain::{
     DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate,
-    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
+    VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -85,7 +85,6 @@ impl From<DomainError> for CargoError {
 }
 
 impl CargoError {
-    #[must_use]
     pub const fn is_interruption(&self) -> bool {
         matches!(self, Self::Interrupted(_))
     }
@@ -129,7 +128,6 @@ pub struct CargoManager {
 }
 
 impl CargoManager {
-    #[must_use]
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
@@ -243,8 +241,6 @@ pub fn parse_install_ledger(raw: &str) -> Result<BTreeMap<String, CargoInstallMe
     }
     Ok(out)
 }
-
-#[must_use]
 pub fn parse_ledger_key_name(key: &str) -> Option<String> {
     let (left, _) = key.split_once(" (")?;
     let (name, _) = left.rsplit_once(' ')?;
@@ -338,7 +334,6 @@ pub fn update_inputs(
 }
 
 /// Looks up crates.io release metadata.
-#[must_use]
 pub fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> ReleaseLookupResult {
     let base_url =
         upnow_infra::env_base_url(env, "UPNOW_CARGO_CRATES_IO_BASE_URL", "https://crates.io");
@@ -417,11 +412,6 @@ pub fn commands_for_execution_plan(
         }
     }
     Ok(commands)
-}
-
-#[must_use]
-pub fn exact_command(candidate: &UpdateCandidate, meta: Option<&CargoInstallMeta>) -> CommandSpec {
-    exact_command_parts(&candidate.package_name, &candidate.target_version, meta)
 }
 
 /// Reads Cargo's registry-selected latest version from `cargo search`.

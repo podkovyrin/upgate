@@ -1,4 +1,5 @@
 //! CLI-layer behavior for the `upnow` rebuild.
+#![allow(clippy::must_use_candidate, clippy::return_self_not_must_use)]
 
 pub mod config;
 pub mod registry;
@@ -55,6 +56,7 @@ pub enum BatchCommand {
 
 #[derive(Debug, Parser)]
 #[command(name = "upnow")]
+#[expect(clippy::struct_excessive_bools)]
 struct Cli {
     #[command(subcommand)]
     command: Option<CliCommand>,
@@ -138,7 +140,6 @@ impl Display for AppError {
 impl std::error::Error for AppError {}
 
 impl AppError {
-    #[must_use]
     pub const fn is_interruption(&self) -> bool {
         matches!(self, Self::Interrupted(_))
     }
@@ -292,6 +293,7 @@ pub fn run_interactive_apply_with_sources(
 /// # Errors
 ///
 /// Returns an error for config, discovery, planning, or execution failures.
+#[expect(clippy::too_many_arguments)]
 pub fn run_batch_with_sources(
     command: BatchCommand,
     config: UpnowConfig,
@@ -316,6 +318,7 @@ pub fn run_batch_with_sources(
     )
 }
 
+#[expect(clippy::too_many_arguments)]
 fn run_batch_with_theme_and_sources(
     command: BatchCommand,
     config: UpnowConfig,
@@ -342,6 +345,7 @@ fn run_batch_with_theme_and_sources(
     )
 }
 
+#[expect(clippy::too_many_arguments)]
 fn run_batch_with_terminal_and_sources(
     command: BatchCommand,
     mut config: UpnowConfig,
@@ -583,11 +587,12 @@ fn run_live_confirmed_selection(
             worker.join().map_err(|_| {
                 AppError::Planning("interactive planning worker panicked".to_owned())
             })?;
-            confirmed_from_drafts(prepared, drafts).map(Some)
+            confirmed_from_drafts(prepared, &drafts).map(Some)
         }
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 fn prepare_interactive_apply_with_events(
     config: UpnowConfig,
     manager_configs: Vec<ManagerConfig>,
@@ -659,7 +664,7 @@ fn prepare_interactive_apply_with_events(
 
 fn confirmed_from_drafts(
     prepared: PreparedInteractiveApply,
-    drafts: Vec<InteractiveManagerSelectionDraft>,
+    drafts: &[InteractiveManagerSelectionDraft],
 ) -> Result<(UpnowConfig, Vec<ConfirmedInteractiveManagerApply>), AppError> {
     if !prepared.planning_failures.is_empty() {
         let details = prepared
@@ -821,7 +826,7 @@ fn resolve_confirmed_execution_plans(
     Ok(resolved)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn execute_confirmed_interactive_apply_resolved(
     config: &mut UpnowConfig,
     process: &ProcessRunner,
@@ -902,6 +907,7 @@ fn execute_confirmed_interactive_apply_resolved(
     Ok(())
 }
 
+#[expect(clippy::too_many_arguments)]
 fn run_batch_for_managers(
     command: BatchCommand,
     config: &UpnowConfig,
@@ -945,6 +951,7 @@ struct ManagerBatchOutput {
     failed: bool,
 }
 
+#[expect(clippy::too_many_arguments)]
 fn run_manager_batch(
     command: BatchCommand,
     config: &UpnowConfig,
@@ -1190,10 +1197,10 @@ fn verbose_scan_item(
 /// Returns an error for invalid arguments or command execution failures.
 pub fn run_from_env() -> Result<String, AppError> {
     let cli = Cli::parse();
-    run_cli(cli)
+    run_cli(&cli)
 }
 
-fn run_cli(cli: Cli) -> Result<String, AppError> {
+fn run_cli(cli: &Cli) -> Result<String, AppError> {
     let config = UpnowConfig::load()?;
     let env = Env::real();
     let process = ProcessRunner::new(MutationMode::from_env(&env));
@@ -1352,14 +1359,17 @@ fn execution_report_has_failures(report: &ExecutionReport) -> bool {
         .any(|item| matches!(item.status, ExecutionStatus::Failed { .. }))
 }
 
+#[expect(clippy::needless_pass_by_value)]
 fn map_manager_error(err: ManagerAdapterError) -> AppError {
+    let detail = err.to_string();
     if err.is_interruption() {
-        AppError::Interrupted(err.to_string())
+        AppError::Interrupted(detail)
     } else {
-        AppError::Manager(err.to_string())
+        AppError::Manager(detail)
     }
 }
 
+#[expect(clippy::needless_pass_by_value)]
 fn map_execution_selection_error(err: ExecutionSelectionError) -> AppError {
     AppError::Manager(err.to_string())
 }

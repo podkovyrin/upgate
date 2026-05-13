@@ -9,8 +9,8 @@ use serde::Deserialize;
 use upnow_domain::{
     DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate,
-    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
+    VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -80,7 +80,6 @@ impl From<DomainError> for PipxError {
 }
 
 impl PipxError {
-    #[must_use]
     pub const fn is_interruption(&self) -> bool {
         matches!(self, Self::Interrupted(_))
     }
@@ -120,7 +119,6 @@ pub struct PipxManager {
 }
 
 impl PipxManager {
-    #[must_use]
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
@@ -233,8 +231,7 @@ pub fn update_inputs(
     Ok(inputs)
 }
 
-/// Looks up PyPI release metadata.
-#[must_use]
+/// Looks up `PyPI` release metadata.
 pub fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> ReleaseLookupResult {
     let base_url = upnow_infra::env_base_url(env, "UPNOW_PIPX_PYPI_BASE_URL", "https://pypi.org");
     let url = format!("{base_url}/pypi/{}/json", package.as_str());
@@ -248,7 +245,7 @@ pub fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> Re
     }
 }
 
-/// Parses PyPI package metadata into a release timeline.
+/// Parses `PyPI` package metadata into a release timeline.
 ///
 /// # Errors
 ///
@@ -310,11 +307,6 @@ pub fn commands_for_execution_plan(
         }
     }
     Ok(commands)
-}
-
-#[must_use]
-pub fn exact_command(candidate: &UpdateCandidate) -> CommandSpec {
-    exact_command_parts(&candidate.package_name, &candidate.target_version)
 }
 
 fn exact_command_for_item(item: &ResolvedExecutionItem) -> CommandSpec {

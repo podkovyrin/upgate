@@ -9,14 +9,14 @@ const LEFT_OVERFLOW_HINT_WIDTH: usize = 5;
 const LEFT_OVERFLOW_HINT: &str = " ⇧+⇥ ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct VisibleTabs {
+pub struct VisibleTabs {
     pub start: usize,
     pub selected_in_slice: usize,
     pub titles: Vec<Line<'static>>,
     pub has_left_overflow: bool,
 }
 
-pub(crate) fn visible_tabs(
+pub fn visible_tabs(
     all_titles: &[Line<'static>],
     selected: usize,
     previous_offset: usize,
@@ -65,7 +65,7 @@ pub(crate) fn visible_tabs(
     }
 }
 
-pub(crate) fn render_tabs(frame: &mut Frame<'_>, area: Rect, tabs: &VisibleTabs, theme: &TuiTheme) {
+pub fn render_tabs(frame: &mut Frame<'_>, area: Rect, tabs: &VisibleTabs, theme: &TuiTheme) {
     if area.is_empty() {
         return;
     }
@@ -103,7 +103,7 @@ fn tab_width(title: &Line<'_>) -> usize {
     title.width() + 2
 }
 
-fn left_overflow_hint_width(enabled: bool) -> usize {
+const fn left_overflow_hint_width(enabled: bool) -> usize {
     if enabled { LEFT_OVERFLOW_HINT_WIDTH } else { 0 }
 }
 

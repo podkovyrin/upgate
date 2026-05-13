@@ -10,41 +10,28 @@ pub enum Env {
 }
 
 impl Env {
-    #[must_use]
     pub const fn real() -> Self {
         Self::Real
     }
-
-    #[must_use]
     pub fn fixed(vars: impl IntoIterator<Item = (String, String)>) -> Self {
         Self::Fixed(vars.into_iter().collect())
     }
-
-    #[must_use]
     pub fn var(&self, name: &str) -> Option<String> {
         match self {
             Self::Real => std::env::var(name).ok(),
             Self::Fixed(vars) => vars.get(name).cloned(),
         }
     }
-
-    #[must_use]
     pub fn non_empty_var(&self, name: &str) -> Option<String> {
         self.var(name)
             .and_then(|value| trim_non_empty(&value).map(ToOwned::to_owned))
     }
-
-    #[must_use]
     pub fn non_empty_path_var(&self, name: &str) -> Option<PathBuf> {
         self.non_empty_var(name).map(PathBuf::from)
     }
-
-    #[must_use]
     pub fn home_dir(&self) -> Option<PathBuf> {
         self.non_empty_path_var("HOME")
     }
-
-    #[must_use]
     pub fn truthy(&self, name: &str) -> bool {
         self.non_empty_var(name).is_some_and(|value| {
             matches!(
@@ -54,8 +41,6 @@ impl Env {
         })
     }
 }
-
-#[must_use]
 pub fn trim_non_empty(value: &str) -> Option<&str> {
     let trimmed = value.trim();
     if trimmed.is_empty() {

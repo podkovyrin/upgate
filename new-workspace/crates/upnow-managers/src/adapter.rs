@@ -22,8 +22,7 @@ pub enum ReleaseLookupSubject<'a> {
 }
 
 impl<'a> ReleaseLookupSubject<'a> {
-    #[must_use]
-    pub fn package_name(self) -> &'a PackageName {
+    pub const fn package_name(self) -> &'a PackageName {
         match self {
             Self::Package(package) => package,
             Self::Installed(tool) => &tool.package_name,
@@ -55,7 +54,6 @@ pub enum ManagerAdapterError {
 }
 
 impl ManagerAdapterError {
-    #[must_use]
     pub const fn is_interruption(&self) -> bool {
         matches!(
             self,

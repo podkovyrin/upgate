@@ -48,26 +48,19 @@ pub struct SelectedItem {
 }
 
 impl SelectedItem {
-    #[must_use]
-    pub fn new(plan_item_id: PlanItemId, target: SelectedTarget) -> Self {
+    pub const fn new(plan_item_id: PlanItemId, target: SelectedTarget) -> Self {
         Self {
             plan_item_id,
             target,
         }
     }
-
-    #[must_use]
-    pub fn recommended(plan_item_id: PlanItemId) -> Self {
+    pub const fn recommended(plan_item_id: PlanItemId) -> Self {
         Self::new(plan_item_id, SelectedTarget::Recommended)
     }
-
-    #[must_use]
-    pub fn forced_candidate(plan_item_id: PlanItemId) -> Self {
+    pub const fn forced_candidate(plan_item_id: PlanItemId) -> Self {
         Self::new(plan_item_id, SelectedTarget::ForcedCandidate)
     }
-
-    #[must_use]
-    pub fn alternate_exact(plan_item_id: PlanItemId, target_version: VersionText) -> Self {
+    pub const fn alternate_exact(plan_item_id: PlanItemId, target_version: VersionText) -> Self {
         Self::new(
             plan_item_id,
             SelectedTarget::AlternateExact { target_version },
@@ -89,28 +82,21 @@ pub struct UpdateSelectionPolicy {
 }
 
 impl UpdateSelectionPolicy {
-    #[must_use]
-    pub fn include_all() -> Self {
+    pub const fn include_all() -> Self {
         Self {
             mode: UpdateSelectionMode::Include,
             except: BTreeSet::new(),
         }
     }
-
-    #[must_use]
-    pub fn skip_all() -> Self {
+    pub const fn skip_all() -> Self {
         Self {
             mode: UpdateSelectionMode::Skip,
             except: BTreeSet::new(),
         }
     }
-
-    #[must_use]
     pub fn is_default(&self) -> bool {
         self.mode == UpdateSelectionMode::Include && self.except.is_empty()
     }
-
-    #[must_use]
     pub fn includes(&self, package: &PackageName) -> bool {
         let is_exception = self.except.contains(package);
 

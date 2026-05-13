@@ -8,8 +8,8 @@ use serde::Deserialize;
 use upnow_domain::{
     DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate,
-    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
+    VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -79,7 +79,6 @@ impl From<DomainError> for DotnetError {
 }
 
 impl DotnetError {
-    #[must_use]
     pub const fn is_interruption(&self) -> bool {
         matches!(self, Self::Interrupted(_))
     }
@@ -142,7 +141,6 @@ pub struct DotnetManager {
 }
 
 impl DotnetManager {
-    #[must_use]
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
@@ -270,7 +268,6 @@ pub fn update_inputs(
 }
 
 /// Looks up `NuGet` release metadata.
-#[must_use]
 pub fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> ReleaseLookupResult {
     match nuget_timeline(http, env, package) {
         Ok(timeline) => ReleaseLookupResult::Known(timeline),
@@ -348,11 +345,6 @@ pub fn commands_for_execution_plan(
         }
     }
     Ok(commands)
-}
-
-#[must_use]
-pub fn exact_command(candidate: &UpdateCandidate) -> CommandSpec {
-    exact_command_parts(&candidate.package_name, &candidate.target_version)
 }
 
 fn nuget_timeline(

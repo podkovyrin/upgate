@@ -10,7 +10,6 @@ pub struct OutcomeTable {
 }
 
 impl OutcomeTable {
-    #[must_use]
     pub const fn new(rows: Vec<OutcomeRow>) -> Self {
         Self { rows }
     }
@@ -27,8 +26,7 @@ pub struct OutcomeRow {
 }
 
 impl OutcomeRow {
-    #[must_use]
-    pub fn item(
+    pub const fn item(
         status: OutcomeStatusView,
         manager_id: ManagerId,
         package_name: PackageName,
@@ -43,8 +41,6 @@ impl OutcomeRow {
             visibility: OutcomeVisibility::Always,
         }
     }
-
-    #[must_use]
     pub const fn manager(status: OutcomeStatusView, manager_id: ManagerId) -> Self {
         Self {
             status,
@@ -55,14 +51,10 @@ impl OutcomeRow {
             visibility: OutcomeVisibility::Always,
         }
     }
-
-    #[must_use]
     pub fn with_note(mut self, note: OutcomeNote) -> Self {
         self.notes.push(note);
         self
     }
-
-    #[must_use]
     pub const fn with_visibility(mut self, visibility: OutcomeVisibility) -> Self {
         self.visibility = visibility;
         self
@@ -98,7 +90,6 @@ pub enum OutcomeVersionsView {
 }
 
 impl OutcomeVersionsView {
-    #[must_use]
     pub const fn change(from: VersionText, to: VersionText) -> Self {
         Self::Change {
             from,
@@ -123,7 +114,6 @@ pub struct OutcomeNote {
 }
 
 impl OutcomeNote {
-    #[must_use]
     pub fn normal(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
@@ -131,8 +121,6 @@ impl OutcomeNote {
             visibility: OutcomeVisibility::Always,
         }
     }
-
-    #[must_use]
     pub fn metadata(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
@@ -140,8 +128,6 @@ impl OutcomeNote {
             visibility: OutcomeVisibility::Always,
         }
     }
-
-    #[must_use]
     pub fn emphasized(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
@@ -149,8 +135,6 @@ impl OutcomeNote {
             visibility: OutcomeVisibility::Always,
         }
     }
-
-    #[must_use]
     pub fn warning(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
@@ -158,8 +142,6 @@ impl OutcomeNote {
             visibility: OutcomeVisibility::Always,
         }
     }
-
-    #[must_use]
     pub const fn with_visibility(mut self, visibility: OutcomeVisibility) -> Self {
         self.visibility = visibility;
         self
@@ -179,8 +161,6 @@ pub enum OutcomeVisibility {
     Always,
     VerboseOnly,
 }
-
-#[must_use]
 pub fn render_outcome_table(table: &OutcomeTable, theme: OutputTheme) -> String {
     let rows = table
         .rows
@@ -195,8 +175,6 @@ pub fn render_outcome_table(table: &OutcomeTable, theme: OutputTheme) -> String 
 
     render_table_rows(&rows, theme.color()).join("\n")
 }
-
-#[must_use]
 pub fn version_label(version: &str) -> String {
     if version.starts_with('v') {
         return version.to_owned();
@@ -207,8 +185,6 @@ pub fn version_label(version: &str) -> String {
         _ => version.to_owned(),
     }
 }
-
-#[must_use]
 pub fn changed_version_segment_index(from: &str, to: &str) -> Option<usize> {
     let from_core = strip_v_prefix(from);
     let to_core = strip_v_prefix(to);
@@ -217,8 +193,6 @@ pub fn changed_version_segment_index(from: &str, to: &str) -> Option<usize> {
 
     first_changed_part_index(&from_parts, &to_parts)
 }
-
-#[must_use]
 pub fn render_to_version(from: &str, to: &str, theme: OutputTheme, emphasize: bool) -> String {
     if !theme.color() {
         return to.to_owned();
@@ -246,8 +220,6 @@ pub fn render_to_version(from: &str, to: &str, theme: OutputTheme, emphasize: bo
 
     output
 }
-
-#[must_use]
 pub fn strip_ansi_codes(text: &str) -> String {
     let mut stripped = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();

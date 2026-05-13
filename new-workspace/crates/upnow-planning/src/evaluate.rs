@@ -70,7 +70,6 @@ impl PolicyDecision {
 }
 
 /// Evaluate one manager-discovered update seed into a typed plan item.
-#[must_use]
 pub fn evaluate_seed(
     id: PlanItemId,
     seed: UpdateSeed,
@@ -97,7 +96,6 @@ pub fn evaluate_seed(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn evaluate_planner_selectable_seed(
     id: PlanItemId,
     seed: UpdateSeed,
@@ -144,14 +142,13 @@ fn evaluate_planner_selectable_seed(
             ),
             VersionScheme::ManagerNative => PlanItem::ResolverError {
                 id,
-                installed: seed.installed.clone(),
+                installed: seed.installed,
                 message: "manager-native evaluation requires manager-specific planner".to_owned(),
             },
         },
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn evaluate_manager_selected_seed(
     id: PlanItemId,
     seed: UpdateSeed,
@@ -255,7 +252,7 @@ fn evaluate_manager_selected_seed(
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn evaluate_semver_seed(
     id: PlanItemId,
     seed: UpdateSeed,
@@ -268,14 +265,14 @@ fn evaluate_semver_seed(
     let Ok(installed_version) = parse_semver(seed.installed.installed_version.as_str()) else {
         return PlanItem::ResolverError {
             id,
-            installed: seed.installed.clone(),
+            installed: seed.installed,
             message: "failed to parse installed version".to_owned(),
         };
     };
     let Ok(parsed_discovered_target) = parse_semver(discovered_target.as_str()) else {
         return PlanItem::ResolverError {
             id,
-            installed: seed.installed.clone(),
+            installed: seed.installed,
             message: "failed to parse discovered target version".to_owned(),
         };
     };
@@ -285,7 +282,7 @@ fn evaluate_semver_seed(
             let bad_version = entry.version.as_str().to_owned();
             return PlanItem::ResolverError {
                 id,
-                installed: seed.installed.clone(),
+                installed: seed.installed,
                 message: format!("failed to parse release version `{bad_version}`"),
             };
         };
@@ -315,7 +312,7 @@ fn evaluate_semver_seed(
             let bad_version = entry.version.as_str().to_owned();
             return PlanItem::ResolverError {
                 id,
-                installed: seed.installed.clone(),
+                installed: seed.installed,
                 message: format!("failed to parse release version `{bad_version}`"),
             };
         };
@@ -326,7 +323,7 @@ fn evaluate_semver_seed(
         let candidate_class = classify_semver_release(entry.version.as_str());
         let policy_decision = evaluate_policy(policy, installed_class, candidate_class);
         let policy_allowed = policy_decision.allowed();
-        let fact = CandidateFact::new(entry, now, min_release_age, policy_decision);
+        let fact = CandidateFact::new(entry, now, min_release_age, &policy_decision);
         candidate_facts.push((parsed.clone(), fact.clone()));
         if newest_overall
             .as_ref()
@@ -409,7 +406,7 @@ fn evaluate_semver_seed(
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn evaluate_pep440_seed(
     id: PlanItemId,
     seed: UpdateSeed,
@@ -422,14 +419,14 @@ fn evaluate_pep440_seed(
     let Ok(installed_version) = parse_pep440(seed.installed.installed_version.as_str()) else {
         return PlanItem::ResolverError {
             id,
-            installed: seed.installed.clone(),
+            installed: seed.installed,
             message: "failed to parse installed version".to_owned(),
         };
     };
     let Ok(parsed_discovered_target) = parse_pep440(discovered_target.as_str()) else {
         return PlanItem::ResolverError {
             id,
-            installed: seed.installed.clone(),
+            installed: seed.installed,
             message: "failed to parse discovered target version".to_owned(),
         };
     };
@@ -439,7 +436,7 @@ fn evaluate_pep440_seed(
             let bad_version = entry.version.as_str().to_owned();
             return PlanItem::ResolverError {
                 id,
-                installed: seed.installed.clone(),
+                installed: seed.installed,
                 message: format!("failed to parse release version `{bad_version}`"),
             };
         };
@@ -469,7 +466,7 @@ fn evaluate_pep440_seed(
             let bad_version = entry.version.as_str().to_owned();
             return PlanItem::ResolverError {
                 id,
-                installed: seed.installed.clone(),
+                installed: seed.installed,
                 message: format!("failed to parse release version `{bad_version}`"),
             };
         };
@@ -480,7 +477,7 @@ fn evaluate_pep440_seed(
         let candidate_class = classify_pep440_release(entry.version.as_str());
         let policy_decision = evaluate_policy(policy, installed_class, candidate_class);
         let policy_allowed = policy_decision.allowed();
-        let fact = CandidateFact::new(entry, now, min_release_age, policy_decision);
+        let fact = CandidateFact::new(entry, now, min_release_age, &policy_decision);
         candidate_facts.push((parsed.clone(), fact.clone()));
         if newest_overall
             .as_ref()
@@ -582,7 +579,7 @@ fn candidate_from_seed(
     .with_diagnostics(diagnostics)
 }
 
-fn evaluate_policy(
+const fn evaluate_policy(
     policy: VersionPolicy,
     installed_class: ReleaseClass,
     candidate_class: ReleaseClass,
@@ -626,7 +623,7 @@ fn selected_target_is_update(seed: &UpdateSeed, target: &VersionText) -> Result<
     }
 }
 
-fn evaluate_same_track_policy(
+const fn evaluate_same_track_policy(
     installed_class: ReleaseClass,
     candidate_class: ReleaseClass,
 ) -> PolicyDecision {
@@ -658,7 +655,7 @@ fn evaluate_same_track_policy(
     }
 }
 
-fn evaluate_stable_policy(
+const fn evaluate_stable_policy(
     candidate_class: ReleaseClass,
     warning: Option<PolicyWarning>,
 ) -> PolicyDecision {
@@ -705,7 +702,7 @@ fn evidence_age(evidence: &TargetAgeEvidence, now: SystemTime) -> Duration {
         .unwrap_or_default()
 }
 
-fn candidate_age_source(evidence: &TargetAgeEvidence) -> CandidateAgeSource {
+const fn candidate_age_source(evidence: &TargetAgeEvidence) -> CandidateAgeSource {
     match evidence {
         TargetAgeEvidence::PublishedAt(_) => CandidateAgeSource::PublishedAt,
         TargetAgeEvidence::ManagerNativeTimestamp(_) => CandidateAgeSource::ManagerNativeTimestamp,
@@ -721,7 +718,8 @@ fn advisory_latest_diagnostics(
     advisory: Option<&AdvisoryReleaseLookup>,
     now: SystemTime,
 ) -> Option<AdvisoryLatestFact> {
-    advisory.map(|advisory| match &advisory.release_lookup {
+    let advisory = advisory?;
+    Some(match &advisory.release_lookup {
         ReleaseLookupResult::Known(timeline) => AdvisoryLatestFact::Known {
             latest_version: advisory.latest_version.clone(),
             candidates: timeline
@@ -788,7 +786,7 @@ impl CandidateFact {
         entry: &ReleaseEntry,
         now: SystemTime,
         min_release_age: Duration,
-        policy_decision: PolicyDecision,
+        policy_decision: &PolicyDecision,
     ) -> Self {
         let age = release_age(entry, now);
         Self {
@@ -877,7 +875,10 @@ fn classify_pep440_release(raw: &str) -> ReleaseClass {
 }
 
 fn classify_semver_like_fallback(raw: &str) -> ReleaseClass {
-    let raw = raw.trim().strip_prefix(['v', 'V']).unwrap_or(raw.trim());
+    let raw = raw
+        .trim()
+        .strip_prefix(['v', 'V'])
+        .unwrap_or_else(|| raw.trim());
     if raw.is_empty() {
         return ReleaseClass::Unknown;
     }
@@ -1023,7 +1024,7 @@ fn classify_prerelease_text(raw: &str) -> Option<ReleaseClass> {
     best
 }
 
-fn select_less_stable(
+const fn select_less_stable(
     current: Option<ReleaseClass>,
     next: Option<ReleaseClass>,
 ) -> Option<ReleaseClass> {

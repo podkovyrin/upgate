@@ -92,7 +92,6 @@ impl From<DomainError> for GoError {
 }
 
 impl GoError {
-    #[must_use]
     pub const fn is_interruption(&self) -> bool {
         matches!(self, Self::Interrupted(_))
     }
@@ -125,7 +124,6 @@ pub struct GoManager {
 }
 
 impl GoManager {
-    #[must_use]
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
@@ -186,7 +184,6 @@ impl ManagerAdapter for GoManager {
 }
 
 /// Parses `go version -m <binary>` output.
-#[must_use]
 pub fn parse_go_version_m_output(text: &str) -> Option<GoBuildInfo> {
     let mut install_path = None::<String>;
     let mut module_path = None::<String>;
@@ -347,11 +344,11 @@ pub fn update_inputs(
         match discovered {
             GoDiscoveredTool::Managed(tool) => {
                 let lookup = lookup_release_by_module(process, &tool.module_path)?;
-                inputs.push(update_input(tool, lookup));
+                inputs.push(update_input(&tool, lookup));
             }
             GoDiscoveredTool::Skipped { name, reason } => {
                 inputs.push(ManagerUpdateInput::Skipped {
-                    installed: placeholder_installed_tool(name)?,
+                    installed: placeholder_installed_tool(&name)?,
                     reason: SkipReason::ManagerRule(reason),
                 });
             }
@@ -471,9 +468,7 @@ pub fn commands_for_execution_plan(
     }
     Ok(commands)
 }
-
-#[must_use]
-pub fn exact_command(install_path: &str, target: &VersionText) -> CommandSpec {
+fn exact_command(install_path: &str, target: &VersionText) -> CommandSpec {
     let spec = format!("{install_path}@{}", target.as_str());
     CommandSpec::new("go", ["install", &spec]).mutating()
 }
@@ -541,7 +536,7 @@ fn installed_tool(tool: &GoManagedTool) -> InstalledTool {
     )
 }
 
-fn placeholder_installed_tool(name: PackageName) -> Result<InstalledTool, GoError> {
+fn placeholder_installed_tool(name: &PackageName) -> Result<InstalledTool, GoError> {
     Ok(InstalledTool::new(
         manager_id(),
         ToolId::new(name.as_str().to_owned())?,
@@ -556,13 +551,13 @@ fn scan_input(discovered: GoDiscoveredTool) -> Result<ManagerScanInput, GoError>
     match discovered {
         GoDiscoveredTool::Managed(tool) => Ok(ManagerScanInput::Installed(installed_tool(&tool))),
         GoDiscoveredTool::Skipped { name, reason } => Ok(ManagerScanInput::Skipped {
-            installed: placeholder_installed_tool(name)?,
+            installed: placeholder_installed_tool(&name)?,
             reason: ScanIssue::ExcludedByManagerRule(ManagerRuleReason::Other { detail: reason }),
         }),
     }
 }
 
-fn update_input(tool: GoManagedTool, lookup: ReleaseLookupResult) -> ManagerUpdateInput {
+fn update_input(tool: &GoManagedTool, lookup: ReleaseLookupResult) -> ManagerUpdateInput {
     let discovered_target = match &lookup {
         ReleaseLookupResult::Known(timeline) => {
             newest_go_semver_version(timeline).unwrap_or_else(|| tool.current_version.clone())
@@ -572,7 +567,7 @@ fn update_input(tool: GoManagedTool, lookup: ReleaseLookupResult) -> ManagerUpda
         }
     };
     ManagerUpdateInput::Seed(UpdateSeed::new(
-        installed_tool(&tool),
+        installed_tool(tool),
         discovered_target,
         VersionScheme::SemVer,
         lookup,
@@ -668,7 +663,7 @@ fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
     }
 }
 
-fn discovered_name(discovered: &GoDiscoveredTool) -> &PackageName {
+const fn discovered_name(discovered: &GoDiscoveredTool) -> &PackageName {
     match discovered {
         GoDiscoveredTool::Managed(tool) => &tool.binary_name,
         GoDiscoveredTool::Skipped { name, .. } => name,

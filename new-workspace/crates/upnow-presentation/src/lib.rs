@@ -1,4 +1,5 @@
 //! Presentation crate for the `upnow` rebuild.
+#![allow(clippy::must_use_candidate, clippy::return_self_not_must_use)]
 
 pub mod batch;
 pub mod outcome;

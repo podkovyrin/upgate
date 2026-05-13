@@ -36,7 +36,6 @@ impl Display for SelectionStateError {
 impl std::error::Error for SelectionStateError {}
 
 impl InteractiveSelectionState {
-    #[must_use]
     pub fn new(view: SelectionView, selection_policy: UpdateSelectionPolicy) -> Self {
         let selected_targets = view
             .rows
@@ -51,26 +50,18 @@ impl InteractiveSelectionState {
             selected_targets,
         }
     }
-
-    #[must_use]
     pub fn rows(&self) -> &[SelectionRow] {
         &self.rows
     }
-
-    #[must_use]
     pub fn selected_target(&self, plan_item_id: &PlanItemId) -> Option<&SelectedTarget> {
         self.selected_targets.get(plan_item_id)
     }
-
-    #[must_use]
     pub fn selected_items(&self) -> Vec<SelectedItem> {
         self.selected_targets
             .iter()
             .map(|(plan_item_id, target)| SelectedItem::new(plan_item_id.clone(), target.clone()))
             .collect()
     }
-
-    #[must_use]
     pub const fn selection_policy(&self) -> &UpdateSelectionPolicy {
         &self.selection_policy
     }

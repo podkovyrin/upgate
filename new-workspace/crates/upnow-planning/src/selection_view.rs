@@ -59,16 +59,13 @@ pub enum TargetOption {
 }
 
 impl TargetOption {
-    #[must_use]
-    pub fn target_version(&self) -> &VersionText {
+    pub const fn target_version(&self) -> &VersionText {
         match self {
             Self::Recommended { target_version, .. }
             | Self::ForcedCandidate { target_version, .. }
             | Self::AlternateExact { target_version, .. } => target_version,
         }
     }
-
-    #[must_use]
     pub fn note_parts(&self) -> &[CandidateNotePart] {
         match self {
             Self::Recommended { note_parts, .. }
@@ -76,8 +73,6 @@ impl TargetOption {
             | Self::AlternateExact { note_parts, .. } => note_parts,
         }
     }
-
-    #[must_use]
     pub fn has_violation(&self) -> bool {
         self.note_parts().iter().any(|part| part.violation)
     }
@@ -90,15 +85,12 @@ pub struct CandidateNotePart {
 }
 
 impl CandidateNotePart {
-    #[must_use]
     pub const fn normal(kind: CandidateNoteKind) -> Self {
         Self {
             kind,
             violation: false,
         }
     }
-
-    #[must_use]
     pub const fn violation(kind: CandidateNoteKind) -> Self {
         Self {
             kind,
@@ -127,8 +119,6 @@ pub enum CandidateNoteKind {
         message: String,
     },
 }
-
-#[must_use]
 pub fn selection_view(
     plan: &UpdatePlan,
     selection_policy: &UpdateSelectionPolicy,
@@ -145,6 +135,7 @@ pub fn selection_view(
     }
 }
 
+#[expect(clippy::too_many_lines)]
 fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> SelectionRow {
     match item {
         PlanItem::Update { id, candidate } => {

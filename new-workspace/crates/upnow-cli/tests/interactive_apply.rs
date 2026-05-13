@@ -60,12 +60,12 @@ fn update_plan(manager_id: &str, package_name: &str) -> UpdatePlan {
     let package_name_value = PackageName::new(package_name).expect("valid package name");
     let item_id = plan_item_id(&format!("{}:{}", manager_id.as_str(), package_name));
     UpdatePlan::new(
-        manager_id.clone(),
+        manager_id,
         vec![PlanItem::Update {
             id: item_id,
             candidate: UpdateCandidate::new(
                 ToolId::new(package_name).expect("valid tool id"),
-                package_name_value.clone(),
+                package_name_value,
                 VersionText::new("1.0.0").expect("valid version"),
                 VersionText::new("1.2.0").expect("valid version"),
                 VersionScheme::SemVer,

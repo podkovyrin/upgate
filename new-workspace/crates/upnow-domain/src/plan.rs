@@ -22,8 +22,6 @@ impl PlanItemId {
         }
         Ok(Self(value))
     }
-
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -39,8 +37,7 @@ pub struct UpdateSeed {
 }
 
 impl UpdateSeed {
-    #[must_use]
-    pub fn new(
+    pub const fn new(
         installed: InstalledTool,
         discovered_target: VersionText,
         version_scheme: VersionScheme,
@@ -55,9 +52,7 @@ impl UpdateSeed {
             execution_eligibility,
         )
     }
-
-    #[must_use]
-    pub fn planner_selectable(
+    pub const fn planner_selectable(
         installed: InstalledTool,
         discovered_target: VersionText,
         version_scheme: VersionScheme,
@@ -75,9 +70,7 @@ impl UpdateSeed {
             execution_target_kind: ExecutionTargetKind::Standard,
         }
     }
-
-    #[must_use]
-    pub fn manager_selected(
+    pub const fn manager_selected(
         installed: InstalledTool,
         selected_target: ManagerSelectedTarget,
         version_scheme: VersionScheme,
@@ -91,8 +84,6 @@ impl UpdateSeed {
             execution_target_kind: ExecutionTargetKind::Standard,
         }
     }
-
-    #[must_use]
     pub const fn with_execution_target_kind(
         mut self,
         execution_target_kind: ExecutionTargetKind,
@@ -112,8 +103,7 @@ pub enum TargetSelection {
 }
 
 impl TargetSelection {
-    #[must_use]
-    pub fn target_version(&self) -> &VersionText {
+    pub const fn target_version(&self) -> &VersionText {
         match self {
             Self::PlannerSelectable {
                 discovered_target, ..
@@ -131,16 +121,13 @@ pub struct ManagerSelectedTarget {
 }
 
 impl ManagerSelectedTarget {
-    #[must_use]
-    pub fn new(target_version: VersionText, target_age: TargetAgeLookupResult) -> Self {
+    pub const fn new(target_version: VersionText, target_age: TargetAgeLookupResult) -> Self {
         Self {
             target_version,
             target_age,
             advisory_release_lookup: None,
         }
     }
-
-    #[must_use]
     pub fn with_advisory_release_lookup(
         mut self,
         latest_version: VersionText,
@@ -187,7 +174,6 @@ pub struct UpdateCandidate {
 }
 
 impl UpdateCandidate {
-    #[must_use]
     pub fn new(
         tool_id: ToolId,
         package_name: PackageName,
@@ -208,8 +194,6 @@ impl UpdateCandidate {
             diagnostics: PlanDiagnostics::default(),
         }
     }
-
-    #[must_use]
     pub const fn with_execution_target_kind(
         mut self,
         execution_target_kind: ExecutionTargetKind,
@@ -217,51 +201,33 @@ impl UpdateCandidate {
         self.execution_target_kind = execution_target_kind;
         self
     }
-
-    #[must_use]
     pub fn with_policy_warnings(mut self, policy_warnings: Vec<PolicyWarning>) -> Self {
         self.policy_warnings = policy_warnings;
         self
     }
-
-    #[must_use]
     pub fn with_diagnostics(mut self, diagnostics: PlanDiagnostics) -> Self {
         self.diagnostics = diagnostics;
         self
     }
-
-    #[must_use]
-    pub fn tool_id(&self) -> &ToolId {
+    pub const fn tool_id(&self) -> &ToolId {
         &self.tool_id
     }
-
-    #[must_use]
-    pub fn package_name(&self) -> &PackageName {
+    pub const fn package_name(&self) -> &PackageName {
         &self.package_name
     }
-
-    #[must_use]
-    pub fn installed_version(&self) -> &VersionText {
+    pub const fn installed_version(&self) -> &VersionText {
         &self.installed_version
     }
-
-    #[must_use]
-    pub fn target_version(&self) -> &VersionText {
+    pub const fn target_version(&self) -> &VersionText {
         &self.target_version
     }
-
-    #[must_use]
-    pub fn version_scheme(&self) -> VersionScheme {
+    pub const fn version_scheme(&self) -> VersionScheme {
         self.version_scheme
     }
-
-    #[must_use]
-    pub fn execution_eligibility(&self) -> ExecutionEligibility {
+    pub const fn execution_eligibility(&self) -> ExecutionEligibility {
         self.execution_eligibility
     }
-
-    #[must_use]
-    pub fn execution_target_kind(&self) -> ExecutionTargetKind {
+    pub const fn execution_target_kind(&self) -> ExecutionTargetKind {
         self.execution_target_kind
     }
 }
@@ -282,13 +248,10 @@ pub enum ExecutionTargetKind {
 }
 
 impl ExecutionEligibility {
-    #[must_use]
-    pub fn supports_exact_target(self) -> bool {
+    pub const fn supports_exact_target(self) -> bool {
         matches!(self, Self::NativeOrExact | Self::ExactOnly)
     }
-
-    #[must_use]
-    pub fn supports_resolver_native(self) -> bool {
+    pub const fn supports_resolver_native(self) -> bool {
         matches!(self, Self::ResolverNativeOnly)
     }
 }
@@ -328,8 +291,7 @@ pub enum PlanItem {
 }
 
 impl PlanItem {
-    #[must_use]
-    pub fn id(&self) -> &PlanItemId {
+    pub const fn id(&self) -> &PlanItemId {
         match self {
             Self::Update { id, .. }
             | Self::Current { id, .. }
@@ -384,18 +346,12 @@ impl UpdatePlan {
             issues,
         })
     }
-
-    #[must_use]
     pub fn contains_item(&self, id: &PlanItemId) -> bool {
         self.items.iter().any(|item| item.id() == id)
     }
-
-    #[must_use]
     pub fn item(&self, id: &PlanItemId) -> Option<&PlanItem> {
         self.items.iter().find(|item| item.id() == id)
     }
-
-    #[must_use]
     pub fn contains_package(&self, package_name: &PackageName) -> bool {
         self.items
             .iter()
@@ -404,8 +360,7 @@ impl UpdatePlan {
 }
 
 impl PlanItem {
-    #[must_use]
-    pub fn package_name(&self) -> &PackageName {
+    pub const fn package_name(&self) -> &PackageName {
         match self {
             Self::Update { candidate, .. } | Self::Delayed { candidate, .. } => {
                 candidate.package_name()
@@ -444,21 +399,16 @@ pub struct PlanDiagnostics {
 }
 
 impl PlanDiagnostics {
-    #[must_use]
     pub fn new(required_age: Duration) -> Self {
         Self {
             required_age,
             ..Self::default()
         }
     }
-
-    #[must_use]
-    pub fn with_missing_metadata(mut self, missing_metadata: MissingMetadataKind) -> Self {
+    pub const fn with_missing_metadata(mut self, missing_metadata: MissingMetadataKind) -> Self {
         self.missing_metadata = Some(missing_metadata);
         self
     }
-
-    #[must_use]
     pub fn with_lookup_failure(mut self, lookup_failure: ReleaseLookupError) -> Self {
         self.lookup_failure = Some(lookup_failure);
         self
@@ -473,7 +423,6 @@ pub struct CandidateAgeFact {
 }
 
 impl CandidateAgeFact {
-    #[must_use]
     pub const fn new(version: VersionText, age: Duration, age_source: CandidateAgeSource) -> Self {
         Self {
             version,

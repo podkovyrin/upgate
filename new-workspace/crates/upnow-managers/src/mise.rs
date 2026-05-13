@@ -87,7 +87,6 @@ impl From<DomainError> for MiseError {
 }
 
 impl MiseError {
-    #[must_use]
     pub const fn is_interruption(&self) -> bool {
         matches!(self, Self::Interrupted(_))
     }
@@ -112,7 +111,6 @@ pub struct MiseManager {
 }
 
 impl MiseManager {
-    #[must_use]
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
@@ -136,13 +134,12 @@ impl ManagerAdapter for MiseManager {
         _env: &Env,
     ) -> Result<Vec<ManagerScanInput>, ManagerAdapterError> {
         installed_tools(process)
-            .map(|tools| {
+            .and_then(|tools| {
                 tools
                     .into_iter()
                     .map(|tool| installed_tool(&tool).map(ManagerScanInput::Installed))
                     .collect::<Result<Vec<_>, _>>()
             })
-            .and_then(|items| items)
             .map_err(|err| adapter_error(&err))
     }
 
@@ -417,19 +414,15 @@ pub fn update_inputs(
             &item.from_version,
             &item.to_version,
         );
-        let selected = ManagerSelectedTarget::new(item.to_version.clone(), target_age);
-        let selected = advisory_latest
-            .get(&item.tool)
-            .map_or(selected.clone(), |latest| {
-                if latest == &item.to_version {
-                    selected
-                } else {
-                    selected.with_advisory_release_lookup(
-                        latest.clone(),
-                        lookup_release_for_tool(process, http, env, &item.tool, Some(latest)),
-                    )
-                }
-            });
+        let mut selected = ManagerSelectedTarget::new(item.to_version.clone(), target_age);
+        if let Some(latest) = advisory_latest.get(&item.tool)
+            && latest != &item.to_version
+        {
+            selected = selected.with_advisory_release_lookup(
+                latest.clone(),
+                lookup_release_for_tool(process, http, env, &item.tool, Some(latest)),
+            );
+        }
         inputs.push(ManagerUpdateInput::Seed(UpdateSeed::manager_selected(
             installed,
             selected,
@@ -482,14 +475,10 @@ pub fn commands_for_execution_plan(
     }
     Ok(commands)
 }
-
-#[must_use]
-pub fn selected_upgrade_command(min_age_arg: &str, tool: &PackageName) -> CommandSpec {
+fn selected_upgrade_command(min_age_arg: &str, tool: &PackageName) -> CommandSpec {
     CommandSpec::new("mise", ["upgrade", "--before", min_age_arg, tool.as_str()]).mutating()
 }
-
-#[must_use]
-pub fn global_upgrade_command(min_age_arg: &str) -> CommandSpec {
+fn global_upgrade_command(min_age_arg: &str) -> CommandSpec {
     CommandSpec::new("mise", ["upgrade", "--before", min_age_arg]).mutating()
 }
 

@@ -26,14 +26,17 @@ pub struct ManagerDefaults {
     pub min_release_age: Duration,
     pub mode: ManagerDefaultMode,
 }
-
-#[must_use]
-pub fn available_manager_ids() -> [&'static str; 12] {
+pub const fn available_manager_ids() -> [&'static str; 12] {
     [
         "brew", "pnpm", "npm", "yarn", "bun", "cargo", "pipx", "go", "mise", "gem", "dotnet", "uv",
     ]
 }
 
+/// Returns the default config values for a manager.
+///
+/// # Errors
+///
+/// Returns an error when `manager_id` is not a known migrated manager.
 pub fn manager_defaults(manager_id: &str) -> Result<ManagerDefaults, ManagerAdapterError> {
     match manager_id {
         "brew" => Ok(ManagerDefaults {
@@ -53,8 +56,6 @@ pub fn manager_defaults(manager_id: &str) -> Result<ManagerDefaults, ManagerAdap
         other => Err(ManagerAdapterError::UnknownManager(other.to_owned())),
     }
 }
-
-#[must_use]
 pub fn supports_version_policy(manager_id: &str, policy: VersionPolicy) -> bool {
     match manager_id {
         "gem" => !matches!(policy, VersionPolicy::SameTrack),
@@ -64,6 +65,11 @@ pub fn supports_version_policy(manager_id: &str, policy: VersionPolicy) -> bool 
     }
 }
 
+/// Validates that a manager id is known by the CLI registry.
+///
+/// # Errors
+///
+/// Returns an error when `manager_id` is not a known migrated manager.
 pub fn ensure_known_manager(manager_id: &str) -> Result<(), ManagerAdapterError> {
     if available_manager_ids().contains(&manager_id) {
         Ok(())
@@ -72,6 +78,11 @@ pub fn ensure_known_manager(manager_id: &str) -> Result<(), ManagerAdapterError>
     }
 }
 
+/// Builds the concrete manager adapter for resolved manager config.
+///
+/// # Errors
+///
+/// Returns an error when the resolved config references an unknown manager.
 pub fn configured_manager(
     config: ManagerConfig,
 ) -> Result<Box<dyn ManagerAdapter>, ManagerAdapterError> {

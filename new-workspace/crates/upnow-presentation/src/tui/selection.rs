@@ -100,7 +100,6 @@ pub struct InteractiveSelectionPlan {
 }
 
 impl InteractiveSelectionPlan {
-    #[must_use]
     pub const fn new(
         view: SelectionView,
         issues: Vec<PlanIssue>,
@@ -250,7 +249,6 @@ struct TargetPickerRenderRow {
 }
 
 impl InteractiveSelectionScreen {
-    #[must_use]
     pub fn new(plans: Vec<InteractiveSelectionPlan>) -> Self {
         let managers = plans
             .into_iter()
@@ -285,8 +283,6 @@ impl InteractiveSelectionScreen {
         screen.clamp_cursor();
         screen
     }
-
-    #[must_use]
     pub fn from_manager_ids(manager_ids: Vec<ManagerId>) -> Self {
         let managers = manager_ids
             .into_iter()
@@ -308,7 +304,7 @@ impl InteractiveSelectionScreen {
         screen
     }
 
-    pub fn tick(&mut self) {
+    pub const fn tick(&mut self) {
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
     }
 
@@ -378,33 +374,21 @@ impl InteractiveSelectionScreen {
         self.target_picker = None;
         self.clamp_cursor();
     }
-
-    #[must_use]
-    pub fn active_tab(&self) -> usize {
+    pub const fn active_tab(&self) -> usize {
         self.active_tab
     }
-
-    #[must_use]
-    pub fn cursor(&self) -> usize {
+    pub const fn cursor(&self) -> usize {
         self.cursor
     }
-
-    #[must_use]
-    pub fn show_all(&self) -> bool {
+    pub const fn show_all(&self) -> bool {
         self.show_all
     }
-
-    #[must_use]
-    pub fn tab_offset(&self) -> usize {
+    pub const fn tab_offset(&self) -> usize {
         self.tab_offset
     }
-
-    #[must_use]
-    pub fn target_picker_open(&self) -> bool {
+    pub const fn target_picker_open(&self) -> bool {
         self.target_picker.is_some()
     }
-
-    #[must_use]
     pub fn target_picker_options(&self) -> Vec<TargetOption> {
         let Some(picker) = self.target_picker else {
             return Vec::new();
@@ -412,16 +396,12 @@ impl InteractiveSelectionScreen {
         let row = self.row(picker.visible_row);
         row.target_options.clone()
     }
-
-    #[must_use]
     pub fn visible_rows(&self) -> Vec<&SelectionRow> {
         self.visible_row_refs()
             .into_iter()
             .map(|visible| self.row(visible))
             .collect()
     }
-
-    #[must_use]
     pub fn has_selectable_rows(&self) -> bool {
         self.managers.iter().any(|manager| {
             manager.state.rows().iter().any(|row| {
@@ -433,8 +413,6 @@ impl InteractiveSelectionScreen {
             })
         })
     }
-
-    #[must_use]
     pub fn placeholder_message(&self) -> Option<String> {
         if !self.visible_row_refs().is_empty() {
             return None;
@@ -507,9 +485,8 @@ impl InteractiveSelectionScreen {
             SelectionInput::Confirm if self.planning_finished => {
                 return Ok(SelectionControl::Confirm);
             }
-            SelectionInput::Confirm => {}
-            SelectionInput::Cancel => return Ok(SelectionControl::Cancel),
-            SelectionInput::Ignore
+            SelectionInput::Confirm
+            | SelectionInput::Ignore
             | SelectionInput::PickerUp
             | SelectionInput::PickerDown
             | SelectionInput::PickerPreviousRow
@@ -517,12 +494,11 @@ impl InteractiveSelectionScreen {
             | SelectionInput::PickerConfirm
             | SelectionInput::PickerCancel
             | SelectionInput::RecommendedTarget => {}
+            SelectionInput::Cancel => return Ok(SelectionControl::Cancel),
         }
 
         Ok(SelectionControl::Continue)
     }
-
-    #[must_use]
     pub fn selection_drafts(&self) -> Vec<InteractiveManagerSelectionDraft> {
         self.managers
             .iter()
@@ -542,23 +518,23 @@ impl InteractiveSelectionScreen {
         selection_policy: UpdateSelectionPolicy,
         rows: Vec<SelectionRow>,
     ) {
+        let existing_index = self
+            .managers
+            .iter()
+            .position(|existing| existing.manager_id == manager_id);
         let view = SelectionView {
             manager_id: manager_id.clone(),
             rows,
         };
         let state = InteractiveSelectionState::new(view, selection_policy);
         let manager = ManagerSelectionState {
-            manager_id: manager_id.clone(),
+            manager_id,
             issues,
             planning_status,
             state,
         };
-        if let Some(existing) = self
-            .managers
-            .iter_mut()
-            .find(|existing| existing.manager_id == manager_id)
-        {
-            *existing = manager;
+        if let Some(existing_index) = existing_index {
+            self.managers[existing_index] = manager;
         } else {
             self.managers.push(manager);
         }
@@ -940,19 +916,20 @@ pub fn run_interactive_selection(
 ///
 /// Returns an I/O error for terminal setup, rendering, event reading, or typed selection
 /// validation failures surfaced by the event loop.
+#[expect(clippy::needless_pass_by_value)]
 pub fn run_interactive_selection_with_planning_events(
     manager_ids: Vec<ManagerId>,
     planning_events: Receiver<InteractiveSelectionPlanningEvent>,
 ) -> io::Result<InteractiveSelectionOutcome> {
     run_interactive_selection_screen(
         InteractiveSelectionScreen::from_manager_ids(manager_ids),
-        Some(planning_events),
+        Some(&planning_events),
     )
 }
 
 fn run_interactive_selection_screen(
     mut screen: InteractiveSelectionScreen,
-    planning_events: Option<Receiver<InteractiveSelectionPlanningEvent>>,
+    planning_events: Option<&Receiver<InteractiveSelectionPlanningEvent>>,
 ) -> io::Result<InteractiveSelectionOutcome> {
     let mut stdout = io::stdout();
     enable_raw_mode()?;
@@ -970,7 +947,7 @@ fn run_interactive_selection_screen(
         }
     };
 
-    let result = run_selection_loop(&mut terminal, &mut screen, planning_events.as_ref());
+    let result = run_selection_loop(&mut terminal, &mut screen, planning_events);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -1202,7 +1179,7 @@ fn all_tab_status(screen: &InteractiveSelectionScreen) -> SelectionTabStatus {
     SelectionTabStatus::Ready
 }
 
-fn manager_tab_status(manager: &ManagerSelectionState) -> SelectionTabStatus {
+const fn manager_tab_status(manager: &ManagerSelectionState) -> SelectionTabStatus {
     match manager.planning_status {
         ManagerPlanningStatus::Waiting | ManagerPlanningStatus::Planning => {
             SelectionTabStatus::Loading
@@ -1479,7 +1456,7 @@ fn target_picker_rows(options: &[TargetOption]) -> Vec<TargetPickerRenderRow> {
         .collect()
 }
 
-fn target_option_kind_label(option: &TargetOption) -> &'static str {
+const fn target_option_kind_label(option: &TargetOption) -> &'static str {
     match option {
         TargetOption::Recommended { .. } => "recommended",
         TargetOption::ForcedCandidate { .. } => "force",
@@ -1538,14 +1515,16 @@ fn note_text(note_parts: &[CandidateNotePart]) -> String {
 fn note_part_text(part: &CandidateNotePart) -> String {
     match &part.kind {
         CandidateNoteKind::Released { age } => format!("released {}", human_age(*age)),
-        CandidateNoteKind::TooFresh { age, required_age } => match age {
-            Some(age) => format!(
-                "too fresh: {} old, need {}",
-                human_age(*age),
-                human_age(*required_age)
-            ),
-            None => format!("too fresh: need {}", human_age(*required_age)),
-        },
+        CandidateNoteKind::TooFresh { age, required_age } => age.as_ref().map_or_else(
+            || format!("too fresh: need {}", human_age(*required_age)),
+            |age| {
+                format!(
+                    "too fresh: {} old, need {}",
+                    human_age(*age),
+                    human_age(*required_age)
+                )
+            },
+        ),
         CandidateNoteKind::VersionPolicyBlocked(reason) => policy_block_reason_text(reason),
         CandidateNoteKind::PolicyWarning(warning) => policy_warning_text(*warning).to_owned(),
         CandidateNoteKind::MissingReleaseMetadata => "missing release metadata".to_owned(),
@@ -1566,7 +1545,7 @@ fn policy_block_reason_text(reason: &PolicyBlockReason) -> String {
     }
 }
 
-fn policy_warning_text(warning: PolicyWarning) -> &'static str {
+const fn policy_warning_text(warning: PolicyWarning) -> &'static str {
     match warning {
         PolicyWarning::InstalledTrackUnknownFallbackStable => {
             "same-track fell back to stable because installed track is unknown"

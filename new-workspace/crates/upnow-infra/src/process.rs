@@ -27,7 +27,6 @@ pub enum MutationMode {
 }
 
 impl MutationMode {
-    #[must_use]
     pub fn from_env(env: &Env) -> Self {
         if env.truthy(SKIP_MUTATING_COMMANDS_ENV) {
             Self::Skip
@@ -45,7 +44,6 @@ pub struct CommandSpec {
 }
 
 impl CommandSpec {
-    #[must_use]
     pub fn new<P, I, A>(program: P, args: I) -> Self
     where
         P: AsRef<OsStr>,
@@ -61,14 +59,10 @@ impl CommandSpec {
             is_mutation: false,
         }
     }
-
-    #[must_use]
     pub const fn mutating(mut self) -> Self {
         self.is_mutation = true;
         self
     }
-
-    #[must_use]
     pub fn display(&self) -> String {
         let mut display = self.program.to_string_lossy().into_owned();
         for arg in &self.args {
@@ -86,17 +80,12 @@ pub enum ProcessRunner {
 }
 
 impl ProcessRunner {
-    #[must_use]
     pub const fn new(mutation_mode: MutationMode) -> Self {
         Self::Real { mutation_mode }
     }
-
-    #[must_use]
     pub fn from_env(env: &Env) -> Self {
         Self::new(MutationMode::from_env(env))
     }
-
-    #[must_use]
     pub fn fake(responses: impl IntoIterator<Item = Result<CommandOutput, InfraError>>) -> Self {
         Self::Fake(FakeProcess::new(responses))
     }
@@ -126,15 +115,12 @@ pub struct FakeProcess {
 }
 
 impl FakeProcess {
-    #[must_use]
     pub fn new(responses: impl IntoIterator<Item = Result<CommandOutput, InfraError>>) -> Self {
         Self {
             responses: Arc::new(Mutex::new(responses.into_iter().collect())),
             calls: Arc::new(Mutex::new(Vec::new())),
         }
     }
-
-    #[must_use]
     pub fn calls(&self) -> Vec<CommandSpec> {
         self.calls.lock().map_or_else(
             |poisoned| poisoned.into_inner().clone(),
@@ -217,7 +203,6 @@ pub struct CommandOutput {
 }
 
 impl CommandOutput {
-    #[must_use]
     pub fn from_parts(
         status: ExitStatus,
         stdout: impl Into<Vec<u8>>,
@@ -231,13 +216,9 @@ impl CommandOutput {
             command_display: "<constructed output>".to_owned(),
         }
     }
-
-    #[must_use]
     pub const fn status(&self) -> ExitStatus {
         self.status
     }
-
-    #[must_use]
     pub const fn skipped_mutation(&self) -> bool {
         self.skipped_mutation
     }
@@ -284,18 +265,12 @@ impl CommandOutput {
             detail: err.to_string(),
         })
     }
-
-    #[must_use]
     pub fn stdout_string_lossy(&self) -> std::borrow::Cow<'_, str> {
         String::from_utf8_lossy(&self.stdout)
     }
-
-    #[must_use]
     pub fn stderr_string_lossy(&self) -> std::borrow::Cow<'_, str> {
         String::from_utf8_lossy(&self.stderr)
     }
-
-    #[must_use]
     fn from_process_output(
         output: Output,
         skipped_mutation: bool,
@@ -309,9 +284,7 @@ impl CommandOutput {
             command_display,
         }
     }
-
-    #[must_use]
-    fn from_skipped_mutation(status: ExitStatus, command_display: String) -> Self {
+    const fn from_skipped_mutation(status: ExitStatus, command_display: String) -> Self {
         Self {
             status,
             stdout: Vec::new(),
@@ -330,41 +303,28 @@ pub struct CommandFailure {
 }
 
 impl CommandFailure {
-    #[must_use]
-    pub fn new(command: String, status: ExitStatus, stderr: String) -> Self {
+    pub const fn new(command: String, status: ExitStatus, stderr: String) -> Self {
         Self {
             command,
             status,
             stderr,
         }
     }
-
-    #[must_use]
     pub fn command(&self) -> &str {
         &self.command
     }
-
-    #[must_use]
     pub const fn status(&self) -> ExitStatus {
         self.status
     }
-
-    #[must_use]
     pub fn code(&self) -> Option<i32> {
         self.status.code()
     }
-
-    #[must_use]
     pub fn was_signaled(&self) -> bool {
         self.status.code().is_none()
     }
-
-    #[must_use]
     pub fn is_interruption(&self) -> bool {
         self.was_signaled()
     }
-
-    #[must_use]
     pub fn stderr(&self) -> &str {
         &self.stderr
     }
@@ -385,8 +345,6 @@ impl fmt::Display for CommandFailure {
         }
     }
 }
-
-#[must_use]
 pub fn status_allowed(status: ExitStatus, check: &CommandCheck) -> bool {
     match check {
         CommandCheck::Success => status.success(),
@@ -399,13 +357,9 @@ pub fn status_allowed(status: ExitStatus, check: &CommandCheck) -> bool {
         CommandCheck::IgnoreStatus => true,
     }
 }
-
-#[must_use]
 pub fn command_exists(command: &str) -> bool {
     command_exists_in_env(command, &Env::real())
 }
-
-#[must_use]
 pub fn command_exists_in_env(command: &str, env: &Env) -> bool {
     let trimmed = command.trim();
     if trimmed.is_empty() {

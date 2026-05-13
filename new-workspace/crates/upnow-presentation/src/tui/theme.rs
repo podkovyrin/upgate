@@ -1,6 +1,6 @@
 use ratatui::style::{Color, Modifier, Style};
 
-use crate::OutputTheme;
+use crate::{OutputTheme, ThemeOptions};
 
 pub(super) struct TuiTheme {
     pub normal: Style,
@@ -24,9 +24,8 @@ pub(super) struct TuiTheme {
 
 impl TuiTheme {
     pub(super) fn current() -> Self {
-        Self::from_output_theme(OutputTheme::from_environment(Default::default()))
+        Self::from_output_theme(OutputTheme::from_environment(ThemeOptions::default()))
     }
-
 
     fn from_output_theme(output: OutputTheme) -> Self {
         if output.color() {
@@ -83,7 +82,7 @@ impl TuiTheme {
         }
     }
 
-    pub(super) fn row_for_selectable_state(&self, selected: bool, forced: bool) -> Style {
+    pub(super) const fn row_for_selectable_state(&self, selected: bool, forced: bool) -> Style {
         if selected {
             self.selected
         } else if forced {
@@ -93,8 +92,8 @@ impl TuiTheme {
         }
     }
 
-    #[allow(clippy::unused_self)]
-    pub(super) fn emphasis(&self, style: Style) -> Style {
+    #[expect(clippy::unused_self)]
+    pub(super) const fn emphasis(&self, style: Style) -> Style {
         style.add_modifier(Modifier::BOLD)
     }
 
@@ -110,7 +109,7 @@ impl TuiTheme {
         }
     }
 
-    pub(super) fn version_changed_for(&self, selected: bool) -> Style {
+    pub(super) const fn version_changed_for(&self, selected: bool) -> Style {
         if selected {
             self.version_changed_selected
         } else {

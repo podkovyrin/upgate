@@ -10,17 +10,12 @@ pub enum Clock {
 }
 
 impl Clock {
-    #[must_use]
     pub const fn system() -> Self {
         Self::System
     }
-
-    #[must_use]
     pub const fn fixed(time: SystemTime) -> Self {
         Self::Fixed(time)
     }
-
-    #[must_use]
     pub fn now(self) -> SystemTime {
         match self {
             Self::System => SystemTime::now(),

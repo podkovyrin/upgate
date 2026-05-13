@@ -7,8 +7,8 @@ use serde::Deserialize;
 use upnow_domain::{
     DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate,
-    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
+    VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -78,7 +78,6 @@ impl From<DomainError> for PnpmError {
 }
 
 impl PnpmError {
-    #[must_use]
     pub const fn is_interruption(&self) -> bool {
         matches!(self, Self::Interrupted(_))
     }
@@ -102,7 +101,6 @@ pub struct PnpmManager {
 }
 
 impl PnpmManager {
-    #[must_use]
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
@@ -224,8 +222,6 @@ pub fn parse_outdated_json(raw: &str) -> Result<Vec<PnpmOutdatedPackage>, PnpmEr
         })
         .collect()
 }
-
-#[must_use]
 pub fn is_no_importer_manifest_error(text: &str) -> bool {
     text.contains("ERR_PNPM_NO_IMPORTER_MANIFEST_FOUND")
 }
@@ -394,11 +390,6 @@ pub fn exact_commands_for_execution_plan(
     Ok(commands)
 }
 
-#[must_use]
-pub fn exact_command(candidate: &UpdateCandidate) -> CommandSpec {
-    exact_command_parts(&candidate.package_name, &candidate.target_version)
-}
-
 fn exact_command_for_item(item: &ResolvedExecutionItem) -> CommandSpec {
     exact_command_parts(&item.package_name, &item.target_version)
 }
@@ -514,8 +505,10 @@ fn system_time_from_datetime(datetime: DateTime<chrono::FixedOffset>) -> SystemT
     }
 }
 
+#[expect(clippy::needless_pass_by_value)]
 fn adapter_error(err: PnpmError) -> ManagerAdapterError {
-    let kind = match &err {
+    let detail = err.to_string();
+    let kind = match err {
         PnpmError::Interrupted(_) => ManagerAdapterErrorKind::Interrupted,
         PnpmError::Json(_)
         | PnpmError::Domain(_)
@@ -527,6 +520,6 @@ fn adapter_error(err: PnpmError) -> ManagerAdapterError {
     ManagerAdapterError::Manager {
         manager_id: MANAGER_ID.to_owned(),
         kind,
-        detail: err.to_string(),
+        detail,
     }
 }

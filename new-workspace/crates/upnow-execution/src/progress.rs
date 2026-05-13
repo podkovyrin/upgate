@@ -71,7 +71,6 @@ pub struct ExecutionProgressSummary {
 }
 
 impl ExecutionProgressState {
-    #[must_use]
     pub fn from_execution_plans(plans: Vec<(ManagerId, ResolvedExecutionPlan)>) -> Self {
         let rows = plans
             .into_iter()
@@ -178,8 +177,6 @@ impl ExecutionProgressState {
             }
         }
     }
-
-    #[must_use]
     pub fn summary(&self) -> ExecutionProgressSummary {
         ExecutionProgressSummary {
             had_failure: !self.manager_failures.is_empty()
@@ -193,25 +190,18 @@ impl ExecutionProgressState {
 }
 
 impl ExecutionProgressEvent {
-    #[must_use]
-    pub fn manager_started(manager_id: ManagerId) -> Self {
+    pub const fn manager_started(manager_id: ManagerId) -> Self {
         Self::ManagerStarted { manager_id }
     }
-
-    #[must_use]
-    pub fn manager_finished(report: ExecutionReport) -> Self {
+    pub const fn manager_finished(report: ExecutionReport) -> Self {
         Self::ManagerFinished { report }
     }
-
-    #[must_use]
     pub fn manager_failed(manager_id: ManagerId, detail: impl Into<String>) -> Self {
         Self::ManagerFailed {
             manager_id,
             detail: detail.into(),
         }
     }
-
-    #[must_use]
     pub fn fatal(detail: impl Into<String>) -> Self {
         Self::Fatal {
             detail: detail.into(),

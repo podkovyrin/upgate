@@ -77,7 +77,6 @@ impl From<DomainError> for BrewError {
 }
 
 impl BrewError {
-    #[must_use]
     pub const fn is_interruption(&self) -> bool {
         matches!(self, Self::Interrupted(_))
     }
@@ -226,7 +225,6 @@ pub struct BrewManager {
 }
 
 impl BrewManager {
-    #[must_use]
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
@@ -250,13 +248,12 @@ impl ManagerAdapter for BrewManager {
         _env: &Env,
     ) -> Result<Vec<ManagerScanInput>, ManagerAdapterError> {
         installed_packages(process)
-            .map(|packages| {
+            .and_then(|packages| {
                 packages
                     .into_iter()
                     .map(|package| installed_tool(&package).map(ManagerScanInput::Installed))
                     .collect::<Result<Vec<_>, _>>()
             })
-            .and_then(|items| items)
             .map_err(|err| adapter_error(&err))
     }
 
@@ -464,7 +461,7 @@ pub fn update_inputs(
                 VersionScheme::ManagerNative,
                 ExecutionEligibility::NativeOnly,
             )
-            .with_execution_target_kind(execution_target_kind(package.kind)),
+            .with_execution_target_kind(execution_target_kind(&package.kind)),
         ));
     }
     Ok(inputs)
@@ -784,7 +781,7 @@ fn fallback_remote_branch(
     }
 }
 
-fn known_target_age(timestamp: ReleaseTimestamp) -> TargetAgeLookupResult {
+const fn known_target_age(timestamp: ReleaseTimestamp) -> TargetAgeLookupResult {
     TargetAgeLookupResult::Known(TargetAgeEvidence::ManagerNativeTimestamp(timestamp))
 }
 
@@ -827,7 +824,7 @@ fn installed_tool_for_outdated(
     ))
 }
 
-fn execution_target_kind(kind: BrewPackageKind) -> ExecutionTargetKind {
+const fn execution_target_kind(kind: &BrewPackageKind) -> ExecutionTargetKind {
     match kind {
         BrewPackageKind::Formula => ExecutionTargetKind::BrewFormula,
         BrewPackageKind::Cask => ExecutionTargetKind::BrewCask,

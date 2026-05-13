@@ -4,7 +4,7 @@ use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 use crate::tui::theme::TuiTheme;
 
-pub(crate) fn render_vertical_scrollbar(
+pub fn render_vertical_scrollbar(
     frame: &mut Frame<'_>,
     area: Rect,
     content_length: usize,

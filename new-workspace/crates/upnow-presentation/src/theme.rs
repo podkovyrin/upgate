@@ -13,7 +13,6 @@ pub struct OutputTheme {
 }
 
 impl OutputTheme {
-    #[must_use]
     pub fn from_environment(options: ThemeOptions) -> Self {
         Self::from_terminal(
             options,
@@ -25,8 +24,6 @@ impl OutputTheme {
             },
         )
     }
-
-    #[must_use]
     pub const fn from_terminal(options: ThemeOptions, capabilities: TerminalCapabilities) -> Self {
         let plain = options.plain || !capabilities.stdout_is_tty;
         let mode = if plain {
@@ -44,29 +41,21 @@ impl OutputTheme {
             verbose: options.verbose,
         }
     }
-
-    #[must_use]
     pub const fn plain(verbose: bool) -> Self {
         Self {
             mode: OutputMode::Plain,
             verbose,
         }
     }
-
-    #[must_use]
     pub const fn styled(color: bool, verbose: bool) -> Self {
         Self {
             mode: OutputMode::Styled { color },
             verbose,
         }
     }
-
-    #[must_use]
     pub const fn is_plain(self) -> bool {
         matches!(self.mode, OutputMode::Plain)
     }
-
-    #[must_use]
     pub const fn color(self) -> bool {
         match self.mode {
             OutputMode::Plain => false,
@@ -83,6 +72,7 @@ pub struct ThemeOptions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(clippy::struct_excessive_bools)]
 pub struct TerminalCapabilities {
     pub stdout_is_tty: bool,
     pub stderr_is_tty: bool,

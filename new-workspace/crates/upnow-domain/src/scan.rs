@@ -15,8 +15,7 @@ pub struct ScanReport {
 }
 
 impl ScanReport {
-    #[must_use]
-    pub fn new(manager_id: ManagerId, items: Vec<ScanItem>, issues: Vec<ScanIssue>) -> Self {
+    pub const fn new(manager_id: ManagerId, items: Vec<ScanItem>, issues: Vec<ScanIssue>) -> Self {
         Self {
             manager_id,
             items,

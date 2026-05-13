@@ -1,4 +1,5 @@
 //! Execution behavior for the `upnow` rebuild.
+#![allow(clippy::must_use_candidate, clippy::return_self_not_must_use)]
 
 pub mod progress;
 
@@ -348,6 +349,6 @@ fn should_use_native_selected_update(
     }
 }
 
-fn supports_exact_target(item: &ResolvedExecutionItem) -> bool {
+const fn supports_exact_target(item: &ResolvedExecutionItem) -> bool {
     item.execution_eligibility.supports_exact_target()
 }

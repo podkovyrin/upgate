@@ -7,8 +7,8 @@ use serde::Deserialize;
 use upnow_domain::{
     DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateCandidate,
-    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
+    VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -78,7 +78,6 @@ impl From<DomainError> for NpmError {
 }
 
 impl NpmError {
-    #[must_use]
     pub const fn is_interruption(&self) -> bool {
         matches!(self, Self::Interrupted(_))
     }
@@ -118,7 +117,6 @@ pub struct NpmManager {
 }
 
 impl NpmManager {
-    #[must_use]
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
@@ -148,12 +146,12 @@ impl ManagerAdapter for NpmManager {
 
     fn release_lookup(
         &self,
-        _process: &ProcessRunner,
+        process: &ProcessRunner,
         _http: &HttpClient,
         _env: &Env,
         subject: ReleaseLookupSubject<'_>,
     ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
-        lookup_release(_process, subject.package_name()).map_err(adapter_error)
+        lookup_release(process, subject.package_name()).map_err(adapter_error)
     }
 
     fn update_inputs(
@@ -369,34 +367,6 @@ pub fn commands_for_execution_plan(
     Ok(commands)
 }
 
-#[must_use]
-pub fn exact_command(
-    candidate: &UpdateCandidate,
-    min_release_age_days: u64,
-    bypass_min_release_age: bool,
-) -> CommandSpec {
-    exact_command_parts(
-        &candidate.package_name,
-        &candidate.target_version,
-        min_release_age_days,
-        bypass_min_release_age,
-    )
-}
-
-#[must_use]
-pub fn selected_native_update_command(
-    candidate: &UpdateCandidate,
-    min_release_age_days: u64,
-) -> CommandSpec {
-    selected_native_update_command_parts(&candidate.package_name, min_release_age_days)
-}
-
-#[must_use]
-pub fn global_update_command(min_release_age_days: u64) -> CommandSpec {
-    let days = min_release_age_days.to_string();
-    CommandSpec::new("npm", ["-g", "update", "--min-release-age", &days]).mutating()
-}
-
 fn execution_item(item: &ResolvedExecutionItem) -> ExecutionCommandItem {
     ExecutionCommandItem {
         plan_item_id: item.plan_item_id.clone(),
@@ -460,7 +430,7 @@ fn selected_native_update_command_parts(
     .mutating()
 }
 
-fn whole_days(duration: Duration) -> u64 {
+const fn whole_days(duration: Duration) -> u64 {
     duration.as_secs() / 86_400
 }
 
@@ -561,8 +531,10 @@ fn system_time_from_datetime(datetime: DateTime<chrono::FixedOffset>) -> SystemT
     }
 }
 
+#[expect(clippy::needless_pass_by_value)]
 fn adapter_error(err: NpmError) -> ManagerAdapterError {
-    let kind = match &err {
+    let detail = err.to_string();
+    let kind = match err {
         NpmError::Interrupted(_) => ManagerAdapterErrorKind::Interrupted,
         NpmError::Json(_)
         | NpmError::Domain(_)
@@ -574,6 +546,6 @@ fn adapter_error(err: NpmError) -> ManagerAdapterError {
     ManagerAdapterError::Manager {
         manager_id: MANAGER_ID.to_owned(),
         kind,
-        detail: err.to_string(),
+        detail,
     }
 }

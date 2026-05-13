@@ -80,7 +80,6 @@ impl From<DomainError> for UvError {
 }
 
 impl UvError {
-    #[must_use]
     pub const fn is_interruption(&self) -> bool {
         matches!(self, Self::Interrupted(_))
     }
@@ -99,7 +98,6 @@ pub struct UvManager {
 }
 
 impl UvManager {
-    #[must_use]
     pub const fn new(config: ManagerConfig) -> Self {
         Self { config }
     }
@@ -164,8 +162,6 @@ impl ManagerAdapter for UvManager {
             .map_err(|err| adapter_error(&err))
     }
 }
-
-#[must_use]
 pub fn parse_installed_tool_line(line: &str, tool_dir: &str) -> Option<UvTool> {
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.starts_with('-') {
@@ -182,8 +178,6 @@ pub fn parse_installed_tool_line(line: &str, tool_dir: &str) -> Option<UvTool> {
         python_path,
     })
 }
-
-#[must_use]
 pub fn parse_install_target_for_package(
     text: &str,
     package_name: &PackageName,
@@ -266,7 +260,6 @@ pub fn update_inputs(
 }
 
 /// Looks up `PyPI` release metadata for a uv tool.
-#[must_use]
 pub fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> ReleaseLookupResult {
     let base_url = upnow_infra::env_base_url(env, "UPNOW_UV_PYPI_BASE_URL", "https://pypi.org");
     let url = format!("{base_url}/pypi/{}/json", package.as_str());
@@ -307,12 +300,13 @@ fn matching_versions(timeline: &ReleaseTimeline, target: &VersionText) -> Vec<Re
         .versions
         .iter()
         .filter(|entry| {
-            if let Some(target) = &parsed_target {
-                Pep440Version::from_str(entry.version.as_str())
-                    .is_ok_and(|version| version == *target)
-            } else {
-                entry.version.as_str() == target.as_str()
-            }
+            parsed_target.as_ref().map_or_else(
+                || entry.version.as_str() == target.as_str(),
+                |target| {
+                    Pep440Version::from_str(entry.version.as_str())
+                        .is_ok_and(|version| version == *target)
+                },
+            )
         })
         .cloned()
         .collect()
@@ -380,9 +374,7 @@ pub fn commands_for_execution_plan(
     }
     Ok(commands)
 }
-
-#[must_use]
-pub fn tool_install_command(package_name: &PackageName, min_age_arg: &str) -> CommandSpec {
+fn tool_install_command(package_name: &PackageName, min_age_arg: &str) -> CommandSpec {
     CommandSpec::new(
         "uv",
         [
