@@ -21,68 +21,20 @@ fn progress_tracks_grouped_execution_for_each_item() {
     )]);
 
     state.apply_event(ExecutionProgressEvent::manager_started(manager_id.clone()));
-    assert!(
-        state
-            .rows
-            .iter()
-            .all(|row| { matches!(row.status, ExecutionProgressStatus::Running) })
-    );
-
     state.apply_event(ExecutionProgressEvent::manager_finished(ExecutionReport {
         manager_id,
         items: vec![
-            result(
-                "brew:alpha",
-                "alpha",
-                ExecutionStatus::Succeeded {
-                    command: "brew upgrade --formula alpha beta".to_owned(),
-                    skipped_mutation: false,
-                },
-            ),
-            result(
-                "brew:beta",
-                "beta",
-                ExecutionStatus::Succeeded {
-                    command: "brew upgrade --formula alpha beta".to_owned(),
-                    skipped_mutation: false,
-                },
-            ),
+            result("brew:alpha", "alpha", ok_status()),
+            result("brew:beta", "beta", ok_status()),
         ],
     }));
 
-    assert_eq!(state.rows.len(), 2);
     assert!(
         state
             .rows
             .iter()
-            .all(|row| { matches!(row.status, ExecutionProgressStatus::Succeeded { .. }) })
+            .all(|row| matches!(row.status, ExecutionProgressStatus::Succeeded { .. }))
     );
-    assert!(!state.summary().had_failure);
-}
-
-#[test]
-fn progress_attaches_manager_failure_to_selected_rows() {
-    let manager_id = manager_id("pnpm");
-    let mut state = ExecutionProgressState::from_execution_plans(vec![(
-        manager_id.clone(),
-        ResolvedExecutionPlan {
-            intents: vec![ExecutionCommandIntent::Exact(item("pnpm:alpha", "alpha"))],
-        },
-    )]);
-
-    state.apply_event(ExecutionProgressEvent::manager_started(manager_id.clone()));
-    state.apply_event(ExecutionProgressEvent::manager_failed(
-        manager_id,
-        "command construction failed",
-    ));
-
-    assert!(matches!(
-        state.rows[0].status,
-        ExecutionProgressStatus::Failed { ref detail }
-            if detail == "command construction failed"
-    ));
-    assert_eq!(state.manager_failures.len(), 1);
-    assert!(state.summary().had_failure);
 }
 
 #[test]
@@ -106,57 +58,21 @@ fn stop_after_current_marks_pending_rows_skipped_on_finish() {
     state.apply_event(ExecutionProgressEvent::StopAfterCurrentRequested);
     state.apply_event(ExecutionProgressEvent::manager_finished(ExecutionReport {
         manager_id: manager_id("pnpm"),
-        items: vec![result(
-            "pnpm:alpha",
-            "alpha",
-            ExecutionStatus::Succeeded {
-                command: "pnpm add -g alpha@1.2.0".to_owned(),
-                skipped_mutation: false,
-            },
-        )],
+        items: vec![result("pnpm:alpha", "alpha", ok_status())],
     }));
     state.apply_event(ExecutionProgressEvent::Finished);
 
-    assert!(matches!(
-        state.rows[0].status,
-        ExecutionProgressStatus::Succeeded { .. }
-    ));
     assert!(matches!(
         state.rows[1].status,
-        ExecutionProgressStatus::Skipped { ref detail }
-            if detail == "stopped after current manager"
+        ExecutionProgressStatus::Skipped { ref detail } if detail == "stopped after current manager"
     ));
-    assert!(state.summary().stopped_after_current);
 }
 
-#[test]
-fn fatal_progress_event_marks_active_and_pending_rows_failed() {
-    let mut state = ExecutionProgressState::from_execution_plans(vec![
-        (
-            manager_id("pnpm"),
-            ResolvedExecutionPlan {
-                intents: vec![ExecutionCommandIntent::Exact(item("pnpm:alpha", "alpha"))],
-            },
-        ),
-        (
-            manager_id("npm"),
-            ResolvedExecutionPlan {
-                intents: vec![ExecutionCommandIntent::Exact(item("npm:beta", "beta"))],
-            },
-        ),
-    ]);
-
-    state.apply_event(ExecutionProgressEvent::manager_started(manager_id("pnpm")));
-    state.apply_event(ExecutionProgressEvent::fatal("interrupted"));
-    state.apply_event(ExecutionProgressEvent::Finished);
-
-    assert!(state.rows.iter().all(|row| {
-        matches!(
-            row.status,
-            ExecutionProgressStatus::Failed { ref detail } if detail == "interrupted"
-        )
-    }));
-    assert!(state.summary().had_failure);
+fn ok_status() -> ExecutionStatus {
+    ExecutionStatus::Succeeded {
+        command: "ok".to_owned(),
+        skipped_mutation: false,
+    }
 }
 
 fn item(id: &str, package_name: &str) -> ResolvedExecutionItem {

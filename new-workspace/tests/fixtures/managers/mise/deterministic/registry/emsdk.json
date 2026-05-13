@@ -1,6 +1,0 @@
-{
-  "short": "emsdk",
-  "backends": [
-    "asdf:mise-plugins/mise-emsdk"
-  ]
-}

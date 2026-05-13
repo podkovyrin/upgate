@@ -68,15 +68,3 @@ pub(super) fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
     clipped.push(ELLIPSIS);
     clipped
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn truncates_to_available_width() {
-        assert_eq!(truncate_with_ellipsis("abcdef", 4), "abc…");
-        assert_eq!(truncate_with_ellipsis("abcdef", 1), "…");
-        assert_eq!(truncate_with_ellipsis("abcdef", 0), "");
-    }
-}

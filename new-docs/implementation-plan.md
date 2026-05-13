@@ -3,6 +3,32 @@
 ## Assumptions
 This rebuild happens in a new Rust workspace inside the current project folder. This document uses `<new-workspace>/` as a placeholder path. The existing `/src` tree is read-only behavioral reference. Do not import old modules into the new workspace.
 
+
+## Test Policy For All Phases
+
+The cleanup after the maximum-aggression test purge is the standing rule for future work. Tests are not phase deliverables by default; they are accepted only when they protect stable behavior that would intentionally survive a redesign.
+
+Allowed test boundaries:
+
+- User-visible CLI behavior and exit behavior.
+- Public API contracts and durable domain invariants.
+- Manager behavior that is part of the product contract.
+- Version policy, release-age, and target-selection behavior.
+- Real-world or malformed parser inputs.
+- User config loading, rejection, override, and persistence behavior.
+- Important process, HTTP, interruption, mutation-safety, and execution errors.
+- Integration paths that are expensive or risky to validate manually.
+
+Disallowed tests:
+
+- Private helpers, constructors/getters/setters, simple data plumbing, mock-call assertions, and implementation order.
+- Tests that encode module boundaries, internal types, transient view-model shape, temporary line renderers, or architecture scaffolding.
+- Tests that mirror production logic, verify fixtures rather than behavior, or preserve compatibility shims.
+- Snapshots/goldens unless the exact output is a stable user contract.
+- Tests kept for coverage, documentation, or discomfort about deletion.
+
+Each test added in a phase must pass this proof: `This test must exist because it protects <specific stable behavior> that would otherwise be at meaningful regression risk.` If the proof is weak, delete the test or do not add it.
+
 ## Phase 0: Workspace Shell And Guardrails
 
 ### Goal
@@ -21,8 +47,8 @@ No product behavior yet. The new workspace builds and runs an empty CLI skeleton
 - `<new-workspace>/crates/upnow-presentation/`
 
 ### Tests Required
-- Workspace build smoke test.
-- Empty test suite runs successfully.
+- Workspace build smoke test only if it exercises the real workspace boundary.
+- Empty test-suite execution is acceptable as a command check, not as a reason to add placeholder tests.
 - CI/local command documented for the new workspace.
 
 ### What Must Not Be Included Yet
@@ -113,13 +139,9 @@ No CLI behavior yet. Domain types compile and are unit-tested. This phase is now
 - `<new-workspace>/crates/upnow-domain/src/selection.rs`
 - `<new-workspace>/crates/upnow-domain/src/error.rs`
 
-### Tests Added
-- Domain constructor and validation tests.
-- `VersionPolicy` parse/display tests.
-- `PlanItem` state tests: update, current, delayed, blocked, skipped, resolver error.
-- `UpdateCandidate` representation tests for target and execution eligibility.
-- `PlanSelection` tests for selected item ids and selection policy.
-- Release lookup representation tests.
+### Tests Kept After Purge
+- Domain tests are limited to durable invariants that protect plan identity or other public contracts.
+- Constructor, representation, parse/display, and state-shape tests were removed unless they protect behavior used at a stable boundary.
 
 ### Intentionally Removed During Stabilization
 - Removed phase-2 enforcement of policy and release-age readiness from `UpdateCandidate`.
@@ -398,7 +420,7 @@ The new CLI supports selected managers, config, planning, execution, and batch r
 - Default command is `plan`.
 - `--managers` filtering.
 - `--set` overrides.
-- Batch output golden tests.
+- Batch output tests only where exact output is a stable user-visible contract.
 - Batch apply with selection policy.
 - Missing command and unsupported manager behavior.
 - Exit code behavior.
@@ -505,7 +527,7 @@ All current managers have migrated batch scan/plan/apply coverage in the new arc
 - Manager-private execution command types were removed; managers now build shared `ExecutionCommand` values from `ResolvedExecutionPlan`.
 - Interactive selected targets are typed as recommended, forced candidate, or alternate exact target.
 - Update selection is typed as `UpdateSelectionPolicy`; persisted config uses `[manager.selection]` with `mode` and optional `except`.
-- Broad fixture-shape tests were removed in favor of stable-boundary parser, manager adapter, planner, execution, config, and CLI tests.
+- Broad fixture-shape tests and weak internal tests were removed in favor of a smaller suite covering stable parser, manager adapter, planner, execution, config, and CLI behavior.
 
 ### Tests Required
 For each manager:
@@ -608,8 +630,8 @@ Interactive apply can display plans and return a typed confirmed selection. UX s
 - `<new-workspace>/crates/upnow-cli/src/app.rs`
 
 ### Tests Required
-- Event reducer tests.
-- Snapshot or golden tests for view-model rows where practical.
+- Interaction tests only for stable user-visible selection behavior.
+- No snapshots/goldens for view-model rows unless the exact rendered output is a user contract.
 - Confirm/cancel behavior.
 - Planning error display behavior.
 - No selectable updates behavior.
@@ -724,9 +746,9 @@ All commands run from the new architecture. Old `/src` is deleted, archived, or 
 
 ### Tests Required
 - Full new workspace test suite.
-- End-to-end fake-manager tests for `scan`, `plan`, `apply`, and `apply --interactive`.
+- End-to-end fake-manager tests only for stable `scan`, `plan`, `apply`, and `apply --interactive` behavior.
 - Build/install smoke test.
-- Regression tests for all migrated manager fixtures.
+- Regression tests only for real bugs or stable manager parsing/behavior contracts.
 
 ### What Must Not Be Included Yet
 - No new managers.

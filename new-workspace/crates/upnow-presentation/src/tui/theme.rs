@@ -27,10 +27,6 @@ impl TuiTheme {
         Self::from_output_theme(OutputTheme::from_environment(Default::default()))
     }
 
-    #[cfg(test)]
-    pub(super) fn plain() -> Self {
-        Self::from_output_theme(OutputTheme::plain(false))
-    }
 
     fn from_output_theme(output: OutputTheme) -> Self {
         if output.color() {

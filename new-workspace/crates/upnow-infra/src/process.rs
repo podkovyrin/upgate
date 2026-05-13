@@ -465,7 +465,7 @@ mod tests {
 
     use super::{
         CommandCheck, CommandOutput, CommandSpec, MutationMode, ProcessRunner,
-        command_exists_in_env, status_allowed, success_exit_status,
+        command_exists_in_env, success_exit_status,
     };
     use crate::{Env, InfraError};
 
@@ -489,13 +489,6 @@ mod tests {
 
         assert_eq!(output.stdout().expect("utf8 stdout"), "ok");
         assert!(output.status().success());
-    }
-
-    #[test]
-    fn process_runner_can_be_shared_across_parallel_workers() {
-        fn assert_send_sync<T: Send + Sync>() {}
-
-        assert_send_sync::<ProcessRunner>();
     }
 
     #[test]
@@ -538,19 +531,6 @@ mod tests {
     }
 
     #[test]
-    fn stderr_returns_trimmed_text() {
-        let runner = ProcessRunner::new(MutationMode::Real);
-        let output = runner
-            .run(
-                &CommandSpec::new("sh", ["-c", "printf ' warning\\n' >&2"]),
-                &CommandCheck::Success,
-            )
-            .expect("command should succeed");
-
-        assert_eq!(output.stderr().expect("utf8 stderr"), "warning");
-    }
-
-    #[test]
     fn json_decodes_stdout_with_command_context_on_failure() {
         let runner = ProcessRunner::new(MutationMode::Real);
         let output = runner
@@ -568,40 +548,6 @@ mod tests {
             panic!("expected JSON parse error");
         };
         assert_eq!(command, "sh -c printf '{'");
-    }
-
-    #[test]
-    fn fake_json_errors_include_executed_command_context() {
-        let output = CommandOutput::from_parts(success_exit_status(), "{", "");
-        let runner = ProcessRunner::fake([Ok(output)]);
-        let spec = CommandSpec::new("tool", ["json"]);
-
-        let output = runner
-            .run(&spec, &CommandCheck::Success)
-            .expect("fake response should be returned");
-        let err = output
-            .json::<serde_json::Value>()
-            .expect_err("invalid JSON should fail");
-
-        let InfraError::JsonParse { command, .. } = err else {
-            panic!("expected JSON parse error");
-        };
-        assert_eq!(command, "tool json");
-    }
-
-    #[test]
-    fn json_decodes_valid_stdout() {
-        let runner = ProcessRunner::new(MutationMode::Real);
-        let output = runner
-            .run(
-                &CommandSpec::new("sh", ["-c", "printf '{\"value\":7}'"]),
-                &CommandCheck::Success,
-            )
-            .expect("command should succeed");
-
-        let value: serde_json::Value = output.json().expect("valid JSON should decode");
-
-        assert_eq!(value["value"], 7);
     }
 
     #[test]
@@ -684,34 +630,6 @@ mod tests {
         };
         assert_eq!(failure.code(), None);
         assert!(failure.is_interruption());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn status_classification_handles_signals() {
-        use std::os::unix::process::ExitStatusExt;
-
-        assert!(!status_allowed(
-            std::process::ExitStatus::from_raw(15),
-            &CommandCheck::Success
-        ));
-    }
-
-    #[test]
-    fn fake_process_returns_queued_outputs_and_records_calls() {
-        let output = CommandOutput::from_parts(success_exit_status(), "ok", "");
-        let runner = ProcessRunner::fake([Ok(output)]);
-        let spec = CommandSpec::new("tool", ["arg"]);
-
-        let result = runner
-            .run(&spec, &CommandCheck::Success)
-            .expect("fake response should be returned");
-
-        assert_eq!(result.stdout().expect("utf8 stdout"), "ok");
-        let ProcessRunner::Fake(fake) = runner else {
-            panic!("expected fake runner");
-        };
-        assert_eq!(fake.calls(), vec![spec]);
     }
 
     #[cfg(unix)]

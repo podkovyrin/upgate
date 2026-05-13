@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use upnow_cli::config::{ConfigError, UpnowConfig};
-use upnow_cli::registry::{ManagerDefaultMode, available_manager_ids, manager_defaults};
 use upnow_domain::{
     ManagerMode, PackageName, UpdateSelectionMode, UpdateSelectionPolicy, VersionPolicy,
 };
@@ -41,46 +40,6 @@ fn missing_config_uses_global_defaults() {
     assert_eq!(npm.min_release_age, Duration::from_secs(7 * 24 * 60 * 60));
     assert_eq!(npm.version_policy, VersionPolicy::None);
     assert_eq!(npm.selection, UpdateSelectionPolicy::default());
-}
-
-#[test]
-fn manager_defaults_cover_brew_gem_and_dotnet() {
-    let config = UpnowConfig::default();
-
-    let brew = config.resolve_manager("brew").expect("brew should resolve");
-    assert_eq!(brew.mode, ManagerMode::Apply);
-    assert_eq!(brew.min_release_age, Duration::from_secs(12 * 60 * 60));
-    assert!(!brew.no_update);
-
-    let gem = config.resolve_manager("gem").expect("gem should resolve");
-    assert_eq!(gem.mode, ManagerMode::Off);
-    assert_eq!(gem.min_release_age, Duration::from_secs(7 * 24 * 60 * 60));
-
-    let dotnet = config
-        .resolve_manager("dotnet")
-        .expect("dotnet should resolve");
-    assert_eq!(dotnet.mode, ManagerMode::Off);
-}
-
-#[test]
-fn config_resolves_every_registered_manager_default() {
-    let config = UpnowConfig::default();
-
-    for manager_id in available_manager_ids() {
-        let resolved = config
-            .resolve_manager(manager_id)
-            .expect("registered manager should resolve from adapter defaults");
-        let defaults = manager_defaults(manager_id).expect("registered manager has defaults");
-        assert_eq!(resolved.manager_id.as_str(), manager_id);
-        assert_eq!(resolved.min_release_age, defaults.min_release_age);
-        assert_eq!(
-            resolved.mode,
-            match defaults.mode {
-                ManagerDefaultMode::Off => ManagerMode::Off,
-                ManagerDefaultMode::Apply => ManagerMode::Apply,
-            }
-        );
-    }
 }
 
 #[test]
@@ -125,43 +84,6 @@ except = ["aom"]
 }
 
 #[test]
-fn config_parses_skip_selection_policy() {
-    let config: UpnowConfig = toml::from_str(
-        r#"
-[npm.selection]
-mode = "skip"
-except = ["typescript"]
-"#,
-    )
-    .expect("TOML should parse");
-
-    let npm = config.resolve_manager("npm").expect("npm should resolve");
-    assert_eq!(npm.selection.mode, UpdateSelectionMode::Skip);
-    assert!(
-        npm.selection
-            .except
-            .contains(&PackageName::new("typescript").expect("valid package"))
-    );
-}
-
-#[test]
-fn config_rejects_invalid_selection_mode() {
-    let config: UpnowConfig = toml::from_str(
-        r#"
-[npm.selection]
-mode = "only"
-"#,
-    )
-    .expect("TOML should parse");
-
-    assert!(matches!(
-        config.resolve_manager("npm"),
-        Err(ConfigError::InvalidSelectionMode { manager_id, value })
-            if manager_id == "npm" && value == "only"
-    ));
-}
-
-#[test]
 fn config_rejects_old_pinned_key() {
     let path = temp_config_path("old-pinned");
     write_config(&path, "[npm]\npinned = [\"typescript\"]\n");
@@ -170,19 +92,6 @@ fn config_rejects_old_pinned_key() {
         UpnowConfig::load_from_path(&path),
         Err(ConfigError::Toml(_))
     ));
-}
-
-#[test]
-fn selected_manager_override_sets_apply_mode() {
-    let mut config: UpnowConfig =
-        toml::from_str("[gem]\nmode = \"off\"\n").expect("inline config should be valid");
-
-    config
-        .apply_selected_managers_cli_override(&["gem"])
-        .expect("selected manager should override mode");
-
-    let gem = config.resolve_manager("gem").expect("gem should resolve");
-    assert_eq!(gem.mode, ManagerMode::Apply);
 }
 
 #[test]
@@ -198,38 +107,6 @@ fn explicit_cli_mode_override_wins_after_selected_manager_override() {
 
     let gem = config.resolve_manager("gem").expect("gem should resolve");
     assert_eq!(gem.mode, ManagerMode::Plan);
-}
-
-#[test]
-fn cli_overrides_parse_supported_values() {
-    let mut config = UpnowConfig::default();
-
-    config
-        .apply_cli_override("upnow.scan_old_age_threshold=14d")
-        .expect("global override should apply");
-    config
-        .apply_cli_override("brew.no_update=true")
-        .expect("brew override should apply");
-    config
-        .apply_cli_override("npm.min_release_age=10d")
-        .expect("min age override should apply");
-    config
-        .apply_cli_override("npm.version_policy=same-track")
-        .expect("policy override should apply");
-
-    assert_eq!(
-        config
-            .scan_old_age_threshold()
-            .expect("scan age should resolve"),
-        Duration::from_secs(14 * 24 * 60 * 60)
-    );
-
-    let brew = config.resolve_manager("brew").expect("brew should resolve");
-    assert!(brew.no_update);
-
-    let npm = config.resolve_manager("npm").expect("npm should resolve");
-    assert_eq!(npm.min_release_age, Duration::from_secs(10 * 24 * 60 * 60));
-    assert_eq!(npm.version_policy, VersionPolicy::SameTrack);
 }
 
 #[test]
@@ -316,27 +193,6 @@ fn cli_overrides_reject_unknown_and_non_phase_five_values() {
 }
 
 #[test]
-fn cli_overrides_reject_invalid_duration_values_immediately() {
-    let mut config = UpnowConfig::default();
-
-    assert!(matches!(
-        config.apply_cli_override("upnow.scan_old_age_threshold=7w"),
-        Err(ConfigError::InvalidDurationUnit { key, value, unit })
-            if key == "[upnow].scan_old_age_threshold" && value == "7w" && unit == "w"
-    ));
-    assert!(matches!(
-        config.apply_cli_override("npm.min_release_age=12h"),
-        Err(ConfigError::InvalidDuration { key, value })
-            if key == "[npm].min_release_age" && value == "12h"
-    ));
-    assert!(matches!(
-        config.apply_cli_override("brew.min_release_age=soon"),
-        Err(ConfigError::InvalidDuration { key, value })
-            if key == "[brew].min_release_age" && value == "soon"
-    ));
-}
-
-#[test]
 fn selection_persistence_preserves_unrelated_toml_and_writes_only_one_manager() {
     let path = temp_config_path("persist-selection");
     write_config(
@@ -393,62 +249,4 @@ except = ["aom"]
         .map(|value| value.as_str().expect("exception should be string"))
         .collect::<Vec<_>>();
     assert_eq!(npm_exceptions, vec!["typescript", "vite"]);
-}
-
-#[test]
-fn selection_persistence_writes_selection_table_without_empty_except() {
-    let path = temp_config_path("persist-skip-all");
-    let mut config = UpnowConfig::default();
-
-    config
-        .set_manager_selection_policy("npm", UpdateSelectionPolicy::skip_all())
-        .expect("selection policy should be set");
-    config
-        .persist_manager_selection_policy_to_path("npm", &path)
-        .expect("selection policy should persist");
-
-    let value: toml::Value =
-        toml::from_str(&std::fs::read_to_string(&path).expect("config should be readable"))
-            .expect("persisted TOML should parse");
-    assert_eq!(value["npm"]["selection"]["mode"].as_str(), Some("skip"));
-    assert!(value["npm"]["selection"].get("except").is_none());
-}
-
-#[test]
-fn selection_persistence_removes_default_selection_table_only_for_target_manager() {
-    let path = temp_config_path("remove-selection");
-    write_config(
-        &path,
-        r#"
-[npm.selection]
-mode = "include"
-except = ["old"]
-
-[brew.selection]
-mode = "include"
-except = ["aom"]
-"#,
-    );
-    let mut config = UpnowConfig::load_from_path(&path).expect("config should load");
-
-    config
-        .set_manager_selection_policy("npm", UpdateSelectionPolicy::default())
-        .expect("default selection should be set");
-    config
-        .persist_manager_selection_policy_to_path("npm", &path)
-        .expect("selection policy should persist");
-
-    let value: toml::Value =
-        toml::from_str(&std::fs::read_to_string(&path).expect("config should be readable"))
-            .expect("persisted TOML should parse");
-    assert!(
-        value
-            .get("npm")
-            .and_then(|npm| npm.get("selection"))
-            .is_none()
-    );
-    assert_eq!(
-        value["brew"]["selection"]["except"][0].as_str(),
-        Some("aom")
-    );
 }

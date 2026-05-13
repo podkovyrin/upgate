@@ -1,7 +1,0 @@
-{
-  "dependencies": {
-    "fresh-tool": {"version": "2.0.0"},
-    "missing-age": {"version": "3.0.0"},
-    "stale-tool": {"version": "1.0.0"}
-  }
-}

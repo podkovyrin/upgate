@@ -1,8 +1,0 @@
-serde v1.0.0:
-    serde
-clap v1.0.0:
-    clap
-semver v9999.0.0:
-    semver
-zzzz-upnow-no-such-crate-000000000000 v1.0.0:
-    zzzz-upnow-no-such-crate-000000000000

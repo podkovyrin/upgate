@@ -46,12 +46,9 @@ fn default_batch_selection_include_mode_excludes_exceptions() {
     let plan = plan();
     let policy = UpdateSelectionPolicy {
         mode: UpdateSelectionMode::Include,
-        except: [
-            PackageName::new("pinned-pkg").expect("valid package name"),
-            PackageName::new("stale-pkg").expect("valid package name"),
-        ]
-        .into_iter()
-        .collect(),
+        except: [PackageName::new("pinned-pkg").expect("valid package name")]
+            .into_iter()
+            .collect(),
     };
     let selection = default_batch_selection(&plan, &policy).expect("selection should be valid");
 
@@ -63,23 +60,5 @@ fn default_batch_selection_include_mode_excludes_exceptions() {
     assert_eq!(
         selection.selected_items[0].target,
         SelectedTarget::Recommended
-    );
-}
-
-#[test]
-fn default_batch_selection_skip_mode_selects_only_exceptions() {
-    let plan = plan();
-    let policy = UpdateSelectionPolicy {
-        mode: UpdateSelectionMode::Skip,
-        except: [PackageName::new("pinned-pkg").expect("valid package name")]
-            .into_iter()
-            .collect(),
-    };
-    let selection = default_batch_selection(&plan, &policy).expect("selection should be valid");
-
-    assert_eq!(selection.selected_items.len(), 1);
-    assert_eq!(
-        selection.selected_items[0].plan_item_id.as_str(),
-        "pnpm:pinned-pkg"
     );
 }

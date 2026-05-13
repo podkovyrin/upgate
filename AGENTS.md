@@ -20,10 +20,39 @@ This project values architectural clarity over forward motion. Treat the impleme
 
 ## Testing
 
-- Test behavior at stable boundaries: CLI behavior, public APIs, or durable module interfaces.
-- Do not write tests that primarily lock in private helpers or incidental structure.
-- If a test requires exposing internals, stop and explain why.
-- Tests should validate product behavior and important error cases, not justify a new abstraction.
+The test suite is presumed guilty. A test survives or is added only when it protects behavior that would intentionally survive a valid redesign. The burden of proof is on the test, not on the person deleting it.
+
+Every new or retained test must have this one-line proof:
+
+`This test must exist because it protects <specific stable behavior> that would otherwise be at meaningful regression risk.`
+
+Allowed reasons to add or keep a test:
+
+- It protects user-visible CLI behavior.
+- It protects a public API contract.
+- It protects a domain invariant.
+- It protects manager behavior that is part of the product contract.
+- It protects version policy behavior.
+- It protects parsing behavior where malformed or real-world input matters.
+- It protects config behavior users rely on.
+- It protects important error handling.
+- It protects integration behavior that would be expensive or risky to manually validate.
+- It is a regression test for a real bug we still care about.
+
+Delete or reject tests that primarily:
+
+- Test private helpers, constructors, getters, setters, or simple data plumbing.
+- Assert implementation order, mocks-called behavior, helper behavior, or internal state.
+- Encode current module boundaries, internal types, current render helpers, or architecture scaffolding.
+- Mirror production logic or prove fixtures rather than product behavior.
+- Duplicate behavior already covered by a stronger integration or stable-boundary test.
+- Use snapshots/goldens without a clear user contract.
+- Require large setup for tiny internal assertions.
+- Exist to preserve coverage percentage, document current implementation, or make a refactor feel safer.
+
+Rewrite tests rarely. Rewrite only when the protected behavior is clearly valuable, the current test is coupled to internals, the replacement moves to a stable boundary, the replacement is smaller than the deleted test, and no new test infrastructure is needed. Otherwise delete.
+
+If a test needs a paragraph of justification, it should not exist.
 
 ## Reviews
 

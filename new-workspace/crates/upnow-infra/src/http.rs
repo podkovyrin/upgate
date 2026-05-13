@@ -237,8 +237,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        HTTP_TIMEOUT, HTTP_USER_AGENT, HttpBytesResponse, HttpClient, HttpResponse, HttpSettings,
-        env_base_url,
+        HTTP_TIMEOUT, HTTP_USER_AGENT, HttpClient, HttpResponse, HttpSettings, env_base_url,
     };
     use crate::Env;
 
@@ -273,49 +272,6 @@ mod tests {
             env_base_url(&env, "UPNOW_TEST_BASE_URL", "https://default.test"),
             "https://default.test"
         );
-    }
-
-    #[test]
-    fn fake_http_client_returns_registered_responses() {
-        let client = HttpClient::fake([(
-            "https://example.test/data".to_owned(),
-            HttpResponse {
-                status: 200,
-                body: "body".to_owned(),
-            },
-        )]);
-
-        let response = client
-            .get_text("https://example.test/data")
-            .expect("registered response should be returned");
-
-        assert_eq!(response.status, 200);
-        assert_eq!(response.body, "body");
-    }
-
-    #[test]
-    fn fake_http_client_returns_registered_byte_responses() {
-        let client = HttpClient::fake_bytes([(
-            "https://example.test/data".to_owned(),
-            HttpBytesResponse {
-                status: 200,
-                body: vec![0, 159, 146, 150],
-            },
-        )]);
-
-        let response = client
-            .get_bytes("https://example.test/data")
-            .expect("registered response should be returned");
-
-        assert_eq!(response.status, 200);
-        assert_eq!(response.body, [0, 159, 146, 150]);
-    }
-
-    #[test]
-    fn fake_http_client_errors_for_unregistered_urls() {
-        let client = HttpClient::fake([]);
-
-        assert!(client.get_text("https://example.test/missing").is_err());
     }
 
     #[test]

@@ -1,6 +1,0 @@
-{
-  "short": "fresh-tool",
-  "backends": [
-    "github:example/fresh-tool"
-  ]
-}

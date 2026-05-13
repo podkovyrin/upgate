@@ -1,2 +1,0 @@
-Would install 1 packages
- + beta-fresh-latest==1.0.5

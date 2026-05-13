@@ -1,26 +1,7 @@
 use upnow_domain::{
-    AdvisoryLatestFact, BlockReason, CandidateAgeFact, CandidateAgeSource, CandidateEvaluationFact,
-    DelayReason, DomainError, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata,
-    ManagerSelectedTarget, MissingMetadataKind, PackageName, PlanDiagnostics, PlanItem, PlanItemId,
-    PolicyBlockReason, ReleaseLookupError, ReleaseLookupResult, ReleaseTimestamp, SkipReason,
-    TargetAgeEvidence, TargetAgeLookupResult, TargetSelection, ToolId, ToolName, UpdateCandidate,
-    UpdatePlan, UpdateSeed, VersionScheme, VersionText,
+    DomainError, ExecutionEligibility, PackageName, PlanItem, PlanItemId, ToolId, UpdateCandidate,
+    UpdatePlan, VersionScheme, VersionText,
 };
-
-fn manager_id() -> ManagerId {
-    ManagerId::new("pnpm").expect("valid manager id")
-}
-
-fn installed_tool(name: &str, version: &str) -> InstalledTool {
-    InstalledTool::new(
-        manager_id(),
-        ToolId::new(format!("pnpm:{name}")).expect("valid tool id"),
-        PackageName::new(name).expect("valid package name"),
-        ToolName::new(name).expect("valid tool name"),
-        VersionText::new(version).expect("valid version"),
-        ManagerMetadata::empty(),
-    )
-}
 
 fn candidate(name: &str) -> UpdateCandidate {
     UpdateCandidate::new(
@@ -33,127 +14,19 @@ fn candidate(name: &str) -> UpdateCandidate {
     )
 }
 
-fn seed(name: &str) -> UpdateSeed {
-    UpdateSeed::new(
-        installed_tool(name, "1.0.0"),
-        VersionText::new("1.2.0").expect("valid target version"),
-        VersionScheme::SemVer,
-        ReleaseLookupResult::MissingMetadata,
-        ExecutionEligibility::NativeOrExact,
-    )
-}
-
-fn item_id(value: &str) -> PlanItemId {
-    PlanItemId::new(value).expect("valid plan item id")
-}
-
-#[test]
-fn plan_item_id_rejects_empty_values() {
-    assert_eq!(PlanItemId::new(" "), Err(DomainError::EmptyPlanItemId));
-}
-
-#[test]
-fn plan_item_variants_represent_phase_two_states() {
-    let update = PlanItem::Update {
-        id: item_id("update"),
-        candidate: candidate("alpha-ready"),
-    };
-    let current = PlanItem::Current {
-        id: item_id("current"),
-        installed: installed_tool("fresh-tool", "2.0.0"),
-    };
-    let delayed = PlanItem::Delayed {
-        id: item_id("delayed"),
-        candidate: candidate("gamma-delayed"),
-        reason: DelayReason::ReleaseTooFresh,
-    };
-    let blocked = PlanItem::Blocked {
-        id: item_id("blocked"),
-        seed: seed("missing-age"),
-        reason: BlockReason::VersionPolicy(PolicyBlockReason::PreReleaseBlocked),
-        policy_warnings: Vec::new(),
-        diagnostics: PlanDiagnostics::new(std::time::Duration::from_secs(86_400)),
-    };
-    let skipped = PlanItem::Skipped {
-        id: item_id("skipped"),
-        installed: installed_tool("pinned-pkg", "3.0.0"),
-        reason: SkipReason::Pinned,
-    };
-    let resolver_error = PlanItem::ResolverError {
-        id: item_id("resolver-error"),
-        installed: installed_tool("omega-error", "1.0.0"),
-        message: "registry timeout".to_owned(),
-    };
-
-    assert_eq!(update.id().as_str(), "update");
-    assert_eq!(current.id().as_str(), "current");
-    assert_eq!(delayed.id().as_str(), "delayed");
-    assert_eq!(blocked.id().as_str(), "blocked");
-    assert_eq!(skipped.id().as_str(), "skipped");
-    assert_eq!(resolver_error.id().as_str(), "resolver-error");
-}
-
-#[test]
-fn plan_diagnostics_preserve_typed_candidate_and_lookup_facts() {
-    let lookup_error = ReleaseLookupError::new("registry timeout");
-    let diagnostics = PlanDiagnostics {
-        required_age: std::time::Duration::from_secs(86_400),
-        candidates: vec![CandidateEvaluationFact {
-            version: VersionText::new("1.2.0-beta.1").expect("valid version"),
-            age: Some(std::time::Duration::from_secs(3_600)),
-            policy_allowed: false,
-            age_allowed: false,
-            policy_block_reason: Some(PolicyBlockReason::PreReleaseBlocked),
-            policy_warning: None,
-        }],
-        selected_target: Some(CandidateAgeFact::new(
-            VersionText::new("1.2.0").expect("valid version"),
-            std::time::Duration::from_secs(90_000),
-            CandidateAgeSource::PublishedAt,
-        )),
-        latest_overall: Some(CandidateAgeFact::new(
-            VersionText::new("1.2.0-beta.1").expect("valid version"),
-            std::time::Duration::from_secs(3_600),
-            CandidateAgeSource::ReleaseTimeline,
-        )),
-        latest_policy_eligible: None,
-        latest_age_eligible: None,
-        missing_metadata: Some(MissingMetadataKind::DiscoveredTarget),
-        lookup_failure: Some(lookup_error.clone()),
-        advisory_latest: Some(AdvisoryLatestFact::LookupFailed {
-            latest_version: VersionText::new("1.2.0").expect("valid version"),
-            error: lookup_error,
-        }),
-    };
-
-    assert_eq!(diagnostics.required_age.as_secs(), 86_400);
-    assert_eq!(
-        diagnostics.candidates[0].policy_block_reason,
-        Some(PolicyBlockReason::PreReleaseBlocked)
-    );
-    assert_eq!(
-        diagnostics.missing_metadata,
-        Some(MissingMetadataKind::DiscoveredTarget)
-    );
-    assert!(matches!(
-        diagnostics.advisory_latest,
-        Some(AdvisoryLatestFact::LookupFailed { .. })
-    ));
-}
-
 #[test]
 fn update_plan_rejects_duplicate_item_ids() {
-    let duplicate_id = item_id("same-id");
+    let duplicate_id = PlanItemId::new("same-id").expect("valid plan item id");
     let result = UpdatePlan::new(
-        manager_id(),
+        upnow_domain::ManagerId::new("pnpm").expect("valid manager id"),
         vec![
             PlanItem::Update {
                 id: duplicate_id.clone(),
                 candidate: candidate("alpha-ready"),
             },
-            PlanItem::Current {
+            PlanItem::Update {
                 id: duplicate_id,
-                installed: installed_tool("fresh-tool", "2.0.0"),
+                candidate: candidate("beta-ready"),
             },
         ],
     );
@@ -162,94 +35,4 @@ fn update_plan_rejects_duplicate_item_ids() {
         result,
         Err(DomainError::DuplicatePlanItemId("same-id".to_owned()))
     );
-}
-
-#[test]
-fn update_candidate_represents_target_and_executable_eligibility() {
-    let candidate = UpdateCandidate::new(
-        ToolId::new("pnpm:exact-only").expect("valid tool id"),
-        PackageName::new("exact-only").expect("valid package name"),
-        VersionText::new("1.0.0").expect("valid installed version"),
-        VersionText::new("1.2.0").expect("valid target version"),
-        VersionScheme::SemVer,
-        ExecutionEligibility::ExactOnly,
-    );
-
-    assert_eq!(candidate.package_name.as_str(), "exact-only");
-    assert_eq!(
-        candidate.execution_eligibility,
-        ExecutionEligibility::ExactOnly
-    );
-}
-
-#[test]
-fn update_seed_represents_planner_selectable_and_manager_selected_targets() {
-    let planner_seed = UpdateSeed::new(
-        installed_tool("alpha-ready", "1.0.0"),
-        VersionText::new("1.2.0").expect("valid target"),
-        VersionScheme::SemVer,
-        ReleaseLookupResult::MissingMetadata,
-        ExecutionEligibility::ExactOnly,
-    );
-    assert_eq!(
-        planner_seed.execution_eligibility,
-        ExecutionEligibility::ExactOnly
-    );
-    let TargetSelection::PlannerSelectable {
-        discovered_target,
-        release_lookup,
-    } = &planner_seed.target_selection
-    else {
-        panic!("expected planner-selectable seed");
-    };
-    assert_eq!(discovered_target.as_str(), "1.2.0");
-    assert_eq!(release_lookup, &ReleaseLookupResult::MissingMetadata);
-
-    let selected_target = ManagerSelectedTarget::new(
-        VersionText::new("1.1.0").expect("valid selected target"),
-        TargetAgeLookupResult::Known(TargetAgeEvidence::PublishedAt(ReleaseTimestamp::new(
-            std::time::SystemTime::UNIX_EPOCH,
-        ))),
-    );
-    let manager_seed = UpdateSeed::manager_selected(
-        installed_tool("resolver-tool", "1.0.0"),
-        selected_target,
-        VersionScheme::SemVer,
-        ExecutionEligibility::ResolverNativeOnly,
-    );
-    assert_eq!(
-        manager_seed.execution_eligibility,
-        ExecutionEligibility::ResolverNativeOnly
-    );
-    let TargetSelection::ManagerSelected(target) = &manager_seed.target_selection else {
-        panic!("expected manager-selected seed");
-    };
-    assert_eq!(target.target_version.as_str(), "1.1.0");
-    assert_eq!(target.advisory_release_lookup, None);
-}
-
-#[test]
-fn manager_selected_target_keeps_advisory_metadata_separate_from_required_age_evidence() {
-    let selected_target = ManagerSelectedTarget::new(
-        VersionText::new("1.1.0").expect("valid selected target"),
-        TargetAgeLookupResult::Known(TargetAgeEvidence::PublishedAt(ReleaseTimestamp::new(
-            std::time::SystemTime::UNIX_EPOCH,
-        ))),
-    )
-    .with_advisory_release_lookup(
-        VersionText::new("1.2.0").expect("valid advisory latest"),
-        ReleaseLookupResult::LookupFailed(ReleaseLookupError::new("advisory latest unavailable")),
-    );
-
-    assert!(matches!(
-        selected_target.target_age,
-        TargetAgeLookupResult::Known(_)
-    ));
-    assert!(matches!(
-        selected_target.advisory_release_lookup,
-        Some(upnow_domain::AdvisoryReleaseLookup {
-            release_lookup: ReleaseLookupResult::LookupFailed(_),
-            ..
-        })
-    ));
 }

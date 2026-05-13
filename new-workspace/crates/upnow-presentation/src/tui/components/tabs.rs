@@ -114,35 +114,3 @@ fn hint_area_width(enabled: bool, available_width: u16, hint_width: usize) -> u1
         0
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn visible_tabs_keeps_selected_tab_visible() {
-        let titles = ["All", "pnpm", "npm", "cargo", "brew"]
-            .into_iter()
-            .map(Line::raw)
-            .collect::<Vec<_>>();
-
-        let tabs = visible_tabs(&titles, 4, 0, 14);
-
-        assert!(tabs.start > 0);
-        assert!(tabs.has_left_overflow);
-        assert_eq!(tabs.titles[tabs.selected_in_slice], Line::raw("brew"));
-    }
-
-    #[test]
-    fn visible_tabs_reuses_offset_when_it_still_fits() {
-        let titles = ["All", "pnpm", "npm"]
-            .into_iter()
-            .map(Line::raw)
-            .collect::<Vec<_>>();
-
-        let tabs = visible_tabs(&titles, 2, 1, 40);
-
-        assert_eq!(tabs.start, 1);
-        assert_eq!(tabs.selected_in_slice, 1);
-    }
-}

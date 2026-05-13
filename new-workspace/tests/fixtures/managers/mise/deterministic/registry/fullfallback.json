@@ -1,6 +1,0 @@
-{
-  "short": "fullfallback",
-  "backends": [
-    "github:example/fullfallback"
-  ]
-}
