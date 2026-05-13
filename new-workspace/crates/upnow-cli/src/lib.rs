@@ -34,8 +34,9 @@ use upnow_planning::{
     PlanningSettings, default_batch_selection, selection_view, update_plan_from_inputs,
 };
 use upnow_presentation::tui::{
-    InteractiveSelectionOutcome, InteractiveSelectionPlan, run_interactive_progress,
-    run_interactive_selection,
+    InteractiveManagerSelectionDraft, InteractiveSelectionOutcome, InteractiveSelectionPlan,
+    InteractiveSelectionPlanningEvent, run_interactive_progress, run_interactive_selection,
+    run_interactive_selection_with_planning_events,
 };
 use upnow_presentation::{
     BatchRenderOptions, OutcomeTable, OutputTheme, ThemeOptions, execution_report_table,
@@ -166,6 +167,7 @@ pub struct InteractiveApplyReport {
 struct PreparedInteractiveApply {
     config: UpnowConfig,
     managers: Vec<PreparedInteractiveManagerApply>,
+    planning_failures: Vec<(ManagerId, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -274,16 +276,9 @@ pub fn run_interactive_apply_with_sources(
     selected_managers: &[String],
     overrides: &[String],
 ) -> Result<String, AppError> {
-    let prepared = prepare_interactive_apply_with_sources(
-        config,
-        process,
-        http,
-        env,
-        clock,
-        selected_managers,
-        overrides,
-    )?;
-    match run_confirmed_selection(prepared)? {
+    let (config, manager_configs) =
+        prepare_interactive_manager_configs(config, selected_managers, overrides)?;
+    match run_live_confirmed_selection(config, manager_configs, process, http, env, clock)? {
         Some((config, confirmed)) => {
             execute_confirmed_interactive_apply_live(config, process, env, confirmed)?;
             Ok(String::new())
@@ -413,7 +408,7 @@ pub fn build_interactive_apply_selection_plans_with_sources(
 }
 
 fn prepare_interactive_apply_with_sources(
-    mut config: UpnowConfig,
+    config: UpnowConfig,
     process: &ProcessRunner,
     http: &HttpClient,
     env: &Env,
@@ -421,20 +416,10 @@ fn prepare_interactive_apply_with_sources(
     selected_managers: &[String],
     overrides: &[String],
 ) -> Result<PreparedInteractiveApply, AppError> {
-    if !selected_managers.is_empty() {
-        config.apply_selected_managers_cli_override(selected_managers)?;
-    }
-    for override_value in overrides {
-        config.apply_cli_override(override_value)?;
-    }
-    let manager_ids = selected_manager_ids(selected_managers)?;
+    let (config, manager_configs) =
+        prepare_interactive_manager_configs(config, selected_managers, overrides)?;
     let mut managers = Vec::new();
-    for manager_id in manager_ids {
-        ensure_known_manager(manager_id.as_str()).map_err(map_manager_error)?;
-        let manager_config = config.resolve_manager(manager_id.as_str())?;
-        if !manager_config.mode.allows_run(true) {
-            continue;
-        }
+    for manager_config in manager_configs {
         let manager = configured_manager(manager_config.clone()).map_err(map_manager_error)?;
         let plan =
             build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config)?;
@@ -443,7 +428,35 @@ fn prepare_interactive_apply_with_sources(
             manager_config,
         });
     }
-    Ok(PreparedInteractiveApply { config, managers })
+    Ok(PreparedInteractiveApply {
+        config,
+        managers,
+        planning_failures: Vec::new(),
+    })
+}
+
+fn prepare_interactive_manager_configs(
+    mut config: UpnowConfig,
+    selected_managers: &[String],
+    overrides: &[String],
+) -> Result<(UpnowConfig, Vec<ManagerConfig>), AppError> {
+    if !selected_managers.is_empty() {
+        config.apply_selected_managers_cli_override(selected_managers)?;
+    }
+    for override_value in overrides {
+        config.apply_cli_override(override_value)?;
+    }
+    let manager_ids = selected_manager_ids(selected_managers)?;
+    let mut manager_configs = Vec::new();
+    for manager_id in manager_ids {
+        ensure_known_manager(manager_id.as_str()).map_err(map_manager_error)?;
+        let manager_config = config.resolve_manager(manager_id.as_str())?;
+        if !manager_config.mode.allows_run(true) {
+            continue;
+        }
+        manager_configs.push(manager_config);
+    }
+    Ok((config, manager_configs))
 }
 
 /// Runs interactive apply selection and returns the confirmed typed selection.
@@ -512,56 +525,177 @@ pub fn run_interactive_apply_selection_with_sources(
     }
 }
 
-fn run_confirmed_selection(
-    prepared: PreparedInteractiveApply,
+fn run_live_confirmed_selection(
+    config: UpnowConfig,
+    manager_configs: Vec<ManagerConfig>,
+    process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
+    clock: Clock,
 ) -> Result<Option<(UpnowConfig, Vec<ConfirmedInteractiveManagerApply>)>, AppError> {
-    let selection_plans = prepared
-        .managers
+    let manager_ids = manager_configs
         .iter()
-        .map(|manager| {
-            InteractiveSelectionPlan::new(
-                selection_view(&manager.plan, &manager.manager_config.selection),
-                manager.plan.issues.clone(),
-                manager.manager_config.selection.clone(),
-            )
-        })
-        .collect();
+        .map(|manager_config| manager_config.manager_id.clone())
+        .collect::<Vec<_>>();
+    let (event_tx, event_rx) = mpsc::channel();
+    let (prepared_tx, prepared_rx) = mpsc::channel();
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    let worker_stop = Arc::clone(&stop_requested);
+    let process = process.clone();
+    let http = http.clone();
+    let env = env.clone();
+    let worker = thread::spawn(move || {
+        let prepared = prepare_interactive_apply_with_events(
+            config,
+            manager_configs,
+            &process,
+            &http,
+            &env,
+            clock,
+            &event_tx,
+            &worker_stop,
+        );
+        if let Err(err) = &prepared {
+            let _ = event_tx.send(InteractiveSelectionPlanningEvent::PlanningFailed {
+                detail: err.to_string(),
+            });
+        }
+        let _ = prepared_tx.send(prepared);
+    });
 
-    match run_interactive_selection(selection_plans)
-        .map_err(|err| AppError::Planning(err.to_string()))?
-    {
-        InteractiveSelectionOutcome::Cancelled => Ok(None),
+    let outcome = match run_interactive_selection_with_planning_events(manager_ids, event_rx) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            stop_requested.store(true, Ordering::Relaxed);
+            return Err(AppError::Planning(err.to_string()));
+        }
+    };
+
+    match outcome {
+        InteractiveSelectionOutcome::Cancelled => {
+            stop_requested.store(true, Ordering::Relaxed);
+            Ok(None)
+        }
         InteractiveSelectionOutcome::Confirmed(drafts) => {
-            if drafts.len() != prepared.managers.len() {
-                return Err(AppError::Planning(format!(
-                    "interactive selection count mismatch: expected {}, got {}",
-                    prepared.managers.len(),
-                    drafts.len()
-                )));
-            }
-
-            let mut confirmed = Vec::new();
-            for (manager, draft) in prepared.managers.into_iter().zip(drafts) {
-                if manager.plan.manager_id != draft.manager_id {
-                    return Err(AppError::Planning(format!(
-                        "interactive selection manager mismatch: expected {}, got {}",
-                        manager.plan.manager_id.as_str(),
-                        draft.manager_id.as_str()
-                    )));
-                }
-                let selection =
-                    PlanSelection::new(&manager.plan, draft.selected_items, draft.selection_policy)
-                        .map_err(|err| AppError::Planning(err.to_string()))?;
-                confirmed.push(ConfirmedInteractiveManagerApply {
-                    plan: manager.plan,
-                    manager_config: manager.manager_config,
-                    selection,
-                });
-            }
-
-            Ok(Some((prepared.config, confirmed)))
+            let prepared = prepared_rx
+                .recv()
+                .map_err(|err| AppError::Planning(err.to_string()))??;
+            worker.join().map_err(|_| {
+                AppError::Planning("interactive planning worker panicked".to_owned())
+            })?;
+            confirmed_from_drafts(prepared, drafts).map(Some)
         }
     }
+}
+
+fn prepare_interactive_apply_with_events(
+    config: UpnowConfig,
+    manager_configs: Vec<ManagerConfig>,
+    process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
+    clock: Clock,
+    event_tx: &mpsc::Sender<InteractiveSelectionPlanningEvent>,
+    stop_requested: &AtomicBool,
+) -> Result<PreparedInteractiveApply, AppError> {
+    let mut managers = Vec::new();
+    let mut planning_failures = Vec::new();
+    for manager_config in manager_configs {
+        if stop_requested.load(Ordering::Relaxed) {
+            break;
+        }
+        let _ = event_tx.send(InteractiveSelectionPlanningEvent::ManagerStarted {
+            manager_id: manager_config.manager_id.clone(),
+        });
+        let manager = match configured_manager(manager_config.clone()).map_err(map_manager_error) {
+            Ok(manager) => manager,
+            Err(err @ AppError::Interrupted(_)) => return Err(err),
+            Err(err) => {
+                let detail = err.to_string();
+                let manager_id = manager_config.manager_id;
+                let _ = event_tx.send(InteractiveSelectionPlanningEvent::ManagerError {
+                    manager_id: manager_id.clone(),
+                    detail: detail.clone(),
+                });
+                planning_failures.push((manager_id, detail));
+                continue;
+            }
+        };
+        match build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config) {
+            Ok(plan) => {
+                let selection_policy = manager_config.selection.clone();
+                let view = selection_view(&plan, &selection_policy);
+                let _ = event_tx.send(InteractiveSelectionPlanningEvent::ManagerReady {
+                    view,
+                    issues: plan.issues.clone(),
+                    selection_policy,
+                });
+                managers.push(PreparedInteractiveManagerApply {
+                    plan,
+                    manager_config,
+                });
+            }
+            Err(err @ AppError::Interrupted(_)) => return Err(err),
+            Err(err) => {
+                let detail = err.to_string();
+                let manager_id = manager_config.manager_id;
+                let _ = event_tx.send(InteractiveSelectionPlanningEvent::ManagerError {
+                    manager_id: manager_id.clone(),
+                    detail: detail.clone(),
+                });
+                planning_failures.push((manager_id, detail));
+            }
+        }
+    }
+    if !stop_requested.load(Ordering::Relaxed) {
+        let _ = event_tx.send(InteractiveSelectionPlanningEvent::Finished);
+    }
+    Ok(PreparedInteractiveApply {
+        config,
+        managers,
+        planning_failures,
+    })
+}
+
+fn confirmed_from_drafts(
+    prepared: PreparedInteractiveApply,
+    drafts: Vec<InteractiveManagerSelectionDraft>,
+) -> Result<(UpnowConfig, Vec<ConfirmedInteractiveManagerApply>), AppError> {
+    if !prepared.planning_failures.is_empty() {
+        let details = prepared
+            .planning_failures
+            .iter()
+            .map(|(manager_id, detail)| format!("{}: {detail}", manager_id.as_str()))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(AppError::Planning(details));
+    }
+
+    let mut confirmed = Vec::new();
+    for manager in prepared.managers {
+        let Some(draft) = drafts
+            .iter()
+            .find(|draft| draft.manager_id == manager.plan.manager_id)
+        else {
+            return Err(AppError::Planning(format!(
+                "missing interactive selection for {}",
+                manager.plan.manager_id.as_str()
+            )));
+        };
+        let selection = PlanSelection::new(
+            &manager.plan,
+            draft.selected_items.clone(),
+            draft.selection_policy.clone(),
+        )
+        .map_err(|err| AppError::Planning(err.to_string()))?;
+        confirmed.push(ConfirmedInteractiveManagerApply {
+            plan: manager.plan,
+            manager_config: manager.manager_config,
+            selection,
+        });
+    }
+
+    Ok((prepared.config, confirmed))
 }
 
 /// Executes confirmed interactive selections and persists selection policy to the default config.
@@ -1255,11 +1389,19 @@ fn selected_manager_ids(selected_managers: &[String]) -> Result<Vec<ManagerId>, 
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc;
+
+    use crate::config::UpnowConfig;
     use clap::Parser;
+    use upnow_domain::ManagerId;
     use upnow_presentation::{OutputTheme, TerminalCapabilities, terminal::BatchTerminal};
 
-    use super::{AppError, BatchCommand, Cli, CliCommand, apply_mutation_mode_notice};
-    use upnow_infra::Env;
+    use super::{
+        AppError, BatchCommand, Cli, CliCommand, PreparedInteractiveApply,
+        apply_mutation_mode_notice, confirmed_from_drafts, prepare_interactive_apply_with_events,
+    };
+    use upnow_infra::{Clock, Env, HttpClient};
     use upnow_infra::{MutationMode, ProcessRunner};
 
     #[test]
@@ -1311,6 +1453,51 @@ mod tests {
 
         assert!(matches!(cli.command, Some(CliCommand::Apply)));
         assert!(cli.interactive);
+    }
+
+    #[test]
+    fn cancelled_live_planning_does_not_start_more_managers() {
+        let config = UpnowConfig::default();
+        let manager_config = config.resolve_manager("npm").expect("npm config resolves");
+        let process = ProcessRunner::fake([]);
+        let http = HttpClient::fake([]);
+        let env = Env::fixed([]);
+        let (event_tx, event_rx) = mpsc::channel();
+        let stop_requested = AtomicBool::new(true);
+
+        let prepared = prepare_interactive_apply_with_events(
+            config,
+            vec![manager_config],
+            &process,
+            &http,
+            &env,
+            Clock::system(),
+            &event_tx,
+            &stop_requested,
+        )
+        .expect("stopped planning should finish without manager work");
+
+        assert!(prepared.managers.is_empty());
+        assert!(prepared.planning_failures.is_empty());
+        assert!(event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn planning_failures_block_confirmation_instead_of_noop_success() {
+        let prepared = PreparedInteractiveApply {
+            config: UpnowConfig::default(),
+            managers: Vec::new(),
+            planning_failures: vec![(
+                ManagerId::new("npm").expect("valid manager"),
+                "outdated failed".to_owned(),
+            )],
+        };
+
+        let err = confirmed_from_drafts(prepared, Vec::new())
+            .expect_err("planning failure must block confirmation");
+
+        assert!(matches!(err, AppError::Planning(_)));
+        assert!(err.to_string().contains("npm: outdated failed"));
     }
 
     #[test]

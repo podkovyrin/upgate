@@ -38,7 +38,9 @@ CLI/config -> manager update discovery -> release or target-age evidence lookup 
 Build the same `UpdatePlan` as `plan` -> apply configured update selection policy -> create default `PlanSelection` -> derive `ExecutionPlan` -> execute -> batch renderer.
 
 ### Apply Interactive
-Build the same `UpdatePlan` -> TUI receives presentation view model -> user confirms typed `PlanSelection` -> persist updated selection policy after confirmation and before execution -> derive `ExecutionPlan` -> progress TUI executes and reports results.
+Start the selection TUI immediately from the selected manager ids so users can see planning activity. While planning runs, the TUI may receive presentation-only planning events for waiting, running, ready, empty, and failed managers. Ready managers still enter the TUI as view models derived from `UpdatePlan`; the TUI must not create plan outcomes.
+
+After planning finishes, user confirmation returns typed `PlanSelection` values for the successfully planned managers. Manager planning failures are displayed and retained as manager-level planning failures; in the current phase, confirmation with any planning failure is fatal and no selection policy is persisted or executed. Cancellation during selection requests planning stop and returns without execution or config persistence. Confirmed successful selections then persist updated selection policy after confirmation and before execution -> derive `ExecutionPlan` -> progress TUI executes and reports results.
 
 ## Module Boundaries
 - `app`: CLI, orchestration, exit codes, manager construction/ordering.
@@ -90,13 +92,13 @@ Display plan and apply command shape may differ when the manager resolver is aut
 Per-item `ExecutionEligibility` owns exact/native/resolver eligibility. Manager-level capabilities only advertise global shortcuts such as native-global or resolver-native-global updates. Managers build shared `ExecutionCommand` values from resolved execution intents; there must not be a second manager-private execution command type.
 
 ## TUI Boundary
-TUI state is presentation state only: tabs, cursor, visible rows, selected ids, modal state. The TUI receives a view model derived from `UpdatePlan` and returns `PlanSelection` with typed `SelectedTarget` values and an `UpdateSelectionPolicy`. It must not parse display notes, mutate plan strings, own apply closures, or persist selection config.
+TUI state is presentation state only: tabs, cursor, visible rows, selected ids, modal state, and live planning activity/error state. During interactive apply startup, the selection TUI may temporarily render manager ids and planning events before a manager's `UpdatePlan` exists. Once a manager is ready, the TUI receives a view model derived from `UpdatePlan` and returns `PlanSelection` with typed `SelectedTarget` values and an `UpdateSelectionPolicy`. It must not parse display notes, mutate plan strings, own apply closures, or persist selection config.
 
 ## Config Boundary
 Config resolves manager mode, min release age, version policy, update selection policy, Brew `no_update`, and scan old-age threshold before planning. Resolved manager config is passed into concrete manager adapters instead of being threaded through adapter methods as loose settings. Selection policy is typed as `mode = "include"` or `mode = "skip"` plus `except` package names; `except` always means the opposite of the mode. Omitted `[manager.selection]` resolves to `mode = "include", except = []`, and that default is omitted when persisted. Interactive selection-policy persistence happens only after confirmed apply selection and before execution. CLI manager selection may override manager mode as current behavior does.
 
 ## Error Handling
-Use typed errors below `app`: manager unavailable, discovery failed, release lookup failed, missing metadata, parse failed, unsupported policy, execution failed, interrupted. Planning supports item-level and manager-level errors. Execution errors attach to selected items. Signal interruption maps to exit `130`.
+Use typed errors below `app`: manager unavailable, discovery failed, release lookup failed, missing metadata, parse failed, unsupported policy, execution failed, interrupted. Planning supports item-level and manager-level errors. Interactive live planning may display manager-level planning errors while other managers continue planning, but those failures remain typed app state and block confirmation/execution in this phase. Execution errors attach to selected items. Signal interruption maps to exit `130`.
 
 ## Testing Strategy
 Use fixture-backed parser tests for manager command and HTTP payload shapes, plus stable-boundary tests for manager adapters, CLI behavior, planner outcomes, config persistence, and execution command construction. Do not keep broad fixture-shape tests that only lock incidental file layout. Use fake clock/process/HTTP clients for planner, release lookup, and execution command construction. Test version policy across SemVer, PEP 440, Brew-native versions, and same-track fallback. Test TUI reducers separately from rendering. Add batch renderer golden tests and integration tests with fake manager adapters.

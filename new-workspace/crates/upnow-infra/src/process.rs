@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::process::{Command, ExitStatus, Output};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::de::DeserializeOwned;
 
@@ -79,7 +79,7 @@ impl CommandSpec {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ProcessRunner {
     Real { mutation_mode: MutationMode },
     Fake(FakeProcess),
@@ -119,18 +119,18 @@ impl ProcessRunner {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FakeProcess {
-    responses: Mutex<VecDeque<Result<CommandOutput, InfraError>>>,
-    calls: Mutex<Vec<CommandSpec>>,
+    responses: Arc<Mutex<VecDeque<Result<CommandOutput, InfraError>>>>,
+    calls: Arc<Mutex<Vec<CommandSpec>>>,
 }
 
 impl FakeProcess {
     #[must_use]
     pub fn new(responses: impl IntoIterator<Item = Result<CommandOutput, InfraError>>) -> Self {
         Self {
-            responses: Mutex::new(responses.into_iter().collect()),
-            calls: Mutex::new(Vec::new()),
+            responses: Arc::new(Mutex::new(responses.into_iter().collect())),
+            calls: Arc::new(Mutex::new(Vec::new())),
         }
     }
 

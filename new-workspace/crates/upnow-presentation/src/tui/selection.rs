@@ -1,4 +1,5 @@
 use std::io;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -28,6 +29,7 @@ use crate::tui::components::{
     render_separator, render_table, render_tabs, version_picker_columns, visible_tabs,
 };
 use crate::tui::layout::app_frame;
+use crate::tui::progress::spinner_frame;
 use crate::tui::text::{truncate_with_ellipsis, version_diff_spans};
 use crate::tui::theme::TuiTheme;
 use crate::tui::{InteractiveSelectionState, SelectionStateError};
@@ -156,8 +158,31 @@ pub enum SelectionControl {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InteractiveSelectionPlanningEvent {
+    ManagerStarted {
+        manager_id: ManagerId,
+    },
+    ManagerReady {
+        view: SelectionView,
+        issues: Vec<PlanIssue>,
+        selection_policy: UpdateSelectionPolicy,
+    },
+    ManagerError {
+        manager_id: ManagerId,
+        detail: String,
+    },
+    PlanningFailed {
+        detail: String,
+    },
+    Finished,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractiveSelectionScreen {
     managers: Vec<ManagerSelectionState>,
+    planning_finished: bool,
+    planning_failure: Option<String>,
+    spinner_tick: usize,
     active_tab: usize,
     tab_offset: usize,
     cursor: usize,
@@ -169,7 +194,29 @@ pub struct InteractiveSelectionScreen {
 struct ManagerSelectionState {
     manager_id: ManagerId,
     issues: Vec<PlanIssue>,
+    planning_status: ManagerPlanningStatus,
     state: InteractiveSelectionState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ManagerPlanningStatus {
+    Waiting,
+    Planning,
+    Ready,
+    Empty,
+    Error { detail: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionTabStatus {
+    Loading,
+    Ready,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionTabRef {
+    All,
+    Manager(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,6 +261,11 @@ impl InteractiveSelectionScreen {
                 ManagerSelectionState {
                     manager_id,
                     issues: plan.issues,
+                    planning_status: if state.rows().is_empty() {
+                        ManagerPlanningStatus::Empty
+                    } else {
+                        ManagerPlanningStatus::Ready
+                    },
                     state,
                 }
             })
@@ -221,6 +273,9 @@ impl InteractiveSelectionScreen {
 
         let mut screen = Self {
             managers,
+            planning_finished: true,
+            planning_failure: None,
+            spinner_tick: 0,
             active_tab: 0,
             tab_offset: 0,
             cursor: 0,
@@ -229,6 +284,99 @@ impl InteractiveSelectionScreen {
         };
         screen.clamp_cursor();
         screen
+    }
+
+    #[must_use]
+    pub fn from_manager_ids(manager_ids: Vec<ManagerId>) -> Self {
+        let managers = manager_ids
+            .into_iter()
+            .map(|manager_id| empty_manager_state(manager_id, ManagerPlanningStatus::Waiting))
+            .collect();
+
+        let mut screen = Self {
+            managers,
+            planning_finished: false,
+            planning_failure: None,
+            spinner_tick: 0,
+            active_tab: 0,
+            tab_offset: 0,
+            cursor: 0,
+            show_all: false,
+            target_picker: None,
+        };
+        screen.clamp_cursor();
+        screen
+    }
+
+    pub fn tick(&mut self) {
+        self.spinner_tick = self.spinner_tick.wrapping_add(1);
+    }
+
+    pub fn apply_planning_event(&mut self, event: InteractiveSelectionPlanningEvent) {
+        match event {
+            InteractiveSelectionPlanningEvent::ManagerStarted { manager_id } => {
+                self.replace_manager_state(
+                    manager_id,
+                    ManagerPlanningStatus::Planning,
+                    Vec::new(),
+                    UpdateSelectionPolicy::default(),
+                    Vec::new(),
+                );
+            }
+            InteractiveSelectionPlanningEvent::ManagerReady {
+                view,
+                issues,
+                selection_policy,
+            } => {
+                let status = if view.rows.is_empty() {
+                    ManagerPlanningStatus::Empty
+                } else {
+                    ManagerPlanningStatus::Ready
+                };
+                self.replace_manager_state(
+                    view.manager_id.clone(),
+                    status,
+                    issues,
+                    selection_policy,
+                    view.rows,
+                );
+            }
+            InteractiveSelectionPlanningEvent::ManagerError { manager_id, detail } => {
+                let policy = self
+                    .managers
+                    .iter()
+                    .find(|manager| manager.manager_id == manager_id)
+                    .map_or_else(UpdateSelectionPolicy::default, |manager| {
+                        manager.state.selection_policy().clone()
+                    });
+                self.replace_manager_state(
+                    manager_id,
+                    ManagerPlanningStatus::Error { detail },
+                    Vec::new(),
+                    policy,
+                    Vec::new(),
+                );
+            }
+            InteractiveSelectionPlanningEvent::PlanningFailed { detail } => {
+                self.planning_finished = true;
+                self.planning_failure = Some(detail.clone());
+                for manager in &mut self.managers {
+                    if matches!(
+                        manager.planning_status,
+                        ManagerPlanningStatus::Waiting | ManagerPlanningStatus::Planning
+                    ) {
+                        manager.planning_status = ManagerPlanningStatus::Error {
+                            detail: detail.clone(),
+                        };
+                    }
+                }
+            }
+            InteractiveSelectionPlanningEvent::Finished => {
+                self.planning_finished = true;
+            }
+        }
+        self.target_picker = None;
+        self.clamp_cursor();
     }
 
     #[must_use]
@@ -291,7 +439,33 @@ impl InteractiveSelectionScreen {
         if !self.visible_row_refs().is_empty() {
             return None;
         }
+        if let Some(detail) = &self.planning_failure {
+            return Some(detail.clone());
+        }
+        if let Some(active_manager_idx) = self.active_manager_idx() {
+            return self
+                .managers
+                .get(active_manager_idx)
+                .map(manager_placeholder_message);
+        }
+        if self
+            .managers
+            .iter()
+            .any(|manager| manager.planning_status == ManagerPlanningStatus::Planning)
+        {
+            return Some("Planning updates...".to_owned());
+        }
+        if self
+            .managers
+            .iter()
+            .any(|manager| manager.planning_status == ManagerPlanningStatus::Waiting)
+        {
+            return Some("Waiting to plan".to_owned());
+        }
         for manager in &self.managers {
+            if let ManagerPlanningStatus::Error { detail } = &manager.planning_status {
+                return Some(format!("{}: {detail}", manager.manager_id.as_str()));
+            }
             if let Some(issue) = manager.issues.first() {
                 return Some(format!(
                     "{}: {}",
@@ -330,7 +504,10 @@ impl InteractiveSelectionScreen {
                 self.clamp_cursor();
             }
             SelectionInput::OpenTargetPicker => self.open_target_picker(),
-            SelectionInput::Confirm => return Ok(SelectionControl::Confirm),
+            SelectionInput::Confirm if self.planning_finished => {
+                return Ok(SelectionControl::Confirm);
+            }
+            SelectionInput::Confirm => {}
             SelectionInput::Cancel => return Ok(SelectionControl::Cancel),
             SelectionInput::Ignore
             | SelectionInput::PickerUp
@@ -355,6 +532,36 @@ impl InteractiveSelectionScreen {
                 selection_policy: manager.state.selection_policy().clone(),
             })
             .collect()
+    }
+
+    fn replace_manager_state(
+        &mut self,
+        manager_id: ManagerId,
+        planning_status: ManagerPlanningStatus,
+        issues: Vec<PlanIssue>,
+        selection_policy: UpdateSelectionPolicy,
+        rows: Vec<SelectionRow>,
+    ) {
+        let view = SelectionView {
+            manager_id: manager_id.clone(),
+            rows,
+        };
+        let state = InteractiveSelectionState::new(view, selection_policy);
+        let manager = ManagerSelectionState {
+            manager_id: manager_id.clone(),
+            issues,
+            planning_status,
+            state,
+        };
+        if let Some(existing) = self
+            .managers
+            .iter_mut()
+            .find(|existing| existing.manager_id == manager_id)
+        {
+            *existing = manager;
+        } else {
+            self.managers.push(manager);
+        }
     }
 
     fn handle_picker_input(
@@ -400,7 +607,7 @@ impl InteractiveSelectionScreen {
     }
 
     fn next_tab(&mut self) {
-        let tab_count = self.managers.len() + 1;
+        let tab_count = self.visible_tab_refs().len();
         if tab_count > 0 {
             self.active_tab = (self.active_tab + 1) % tab_count;
         }
@@ -409,7 +616,7 @@ impl InteractiveSelectionScreen {
     }
 
     fn previous_tab(&mut self) {
-        let tab_count = self.managers.len() + 1;
+        let tab_count = self.visible_tab_refs().len();
         if tab_count > 0 {
             self.active_tab = if self.active_tab == 0 {
                 tab_count - 1
@@ -617,6 +824,7 @@ impl InteractiveSelectionScreen {
     }
 
     fn clamp_cursor(&mut self) {
+        self.clamp_active_tab();
         let row_count = self.visible_row_refs().len();
         if row_count == 0 {
             self.cursor = 0;
@@ -625,14 +833,26 @@ impl InteractiveSelectionScreen {
         }
     }
 
+    fn clamp_active_tab(&mut self) {
+        let tab_count = self.visible_tab_refs().len();
+        if tab_count == 0 {
+            self.active_tab = 0;
+        } else if self.active_tab >= tab_count {
+            self.active_tab = tab_count - 1;
+        }
+    }
+
     fn current_visible_row(&self) -> Option<VisibleRow> {
         self.visible_row_refs().get(self.cursor).copied()
     }
 
     fn visible_row_refs(&self) -> Vec<VisibleRow> {
+        let active_manager_idx = self.active_manager_idx();
         let mut rows = Vec::new();
         for (manager_idx, manager) in self.managers.iter().enumerate() {
-            if self.active_tab != 0 && self.active_tab != manager_idx + 1 {
+            if let Some(active_manager_idx) = active_manager_idx
+                && active_manager_idx != manager_idx
+            {
                 continue;
             }
             for (row_idx, row) in manager.state.rows().iter().enumerate() {
@@ -650,8 +870,55 @@ impl InteractiveSelectionScreen {
         rows
     }
 
+    fn visible_tab_refs(&self) -> Vec<SelectionTabRef> {
+        std::iter::once(SelectionTabRef::All)
+            .chain(
+                self.managers
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, manager)| manager.planning_status != ManagerPlanningStatus::Empty)
+                    .map(|(manager_idx, _)| SelectionTabRef::Manager(manager_idx)),
+            )
+            .collect()
+    }
+
+    fn active_manager_idx(&self) -> Option<usize> {
+        match self.visible_tab_refs().get(self.active_tab).copied() {
+            Some(SelectionTabRef::Manager(manager_idx)) => Some(manager_idx),
+            Some(SelectionTabRef::All) | None => None,
+        }
+    }
+
     fn row(&self, visible: VisibleRow) -> &SelectionRow {
         &self.managers[visible.manager_idx].state.rows()[visible.row_idx]
+    }
+}
+
+fn empty_manager_state(
+    manager_id: ManagerId,
+    planning_status: ManagerPlanningStatus,
+) -> ManagerSelectionState {
+    let view = SelectionView {
+        manager_id: manager_id.clone(),
+        rows: Vec::new(),
+    };
+    ManagerSelectionState {
+        manager_id,
+        issues: Vec::new(),
+        planning_status,
+        state: InteractiveSelectionState::new(view, UpdateSelectionPolicy::default()),
+    }
+}
+
+fn manager_placeholder_message(manager: &ManagerSelectionState) -> String {
+    match &manager.planning_status {
+        ManagerPlanningStatus::Waiting => "Waiting to plan".to_owned(),
+        ManagerPlanningStatus::Planning => "Planning updates...".to_owned(),
+        ManagerPlanningStatus::Ready | ManagerPlanningStatus::Empty => manager
+            .issues
+            .first()
+            .map_or_else(|| "No selectable updates".to_owned(), plan_issue_label),
+        ManagerPlanningStatus::Error { detail } => detail.clone(),
     }
 }
 
@@ -663,6 +930,29 @@ impl InteractiveSelectionScreen {
 /// validation failures surfaced by the event loop.
 pub fn run_interactive_selection(
     plans: Vec<InteractiveSelectionPlan>,
+) -> io::Result<InteractiveSelectionOutcome> {
+    run_interactive_selection_screen(InteractiveSelectionScreen::new(plans), None)
+}
+
+/// Runs the terminal selection UI from manager ids while planning events arrive externally.
+///
+/// # Errors
+///
+/// Returns an I/O error for terminal setup, rendering, event reading, or typed selection
+/// validation failures surfaced by the event loop.
+pub fn run_interactive_selection_with_planning_events(
+    manager_ids: Vec<ManagerId>,
+    planning_events: Receiver<InteractiveSelectionPlanningEvent>,
+) -> io::Result<InteractiveSelectionOutcome> {
+    run_interactive_selection_screen(
+        InteractiveSelectionScreen::from_manager_ids(manager_ids),
+        Some(planning_events),
+    )
+}
+
+fn run_interactive_selection_screen(
+    mut screen: InteractiveSelectionScreen,
+    planning_events: Option<Receiver<InteractiveSelectionPlanningEvent>>,
 ) -> io::Result<InteractiveSelectionOutcome> {
     let mut stdout = io::stdout();
     enable_raw_mode()?;
@@ -679,9 +969,8 @@ pub fn run_interactive_selection(
             return Err(err);
         }
     };
-    let mut screen = InteractiveSelectionScreen::new(plans);
 
-    let result = run_selection_loop(&mut terminal, &mut screen);
+    let result = run_selection_loop(&mut terminal, &mut screen, planning_events.as_ref());
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -693,12 +982,16 @@ pub fn run_interactive_selection(
 fn run_selection_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     screen: &mut InteractiveSelectionScreen,
+    planning_events: Option<&Receiver<InteractiveSelectionPlanningEvent>>,
 ) -> io::Result<InteractiveSelectionOutcome> {
     loop {
+        drain_planning_events(screen, planning_events)?;
         terminal.draw(|frame| draw_selection(frame, screen))?;
         if !event::poll(Duration::from_millis(100))? {
+            screen.tick();
             continue;
         }
+        drain_planning_events(screen, planning_events)?;
         let input = selection_input_from_event(&event::read()?, screen.target_picker_open());
         match screen
             .handle_input(input)
@@ -711,6 +1004,27 @@ fn run_selection_loop(
                 ));
             }
             SelectionControl::Cancel => return Ok(InteractiveSelectionOutcome::Cancelled),
+        }
+    }
+}
+
+fn drain_planning_events(
+    screen: &mut InteractiveSelectionScreen,
+    planning_events: Option<&Receiver<InteractiveSelectionPlanningEvent>>,
+) -> io::Result<()> {
+    let Some(planning_events) = planning_events else {
+        return Ok(());
+    };
+    loop {
+        match planning_events.try_recv() {
+            Ok(event) => screen.apply_planning_event(event),
+            Err(TryRecvError::Empty) => return Ok(()),
+            Err(TryRecvError::Disconnected) => {
+                screen.apply_planning_event(InteractiveSelectionPlanningEvent::PlanningFailed {
+                    detail: "planning stopped before reporting completion".to_owned(),
+                });
+                return Ok(());
+            }
         }
     }
 }
@@ -817,14 +1131,7 @@ fn draw_tabs(
         .min(area.width);
     let [tabs_area, key_area] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(key_area_width)]).areas(area);
-    let titles = std::iter::once(Line::raw("All"))
-        .chain(
-            screen
-                .managers
-                .iter()
-                .map(|manager| Line::raw(manager.manager_id.as_str().to_owned())),
-        )
-        .collect::<Vec<_>>();
+    let titles = selection_tab_titles(screen, theme);
 
     let tabs = visible_tabs(
         &titles,
@@ -838,6 +1145,72 @@ fn draw_tabs(
         Paragraph::new(Line::from(Span::styled(TAB_KEY_LABEL, theme.keycap))),
         key_area,
     );
+}
+
+fn selection_tab_titles(
+    screen: &InteractiveSelectionScreen,
+    theme: &TuiTheme,
+) -> Vec<Line<'static>> {
+    screen
+        .visible_tab_refs()
+        .into_iter()
+        .map(|tab| match tab {
+            SelectionTabRef::All => {
+                selection_tab_title("All", all_tab_status(screen), screen.spinner_tick, theme)
+            }
+            SelectionTabRef::Manager(manager_idx) => {
+                let manager = &screen.managers[manager_idx];
+                selection_tab_title(
+                    manager.manager_id.as_str(),
+                    manager_tab_status(manager),
+                    screen.spinner_tick,
+                    theme,
+                )
+            }
+        })
+        .collect()
+}
+
+fn selection_tab_title(
+    label: &str,
+    status: SelectionTabStatus,
+    spinner_tick: usize,
+    theme: &TuiTheme,
+) -> Line<'static> {
+    match status {
+        SelectionTabStatus::Loading => Line::from(vec![
+            Span::raw(label.to_owned()),
+            Span::raw(" "),
+            Span::styled(spinner_frame(spinner_tick), theme.running),
+        ]),
+        SelectionTabStatus::Ready => Line::raw(label.to_owned()),
+    }
+}
+
+fn all_tab_status(screen: &InteractiveSelectionScreen) -> SelectionTabStatus {
+    if screen
+        .managers
+        .iter()
+        .filter(|manager| manager.planning_status != ManagerPlanningStatus::Empty)
+        .any(|manager| {
+            manager.planning_status == ManagerPlanningStatus::Planning
+                || manager.planning_status == ManagerPlanningStatus::Waiting
+        })
+    {
+        return SelectionTabStatus::Loading;
+    }
+    SelectionTabStatus::Ready
+}
+
+fn manager_tab_status(manager: &ManagerSelectionState) -> SelectionTabStatus {
+    match manager.planning_status {
+        ManagerPlanningStatus::Waiting | ManagerPlanningStatus::Planning => {
+            SelectionTabStatus::Loading
+        }
+        ManagerPlanningStatus::Ready
+        | ManagerPlanningStatus::Empty
+        | ManagerPlanningStatus::Error { .. } => SelectionTabStatus::Ready,
+    }
 }
 
 fn draw_list_content(
@@ -1280,6 +1653,176 @@ mod tests {
         assert!(rendered.contains("confirm"));
         assert!(rendered.contains("─"));
         assert!(rendered.contains("⇥"));
+    }
+
+    #[test]
+    fn renders_planning_tabs_before_rows_exist() {
+        let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![
+            ManagerId::new("pnpm").expect("valid manager"),
+            ManagerId::new("npm").expect("valid manager"),
+        ]);
+
+        let rendered = render_to_string(&mut screen, 96, 18);
+
+        assert!(rendered.contains("All"), "{rendered}");
+        assert!(rendered.contains("pnpm"), "{rendered}");
+        assert!(rendered.contains("npm"), "{rendered}");
+        assert!(rendered.contains("Waiting to plan"), "{rendered}");
+    }
+
+    #[test]
+    fn renders_waiting_indicators_on_initial_planning_tabs() {
+        let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![
+            ManagerId::new("pnpm").expect("valid manager"),
+            ManagerId::new("npm").expect("valid manager"),
+        ]);
+
+        let rendered = render_to_string(&mut screen, 96, 18);
+
+        assert!(rendered.contains("All ⠋"), "{rendered}");
+        assert!(rendered.contains("pnpm ⠋"), "{rendered}");
+        assert!(rendered.contains("npm ⠋"), "{rendered}");
+    }
+
+    #[test]
+    fn manager_started_keeps_same_braille_loading_indicator() {
+        let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![
+            ManagerId::new("pnpm").expect("valid manager"),
+            ManagerId::new("npm").expect("valid manager"),
+        ]);
+
+        screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerStarted {
+            manager_id: ManagerId::new("pnpm").expect("valid manager"),
+        });
+        let rendered = render_to_string(&mut screen, 96, 18);
+
+        assert!(rendered.contains("All ⠋"), "{rendered}");
+        assert!(rendered.contains("pnpm ⠋"), "{rendered}");
+        assert!(rendered.contains("npm ⠋"), "{rendered}");
+    }
+
+    #[test]
+    fn ready_manager_tab_removes_activity_indicator() {
+        let plan = plan(
+            "pnpm",
+            vec![update(
+                "pnpm:alpha",
+                "alpha",
+                ExecutionEligibility::NativeOrExact,
+            )],
+        );
+        let policy = UpdateSelectionPolicy::default();
+        let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![
+            ManagerId::new("pnpm").expect("valid manager"),
+        ]);
+
+        screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerStarted {
+            manager_id: ManagerId::new("pnpm").expect("valid manager"),
+        });
+        screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerReady {
+            view: selection_view(&plan, &policy),
+            issues: Vec::new(),
+            selection_policy: policy,
+        });
+        let rendered = render_to_string(&mut screen, 96, 18);
+
+        assert!(rendered.contains("pnpm"), "{rendered}");
+        assert!(!rendered.contains("pnpm ⠋"), "{rendered}");
+    }
+
+    #[test]
+    fn empty_manager_tab_is_hidden() {
+        let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![
+            ManagerId::new("pnpm").expect("valid manager"),
+        ]);
+        let plan = plan("pnpm", Vec::new());
+        let policy = UpdateSelectionPolicy::default();
+
+        screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerReady {
+            view: selection_view(&plan, &policy),
+            issues: Vec::new(),
+            selection_policy: policy,
+        });
+        let rendered = render_to_string(&mut screen, 96, 18);
+
+        assert!(rendered.contains("All"), "{rendered}");
+        assert!(!rendered.contains("pnpm"), "{rendered}");
+        assert!(!rendered.contains("All ⠋"), "{rendered}");
+    }
+
+    #[test]
+    fn planning_failure_renders_error_placeholder() {
+        let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![
+            ManagerId::new("pnpm").expect("valid manager"),
+        ]);
+
+        screen.apply_planning_event(InteractiveSelectionPlanningEvent::PlanningFailed {
+            detail: "planning worker stopped".to_owned(),
+        });
+        let rendered = render_to_string(&mut screen, 96, 18);
+
+        assert!(rendered.contains("planning worker stopped"), "{rendered}");
+        assert!(!rendered.contains("All ⠋"), "{rendered}");
+    }
+
+    #[test]
+    fn error_manager_tab_renders_normally_without_indicator() {
+        let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![
+            ManagerId::new("pnpm").expect("valid manager"),
+        ]);
+
+        screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerError {
+            manager_id: ManagerId::new("pnpm").expect("valid manager"),
+            detail: "outdated failed".to_owned(),
+        });
+        let rendered = render_to_string(&mut screen, 96, 18);
+
+        assert!(rendered.contains("All"), "{rendered}");
+        assert!(rendered.contains("pnpm"), "{rendered}");
+        assert!(!rendered.contains("All !"), "{rendered}");
+        assert!(!rendered.contains("pnpm !"), "{rendered}");
+        assert!(!rendered.contains("pnpm ⠋"), "{rendered}");
+    }
+
+    #[test]
+    fn all_tab_reflects_loading_while_any_visible_manager_loads() {
+        let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![
+            ManagerId::new("pnpm").expect("valid manager"),
+            ManagerId::new("npm").expect("valid manager"),
+        ]);
+
+        screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerError {
+            manager_id: ManagerId::new("pnpm").expect("valid manager"),
+            detail: "outdated failed".to_owned(),
+        });
+        screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerStarted {
+            manager_id: ManagerId::new("npm").expect("valid manager"),
+        });
+        let rendered = render_to_string(&mut screen, 96, 18);
+
+        assert!(rendered.contains("All ⠋"), "{rendered}");
+        assert!(rendered.contains("pnpm"), "{rendered}");
+        assert!(rendered.contains("npm ⠋"), "{rendered}");
+        assert!(!rendered.contains("pnpm !"), "{rendered}");
+    }
+
+    #[test]
+    fn all_tab_has_no_error_indicator_when_managers_error() {
+        let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![
+            ManagerId::new("pnpm").expect("valid manager"),
+        ]);
+
+        screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerError {
+            manager_id: ManagerId::new("pnpm").expect("valid manager"),
+            detail: "outdated failed".to_owned(),
+        });
+        let rendered = render_to_string(&mut screen, 96, 18);
+
+        assert!(rendered.contains("All"), "{rendered}");
+        assert!(rendered.contains("pnpm"), "{rendered}");
+        assert!(!rendered.contains("All !"), "{rendered}");
+        assert!(!rendered.contains("pnpm !"), "{rendered}");
+        assert!(!rendered.contains("All ⠋"), "{rendered}");
     }
 
     #[test]

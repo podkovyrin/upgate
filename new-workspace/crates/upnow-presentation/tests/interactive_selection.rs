@@ -5,7 +5,8 @@ use upnow_domain::{
 };
 use upnow_planning::{TargetOption, selection_view};
 use upnow_presentation::tui::{
-    InteractiveSelectionPlan, InteractiveSelectionScreen, SelectionControl, SelectionInput,
+    InteractiveSelectionPlan, InteractiveSelectionPlanningEvent, InteractiveSelectionScreen,
+    SelectionControl, SelectionInput,
 };
 
 #[test]
@@ -40,6 +41,193 @@ fn cancel_returns_cancel_control() {
     let control = screen
         .handle_input(SelectionInput::Cancel)
         .expect("cancel should be handled");
+
+    assert_eq!(control, SelectionControl::Cancel);
+}
+
+#[test]
+fn planning_screen_starts_with_manager_tabs_and_waiting_placeholder() {
+    let mut screen =
+        InteractiveSelectionScreen::from_manager_ids(vec![manager_id("pnpm"), manager_id("npm")]);
+
+    assert_eq!(screen.active_tab(), 0);
+    assert_eq!(
+        screen.placeholder_message().as_deref(),
+        Some("Waiting to plan")
+    );
+
+    screen
+        .handle_input(SelectionInput::NextTab)
+        .expect("tab should move to first manager");
+    assert_eq!(screen.active_tab(), 1);
+    assert_eq!(
+        screen.placeholder_message().as_deref(),
+        Some("Waiting to plan")
+    );
+
+    screen
+        .handle_input(SelectionInput::NextTab)
+        .expect("tab should move to second manager");
+    assert_eq!(screen.active_tab(), 2);
+    assert_eq!(
+        screen.placeholder_message().as_deref(),
+        Some("Waiting to plan")
+    );
+}
+
+#[test]
+fn manager_started_changes_placeholder_to_planning() {
+    let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![manager_id("pnpm")]);
+
+    screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerStarted {
+        manager_id: manager_id("pnpm"),
+    });
+
+    assert_eq!(
+        screen.placeholder_message().as_deref(),
+        Some("Planning updates...")
+    );
+}
+
+#[test]
+fn manager_finished_with_rows_displays_selectable_rows() {
+    let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![manager_id("pnpm")]);
+    let plan = plan(
+        "pnpm",
+        vec![update(
+            "pnpm:alpha",
+            "alpha",
+            ExecutionEligibility::NativeOrExact,
+        )],
+    );
+    let policy = UpdateSelectionPolicy::default();
+
+    screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerReady {
+        view: selection_view(&plan, &policy),
+        issues: Vec::new(),
+        selection_policy: policy,
+    });
+
+    assert_eq!(screen.placeholder_message(), None);
+    assert_eq!(screen.visible_rows().len(), 1);
+}
+
+#[test]
+fn planning_indicators_do_not_affect_row_selection_or_drafts() {
+    let mut screen =
+        InteractiveSelectionScreen::from_manager_ids(vec![manager_id("pnpm"), manager_id("npm")]);
+    let plan = plan(
+        "pnpm",
+        vec![update(
+            "pnpm:alpha",
+            "alpha",
+            ExecutionEligibility::NativeOrExact,
+        )],
+    );
+    let policy = UpdateSelectionPolicy::default();
+
+    screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerReady {
+        view: selection_view(&plan, &policy),
+        issues: Vec::new(),
+        selection_policy: policy,
+    });
+    screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerStarted {
+        manager_id: manager_id("npm"),
+    });
+
+    let selections = screen.selection_drafts();
+    assert_eq!(selections.len(), 2);
+    assert_eq!(selections[0].manager_id.as_str(), "pnpm");
+    assert_eq!(selections[0].selected_items.len(), 1);
+    assert_eq!(
+        selections[0].selected_items[0].target,
+        SelectedTarget::Recommended
+    );
+    assert_eq!(selections[1].manager_id.as_str(), "npm");
+    assert!(selections[1].selected_items.is_empty());
+}
+
+#[test]
+fn manager_finished_empty_stays_as_empty_placeholder() {
+    let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![manager_id("pnpm")]);
+    let plan = plan("pnpm", Vec::new());
+    let policy = UpdateSelectionPolicy::default();
+
+    screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerReady {
+        view: selection_view(&plan, &policy),
+        issues: Vec::new(),
+        selection_policy: policy,
+    });
+    screen.apply_planning_event(InteractiveSelectionPlanningEvent::Finished);
+
+    assert!(screen.visible_rows().is_empty());
+    assert_eq!(
+        screen.placeholder_message().as_deref(),
+        Some("No selectable updates")
+    );
+}
+
+#[test]
+fn planning_failure_finishes_with_error_placeholder() {
+    let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![manager_id("pnpm")]);
+
+    screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerStarted {
+        manager_id: manager_id("pnpm"),
+    });
+    screen.apply_planning_event(InteractiveSelectionPlanningEvent::PlanningFailed {
+        detail: "planning worker stopped".to_owned(),
+    });
+
+    assert_eq!(
+        screen.placeholder_message().as_deref(),
+        Some("planning worker stopped")
+    );
+    let control = screen
+        .handle_input(SelectionInput::Confirm)
+        .expect("confirm after terminal planning failure should exit");
+    assert_eq!(control, SelectionControl::Confirm);
+}
+
+#[test]
+fn manager_error_is_visible_on_manager_tab_and_all_without_rows() {
+    let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![manager_id("pnpm")]);
+
+    screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerError {
+        manager_id: manager_id("pnpm"),
+        detail: "outdated failed".to_owned(),
+    });
+
+    assert_eq!(
+        screen.placeholder_message().as_deref(),
+        Some("pnpm: outdated failed")
+    );
+    screen
+        .handle_input(SelectionInput::NextTab)
+        .expect("tab should move to manager");
+    assert_eq!(
+        screen.placeholder_message().as_deref(),
+        Some("outdated failed")
+    );
+}
+
+#[test]
+fn confirm_before_planning_finished_does_not_exit() {
+    let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![manager_id("pnpm")]);
+
+    let control = screen
+        .handle_input(SelectionInput::Confirm)
+        .expect("confirm should be ignored during planning");
+
+    assert_eq!(control, SelectionControl::Continue);
+}
+
+#[test]
+fn cancel_during_planning_cancels() {
+    let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![manager_id("pnpm")]);
+
+    let control = screen
+        .handle_input(SelectionInput::Cancel)
+        .expect("cancel should be available during planning");
 
     assert_eq!(control, SelectionControl::Cancel);
 }
@@ -460,6 +648,10 @@ fn selection_plan(plan: &UpdatePlan) -> InteractiveSelectionPlan {
 
 fn plan(manager: &str, items: Vec<PlanItem>) -> UpdatePlan {
     UpdatePlan::new(ManagerId::new(manager).expect("valid manager"), items).expect("valid plan")
+}
+
+fn manager_id(manager: &str) -> ManagerId {
+    ManagerId::new(manager).expect("valid manager")
 }
 
 fn update(id: &str, name: &str, execution_eligibility: ExecutionEligibility) -> PlanItem {
