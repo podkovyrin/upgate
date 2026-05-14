@@ -1,7 +1,8 @@
 use upnow_domain::{
-    AdvisoryLatestFact, BlockReason, CandidateAgeFact, DelayReason, ManagerId, PackageName,
-    PlanDiagnostics, PlanItem, PlanItemId, PolicyBlockReason, PolicyWarning, ReleaseLookupError,
-    SkipReason, UpdateCandidate, UpdatePlan, UpdateSelectionPolicy, VersionText,
+    AdvisoryLatestFact, BlockReason, CandidateAgeFact, CandidateEvaluationFact, DelayReason,
+    ManagerId, PackageName, PlanDiagnostics, PlanItem, PlanItemId, PolicyBlockReason,
+    PolicyWarning, ReleaseLookupError, SkipReason, UpdateCandidate, UpdatePlan,
+    UpdateSelectionPolicy, VersionText,
 };
 
 use std::time::Duration;
@@ -261,10 +262,8 @@ fn update_target_options(
         note_parts: notes.clone(),
     }];
     if candidate.execution_eligibility.supports_exact_target() {
-        options.push(TargetOption::AlternateExact {
-            target_version: candidate.target_version.clone(),
-            note_parts: notes,
-        });
+        let exact_options = exact_target_options(candidate, notes);
+        options.extend(exact_options);
     }
     options
 }
@@ -280,6 +279,28 @@ fn delayed_target_options(
         }];
     }
     Vec::new()
+}
+
+fn exact_target_options(
+    candidate: &UpdateCandidate,
+    fallback_notes: Vec<CandidateNotePart>,
+) -> Vec<TargetOption> {
+    if candidate.diagnostics.candidates.is_empty() {
+        return vec![TargetOption::AlternateExact {
+            target_version: candidate.target_version.clone(),
+            note_parts: fallback_notes,
+        }];
+    }
+
+    candidate
+        .diagnostics
+        .candidates
+        .iter()
+        .map(|evaluated| TargetOption::AlternateExact {
+            target_version: evaluated.version.clone(),
+            note_parts: candidate_evaluation_notes(evaluated, candidate.diagnostics.required_age),
+        })
+        .collect()
 }
 
 fn update_notes(candidate: &UpdateCandidate) -> Vec<CandidateNotePart> {
@@ -303,6 +324,35 @@ fn update_notes(candidate: &UpdateCandidate) -> Vec<CandidateNotePart> {
             .copied()
             .map(|warning| CandidateNotePart::normal(CandidateNoteKind::PolicyWarning(warning))),
     );
+    notes
+}
+
+fn candidate_evaluation_notes(
+    candidate: &CandidateEvaluationFact,
+    required_age: Duration,
+) -> Vec<CandidateNotePart> {
+    let mut notes = Vec::new();
+    if let Some(age) = candidate.age {
+        notes.push(CandidateNotePart::normal(CandidateNoteKind::Released {
+            age,
+        }));
+    }
+    if !candidate.age_allowed {
+        notes.push(CandidateNotePart::violation(CandidateNoteKind::TooFresh {
+            age: candidate.age,
+            required_age,
+        }));
+    }
+    if let Some(reason) = candidate.policy_block_reason.clone() {
+        notes.push(CandidateNotePart::violation(
+            CandidateNoteKind::VersionPolicyBlocked(reason),
+        ));
+    }
+    if let Some(warning) = candidate.policy_warning {
+        notes.push(CandidateNotePart::normal(CandidateNoteKind::PolicyWarning(
+            warning,
+        )));
+    }
     notes
 }
 

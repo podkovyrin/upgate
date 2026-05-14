@@ -19,8 +19,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row};
 use unicode_width::UnicodeWidthStr;
 use upnow_domain::{
-    ManagerId, PlanIssue, PolicyBlockReason, PolicyWarning, SelectedItem, SelectedTarget,
-    SkipReason, UpdateSelectionPolicy,
+    ManagerId, PlanIssue, PlanItemId, PolicyBlockReason, PolicyWarning, SelectedItem,
+    SelectedTarget, SkipReason, UpdateSelectionPolicy,
 };
 
 use crate::outcome::version_label;
@@ -309,6 +309,9 @@ impl InteractiveSelectionScreen {
     }
 
     pub fn apply_planning_event(&mut self, event: InteractiveSelectionPlanningEvent) {
+        let open_picker_row = self
+            .target_picker
+            .map(|picker| self.row(picker.visible_row).plan_item_id.clone());
         match event {
             InteractiveSelectionPlanningEvent::ManagerStarted { manager_id } => {
                 self.replace_manager_state(
@@ -371,8 +374,8 @@ impl InteractiveSelectionScreen {
                 self.planning_finished = true;
             }
         }
-        self.target_picker = None;
         self.clamp_cursor();
+        self.rebind_or_close_target_picker(open_picker_row);
     }
     pub const fn active_tab(&self) -> usize {
         self.active_tab
@@ -673,6 +676,29 @@ impl InteractiveSelectionScreen {
         }
     }
 
+    fn rebind_or_close_target_picker(&mut self, open_picker_row: Option<PlanItemId>) {
+        let Some(plan_item_id) = open_picker_row else {
+            return;
+        };
+        let Some(mut picker) = self.target_picker else {
+            return;
+        };
+        let Some(visible_row) = self.visible_row_for_plan_item(&plan_item_id) else {
+            self.target_picker = None;
+            return;
+        };
+        let option_count = self.target_option_count(visible_row);
+        if option_count == 0 {
+            self.target_picker = None;
+            return;
+        }
+        picker.visible_row = visible_row;
+        if picker.cursor >= option_count {
+            picker.cursor = option_count - 1;
+        }
+        self.target_picker = Some(picker);
+    }
+
     fn move_picker_up(&mut self) {
         let Some(mut picker) = self.target_picker else {
             return;
@@ -840,6 +866,12 @@ impl InteractiveSelectionScreen {
 
     fn current_visible_row(&self) -> Option<VisibleRow> {
         self.visible_row_refs().get(self.cursor).copied()
+    }
+
+    fn visible_row_for_plan_item(&self, plan_item_id: &PlanItemId) -> Option<VisibleRow> {
+        self.visible_row_refs()
+            .into_iter()
+            .find(|visible| self.row(*visible).plan_item_id == *plan_item_id)
     }
 
     fn visible_row_refs(&self) -> Vec<VisibleRow> {

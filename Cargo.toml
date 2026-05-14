@@ -1,3 +1,9 @@
+[package]
+name = "upnow"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
 [workspace]
 resolver = "3"
 members = [
@@ -22,3 +28,28 @@ unsafe_code = "warn"
 [workspace.lints.clippy]
 all = "warn"
 pedantic = "warn"
+
+# Old `/src` package dependencies.
+#
+# The repository root package exists only so the pre-cutover implementation in
+# `/src` can still be run while the typed workspace is rebuilt. New architecture
+# work belongs in `new-workspace/crates/*`; do not make new workspace crates
+# depend on this package or import modules from `/src`.
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap = { version = "4.5", features = ["derive"] }
+rayon = "1.10"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
+pep440_rs = "0.7"
+semver = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "1.1"
+toml_edit = "0.25"
+indicatif = "0.18"
+owo-colors = "4.1"
+crossterm = "0.29"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+unicode-width = "0.2"
+flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }

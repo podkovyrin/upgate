@@ -227,7 +227,7 @@ fn selected_execution_items(
                 candidate,
                 target_version.clone(),
                 true,
-                false,
+                exact_target_bypasses_min_release_age(candidate, target_version),
             ),
             (
                 PlanItem::Update { candidate, .. } | PlanItem::Delayed { candidate, .. },
@@ -389,4 +389,16 @@ fn should_use_grouped_native_update(item: &ResolvedExecutionItem) -> bool {
 
 const fn supports_exact_target(item: &ResolvedExecutionItem) -> bool {
     item.execution_eligibility.supports_exact_target()
+}
+
+fn exact_target_bypasses_min_release_age(
+    candidate: &UpdateCandidate,
+    target_version: &VersionText,
+) -> bool {
+    candidate
+        .diagnostics
+        .candidates
+        .iter()
+        .find(|evaluated| &evaluated.version == target_version)
+        .is_some_and(|evaluated| !evaluated.age_allowed)
 }

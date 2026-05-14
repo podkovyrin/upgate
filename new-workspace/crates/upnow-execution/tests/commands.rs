@@ -1,7 +1,10 @@
+use std::time::Duration;
+
 use upnow_domain::{
-    ExecutionEligibility, ExecutionTargetKind, ManagerCapabilities, ManagerId, PackageName,
-    PlanItem, PlanItemId, PlanSelection, SelectedItem, ToolId, UpdateCandidate, UpdatePlan,
-    UpdateSelectionPolicy, VersionPolicy, VersionScheme, VersionText,
+    CandidateEvaluationFact, ExecutionEligibility, ExecutionTargetKind, ManagerCapabilities,
+    ManagerId, PackageName, PlanDiagnostics, PlanItem, PlanItemId, PlanSelection, SelectedItem,
+    ToolId, UpdateCandidate, UpdatePlan, UpdateSelectionPolicy, VersionPolicy, VersionScheme,
+    VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ExecutionStatus,
@@ -216,8 +219,67 @@ fn resolves_exact_intent_for_policy_filtered_update() {
     ));
 }
 
+#[test]
+fn alternate_exact_too_fresh_target_bypasses_min_release_age() {
+    let plan = plan(vec![update_item_with_diagnostics(
+        "pnpm:alpha-ready",
+        "alpha-ready",
+        ExecutionEligibility::ExactOnly,
+    )]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![SelectedItem::alternate_exact(
+            PlanItemId::new("pnpm:alpha-ready").expect("valid id"),
+            VersionText::new("2.0.0").expect("valid version"),
+        )],
+        UpdateSelectionPolicy::default(),
+    )
+    .expect("valid selection");
+
+    let resolved = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        ManagerCapabilities::new(),
+        VersionPolicy::Stable,
+    )
+    .expect("selection should resolve");
+
+    assert!(matches!(
+        resolved.intents.as_slice(),
+        [ExecutionCommandIntent::Exact(item)]
+            if item.target_version.as_str() == "2.0.0" && item.bypass_min_release_age
+    ));
+}
+
 fn update_item(id: &str, package: &str, eligibility: ExecutionEligibility) -> PlanItem {
     update_item_with_target_kind(id, package, eligibility, ExecutionTargetKind::Standard)
+}
+
+fn update_item_with_diagnostics(
+    id: &str,
+    package: &str,
+    eligibility: ExecutionEligibility,
+) -> PlanItem {
+    let PlanItem::Update { id, candidate } =
+        update_item_with_target_kind(id, package, eligibility, ExecutionTargetKind::Standard)
+    else {
+        unreachable!("helper always builds update item");
+    };
+    PlanItem::Update {
+        id,
+        candidate: candidate.with_diagnostics(PlanDiagnostics {
+            required_age: Duration::from_secs(7 * 24 * 60 * 60),
+            candidates: vec![CandidateEvaluationFact {
+                version: VersionText::new("2.0.0").expect("valid version"),
+                age: Some(Duration::from_secs(24 * 60 * 60)),
+                policy_allowed: true,
+                age_allowed: false,
+                policy_block_reason: None,
+                policy_warning: None,
+            }],
+            ..PlanDiagnostics::default()
+        }),
+    }
 }
 
 fn update_item_with_target_kind(
