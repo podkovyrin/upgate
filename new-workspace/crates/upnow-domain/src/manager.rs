@@ -1,6 +1,11 @@
 use crate::{DomainError, VersionText};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Manager-level shortcuts that are safe only when the selected plan matches
+/// the manager-wide command semantics.
+///
+/// Per-item execution support lives on update candidates; these flags do not
+/// mean every individual item can use every command shape.
 pub struct ManagerCapabilities {
     pub native_global_update: bool,
     pub resolver_native_global_update: bool,

@@ -44,15 +44,22 @@ pub enum SelectionRowVisibility {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Typed action option shown in the details picker for a real plan row.
+///
+/// Despite the current name, this is not display text. Each variant maps back
+/// to a typed apply selection.
 pub enum TargetOption {
+    /// Apply the plan's normal recommended target.
     Recommended {
         target_version: VersionText,
         note_parts: Vec<CandidateNotePart>,
     },
+    /// Apply the planned candidate even though normal gates did not select it.
     ForcedCandidate {
         target_version: VersionText,
         note_parts: Vec<CandidateNotePart>,
     },
+    /// Apply a specific exact target produced from typed candidate diagnostics.
     AlternateExact {
         target_version: VersionText,
         note_parts: Vec<CandidateNotePart>,

@@ -3,6 +3,11 @@ use std::collections::BTreeSet;
 use crate::{DomainError, PackageName, PlanItemId, UpdatePlan, VersionText};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Typed apply confirmation for one manager.
+///
+/// This is the stable output of selection, not TUI state. It carries the
+/// selected plan items for the current run plus the package-based policy that
+/// should be persisted after confirmation.
 pub struct PlanSelection {
     pub selected_items: Vec<SelectedItem>,
     pub selection_policy: UpdateSelectionPolicy,
@@ -51,6 +56,7 @@ impl PlanSelection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// One selected plan row and the target/action chosen for this apply run.
 pub struct SelectedItem {
     pub plan_item_id: PlanItemId,
     pub target: SelectedTarget,
@@ -85,6 +91,11 @@ pub enum SelectedTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Package-level default selection policy persisted for future interactive
+/// apply runs.
+///
+/// `except` always means the opposite of `mode`: in include mode exceptions are
+/// skipped, and in skip mode exceptions are included.
 pub struct UpdateSelectionPolicy {
     pub mode: UpdateSelectionMode,
     pub except: BTreeSet<PackageName>,

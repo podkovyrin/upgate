@@ -19,15 +19,31 @@ pub struct ResolvedExecutionPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutionCommandIntent {
+    /// Install a concrete target version for one selected item.
     Exact(ResolvedExecutionItem),
+    /// Update one selected item with the manager's native selected-update
+    /// command, letting the manager choose the final target.
     NativeSelected(ResolvedExecutionItem),
+    /// Update several selected items with one grouped native command when the
+    /// manager supports a typed grouped shape for those items.
     GroupedNative(Vec<ResolvedExecutionItem>),
+    /// Run one manager-level native update command when the selected set is
+    /// equivalent to all eligible native updates.
     NativeGlobal(Vec<ResolvedExecutionItem>),
+    /// Update one selected item by re-running the manager's resolver for that
+    /// item. The resolved item carries any policy-bypass flags.
     ResolverNative(ResolvedExecutionItem),
+    /// Run one manager-level resolver-native update command when the selected
+    /// set is equivalent to all eligible resolver-native updates.
     ResolverNativeGlobal(Vec<ResolvedExecutionItem>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Item-level execution facts after a plan selection has been resolved.
+///
+/// Managers consume this value to build concrete commands. It keeps the plan
+/// item identity attached so command results can be reported back to the
+/// selected row.
 pub struct ResolvedExecutionItem {
     pub plan_item_id: PlanItemId,
     pub package_name: PackageName,
@@ -140,12 +156,14 @@ pub enum ExecutionStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Concrete command plus the selected items that should receive its result.
 pub struct ExecutionCommand {
     pub items: Vec<ExecutionCommandItem>,
     pub command: CommandSpec,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Selected item metadata carried beside a concrete command for result mapping.
 pub struct ExecutionCommandItem {
     pub plan_item_id: PlanItemId,
     pub package_name: PackageName,

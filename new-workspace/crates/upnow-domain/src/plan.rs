@@ -28,6 +28,11 @@ impl PlanItemId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Manager-discovered input before shared planning applies policy and age
+/// gates.
+///
+/// Seeds preserve whether the manager supplied a release timeline that planning
+/// may choose from, or a manager-selected target that planning may only gate.
 pub struct UpdateSeed {
     pub installed: InstalledTool,
     pub version_scheme: VersionScheme,
@@ -94,11 +99,16 @@ impl UpdateSeed {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Describes who chose the target that planning evaluates.
 pub enum TargetSelection {
+    /// Planning may select from release metadata, using `discovered_target` as
+    /// the manager-discovered newest target.
     PlannerSelectable {
         discovered_target: VersionText,
         release_lookup: ReleaseLookupResult,
     },
+    /// The manager resolver already chose the target; planning may accept,
+    /// delay, or block it, but must not replace it with another version.
     ManagerSelected(ManagerSelectedTarget),
 }
 
@@ -114,6 +124,10 @@ impl TargetSelection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Target chosen by a manager-native resolver or outdated snapshot.
+///
+/// This is authoritative for manager-selected managers such as uv and mise.
+/// Advisory metadata may annotate output, but it must not replace this target.
 pub struct ManagerSelectedTarget {
     pub target_version: VersionText,
     pub target_age: TargetAgeLookupResult,
@@ -161,6 +175,11 @@ pub enum ManagerUpdateInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Candidate facts after a seed has been evaluated into a concrete plan row.
+///
+/// A candidate describes the planned target and execution support, but the
+/// surrounding `PlanItem` determines whether it is currently eligible,
+/// delayed, blocked, or selectable only as a forced action.
 pub struct UpdateCandidate {
     pub tool_id: ToolId,
     pub package_name: PackageName,
@@ -234,17 +253,33 @@ impl UpdateCandidate {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionEligibility {
+    /// The item can use either a selected native update command or an exact
+    /// target command. Execution chooses native selected only when the selected
+    /// plan semantics make the manager's resolver safe to use.
     NativeOrExact,
+    /// The item can only be updated by installing a concrete target version.
     ExactOnly,
+    /// The item can use an exact target command, and may participate in a safe
+    /// manager-level native global update when the selected set matches all
+    /// eligible updates.
     ExactOrNativeGlobal,
+    /// The item can only use a selected native update command, where the
+    /// manager chooses the final target for that selected tool.
     NativeOnly,
+    /// The item can only use a resolver-native command, where apply re-runs the
+    /// manager resolver for this item instead of installing an exact version.
     ResolverNativeOnly,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Extra command-shape discriminator for managers whose selected updates need
+/// different native command forms.
 pub enum ExecutionTargetKind {
+    /// Standard package update command with no manager-specific grouping kind.
     Standard,
+    /// Homebrew formula update command/group.
     BrewFormula,
+    /// Homebrew cask update command/group.
     BrewCask,
 }
 
@@ -399,6 +434,10 @@ pub enum BlockReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Explanation facts produced during planning.
+///
+/// Presentation uses these facts for notes/details, and execution uses them to
+/// decide whether an exact forced target bypasses the configured age gate.
 pub struct PlanDiagnostics {
     pub required_age: Duration,
     pub candidates: Vec<CandidateEvaluationFact>,
@@ -453,6 +492,7 @@ pub enum CandidateAgeSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Per-version evaluation fact retained for details and exact/forced selection.
 pub struct CandidateEvaluationFact {
     pub version: VersionText,
     pub age: Option<Duration>,
