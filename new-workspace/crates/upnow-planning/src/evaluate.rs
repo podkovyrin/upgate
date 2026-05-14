@@ -160,7 +160,15 @@ fn evaluate_manager_selected_seed(
     let mut diagnostics = PlanDiagnostics::new(min_release_age);
     diagnostics.advisory_latest =
         advisory_latest_diagnostics(target.advisory_release_lookup.as_ref(), now);
-    let selected_target = target.target_version.clone();
+    let Some(selected_target) = target.target_version().cloned() else {
+        return PlanItem::Blocked {
+            id,
+            seed,
+            reason: BlockReason::MissingReleaseMetadata,
+            policy_warnings: Vec::new(),
+            diagnostics: diagnostics.with_missing_metadata(MissingMetadataKind::SelectedUpdate),
+        };
+    };
     match selected_target_is_update(&seed, &selected_target) {
         Ok(false) => {
             return PlanItem::Current {
@@ -220,7 +228,7 @@ fn evaluate_manager_selected_seed(
                 seed,
                 reason: BlockReason::MissingReleaseMetadata,
                 policy_warnings: Vec::new(),
-                diagnostics: diagnostics.with_missing_metadata(MissingMetadataKind::SelectedTarget),
+                diagnostics: diagnostics.with_missing_metadata(MissingMetadataKind::SelectedUpdate),
             };
         }
         TargetAgeLookupResult::LookupFailed(err) => {
@@ -572,7 +580,7 @@ fn candidate_from_seed(
         seed.installed.installed_version.clone(),
         target_version,
         seed.version_scheme,
-        seed.execution_eligibility,
+        seed.execution_support,
     )
     .with_execution_target_kind(seed.execution_target_kind)
     .with_policy_warnings(policy_warnings)

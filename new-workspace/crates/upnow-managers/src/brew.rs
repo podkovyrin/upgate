@@ -5,11 +5,11 @@ use std::time::{Duration, SystemTime};
 use chrono::DateTime;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionEligibility, ExecutionTargetKind, InstalledTool, ManagerConfig,
-    ManagerId, ManagerMetadata, ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput,
-    PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
-    ReleaseTimestamp, SkipReason, TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName,
-    UpdateSeed, VersionScheme, VersionText,
+    DomainError, ExecutionSupport, ExecutionTargetKind, InstalledTool, ManagerConfig, ManagerId,
+    ManagerMetadata, ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput, PackageName,
+    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
+    SkipReason, TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed,
+    VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -465,7 +465,7 @@ pub fn update_inputs(
                 installed,
                 selected,
                 VersionScheme::ManagerNative,
-                ExecutionEligibility::NativeOnly,
+                ExecutionSupport::grouped_native_only(),
             )
             .with_execution_target_kind(execution_target_kind(&package.kind)),
         ));
@@ -483,14 +483,19 @@ pub fn commands_for_execution_plan(
 ) -> Result<Vec<ExecutionCommand>, BrewError> {
     let mut formulae = Vec::new();
     let mut casks = Vec::new();
+    let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
             ExecutionCommandIntent::NativeSelected(item) => {
-                push_brew_item(item, &mut formulae, &mut casks)?;
+                commands.push(scoped_upgrade_command(item)?);
             }
             ExecutionCommandIntent::GroupedNative(items) => {
                 for item in items {
-                    push_brew_item(item, &mut formulae, &mut casks)?;
+                    if item.known_target_version().is_some() {
+                        push_brew_item(item, &mut formulae, &mut casks)?;
+                    } else {
+                        commands.push(scoped_upgrade_command(item)?);
+                    }
                 }
             }
             ExecutionCommandIntent::NativeGlobal(_) => {
@@ -514,7 +519,6 @@ pub fn commands_for_execution_plan(
         }
     }
 
-    let mut commands = Vec::new();
     if !formulae.is_empty() {
         commands.push(grouped_upgrade_command("--formula", &formulae));
     }
@@ -878,6 +882,24 @@ fn grouped_upgrade_command(kind_arg: &str, items: &[ResolvedExecutionItem]) -> E
     }
 }
 
+fn scoped_upgrade_command(item: &ResolvedExecutionItem) -> Result<ExecutionCommand, BrewError> {
+    let mut args = vec!["upgrade".to_owned()];
+    match item.execution_target_kind {
+        ExecutionTargetKind::BrewFormula => {}
+        ExecutionTargetKind::BrewCask => args.push("--cask".to_owned()),
+        ExecutionTargetKind::Standard => {
+            return Err(BrewError::UnsupportedCommandIntent(
+                "standard-target-kind".to_owned(),
+            ));
+        }
+    }
+    args.push(item.package_name.as_str().to_owned());
+    Ok(ExecutionCommand {
+        items: vec![ExecutionCommandItem::from(item)],
+        command: CommandSpec::new("brew", args).mutating(),
+    })
+}
+
 fn adapter_error(err: &BrewError) -> ManagerAdapterError {
     let detail = err.to_string();
     let kind = match err {
@@ -892,5 +914,163 @@ fn adapter_error(err: &BrewError) -> ManagerAdapterError {
         manager_id: MANAGER_ID.to_owned(),
         kind,
         detail,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use upnow_domain::PlanItemId;
+    use upnow_execution::{ResolvedExecutionItem, ResolvedExecutionTarget};
+
+    #[test]
+    fn manager_resolved_formula_uses_scoped_formula_upgrade() {
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::NativeSelected(item(
+                "brew:wget",
+                "wget",
+                ExecutionTargetKind::BrewFormula,
+                ResolvedExecutionTarget::ManagerResolved,
+            ))],
+        };
+
+        let commands = commands_for_execution_plan(&plan).expect("brew command should build");
+
+        assert_eq!(command_displays(&commands), vec!["brew upgrade wget"]);
+    }
+
+    #[test]
+    fn manager_resolved_cask_uses_scoped_cask_upgrade() {
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::NativeSelected(item(
+                "brew:visual-studio-code",
+                "visual-studio-code",
+                ExecutionTargetKind::BrewCask,
+                ResolvedExecutionTarget::ManagerResolved,
+            ))],
+        };
+
+        let commands = commands_for_execution_plan(&plan).expect("brew command should build");
+
+        assert_eq!(
+            command_displays(&commands),
+            vec!["brew upgrade --cask visual-studio-code"]
+        );
+    }
+
+    #[test]
+    fn grouped_known_targets_preserve_formula_and_cask_grouping() {
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::GroupedNative(vec![
+                item(
+                    "brew:wget",
+                    "wget",
+                    ExecutionTargetKind::BrewFormula,
+                    ResolvedExecutionTarget::Known(
+                        VersionText::new("1.2.0").expect("valid version"),
+                    ),
+                ),
+                item(
+                    "brew:ripgrep",
+                    "ripgrep",
+                    ExecutionTargetKind::BrewFormula,
+                    ResolvedExecutionTarget::Known(
+                        VersionText::new("14.1.0").expect("valid version"),
+                    ),
+                ),
+                item(
+                    "brew:visual-studio-code",
+                    "visual-studio-code",
+                    ExecutionTargetKind::BrewCask,
+                    ResolvedExecutionTarget::Known(
+                        VersionText::new("1.100.0").expect("valid version"),
+                    ),
+                ),
+            ])],
+        };
+
+        let commands = commands_for_execution_plan(&plan).expect("brew command should build");
+
+        assert_eq!(
+            command_displays(&commands),
+            vec![
+                "brew upgrade --formula wget ripgrep",
+                "brew upgrade --cask visual-studio-code",
+            ]
+        );
+    }
+
+    #[test]
+    fn grouped_manager_resolved_items_stay_scoped() {
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::GroupedNative(vec![
+                item(
+                    "brew:wget",
+                    "wget",
+                    ExecutionTargetKind::BrewFormula,
+                    ResolvedExecutionTarget::ManagerResolved,
+                ),
+                item(
+                    "brew:visual-studio-code",
+                    "visual-studio-code",
+                    ExecutionTargetKind::BrewCask,
+                    ResolvedExecutionTarget::ManagerResolved,
+                ),
+            ])],
+        };
+
+        let commands = commands_for_execution_plan(&plan).expect("brew command should build");
+
+        assert_eq!(
+            command_displays(&commands),
+            vec![
+                "brew upgrade wget",
+                "brew upgrade --cask visual-studio-code",
+            ]
+        );
+    }
+
+    #[test]
+    fn manager_resolved_standard_target_is_rejected() {
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::NativeSelected(item(
+                "brew:unknown",
+                "unknown",
+                ExecutionTargetKind::Standard,
+                ResolvedExecutionTarget::ManagerResolved,
+            ))],
+        };
+
+        let err = commands_for_execution_plan(&plan).expect_err("standard target is unsupported");
+
+        assert_eq!(
+            err,
+            BrewError::UnsupportedCommandIntent("standard-target-kind".to_owned())
+        );
+    }
+
+    fn command_displays(commands: &[ExecutionCommand]) -> Vec<String> {
+        commands
+            .iter()
+            .map(|command| command.command.display())
+            .collect()
+    }
+
+    fn item(
+        id: &str,
+        package: &str,
+        execution_target_kind: ExecutionTargetKind,
+        target: ResolvedExecutionTarget,
+    ) -> ResolvedExecutionItem {
+        ResolvedExecutionItem {
+            plan_item_id: PlanItemId::new(id).expect("valid id"),
+            package_name: PackageName::new(package).expect("valid package"),
+            installed_version: VersionText::new("1.0.0").expect("valid version"),
+            target,
+            execution_support: ExecutionSupport::grouped_native_only(),
+            execution_target_kind,
+            exact_target_required: false,
+            bypass_min_release_age: false,
+        }
     }
 }

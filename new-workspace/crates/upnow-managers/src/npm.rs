@@ -5,10 +5,10 @@ use std::time::{Duration, SystemTime};
 use chrono::DateTime;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
+    DomainError, ExecutionSupport, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
-    VersionPolicy, VersionScheme, VersionText,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ResolverNativeSupport, ToolId,
+    ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -179,7 +179,7 @@ impl ManagerAdapter for NpmManager {
         _env: &Env,
         plan: &ResolvedExecutionPlan,
     ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
-        commands_for_execution_plan(plan, self.config.min_release_age).map_err(adapter_error)
+        commands_for_execution_plan(plan).map_err(adapter_error)
     }
 }
 
@@ -332,7 +332,6 @@ pub fn parse_npm_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTi
 /// Returns an error when the resolved execution mode is not supported by npm.
 pub fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
-    min_release_age: Duration,
 ) -> Result<Vec<ExecutionCommand>, NpmError> {
     let mut commands = Vec::new();
     for intent in &plan.intents {
@@ -340,20 +339,13 @@ pub fn commands_for_execution_plan(
             ExecutionCommandIntent::NativeSelected(item) => {
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
-                    command: selected_native_update_command_for_item(
-                        item,
-                        whole_days(min_release_age),
-                    ),
+                    command: selected_native_update_command_for_item(item),
                 });
             }
             ExecutionCommandIntent::Exact(item) => {
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
-                    command: exact_command_for_item(
-                        item,
-                        whole_days(min_release_age),
-                        item.bypass_min_release_age,
-                    ),
+                    command: exact_command_for_item(item),
                 });
             }
             ExecutionCommandIntent::ResolverNative(_) => {
@@ -381,62 +373,25 @@ pub fn commands_for_execution_plan(
     Ok(commands)
 }
 
-fn exact_command_for_item(
-    item: &ResolvedExecutionItem,
-    min_release_age_days: u64,
-    bypass_min_release_age: bool,
-) -> CommandSpec {
+fn exact_command_for_item(item: &ResolvedExecutionItem) -> CommandSpec {
     exact_command_parts(
         &item.package_name,
-        &item.target_version,
-        min_release_age_days,
-        bypass_min_release_age,
+        item.known_target_version()
+            .expect("exact command requires known target"),
     )
 }
 
-fn exact_command_parts(
-    package_name: &PackageName,
-    target_version: &VersionText,
-    min_release_age_days: u64,
-    bypass_min_release_age: bool,
-) -> CommandSpec {
+fn exact_command_parts(package_name: &PackageName, target_version: &VersionText) -> CommandSpec {
     let spec = format!("{}@{}", package_name.as_str(), target_version.as_str());
-    let days = min_release_age_days.to_string();
-    let mut args = vec!["install".to_owned(), "-g".to_owned(), spec];
-    if !bypass_min_release_age {
-        args.push("--min-release-age".to_owned());
-        args.push(days);
-    }
-    CommandSpec::new("npm", args).mutating()
+    CommandSpec::new("npm", ["install", "-g", &spec]).mutating()
 }
 
-fn selected_native_update_command_for_item(
-    item: &ResolvedExecutionItem,
-    min_release_age_days: u64,
-) -> CommandSpec {
-    selected_native_update_command_parts(&item.package_name, min_release_age_days)
+fn selected_native_update_command_for_item(item: &ResolvedExecutionItem) -> CommandSpec {
+    selected_native_update_command_parts(&item.package_name)
 }
 
-fn selected_native_update_command_parts(
-    package_name: &PackageName,
-    min_release_age_days: u64,
-) -> CommandSpec {
-    let days = min_release_age_days.to_string();
-    CommandSpec::new(
-        "npm",
-        [
-            "-g",
-            "update",
-            package_name.as_str(),
-            "--min-release-age",
-            &days,
-        ],
-    )
-    .mutating()
-}
-
-const fn whole_days(duration: Duration) -> u64 {
-    duration.as_secs() / 86_400
+fn selected_native_update_command_parts(package_name: &PackageName) -> CommandSpec {
+    CommandSpec::new("npm", ["update", "-g", package_name.as_str()]).mutating()
 }
 
 fn installed_tool(package: NpmInstalledPackage) -> Result<InstalledTool, NpmError> {
@@ -475,8 +430,19 @@ fn update_input(tool: InstalledTool, lookup: ReleaseLookupResult) -> ManagerUpda
         discovered_target,
         VersionScheme::SemVer,
         lookup,
-        ExecutionEligibility::NativeOrExact,
+        npm_execution_support(),
     ))
+}
+
+const fn npm_execution_support() -> ExecutionSupport {
+    ExecutionSupport {
+        exact: true,
+        native_selected: true,
+        native_global: false,
+        grouped_native: false,
+        resolver_native_selected: ResolverNativeSupport::none(),
+        resolver_native_global: false,
+    }
 }
 
 fn time_map_to_timeline(
@@ -548,5 +514,92 @@ fn adapter_error(err: NpmError) -> ManagerAdapterError {
         manager_id: MANAGER_ID.to_owned(),
         kind,
         detail,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use upnow_domain::{ExecutionTargetKind, PlanItemId};
+    use upnow_execution::ResolvedExecutionTarget;
+
+    #[test]
+    fn exact_execution_installs_global_package_version() {
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::Exact(item(
+                ResolvedExecutionTarget::Known(version("5.9.3")),
+                true,
+                false,
+            ))],
+        };
+
+        let commands = commands_for_execution_plan(&plan).expect("commands");
+
+        assert_eq!(
+            commands[0].command.display(),
+            "npm install -g typescript@5.9.3"
+        );
+    }
+
+    #[test]
+    fn manager_resolved_native_selected_updates_one_global_package() {
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::NativeSelected(item(
+                ResolvedExecutionTarget::ManagerResolved,
+                false,
+                false,
+            ))],
+        };
+
+        let commands = commands_for_execution_plan(&plan).expect("commands");
+
+        assert_eq!(commands[0].command.display(), "npm update -g typescript");
+        assert_eq!(
+            commands[0].items[0].target,
+            ResolvedExecutionTarget::ManagerResolved
+        );
+    }
+
+    #[test]
+    fn resolver_native_execution_is_not_an_npm_command_shape() {
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::ResolverNative(item(
+                ResolvedExecutionTarget::ManagerResolved,
+                false,
+                false,
+            ))],
+        };
+
+        let err = commands_for_execution_plan(&plan).expect_err("unsupported intent");
+
+        assert_eq!(
+            err,
+            NpmError::UnsupportedCommandIntent("resolver-native".to_owned())
+        );
+    }
+
+    fn item(
+        target: ResolvedExecutionTarget,
+        exact_target_required: bool,
+        bypass_min_release_age: bool,
+    ) -> ResolvedExecutionItem {
+        ResolvedExecutionItem {
+            plan_item_id: PlanItemId::new("npm:typescript").expect("valid id"),
+            package_name: package("typescript"),
+            installed_version: version("5.8.0"),
+            target,
+            execution_support: npm_execution_support(),
+            execution_target_kind: ExecutionTargetKind::Standard,
+            exact_target_required,
+            bypass_min_release_age,
+        }
+    }
+
+    fn package(value: &str) -> PackageName {
+        PackageName::new(value.to_owned()).expect("valid package")
+    }
+
+    fn version(value: &str) -> VersionText {
+        VersionText::new(value.to_owned()).expect("valid version")
     }
 }

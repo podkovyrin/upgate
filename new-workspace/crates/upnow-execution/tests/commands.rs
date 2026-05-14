@@ -1,15 +1,17 @@
 use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
-    BlockReason, CandidateEvaluationFact, ExecutionEligibility, ExecutionTargetKind, InstalledTool,
-    ManagerCapabilities, ManagerId, ManagerMetadata, PackageName, PlanDiagnostics, PlanItem,
+    BlockReason, CandidateEvaluationFact, ExecutionSupport, ExecutionTargetKind, InstalledTool,
+    ManagerCapabilities, ManagerId, ManagerMetadata, ManagerSelectedTarget,
+    MinAgeConstraintSupport, MissingMetadataKind, PackageName, PlanDiagnostics, PlanItem,
     PlanItemId, PlanSelection, PolicyBlockReason, ReleaseEntry, ReleaseLookupResult,
-    ReleaseTimeline, ReleaseTimestamp, SelectedItem, ToolId, ToolName, UpdateCandidate, UpdatePlan,
-    UpdateSeed, UpdateSelectionPolicy, VersionPolicy, VersionScheme, VersionText,
+    ReleaseTimeline, ReleaseTimestamp, SelectedItem, TargetAgeLookupResult, ToolId, ToolName,
+    UpdateCandidate, UpdatePlan, UpdateSeed, UpdateSelectionPolicy, VersionPolicy, VersionScheme,
+    VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ExecutionStatus,
-    execute_commands, resolve_selection_for_execution,
+    ResolvedExecutionTarget, execute_commands, resolve_selection_for_execution,
 };
 use upnow_infra::{CommandOutput, CommandSpec, ProcessRunner};
 
@@ -40,12 +42,12 @@ fn resolves_native_global_intent_for_complete_native_only_selection() {
         update_item(
             "pnpm:alpha-ready",
             "alpha-ready",
-            ExecutionEligibility::NativeOnly,
+            ExecutionSupport::native_only(),
         ),
         update_item(
             "pnpm:beta-ready",
             "beta-ready",
-            ExecutionEligibility::NativeOnly,
+            ExecutionSupport::native_only(),
         ),
     ]);
     let selection = PlanSelection::new(
@@ -78,12 +80,12 @@ fn does_not_resolve_native_global_for_exact_only_items() {
         update_item(
             "pnpm:alpha-ready",
             "alpha-ready",
-            ExecutionEligibility::ExactOnly,
+            ExecutionSupport::exact_only(),
         ),
         update_item(
             "pnpm:beta-ready",
             "beta-ready",
-            ExecutionEligibility::ExactOnly,
+            ExecutionSupport::exact_only(),
         ),
     ]);
     let selection = PlanSelection::new(
@@ -118,12 +120,12 @@ fn resolves_native_global_for_exact_or_native_global_items_with_no_policy() {
         update_item(
             "pnpm:alpha-ready",
             "alpha-ready",
-            ExecutionEligibility::ExactOrNativeGlobal,
+            ExecutionSupport::exact_or_native_global(),
         ),
         update_item(
             "pnpm:beta-ready",
             "beta-ready",
-            ExecutionEligibility::ExactOrNativeGlobal,
+            ExecutionSupport::exact_or_native_global(),
         ),
     ]);
     let selection = PlanSelection::new(
@@ -156,13 +158,13 @@ fn resolves_grouped_native_intent_for_brew_target_kinds() {
         update_item_with_target_kind(
             "brew:alpha-ready",
             "alpha-ready",
-            ExecutionEligibility::NativeOnly,
+            ExecutionSupport::native_only(),
             ExecutionTargetKind::BrewFormula,
         ),
         update_item_with_target_kind(
             "brew:beta-ready",
             "beta-ready",
-            ExecutionEligibility::NativeOnly,
+            ExecutionSupport::native_only(),
             ExecutionTargetKind::BrewCask,
         ),
     ]);
@@ -195,7 +197,7 @@ fn resolves_exact_intent_for_policy_filtered_update() {
     let plan = plan(vec![update_item(
         "pnpm:alpha-ready",
         "alpha-ready",
-        ExecutionEligibility::NativeOrExact,
+        ExecutionSupport::native_or_exact(),
     )]);
     let selection = PlanSelection::new(
         &plan,
@@ -225,11 +227,11 @@ fn alternate_exact_too_fresh_target_bypasses_min_release_age() {
     let plan = plan(vec![update_item_with_diagnostics(
         "pnpm:alpha-ready",
         "alpha-ready",
-        ExecutionEligibility::ExactOnly,
+        ExecutionSupport::exact_only(),
     )]);
     let selection = PlanSelection::new(
         &plan,
-        vec![SelectedItem::alternate_exact(
+        vec![SelectedItem::exact(
             PlanItemId::new("pnpm:alpha-ready").expect("valid id"),
             VersionText::new("2.0.0").expect("valid version"),
         )],
@@ -248,7 +250,7 @@ fn alternate_exact_too_fresh_target_bypasses_min_release_age() {
     assert!(matches!(
         resolved.intents.as_slice(),
         [ExecutionCommandIntent::Exact(item)]
-            if item.target_version.as_str() == "2.0.0" && item.bypass_min_release_age
+            if item.known_target_version().expect("known target").as_str() == "2.0.0" && item.bypass_min_release_age
     ));
 }
 
@@ -257,11 +259,11 @@ fn forced_policy_blocked_item_resolves_exact_intent() {
     let plan = plan(vec![blocked_policy_item(
         "pnpm:alpha-blocked",
         "alpha-blocked",
-        ExecutionEligibility::ExactOnly,
+        ExecutionSupport::exact_only(),
     )]);
     let selection = PlanSelection::new(
         &plan,
-        vec![SelectedItem::forced_candidate(
+        vec![SelectedItem::force_planned_candidate(
             PlanItemId::new("pnpm:alpha-blocked").expect("valid id"),
         )],
         UpdateSelectionPolicy::default(),
@@ -279,18 +281,173 @@ fn forced_policy_blocked_item_resolves_exact_intent() {
     assert!(matches!(
         resolved.intents.as_slice(),
         [ExecutionCommandIntent::Exact(item)]
-            if item.target_version.as_str() == "2.0.0" && item.exact_target_required
+            if item.known_target_version().expect("known target").as_str() == "2.0.0" && item.exact_target_required
     ));
 }
 
-fn update_item(id: &str, package: &str, eligibility: ExecutionEligibility) -> PlanItem {
+#[test]
+fn forced_delayed_resolver_native_item_bypasses_age_limit() {
+    let plan = plan(vec![delayed_item(
+        "mise:node",
+        "node",
+        ExecutionSupport::resolver_native(MinAgeConstraintSupport::Optional, true, false),
+    )]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![SelectedItem::force_planned_candidate(
+            PlanItemId::new("mise:node").expect("valid id"),
+        )],
+        UpdateSelectionPolicy::default(),
+    )
+    .expect("valid selection");
+
+    let resolved = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        ManagerCapabilities::new(),
+        VersionPolicy::None,
+    )
+    .expect("selection should resolve");
+
+    assert!(matches!(
+        resolved.intents.as_slice(),
+        [ExecutionCommandIntent::ResolverNative(item)]
+            if item.known_target_version().expect("known target").as_str() == "1.2.0"
+                && item.bypass_min_release_age
+    ));
+}
+
+#[test]
+fn manager_resolved_with_resolver_native_support_resolves_resolver_native() {
+    let plan = plan(vec![manager_resolved_update_item(
+        "uv:ruff",
+        "ruff",
+        ExecutionSupport::resolver_native(MinAgeConstraintSupport::Optional, true, false),
+    )]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![SelectedItem::manager_resolved(
+            PlanItemId::new("uv:ruff").expect("valid id"),
+        )],
+        UpdateSelectionPolicy::default(),
+    )
+    .expect("valid selection");
+
+    let resolved = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        ManagerCapabilities::new(),
+        VersionPolicy::None,
+    )
+    .expect("selection should resolve");
+
+    assert!(matches!(
+        resolved.intents.as_slice(),
+        [ExecutionCommandIntent::ResolverNative(item)]
+            if item.target == ResolvedExecutionTarget::ManagerResolved
+    ));
+}
+
+#[test]
+fn manager_resolved_with_native_selected_support_resolves_native_selected() {
+    let plan = plan(vec![manager_resolved_update_item(
+        "npm:eslint",
+        "eslint",
+        ExecutionSupport::native_only(),
+    )]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![SelectedItem::manager_resolved(
+            PlanItemId::new("npm:eslint").expect("valid id"),
+        )],
+        UpdateSelectionPolicy::default(),
+    )
+    .expect("valid selection");
+
+    let resolved = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        ManagerCapabilities::new(),
+        VersionPolicy::None,
+    )
+    .expect("selection should resolve");
+
+    assert!(matches!(
+        resolved.intents.as_slice(),
+        [ExecutionCommandIntent::NativeSelected(item)]
+            if item.target == ResolvedExecutionTarget::ManagerResolved
+    ));
+}
+
+#[test]
+fn manager_resolved_missing_selected_metadata_resolves_resolver_native() {
+    let plan = plan(vec![blocked_missing_selected_update_metadata_item(
+        "uv:ruff",
+        "ruff",
+        ExecutionSupport::resolver_native(MinAgeConstraintSupport::Optional, true, false),
+    )]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![SelectedItem::manager_resolved(
+            PlanItemId::new("uv:ruff").expect("valid id"),
+        )],
+        UpdateSelectionPolicy::default(),
+    )
+    .expect("valid selection");
+
+    let resolved = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        ManagerCapabilities::new(),
+        VersionPolicy::None,
+    )
+    .expect("selection should resolve");
+
+    assert!(matches!(
+        resolved.intents.as_slice(),
+        [ExecutionCommandIntent::ResolverNative(item)]
+            if item.target == ResolvedExecutionTarget::ManagerResolved
+    ));
+}
+
+#[test]
+fn unsupported_manager_resolved_selected_update_is_rejected() {
+    let plan = plan(vec![manager_resolved_update_item(
+        "pnpm:alpha",
+        "alpha",
+        ExecutionSupport::exact_only(),
+    )]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![SelectedItem::manager_resolved(
+            PlanItemId::new("pnpm:alpha").expect("valid id"),
+        )],
+        UpdateSelectionPolicy::default(),
+    )
+    .expect("valid selection");
+
+    let err = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        ManagerCapabilities::new(),
+        VersionPolicy::None,
+    )
+    .expect_err("targetless exact-only item should be rejected");
+
+    assert_eq!(
+        err.to_string(),
+        "plan item `pnpm:alpha` does not support manager-resolved selected execution"
+    );
+}
+
+fn update_item(id: &str, package: &str, eligibility: ExecutionSupport) -> PlanItem {
     update_item_with_target_kind(id, package, eligibility, ExecutionTargetKind::Standard)
 }
 
 fn update_item_with_diagnostics(
     id: &str,
     package: &str,
-    eligibility: ExecutionEligibility,
+    eligibility: ExecutionSupport,
 ) -> PlanItem {
     let PlanItem::Update { id, candidate } =
         update_item_with_target_kind(id, package, eligibility, ExecutionTargetKind::Standard)
@@ -317,7 +474,7 @@ fn update_item_with_diagnostics(
 fn update_item_with_target_kind(
     id: &str,
     package: &str,
-    eligibility: ExecutionEligibility,
+    eligibility: ExecutionSupport,
     target_kind: ExecutionTargetKind,
 ) -> PlanItem {
     PlanItem::Update {
@@ -334,7 +491,54 @@ fn update_item_with_target_kind(
     }
 }
 
-fn blocked_policy_item(id: &str, package: &str, eligibility: ExecutionEligibility) -> PlanItem {
+fn delayed_item(id: &str, package: &str, eligibility: ExecutionSupport) -> PlanItem {
+    PlanItem::Delayed {
+        id: PlanItemId::new(id).expect("valid id"),
+        candidate: candidate(id, package, eligibility).with_diagnostics(PlanDiagnostics {
+            required_age: Duration::from_secs(7 * 24 * 60 * 60),
+            candidates: vec![CandidateEvaluationFact {
+                version: VersionText::new("1.2.0").expect("valid version"),
+                age: Some(Duration::from_secs(24 * 60 * 60)),
+                policy_allowed: true,
+                age_allowed: false,
+                policy_block_reason: None,
+                policy_warning: None,
+            }],
+            ..PlanDiagnostics::default()
+        }),
+        reason: upnow_domain::DelayReason::ReleaseTooFresh,
+    }
+}
+
+fn manager_resolved_update_item(
+    id: &str,
+    package: &str,
+    eligibility: ExecutionSupport,
+) -> PlanItem {
+    PlanItem::Update {
+        id: PlanItemId::new(id).expect("valid id"),
+        candidate: UpdateCandidate::manager_resolved(
+            ToolId::new(id).expect("valid tool id"),
+            PackageName::new(package).expect("valid package"),
+            VersionText::new("1.0.0").expect("valid version"),
+            VersionScheme::SemVer,
+            eligibility,
+        ),
+    }
+}
+
+fn candidate(id: &str, package: &str, eligibility: ExecutionSupport) -> UpdateCandidate {
+    UpdateCandidate::new(
+        ToolId::new(id).expect("valid tool id"),
+        PackageName::new(package).expect("valid package"),
+        VersionText::new("1.0.0").expect("valid version"),
+        VersionText::new("1.2.0").expect("valid version"),
+        VersionScheme::SemVer,
+        eligibility,
+    )
+}
+
+fn blocked_policy_item(id: &str, package: &str, eligibility: ExecutionSupport) -> PlanItem {
     PlanItem::Blocked {
         id: PlanItemId::new(id).expect("valid id"),
         seed: UpdateSeed::new(
@@ -358,6 +562,29 @@ fn blocked_policy_item(id: &str, package: &str, eligibility: ExecutionEligibilit
             }],
             ..PlanDiagnostics::default()
         },
+    }
+}
+
+fn blocked_missing_selected_update_metadata_item(
+    id: &str,
+    package: &str,
+    eligibility: ExecutionSupport,
+) -> PlanItem {
+    PlanItem::Blocked {
+        id: PlanItemId::new(id).expect("valid id"),
+        seed: UpdateSeed::manager_selected(
+            installed_tool(package),
+            ManagerSelectedTarget::new(
+                VersionText::new("2.0.0").expect("valid version"),
+                TargetAgeLookupResult::MissingMetadata,
+            ),
+            VersionScheme::Pep440,
+            eligibility,
+        ),
+        reason: BlockReason::MissingReleaseMetadata,
+        policy_warnings: Vec::new(),
+        diagnostics: PlanDiagnostics::new(Duration::from_secs(7 * 24 * 60 * 60))
+            .with_missing_metadata(MissingMetadataKind::SelectedUpdate),
     }
 }
 
@@ -388,7 +615,7 @@ fn command_item(package_name: &str) -> ExecutionCommandItem {
         plan_item_id: PlanItemId::new(format!("pnpm:{package_name}")).expect("valid id"),
         package_name: PackageName::new(package_name).expect("valid package"),
         installed_version: VersionText::new("1.0.0").expect("valid version"),
-        target_version: VersionText::new("1.2.0").expect("valid version"),
+        target: ResolvedExecutionTarget::Known(VersionText::new("1.2.0").expect("valid version")),
     }
 }
 

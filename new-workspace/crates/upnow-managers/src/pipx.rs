@@ -7,7 +7,7 @@ use chrono::DateTime;
 use pep440_rs::Version as Pep440Version;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
+    DomainError, ExecutionSupport, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
     ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
     VersionScheme, VersionText,
@@ -314,7 +314,11 @@ pub fn commands_for_execution_plan(
 }
 
 fn exact_command_for_item(item: &ResolvedExecutionItem) -> CommandSpec {
-    exact_command_parts(&item.package_name, &item.target_version)
+    exact_command_parts(
+        &item.package_name,
+        item.known_target_version()
+            .expect("exact command requires known target"),
+    )
 }
 
 fn exact_command_parts(package_name: &PackageName, target_version: &VersionText) -> CommandSpec {
@@ -359,7 +363,7 @@ fn update_input(tool: InstalledTool, lookup: ReleaseLookupResult) -> ManagerUpda
         discovered_target,
         VersionScheme::Pep440,
         lookup,
-        ExecutionEligibility::ExactOnly,
+        ExecutionSupport::exact_only(),
     ))
 }
 

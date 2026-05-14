@@ -1,5 +1,5 @@
 use upnow_domain::{
-    ExecutionEligibility, ManagerId, PackageName, PlanItem, PlanItemId, SelectedTarget, ToolId,
+    ExecutionSupport, ManagerId, PackageName, PlanItem, PlanItemId, SelectedUpdate, ToolId,
     UpdateCandidate, UpdatePlan, UpdateSelectionMode, UpdateSelectionPolicy, VersionScheme,
     VersionText,
 };
@@ -20,7 +20,7 @@ fn candidate(package: &str) -> UpdateCandidate {
         VersionText::new("1.0.0").expect("valid installed version"),
         VersionText::new("1.1.0").expect("valid target version"),
         VersionScheme::SemVer,
-        ExecutionEligibility::NativeOrExact,
+        ExecutionSupport::native_or_exact(),
     )
 }
 
@@ -57,8 +57,8 @@ fn default_batch_selection_include_mode_excludes_exceptions() {
         "pnpm:alpha-ready"
     );
     assert_eq!(
-        selection.selected_items[0].target,
-        SelectedTarget::Recommended
+        selection.selected_items[0].selected_update,
+        SelectedUpdate::Recommended
     );
 }
 
@@ -78,7 +78,7 @@ fn default_batch_selection_skip_mode_includes_only_exceptions() {
         "pnpm:exception-pkg"
     );
     assert_eq!(
-        selection.selected_items[0].target,
-        SelectedTarget::Recommended
+        selection.selected_items[0].selected_update,
+        SelectedUpdate::Recommended
     );
 }

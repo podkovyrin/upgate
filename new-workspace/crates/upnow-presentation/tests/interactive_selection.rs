@@ -1,11 +1,11 @@
 use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
-    BlockReason, CandidateEvaluationFact, ExecutionEligibility, InstalledTool, ManagerId,
-    ManagerMetadata, PackageName, PlanDiagnostics, PlanIssue, PlanItem, PlanItemId,
-    PolicyBlockReason, ReleaseEntry, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
-    SelectedTarget, ToolId, ToolName, UpdateCandidate, UpdatePlan, UpdateSeed,
-    UpdateSelectionPolicy, VersionScheme, VersionText,
+    BlockReason, CandidateEvaluationFact, ExecutionSupport, InstalledTool, ManagerId,
+    ManagerMetadata, ManagerSelectedTarget, PackageName, PlanDiagnostics, PlanIssue, PlanItem,
+    PlanItemId, PolicyBlockReason, ReleaseEntry, ReleaseLookupResult, ReleaseTimeline,
+    ReleaseTimestamp, SelectedUpdate, TargetAgeLookupResult, ToolId, ToolName, UpdateCandidate,
+    UpdatePlan, UpdateSeed, UpdateSelectionPolicy, VersionScheme, VersionText,
 };
 use upnow_presentation::tui::{
     InteractiveSelectionPlan, InteractiveSelectionPlanningEvent, InteractiveSelectionScreen,
@@ -20,7 +20,7 @@ fn confirm_returns_typed_selection() {
         vec![update(
             "pnpm:alpha",
             "alpha",
-            ExecutionEligibility::NativeOrExact,
+            ExecutionSupport::native_or_exact(),
         )],
     ));
 
@@ -33,8 +33,8 @@ fn confirm_returns_typed_selection() {
     assert_eq!(selections[0].manager_id.as_str(), "pnpm");
     assert_eq!(selections[0].selected_items.len(), 1);
     assert_eq!(
-        selections[0].selected_items[0].target,
-        SelectedTarget::Recommended
+        selections[0].selected_items[0].selected_update,
+        SelectedUpdate::Recommended
     );
 }
 
@@ -62,7 +62,7 @@ fn manager_ready_with_rows_clears_placeholder_and_shows_rows() {
         vec![update(
             "pnpm:alpha",
             "alpha",
-            ExecutionEligibility::NativeOrExact,
+            ExecutionSupport::native_or_exact(),
         )],
     );
     let policy = UpdateSelectionPolicy::default();
@@ -85,7 +85,7 @@ fn enter_opens_details_after_planning_finished() {
         vec![update(
             "pnpm:alpha",
             "alpha",
-            ExecutionEligibility::NativeOrExact,
+            ExecutionSupport::native_or_exact(),
         )],
     );
     let policy = UpdateSelectionPolicy::default();
@@ -128,7 +128,7 @@ fn planning_events_preserve_open_details_for_existing_row() {
         vec![update(
             "pnpm:alpha",
             "alpha",
-            ExecutionEligibility::NativeOrExact,
+            ExecutionSupport::native_or_exact(),
         )],
     );
     let npm_plan = plan(
@@ -136,7 +136,7 @@ fn planning_events_preserve_open_details_for_existing_row() {
         vec![update(
             "npm:beta",
             "beta",
-            ExecutionEligibility::NativeOrExact,
+            ExecutionSupport::native_or_exact(),
         )],
     );
     let pnpm_policy = UpdateSelectionPolicy::default();
@@ -162,7 +162,10 @@ fn planning_events_preserve_open_details_for_existing_row() {
     screen.apply_planning_event(InteractiveSelectionPlanningEvent::Finished);
     assert!(screen.target_picker_open());
     assert_eq!(
-        screen.target_picker_options()[0].target_version().as_str(),
+        screen.target_picker_options()[0]
+            .target_version()
+            .expect("known target")
+            .as_str(),
         "1.2.0"
     );
 }
@@ -214,7 +217,7 @@ fn picker_can_choose_alternate_exact_target() {
             candidate: candidate_with_diagnostics(
                 "pnpm:alpha",
                 "alpha",
-                ExecutionEligibility::ExactOnly,
+                ExecutionSupport::exact_only(),
             ),
         }],
     ));
@@ -226,11 +229,20 @@ fn picker_can_choose_alternate_exact_target() {
     assert_eq!(options.len(), 4);
     assert!(matches!(options[0], TargetOption::Recommended { .. }));
     assert!(matches!(options[1], TargetOption::AlternateExact { .. }));
-    assert_eq!(options[1].target_version().as_str(), "2.0.0");
+    assert_eq!(
+        options[1].target_version().expect("known target").as_str(),
+        "2.0.0"
+    );
     assert!(options[1].has_violation());
-    assert_eq!(options[2].target_version().as_str(), "1.3.0-beta.1");
+    assert_eq!(
+        options[2].target_version().expect("known target").as_str(),
+        "1.3.0-beta.1"
+    );
     assert!(options[2].has_violation());
-    assert_eq!(options[3].target_version().as_str(), "1.2.0");
+    assert_eq!(
+        options[3].target_version().expect("known target").as_str(),
+        "1.2.0"
+    );
     screen
         .handle_input(SelectionInput::PickerDown)
         .expect("picker should move");
@@ -241,8 +253,8 @@ fn picker_can_choose_alternate_exact_target() {
 
     assert!(!screen.target_picker_open());
     assert!(matches!(
-        selections[0].selected_items[0].target,
-        SelectedTarget::AlternateExact { ref target_version }
+        selections[0].selected_items[0].selected_update,
+        SelectedUpdate::Exact { ref target_version }
             if target_version.as_str() == "2.0.0"
     ));
 }
@@ -254,7 +266,7 @@ fn view_all_hidden_forceable_row_opens_details_and_confirms_forced_target() {
         vec![blocked_policy_item(
             "pnpm:alpha",
             "alpha",
-            ExecutionEligibility::ExactOnly,
+            ExecutionSupport::exact_only(),
         )],
     ));
 
@@ -280,8 +292,87 @@ fn view_all_hidden_forceable_row_opens_details_and_confirms_forced_target() {
 
     assert!(!screen.target_picker_open());
     assert_eq!(
-        selections[0].selected_items[0].target,
-        SelectedTarget::ForcedCandidate
+        selections[0].selected_items[0].selected_update,
+        SelectedUpdate::ForcePlannedCandidate
+    );
+}
+
+#[test]
+fn view_all_manager_resolved_row_opens_details_and_confirms_manager_resolved() {
+    let mut screen = screen(&plan(
+        "uv",
+        vec![PlanItem::Delayed {
+            id: plan_item_id("uv:ruff"),
+            candidate: manager_resolved_candidate(
+                "uv:ruff",
+                "ruff",
+                ExecutionSupport::resolver_native(
+                    upnow_domain::MinAgeConstraintSupport::Optional,
+                    true,
+                    false,
+                ),
+            ),
+            reason: upnow_domain::DelayReason::ReleaseTooFresh,
+        }],
+    ));
+
+    assert_eq!(screen.visible_rows().len(), 1);
+    screen
+        .handle_input(SelectionInput::OpenTargetPicker)
+        .expect("manager-resolved row should open details");
+    assert!(screen.target_picker_open());
+    assert!(screen.visible_rows()[0].target_version.is_none());
+    assert!(matches!(
+        screen.target_picker_options()[0],
+        TargetOption::ManagerResolved { .. }
+    ));
+
+    screen
+        .handle_input(SelectionInput::PickerConfirm)
+        .expect("manager-resolved target should confirm");
+    let selections = screen.selection_drafts();
+
+    assert_eq!(
+        selections[0].selected_items[0].selected_update,
+        SelectedUpdate::ManagerResolved
+    );
+}
+
+#[test]
+fn missing_selected_target_metadata_row_opens_details_and_confirms_manager_resolved() {
+    let mut screen = screen(&plan(
+        "uv",
+        vec![blocked_missing_selected_update_metadata_item(
+            "uv:ruff",
+            "ruff",
+            ExecutionSupport::resolver_native(
+                upnow_domain::MinAgeConstraintSupport::Optional,
+                true,
+                false,
+            ),
+        )],
+    ));
+
+    screen
+        .handle_input(SelectionInput::ToggleViewAll)
+        .expect("view all should be handled");
+    assert_eq!(screen.visible_rows().len(), 1);
+    screen
+        .handle_input(SelectionInput::OpenTargetPicker)
+        .expect("missing selected metadata row should open details");
+    assert!(matches!(
+        screen.target_picker_options()[0],
+        TargetOption::ManagerResolved { .. }
+    ));
+
+    screen
+        .handle_input(SelectionInput::PickerConfirm)
+        .expect("manager-resolved target should confirm");
+    let selections = screen.selection_drafts();
+
+    assert_eq!(
+        selections[0].selected_items[0].selected_update,
+        SelectedUpdate::ManagerResolved
     );
 }
 
@@ -314,7 +405,7 @@ fn picker_cancel_closes_picker_but_global_cancel_cancels_selection() {
         vec![update(
             "pnpm:alpha",
             "alpha",
-            ExecutionEligibility::NativeOrExact,
+            ExecutionSupport::native_or_exact(),
         )],
     ));
 
@@ -376,18 +467,14 @@ fn manager_id(manager: &str) -> ManagerId {
     ManagerId::new(manager).expect("valid manager")
 }
 
-fn update(id: &str, name: &str, execution_eligibility: ExecutionEligibility) -> PlanItem {
+fn update(id: &str, name: &str, execution_support: ExecutionSupport) -> PlanItem {
     PlanItem::Update {
         id: plan_item_id(id),
-        candidate: candidate(id, name, execution_eligibility),
+        candidate: candidate(id, name, execution_support),
     }
 }
 
-fn blocked_policy_item(
-    id: &str,
-    name: &str,
-    execution_eligibility: ExecutionEligibility,
-) -> PlanItem {
+fn blocked_policy_item(id: &str, name: &str, execution_support: ExecutionSupport) -> PlanItem {
     PlanItem::Blocked {
         id: plan_item_id(id),
         seed: UpdateSeed::new(
@@ -395,7 +482,7 @@ fn blocked_policy_item(
             VersionText::new("2.0.0").expect("valid target version"),
             VersionScheme::SemVer,
             release_lookup("2.0.0"),
-            execution_eligibility,
+            execution_support,
         ),
         reason: BlockReason::VersionPolicy(PolicyBlockReason::PreReleaseBlocked),
         policy_warnings: Vec::new(),
@@ -414,23 +501,60 @@ fn blocked_policy_item(
     }
 }
 
-fn candidate(id: &str, name: &str, execution_eligibility: ExecutionEligibility) -> UpdateCandidate {
+fn blocked_missing_selected_update_metadata_item(
+    id: &str,
+    name: &str,
+    execution_support: ExecutionSupport,
+) -> PlanItem {
+    PlanItem::Blocked {
+        id: plan_item_id(id),
+        seed: UpdateSeed::manager_selected(
+            installed_tool("uv", name),
+            ManagerSelectedTarget::new(
+                VersionText::new("2.0.0").expect("valid target version"),
+                TargetAgeLookupResult::MissingMetadata,
+            ),
+            VersionScheme::Pep440,
+            execution_support,
+        ),
+        reason: BlockReason::MissingReleaseMetadata,
+        policy_warnings: Vec::new(),
+        diagnostics: PlanDiagnostics::new(Duration::from_secs(7 * 24 * 60 * 60))
+            .with_missing_metadata(upnow_domain::MissingMetadataKind::SelectedUpdate),
+    }
+}
+
+fn candidate(id: &str, name: &str, execution_support: ExecutionSupport) -> UpdateCandidate {
     UpdateCandidate::new(
         ToolId::new(id).expect("valid tool"),
         package(name),
         VersionText::new("1.0.0").expect("valid installed version"),
         VersionText::new("1.2.0").expect("valid target version"),
         VersionScheme::SemVer,
-        execution_eligibility,
+        execution_support,
+    )
+}
+
+fn manager_resolved_candidate(
+    id: &str,
+    name: &str,
+    execution_support: ExecutionSupport,
+) -> UpdateCandidate {
+    UpdateCandidate::manager_resolved(
+        ToolId::new(id).expect("valid tool"),
+        package(name),
+        VersionText::new("1.0.0").expect("valid installed version"),
+        VersionScheme::SemVer,
+        execution_support,
     )
 }
 
 fn candidate_with_diagnostics(
     id: &str,
     name: &str,
-    execution_eligibility: ExecutionEligibility,
+    execution_support: ExecutionSupport,
 ) -> UpdateCandidate {
-    candidate(id, name, execution_eligibility).with_diagnostics(PlanDiagnostics {
+    candidate(id, name, execution_support).with_diagnostics(PlanDiagnostics {
         required_age: Duration::from_secs(7 * 24 * 60 * 60),
         candidates: vec![
             CandidateEvaluationFact {

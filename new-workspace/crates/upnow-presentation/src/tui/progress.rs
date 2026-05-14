@@ -14,9 +14,12 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row};
-use upnow_execution::progress::{
-    ExecutionProgressEvent, ExecutionProgressRow, ExecutionProgressState, ExecutionProgressStatus,
-    ExecutionProgressSummary,
+use upnow_execution::{
+    ResolvedExecutionTarget,
+    progress::{
+        ExecutionProgressEvent, ExecutionProgressRow, ExecutionProgressState,
+        ExecutionProgressStatus, ExecutionProgressSummary,
+    },
 };
 
 use crate::tui::components::{
@@ -330,10 +333,17 @@ fn progress_table_row(
         Cell::new(row.manager_id.as_str().to_owned()).style(style),
         Cell::new(row.package_name.as_str().to_owned()).style(theme.emphasis(style)),
         Cell::new(row.installed_version.as_str().to_owned()).style(style),
-        Cell::new(row.target_version.as_str().to_owned()).style(style),
+        Cell::new(progress_target_label(&row.target)).style(style),
         Cell::new(status_note(&row.status)).style(style),
     ])
     .style(style)
+}
+
+fn progress_target_label(target: &ResolvedExecutionTarget) -> String {
+    match target {
+        ResolvedExecutionTarget::Known(version) => version.as_str().to_owned(),
+        ResolvedExecutionTarget::ManagerResolved => "manager-resolved".to_owned(),
+    }
 }
 
 const fn progress_row_style(status: &ExecutionProgressStatus, theme: &TuiTheme) -> Style {

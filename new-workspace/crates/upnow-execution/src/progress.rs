@@ -2,7 +2,7 @@ use upnow_domain::{ManagerId, PackageName, PlanItemId, VersionText};
 
 use crate::{
     ExecutionCommandIntent, ExecutionReport, ExecutionStatus, ResolvedExecutionItem,
-    ResolvedExecutionPlan,
+    ResolvedExecutionPlan, ResolvedExecutionTarget,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,7 +19,7 @@ pub struct ExecutionProgressRow {
     pub plan_item_id: PlanItemId,
     pub package_name: PackageName,
     pub installed_version: VersionText,
-    pub target_version: VersionText,
+    pub target: ResolvedExecutionTarget,
     pub status: ExecutionProgressStatus,
 }
 
@@ -226,7 +226,7 @@ fn row_from_item(manager_id: ManagerId, item: ResolvedExecutionItem) -> Executio
         plan_item_id: item.plan_item_id,
         package_name: item.package_name,
         installed_version: item.installed_version,
-        target_version: item.target_version,
+        target: item.target,
         status: ExecutionProgressStatus::Pending,
     }
 }

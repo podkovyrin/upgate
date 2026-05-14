@@ -59,35 +59,36 @@ impl PlanSelection {
 /// One selected plan row and the target/action chosen for this apply run.
 pub struct SelectedItem {
     pub plan_item_id: PlanItemId,
-    pub target: SelectedTarget,
+    pub selected_update: SelectedUpdate,
 }
 
 impl SelectedItem {
-    pub const fn new(plan_item_id: PlanItemId, target: SelectedTarget) -> Self {
+    pub const fn new(plan_item_id: PlanItemId, selected_update: SelectedUpdate) -> Self {
         Self {
             plan_item_id,
-            target,
+            selected_update,
         }
     }
     pub const fn recommended(plan_item_id: PlanItemId) -> Self {
-        Self::new(plan_item_id, SelectedTarget::Recommended)
+        Self::new(plan_item_id, SelectedUpdate::Recommended)
     }
-    pub const fn forced_candidate(plan_item_id: PlanItemId) -> Self {
-        Self::new(plan_item_id, SelectedTarget::ForcedCandidate)
+    pub const fn force_planned_candidate(plan_item_id: PlanItemId) -> Self {
+        Self::new(plan_item_id, SelectedUpdate::ForcePlannedCandidate)
     }
-    pub const fn alternate_exact(plan_item_id: PlanItemId, target_version: VersionText) -> Self {
-        Self::new(
-            plan_item_id,
-            SelectedTarget::AlternateExact { target_version },
-        )
+    pub const fn exact(plan_item_id: PlanItemId, target_version: VersionText) -> Self {
+        Self::new(plan_item_id, SelectedUpdate::Exact { target_version })
+    }
+    pub const fn manager_resolved(plan_item_id: PlanItemId) -> Self {
+        Self::new(plan_item_id, SelectedUpdate::ManagerResolved)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SelectedTarget {
+pub enum SelectedUpdate {
     Recommended,
-    ForcedCandidate,
-    AlternateExact { target_version: VersionText },
+    ForcePlannedCandidate,
+    Exact { target_version: VersionText },
+    ManagerResolved,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -6,9 +6,10 @@ pub mod progress;
 use std::fmt::{self, Display};
 
 use upnow_domain::{
-    BlockReason, ExecutionEligibility, ExecutionTargetKind, ManagerCapabilities, ManagerId,
-    PackageName, PlanDiagnostics, PlanItem, PlanItemId, PlanSelection, SelectedTarget,
-    UpdateCandidate, UpdatePlan, UpdateSeed, VersionPolicy, VersionText,
+    BlockReason, ExecutionSupport, ExecutionTargetKind, ManagerCapabilities, ManagerId,
+    MinAgeConstraintSupport, MissingMetadataKind, PackageName, PlanDiagnostics, PlanItem,
+    PlanItemId, PlanSelection, PlannedTargetRef, SelectedUpdate, UpdateCandidate, UpdatePlan,
+    UpdateSeed, VersionPolicy, VersionText,
 };
 use upnow_infra::{CommandCheck, CommandSpec, InfraError, ProcessRunner};
 
@@ -48,11 +49,32 @@ pub struct ResolvedExecutionItem {
     pub plan_item_id: PlanItemId,
     pub package_name: PackageName,
     pub installed_version: VersionText,
-    pub target_version: VersionText,
-    pub execution_eligibility: ExecutionEligibility,
+    pub target: ResolvedExecutionTarget,
+    pub execution_support: ExecutionSupport,
     pub execution_target_kind: ExecutionTargetKind,
     pub exact_target_required: bool,
     pub bypass_min_release_age: bool,
+}
+
+impl ResolvedExecutionItem {
+    pub const fn known_target_version(&self) -> Option<&VersionText> {
+        self.target.known_version()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedExecutionTarget {
+    Known(VersionText),
+    ManagerResolved,
+}
+
+impl ResolvedExecutionTarget {
+    pub const fn known_version(&self) -> Option<&VersionText> {
+        match self {
+            Self::Known(version) => Some(version),
+            Self::ManagerResolved => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +82,8 @@ pub enum ExecutionSelectionError {
     UnknownPlanItem(String),
     ItemNotExecutable(String),
     ExactTargetUnsupported(String),
+    ManagerResolvedUnsupported(String),
+    KnownTargetRequired(String),
 }
 
 impl Display for ExecutionSelectionError {
@@ -71,6 +95,18 @@ impl Display for ExecutionSelectionError {
                 write!(
                     formatter,
                     "plan item `{id}` does not support exact target execution"
+                )
+            }
+            Self::ManagerResolvedUnsupported(id) => {
+                write!(
+                    formatter,
+                    "plan item `{id}` does not support manager-resolved selected execution"
+                )
+            }
+            Self::KnownTargetRequired(id) => {
+                write!(
+                    formatter,
+                    "plan item `{id}` requires a known target version"
                 )
             }
         }
@@ -139,7 +175,7 @@ pub struct ExecutionItemResult {
     pub plan_item_id: PlanItemId,
     pub package_name: PackageName,
     pub installed_version: VersionText,
-    pub target_version: VersionText,
+    pub target: ResolvedExecutionTarget,
     pub status: ExecutionStatus,
 }
 
@@ -168,7 +204,7 @@ pub struct ExecutionCommandItem {
     pub plan_item_id: PlanItemId,
     pub package_name: PackageName,
     pub installed_version: VersionText,
-    pub target_version: VersionText,
+    pub target: ResolvedExecutionTarget,
 }
 
 impl From<&ResolvedExecutionItem> for ExecutionCommandItem {
@@ -177,7 +213,7 @@ impl From<&ResolvedExecutionItem> for ExecutionCommandItem {
             plan_item_id: item.plan_item_id.clone(),
             package_name: item.package_name.clone(),
             installed_version: item.installed_version.clone(),
-            target_version: item.target_version.clone(),
+            target: item.target.clone(),
         }
     }
 }
@@ -211,7 +247,7 @@ pub fn execute_commands(
                 plan_item_id: item.plan_item_id,
                 package_name: item.package_name,
                 installed_version: item.installed_version,
-                target_version: item.target_version,
+                target: item.target,
                 status: status.clone(),
             });
         }
@@ -229,47 +265,45 @@ fn selected_execution_items(
         let item = plan.item(&selected.plan_item_id).ok_or_else(|| {
             ExecutionSelectionError::UnknownPlanItem(selected.plan_item_id.as_str().to_owned())
         })?;
-        let resolved = match (item, &selected.target) {
-            (PlanItem::Update { candidate, .. }, SelectedTarget::Recommended) => resolved_item(
+        let resolved = match (item, &selected.selected_update) {
+            (PlanItem::Update { candidate, .. }, SelectedUpdate::Recommended) => resolved_item(
                 selected.plan_item_id.clone(),
                 candidate,
-                candidate.target_version.clone(),
+                known_candidate_target(candidate)?,
                 false,
                 false,
             ),
             (
                 PlanItem::Update { candidate, .. } | PlanItem::Delayed { candidate, .. },
-                SelectedTarget::AlternateExact { target_version },
-            ) if candidate.execution_eligibility.supports_exact_target() => resolved_item(
+                SelectedUpdate::Exact { target_version },
+            ) if candidate.execution_support.exact => resolved_item(
                 selected.plan_item_id.clone(),
                 candidate,
-                target_version.clone(),
+                ResolvedExecutionTarget::Known(target_version.clone()),
                 true,
                 exact_target_bypasses_min_release_age(candidate, target_version),
             ),
             (
                 PlanItem::Update { candidate, .. } | PlanItem::Delayed { candidate, .. },
-                SelectedTarget::AlternateExact { .. },
-            ) if !candidate.execution_eligibility.supports_exact_target() => {
+                SelectedUpdate::Exact { .. },
+            ) if !candidate.execution_support.exact => {
                 return Err(ExecutionSelectionError::ExactTargetUnsupported(
                     item.id().as_str().to_owned(),
                 ));
             }
-            (PlanItem::Delayed { candidate, .. }, SelectedTarget::ForcedCandidate)
-                if candidate.execution_eligibility.supports_exact_target() =>
+            (PlanItem::Delayed { candidate, .. }, SelectedUpdate::ForcePlannedCandidate)
+                if candidate.execution_support.exact =>
             {
                 resolved_item(
                     selected.plan_item_id.clone(),
                     candidate,
-                    candidate.target_version.clone(),
+                    known_candidate_target(candidate)?,
                     true,
                     true,
                 )
             }
-            (PlanItem::Delayed { .. }, SelectedTarget::ForcedCandidate) => {
-                return Err(ExecutionSelectionError::ExactTargetUnsupported(
-                    item.id().as_str().to_owned(),
-                ));
+            (PlanItem::Delayed { candidate, .. }, SelectedUpdate::ForcePlannedCandidate) => {
+                resolve_forced_candidate(selected.plan_item_id.clone(), candidate)?
             }
             (
                 PlanItem::Blocked {
@@ -278,29 +312,27 @@ fn selected_execution_items(
                     diagnostics,
                     ..
                 },
-                SelectedTarget::ForcedCandidate,
-            ) if seed.execution_eligibility.supports_exact_target() => resolved_seed_item(
+                SelectedUpdate::ForcePlannedCandidate,
+            ) if seed.execution_support.exact => resolved_seed_item(
                 selected.plan_item_id.clone(),
                 seed,
-                seed.target_selection.target_version().clone(),
+                known_seed_target(seed)?,
                 true,
-                target_bypasses_min_release_age(
-                    diagnostics,
-                    seed.target_selection.target_version(),
-                ),
+                seed.target_selection
+                    .target_version()
+                    .is_some_and(|target_version| {
+                        target_bypasses_min_release_age(diagnostics, target_version)
+                    }),
             ),
             (
                 PlanItem::Blocked {
                     seed,
                     reason: BlockReason::VersionPolicy(_),
+                    diagnostics,
                     ..
                 },
-                SelectedTarget::ForcedCandidate,
-            ) if !seed.execution_eligibility.supports_exact_target() => {
-                return Err(ExecutionSelectionError::ExactTargetUnsupported(
-                    item.id().as_str().to_owned(),
-                ));
-            }
+                SelectedUpdate::ForcePlannedCandidate,
+            ) => resolve_forced_seed(selected.plan_item_id.clone(), seed, diagnostics)?,
             (
                 PlanItem::Blocked {
                     seed,
@@ -308,11 +340,11 @@ fn selected_execution_items(
                     diagnostics,
                     ..
                 },
-                SelectedTarget::AlternateExact { target_version },
-            ) if seed.execution_eligibility.supports_exact_target() => resolved_seed_item(
+                SelectedUpdate::Exact { target_version },
+            ) if seed.execution_support.exact => resolved_seed_item(
                 selected.plan_item_id.clone(),
                 seed,
-                target_version.clone(),
+                ResolvedExecutionTarget::Known(target_version.clone()),
                 true,
                 target_bypasses_min_release_age(diagnostics, target_version),
             ),
@@ -322,11 +354,36 @@ fn selected_execution_items(
                     reason: BlockReason::VersionPolicy(_),
                     ..
                 },
-                SelectedTarget::AlternateExact { .. },
-            ) if !seed.execution_eligibility.supports_exact_target() => {
+                SelectedUpdate::Exact { .. },
+            ) if !seed.execution_support.exact => {
                 return Err(ExecutionSelectionError::ExactTargetUnsupported(
                     item.id().as_str().to_owned(),
                 ));
+            }
+            (
+                PlanItem::Update { candidate, .. } | PlanItem::Delayed { candidate, .. },
+                SelectedUpdate::ManagerResolved,
+            ) => {
+                resolve_manager_resolved_candidate(selected.plan_item_id.clone(), candidate, false)?
+            }
+            (
+                PlanItem::Blocked {
+                    seed,
+                    reason: BlockReason::VersionPolicy(_),
+                    ..
+                },
+                SelectedUpdate::ManagerResolved,
+            ) => resolve_manager_resolved_seed(selected.plan_item_id.clone(), seed, false)?,
+            (
+                PlanItem::Blocked {
+                    seed,
+                    reason: BlockReason::MissingReleaseMetadata,
+                    diagnostics,
+                    ..
+                },
+                SelectedUpdate::ManagerResolved,
+            ) if diagnostics.missing_metadata == Some(MissingMetadataKind::SelectedUpdate) => {
+                resolve_manager_resolved_seed(selected.plan_item_id.clone(), seed, false)?
             }
             _ => {
                 return Err(ExecutionSelectionError::ItemNotExecutable(
@@ -342,7 +399,7 @@ fn selected_execution_items(
 fn resolved_item(
     plan_item_id: PlanItemId,
     candidate: &UpdateCandidate,
-    target_version: VersionText,
+    target: ResolvedExecutionTarget,
     exact_target_required: bool,
     bypass_min_release_age: bool,
 ) -> ResolvedExecutionItem {
@@ -350,8 +407,8 @@ fn resolved_item(
         plan_item_id,
         package_name: candidate.package_name.clone(),
         installed_version: candidate.installed_version.clone(),
-        target_version,
-        execution_eligibility: candidate.execution_eligibility,
+        target,
+        execution_support: candidate.execution_support,
         execution_target_kind: candidate.execution_target_kind,
         exact_target_required,
         bypass_min_release_age,
@@ -361,7 +418,7 @@ fn resolved_item(
 fn resolved_seed_item(
     plan_item_id: PlanItemId,
     seed: &UpdateSeed,
-    target_version: VersionText,
+    target: ResolvedExecutionTarget,
     exact_target_required: bool,
     bypass_min_release_age: bool,
 ) -> ResolvedExecutionItem {
@@ -369,12 +426,139 @@ fn resolved_seed_item(
         plan_item_id,
         package_name: seed.installed.package_name.clone(),
         installed_version: seed.installed.installed_version.clone(),
-        target_version,
-        execution_eligibility: seed.execution_eligibility,
+        target,
+        execution_support: seed.execution_support,
         execution_target_kind: seed.execution_target_kind,
         exact_target_required,
         bypass_min_release_age,
     }
+}
+
+fn known_candidate_target(
+    candidate: &UpdateCandidate,
+) -> Result<ResolvedExecutionTarget, ExecutionSelectionError> {
+    match candidate.target() {
+        PlannedTargetRef::Known(version) => Ok(ResolvedExecutionTarget::Known(version.clone())),
+        PlannedTargetRef::ManagerResolved => Err(ExecutionSelectionError::KnownTargetRequired(
+            candidate.tool_id.as_str().to_owned(),
+        )),
+    }
+}
+
+fn known_seed_target(
+    seed: &UpdateSeed,
+) -> Result<ResolvedExecutionTarget, ExecutionSelectionError> {
+    match seed.target_selection.target() {
+        PlannedTargetRef::Known(version) => Ok(ResolvedExecutionTarget::Known(version.clone())),
+        PlannedTargetRef::ManagerResolved => Err(ExecutionSelectionError::KnownTargetRequired(
+            seed.installed.tool_id.as_str().to_owned(),
+        )),
+    }
+}
+
+fn resolve_forced_candidate(
+    plan_item_id: PlanItemId,
+    candidate: &UpdateCandidate,
+) -> Result<ResolvedExecutionItem, ExecutionSelectionError> {
+    let support = candidate.execution_support;
+    if support.resolver_native_selected.selected
+        && support.resolver_native_selected.min_age_constraint == MinAgeConstraintSupport::Optional
+    {
+        return Ok(resolved_item(
+            plan_item_id,
+            candidate,
+            known_candidate_target(candidate)?,
+            false,
+            true,
+        ));
+    }
+    if support.native_selected && support.supports_manager_resolved_target() {
+        let target =
+            known_candidate_target(candidate).unwrap_or(ResolvedExecutionTarget::ManagerResolved);
+        return Ok(resolved_item(plan_item_id, candidate, target, false, true));
+    }
+    Err(ExecutionSelectionError::ExactTargetUnsupported(
+        plan_item_id.as_str().to_owned(),
+    ))
+}
+
+fn resolve_forced_seed(
+    plan_item_id: PlanItemId,
+    seed: &UpdateSeed,
+    diagnostics: &PlanDiagnostics,
+) -> Result<ResolvedExecutionItem, ExecutionSelectionError> {
+    let support = seed.execution_support;
+    if support.resolver_native_selected.selected
+        && support.resolver_native_selected.min_age_constraint == MinAgeConstraintSupport::Optional
+    {
+        return Ok(resolved_seed_item(
+            plan_item_id,
+            seed,
+            known_seed_target(seed)?,
+            false,
+            true,
+        ));
+    }
+    if support.native_selected && support.supports_manager_resolved_target() {
+        let bypass = seed
+            .target_selection
+            .target_version()
+            .is_some_and(|target_version| {
+                target_bypasses_min_release_age(diagnostics, target_version)
+            });
+        let target = known_seed_target(seed).unwrap_or(ResolvedExecutionTarget::ManagerResolved);
+        return Ok(resolved_seed_item(
+            plan_item_id,
+            seed,
+            target,
+            false,
+            bypass,
+        ));
+    }
+    Err(ExecutionSelectionError::ExactTargetUnsupported(
+        plan_item_id.as_str().to_owned(),
+    ))
+}
+
+fn resolve_manager_resolved_candidate(
+    plan_item_id: PlanItemId,
+    candidate: &UpdateCandidate,
+    bypass_min_release_age: bool,
+) -> Result<ResolvedExecutionItem, ExecutionSelectionError> {
+    if !candidate
+        .execution_support
+        .supports_manager_resolved_target()
+    {
+        return Err(ExecutionSelectionError::ManagerResolvedUnsupported(
+            plan_item_id.as_str().to_owned(),
+        ));
+    }
+    Ok(resolved_item(
+        plan_item_id,
+        candidate,
+        ResolvedExecutionTarget::ManagerResolved,
+        false,
+        bypass_min_release_age,
+    ))
+}
+
+fn resolve_manager_resolved_seed(
+    plan_item_id: PlanItemId,
+    seed: &UpdateSeed,
+    bypass_min_release_age: bool,
+) -> Result<ResolvedExecutionItem, ExecutionSelectionError> {
+    if !seed.execution_support.supports_manager_resolved_target() {
+        return Err(ExecutionSelectionError::ManagerResolvedUnsupported(
+            plan_item_id.as_str().to_owned(),
+        ));
+    }
+    Ok(resolved_seed_item(
+        plan_item_id,
+        seed,
+        ResolvedExecutionTarget::ManagerResolved,
+        false,
+        bypass_min_release_age,
+    ))
 }
 
 fn should_use_native_global_update(
@@ -389,7 +573,7 @@ fn should_use_native_global_update(
         || selected.iter().any(|item| item.exact_target_required)
         || !selected
             .iter()
-            .all(|item| item.execution_eligibility.supports_native_global())
+            .all(|item| item.execution_support.native_global)
         || !selected
             .iter()
             .all(|item| item.execution_target_kind == ExecutionTargetKind::Standard)
@@ -399,7 +583,7 @@ fn should_use_native_global_update(
     if version_policy != VersionPolicy::None
         && !selected
             .iter()
-            .all(|item| item.execution_eligibility == ExecutionEligibility::NativeOnly)
+            .all(|item| item.execution_support.native_selected && !item.execution_support.exact)
     {
         return false;
     }
@@ -422,7 +606,7 @@ fn should_use_resolver_native_global_update(
         && selected.iter().all(|item| {
             !item.bypass_min_release_age
                 && !item.exact_target_required
-                && item.execution_eligibility.supports_resolver_native()
+                && item.execution_support.resolver_native_selected.selected
         })
         && selected_matches_all_updates(plan, selected)
 }
@@ -448,7 +632,10 @@ fn should_use_resolver_native_update(
     item: &ResolvedExecutionItem,
     version_policy: VersionPolicy,
 ) -> bool {
-    version_policy == VersionPolicy::None && item.execution_eligibility.supports_resolver_native()
+    item.execution_support.resolver_native_selected.selected
+        && (version_policy == VersionPolicy::None
+            || item.bypass_min_release_age
+            || item.target == ResolvedExecutionTarget::ManagerResolved)
 }
 
 fn should_use_native_selected_update(
@@ -459,12 +646,14 @@ fn should_use_native_selected_update(
         return false;
     }
 
-    match item.execution_eligibility {
-        ExecutionEligibility::NativeOnly => true,
-        ExecutionEligibility::NativeOrExact => version_policy == VersionPolicy::None,
-        ExecutionEligibility::ExactOnly
-        | ExecutionEligibility::ExactOrNativeGlobal
-        | ExecutionEligibility::ResolverNativeOnly => false,
+    if !item.execution_support.native_selected {
+        false
+    } else if item.target == ResolvedExecutionTarget::ManagerResolved {
+        true
+    } else if item.execution_support.exact {
+        version_policy == VersionPolicy::None
+    } else {
+        true
     }
 }
 
@@ -476,13 +665,13 @@ fn should_use_grouped_native_update(item: &ResolvedExecutionItem) -> bool {
     match item.execution_target_kind {
         ExecutionTargetKind::Standard => false,
         ExecutionTargetKind::BrewFormula | ExecutionTargetKind::BrewCask => {
-            item.execution_eligibility.supports_native_target()
+            item.execution_support.grouped_native || item.execution_support.native_selected
         }
     }
 }
 
 const fn supports_exact_target(item: &ResolvedExecutionItem) -> bool {
-    item.execution_eligibility.supports_exact_target()
+    item.execution_support.exact && matches!(item.target, ResolvedExecutionTarget::Known(_))
 }
 
 fn exact_target_bypasses_min_release_age(

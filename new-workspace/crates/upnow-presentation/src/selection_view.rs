@@ -1,8 +1,8 @@
 use upnow_domain::{
     AdvisoryLatestFact, BlockReason, CandidateAgeFact, CandidateEvaluationFact, DelayReason,
-    ManagerId, PackageName, PlanDiagnostics, PlanItem, PlanItemId, PolicyBlockReason,
-    PolicyWarning, ReleaseLookupError, SkipReason, UpdateCandidate, UpdatePlan, UpdateSeed,
-    UpdateSelectionPolicy, VersionText,
+    ManagerId, MissingMetadataKind, PackageName, PlanDiagnostics, PlanItem, PlanItemId,
+    PolicyBlockReason, PolicyWarning, ReleaseLookupError, SkipReason, UpdateCandidate, UpdatePlan,
+    UpdateSeed, UpdateSelectionPolicy, VersionText,
 };
 
 use std::time::Duration;
@@ -64,21 +64,25 @@ pub enum TargetOption {
         target_version: VersionText,
         note_parts: Vec<CandidateNotePart>,
     },
+    /// Let the manager choose the final target for this selected tool.
+    ManagerResolved { note_parts: Vec<CandidateNotePart> },
 }
 
 impl TargetOption {
-    pub const fn target_version(&self) -> &VersionText {
+    pub const fn target_version(&self) -> Option<&VersionText> {
         match self {
             Self::Recommended { target_version, .. }
             | Self::ForcedCandidate { target_version, .. }
-            | Self::AlternateExact { target_version, .. } => target_version,
+            | Self::AlternateExact { target_version, .. } => Some(target_version),
+            Self::ManagerResolved { .. } => None,
         }
     }
     pub fn note_parts(&self) -> &[CandidateNotePart] {
         match self {
             Self::Recommended { note_parts, .. }
             | Self::ForcedCandidate { note_parts, .. }
-            | Self::AlternateExact { note_parts, .. } => note_parts,
+            | Self::AlternateExact { note_parts, .. }
+            | Self::ManagerResolved { note_parts } => note_parts,
         }
     }
     pub fn has_violation(&self) -> bool {
@@ -154,7 +158,7 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
                 plan_item_id: id.clone(),
                 package_name: candidate.package_name.clone(),
                 installed_version: candidate.installed_version.clone(),
-                target_version: Some(candidate.target_version.clone()),
+                target_version: candidate.target_version().cloned(),
                 status: SelectionRowStatus::Update,
                 default_visibility: SelectionRowVisibility::Visible,
                 notes,
@@ -186,7 +190,7 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
                 plan_item_id: id.clone(),
                 package_name: candidate.package_name.clone(),
                 installed_version: candidate.installed_version.clone(),
-                target_version: Some(candidate.target_version.clone()),
+                target_version: candidate.target_version().cloned(),
                 status: SelectionRowStatus::Delayed,
                 default_visibility: if target_options.is_empty() {
                     SelectionRowVisibility::HiddenUntilViewAll
@@ -212,7 +216,7 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
                 plan_item_id: id.clone(),
                 package_name: seed.installed.package_name.clone(),
                 installed_version: seed.installed.installed_version.clone(),
-                target_version: Some(seed.target_selection.target_version().clone()),
+                target_version: seed.target_selection.target_version().cloned(),
                 status: SelectionRowStatus::Blocked,
                 default_visibility: SelectionRowVisibility::HiddenUntilViewAll,
                 notes,
@@ -268,11 +272,22 @@ fn update_target_options(
     candidate: &UpdateCandidate,
     notes: Vec<CandidateNotePart>,
 ) -> Vec<TargetOption> {
-    let mut options = vec![TargetOption::Recommended {
-        target_version: candidate.target_version.clone(),
-        note_parts: notes.clone(),
-    }];
-    if candidate.execution_eligibility.supports_exact_target() {
+    let mut options = match candidate.target_version() {
+        Some(target_version) => vec![TargetOption::Recommended {
+            target_version: target_version.clone(),
+            note_parts: notes.clone(),
+        }],
+        None if candidate
+            .execution_support
+            .supports_manager_resolved_target() =>
+        {
+            vec![TargetOption::ManagerResolved {
+                note_parts: notes.clone(),
+            }]
+        }
+        None => Vec::new(),
+    };
+    if candidate.execution_support.supports_exact_target() {
         let exact_options = exact_target_options(candidate, notes);
         options.extend(exact_options);
     }
@@ -283,12 +298,23 @@ fn delayed_target_options(
     candidate: &UpdateCandidate,
     notes: Vec<CandidateNotePart>,
 ) -> Vec<TargetOption> {
-    if candidate.execution_eligibility.supports_exact_target() {
+    if candidate.execution_support.supports_age_bypass() {
+        let Some(target_version) = candidate.target_version().cloned() else {
+            if candidate
+                .execution_support
+                .supports_manager_resolved_target()
+            {
+                return vec![TargetOption::ManagerResolved { note_parts: notes }];
+            }
+            return Vec::new();
+        };
         let mut options = vec![TargetOption::ForcedCandidate {
-            target_version: candidate.target_version.clone(),
+            target_version,
             note_parts: notes.clone(),
         }];
-        options.extend(exact_target_options(candidate, notes));
+        if candidate.execution_support.supports_exact_target() {
+            options.extend(exact_target_options(candidate, notes));
+        }
         return options;
     }
     Vec::new()
@@ -300,20 +326,37 @@ fn blocked_target_options(
     notes: Vec<CandidateNotePart>,
     diagnostics: &PlanDiagnostics,
 ) -> Vec<TargetOption> {
+    if matches!(reason, BlockReason::MissingReleaseMetadata)
+        && diagnostics.missing_metadata == Some(MissingMetadataKind::SelectedUpdate)
+        && seed.execution_support.supports_manager_resolved_target()
+    {
+        return vec![TargetOption::ManagerResolved { note_parts: notes }];
+    }
+
+    let Some(target_version) = seed.target_selection.target_version().cloned() else {
+        return match reason {
+            BlockReason::VersionPolicy(_) | BlockReason::MissingReleaseMetadata
+                if seed.execution_support.supports_manager_resolved_target() =>
+            {
+                vec![TargetOption::ManagerResolved { note_parts: notes }]
+            }
+            _ => Vec::new(),
+        };
+    };
+
     if !matches!(reason, BlockReason::VersionPolicy(_))
-        || !seed.execution_eligibility.supports_exact_target()
+        || !seed.execution_support.supports_age_bypass()
     {
         return Vec::new();
     }
 
-    let target_version = seed.target_selection.target_version().clone();
     let candidate = UpdateCandidate::new(
         seed.installed.tool_id.clone(),
         seed.installed.package_name.clone(),
         seed.installed.installed_version.clone(),
         target_version.clone(),
         seed.version_scheme,
-        seed.execution_eligibility,
+        seed.execution_support,
     )
     .with_execution_target_kind(seed.execution_target_kind)
     .with_diagnostics(diagnostics.clone());
@@ -322,7 +365,9 @@ fn blocked_target_options(
         target_version,
         note_parts: notes.clone(),
     }];
-    options.extend(exact_target_options(&candidate, notes));
+    if seed.execution_support.supports_exact_target() {
+        options.extend(exact_target_options(&candidate, notes));
+    }
     options
 }
 
@@ -332,7 +377,10 @@ fn exact_target_options(
 ) -> Vec<TargetOption> {
     if candidate.diagnostics.candidates.is_empty() {
         return vec![TargetOption::AlternateExact {
-            target_version: candidate.target_version.clone(),
+            target_version: candidate
+                .target_version()
+                .expect("exact option requires known target")
+                .clone(),
             note_parts: fallback_notes,
         }];
     }

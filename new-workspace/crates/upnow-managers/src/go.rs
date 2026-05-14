@@ -9,7 +9,7 @@ use chrono::DateTime;
 use semver::Version;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
+    DomainError, ExecutionSupport, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerRuleReason, ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry,
     ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ScanIssue,
     SkipReason, ToolId, ToolName, UpdateSeed, VersionScheme, VersionText,
@@ -575,7 +575,7 @@ fn update_input(tool: &GoManagedTool, lookup: ReleaseLookupResult) -> ManagerUpd
         discovered_target,
         VersionScheme::SemVer,
         lookup,
-        ExecutionEligibility::ExactOnly,
+        ExecutionSupport::exact_only(),
     ))
 }
 
@@ -615,7 +615,11 @@ fn exact_command_for_item(
     let install_path = install_paths
         .get(&item.package_name)
         .ok_or_else(|| GoError::MissingInstallPath(item.package_name.as_str().to_owned()))?;
-    Ok(exact_command(install_path, &item.target_version))
+    Ok(exact_command(
+        install_path,
+        item.known_target_version()
+            .expect("exact command requires known target"),
+    ))
 }
 
 fn lookup_installed_release(

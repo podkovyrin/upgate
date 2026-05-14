@@ -19,9 +19,10 @@ pub use manager::{
 };
 pub use plan::{
     AdvisoryLatestFact, AdvisoryReleaseLookup, BlockReason, CandidateAgeFact, CandidateAgeSource,
-    CandidateEvaluationFact, DelayReason, ExecutionEligibility, ExecutionTargetKind,
-    ManagerSelectedTarget, ManagerUpdateInput, MissingMetadataKind, PlanDiagnostics, PlanIssue,
-    PlanItem, PlanItemId, PolicyBlockReason, SkipReason, TargetSelection, UpdateCandidate,
+    CandidateEvaluationFact, DelayReason, ExecutionSupport, ExecutionTargetKind,
+    ManagerSelectedTarget, ManagerUpdateInput, MinAgeConstraintSupport, MissingMetadataKind,
+    PlanDiagnostics, PlanIssue, PlanItem, PlanItemId, PlannedTarget, PlannedTargetRef,
+    PolicyBlockReason, ResolverNativeSupport, SkipReason, TargetSelection, UpdateCandidate,
     UpdatePlan, UpdateSeed,
 };
 pub use policy::{PolicyWarning, VersionPolicy};
@@ -33,6 +34,6 @@ pub use scan::{
     ManagerRuleReason, ManagerScanInput, ScanIssue, ScanItem, ScanReport, UnsupportedReason,
 };
 pub use selection::{
-    PlanSelection, SelectedItem, SelectedTarget, UpdateSelectionMode, UpdateSelectionPolicy,
+    PlanSelection, SelectedItem, SelectedUpdate, UpdateSelectionMode, UpdateSelectionPolicy,
 };
 pub use version::{VersionScheme, VersionText};

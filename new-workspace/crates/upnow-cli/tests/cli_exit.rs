@@ -48,7 +48,7 @@ case "$*" in
   "view alpha-ready time --json")
     printf '%s\n' '{"1.0.0":"2021-01-01T00:00:00.000Z","1.2.0":"2021-12-01T00:00:00.000Z"}'
     ;;
-  "-g update alpha-ready --min-release-age 7")
+  "update -g alpha-ready"|"-g update alpha-ready --min-release-age 7")
     echo "install failed" >&2
     exit 1
     ;;

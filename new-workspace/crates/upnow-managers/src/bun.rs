@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime};
 use chrono::DateTime;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
+    DomainError, ExecutionSupport, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
     ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
     VersionScheme, VersionText,
@@ -390,16 +390,23 @@ pub fn commands_for_execution_plan(
                     command: exact_command_with_program(
                         runtime.executable(),
                         &item.package_name,
-                        &item.target_version,
+                        item.known_target_version()
+                            .expect("exact command requires known target"),
                         min_release_age,
                         item.bypass_min_release_age,
                     ),
                 });
             }
-            ExecutionCommandIntent::NativeSelected(_) => {
-                return Err(BunError::UnsupportedCommandIntent(
-                    "native-selected".to_owned(),
-                ));
+            ExecutionCommandIntent::NativeSelected(item) => {
+                commands.push(ExecutionCommand {
+                    items: vec![ExecutionCommandItem::from(item)],
+                    command: selected_native_update_command(
+                        runtime.executable(),
+                        &item.package_name,
+                        min_release_age,
+                        item.bypass_min_release_age,
+                    ),
+                });
             }
         }
     }
@@ -433,6 +440,25 @@ fn global_update_command(bun: &str, min_release_age: Duration) -> CommandSpec {
         ],
     )
     .mutating()
+}
+
+fn selected_native_update_command(
+    bun: &str,
+    package_name: &PackageName,
+    min_release_age: Duration,
+    bypass_min_release_age: bool,
+) -> CommandSpec {
+    let min_age_secs = min_release_age.as_secs().to_string();
+    let mut args = vec![
+        "update".to_owned(),
+        "-g".to_owned(),
+        package_name.as_str().to_owned(),
+    ];
+    if !bypass_min_release_age {
+        args.push("--minimum-release-age".to_owned());
+        args.push(min_age_secs);
+    }
+    CommandSpec::new(bun, args).mutating()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -509,7 +535,7 @@ fn update_input(tool: InstalledTool, lookup: ReleaseLookupResult) -> ManagerUpda
         discovered_target,
         VersionScheme::SemVer,
         lookup,
-        ExecutionEligibility::ExactOrNativeGlobal,
+        ExecutionSupport::native_or_exact(),
     ))
 }
 
@@ -588,5 +614,159 @@ fn adapter_error(err: &BunError) -> ManagerAdapterError {
         manager_id: MANAGER_ID.to_owned(),
         kind,
         detail,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use upnow_domain::{ExecutionTargetKind, PlanItemId};
+    use upnow_execution::{ResolvedExecutionItem, ResolvedExecutionTarget};
+    use upnow_infra::CommandOutput;
+
+    #[test]
+    fn update_input_declares_selected_native_support() {
+        let input = update_input(
+            installed_tool_for_test("typescript"),
+            ReleaseLookupResult::MissingMetadata,
+        );
+        let ManagerUpdateInput::Seed(seed) = input else {
+            panic!("update input should be a seed");
+        };
+
+        assert_eq!(seed.execution_support, ExecutionSupport::native_or_exact());
+    }
+
+    #[test]
+    fn manager_resolved_selected_update_builds_scoped_global_command() {
+        let process = bun_runtime_process();
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::NativeSelected(resolved_item(
+                "typescript",
+                ResolvedExecutionTarget::ManagerResolved,
+                false,
+            ))],
+        };
+
+        let commands =
+            commands_for_execution_plan(&process, &plan, Duration::from_secs(7 * 24 * 60 * 60))
+                .expect("native selected command should be supported");
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(
+            commands[0].command.display(),
+            "/opt/bin/bun update -g typescript --minimum-release-age 604800"
+        );
+        assert!(matches!(
+            commands[0].items[0].target,
+            ResolvedExecutionTarget::ManagerResolved
+        ));
+    }
+
+    #[test]
+    fn forced_selected_update_omits_min_release_age() {
+        let process = bun_runtime_process();
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::NativeSelected(resolved_item(
+                "typescript",
+                ResolvedExecutionTarget::ManagerResolved,
+                true,
+            ))],
+        };
+
+        let commands =
+            commands_for_execution_plan(&process, &plan, Duration::from_secs(7 * 24 * 60 * 60))
+                .expect("native selected command should be supported");
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(
+            commands[0].command.display(),
+            "/opt/bin/bun update -g typescript"
+        );
+    }
+
+    #[test]
+    fn exact_and_global_command_shapes_are_unchanged() {
+        let process = bun_runtime_process();
+        let plan = ResolvedExecutionPlan {
+            intents: vec![
+                ExecutionCommandIntent::Exact(resolved_item(
+                    "typescript",
+                    ResolvedExecutionTarget::Known(
+                        VersionText::new("5.5.0").expect("valid version"),
+                    ),
+                    false,
+                )),
+                ExecutionCommandIntent::NativeGlobal(vec![resolved_item(
+                    "eslint",
+                    ResolvedExecutionTarget::Known(
+                        VersionText::new("9.0.0").expect("valid version"),
+                    ),
+                    false,
+                )]),
+            ],
+        };
+
+        let commands =
+            commands_for_execution_plan(&process, &plan, Duration::from_secs(7 * 24 * 60 * 60))
+                .expect("exact and global commands should still be supported");
+
+        assert_eq!(commands.len(), 2);
+        assert_eq!(
+            commands[0].command.display(),
+            "/opt/bin/bun update -g typescript@5.5.0 --minimum-release-age 604800"
+        );
+        assert_eq!(
+            commands[1].command.display(),
+            "/opt/bin/bun update -g --minimum-release-age 604800"
+        );
+    }
+
+    fn resolved_item(
+        package: &str,
+        target: ResolvedExecutionTarget,
+        bypass_min_release_age: bool,
+    ) -> ResolvedExecutionItem {
+        ResolvedExecutionItem {
+            plan_item_id: PlanItemId::new(format!("bun:{package}")).expect("valid plan item id"),
+            package_name: PackageName::new(package).expect("valid package"),
+            installed_version: VersionText::new("1.0.0").expect("valid version"),
+            target,
+            execution_support: ExecutionSupport::native_or_exact(),
+            execution_target_kind: ExecutionTargetKind::Standard,
+            exact_target_required: false,
+            bypass_min_release_age,
+        }
+    }
+
+    fn installed_tool_for_test(package: &str) -> InstalledTool {
+        InstalledTool::new(
+            BunManager::id(),
+            ToolId::new(format!("bun:{package}")).expect("valid tool id"),
+            PackageName::new(package).expect("valid package"),
+            ToolName::new(package).expect("valid tool name"),
+            VersionText::new("1.0.0").expect("valid version"),
+            ManagerMetadata::empty(),
+        )
+    }
+
+    fn bun_runtime_process() -> ProcessRunner {
+        ProcessRunner::fake([Ok(CommandOutput::from_parts(
+            success_status(),
+            "/opt/bin/bun\n",
+            "",
+        ))])
+    }
+
+    #[cfg(unix)]
+    fn success_status() -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(0)
+    }
+
+    #[cfg(windows)]
+    fn success_status() -> std::process::ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(0)
     }
 }

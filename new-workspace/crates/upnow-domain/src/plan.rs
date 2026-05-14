@@ -37,7 +37,7 @@ pub struct UpdateSeed {
     pub installed: InstalledTool,
     pub version_scheme: VersionScheme,
     pub target_selection: TargetSelection,
-    pub execution_eligibility: ExecutionEligibility,
+    pub execution_support: ExecutionSupport,
     pub execution_target_kind: ExecutionTargetKind,
 }
 
@@ -47,14 +47,14 @@ impl UpdateSeed {
         discovered_target: VersionText,
         version_scheme: VersionScheme,
         release_lookup: ReleaseLookupResult,
-        execution_eligibility: ExecutionEligibility,
+        execution_support: ExecutionSupport,
     ) -> Self {
         Self::planner_selectable(
             installed,
             discovered_target,
             version_scheme,
             release_lookup,
-            execution_eligibility,
+            execution_support,
         )
     }
     pub const fn planner_selectable(
@@ -62,7 +62,7 @@ impl UpdateSeed {
         discovered_target: VersionText,
         version_scheme: VersionScheme,
         release_lookup: ReleaseLookupResult,
-        execution_eligibility: ExecutionEligibility,
+        execution_support: ExecutionSupport,
     ) -> Self {
         Self {
             installed,
@@ -71,7 +71,7 @@ impl UpdateSeed {
                 discovered_target,
                 release_lookup,
             },
-            execution_eligibility,
+            execution_support,
             execution_target_kind: ExecutionTargetKind::Standard,
         }
     }
@@ -79,13 +79,13 @@ impl UpdateSeed {
         installed: InstalledTool,
         selected_target: ManagerSelectedTarget,
         version_scheme: VersionScheme,
-        execution_eligibility: ExecutionEligibility,
+        execution_support: ExecutionSupport,
     ) -> Self {
         Self {
             installed,
             version_scheme,
             target_selection: TargetSelection::ManagerSelected(selected_target),
-            execution_eligibility,
+            execution_support,
             execution_target_kind: ExecutionTargetKind::Standard,
         }
     }
@@ -113,12 +113,18 @@ pub enum TargetSelection {
 }
 
 impl TargetSelection {
-    pub const fn target_version(&self) -> &VersionText {
+    pub const fn target(&self) -> PlannedTargetRef<'_> {
         match self {
             Self::PlannerSelectable {
                 discovered_target, ..
-            } => discovered_target,
-            Self::ManagerSelected(target) => &target.target_version,
+            } => PlannedTargetRef::Known(discovered_target),
+            Self::ManagerSelected(target) => target.target.as_ref(),
+        }
+    }
+    pub const fn target_version(&self) -> Option<&VersionText> {
+        match self.target() {
+            PlannedTargetRef::Known(version) => Some(version),
+            PlannedTargetRef::ManagerResolved => None,
         }
     }
 }
@@ -129,7 +135,7 @@ impl TargetSelection {
 /// This is authoritative for manager-selected managers such as uv and mise.
 /// Advisory metadata may annotate output, but it must not replace this target.
 pub struct ManagerSelectedTarget {
-    pub target_version: VersionText,
+    pub target: PlannedTarget,
     pub target_age: TargetAgeLookupResult,
     pub advisory_release_lookup: Option<AdvisoryReleaseLookup>,
 }
@@ -137,9 +143,22 @@ pub struct ManagerSelectedTarget {
 impl ManagerSelectedTarget {
     pub const fn new(target_version: VersionText, target_age: TargetAgeLookupResult) -> Self {
         Self {
-            target_version,
+            target: PlannedTarget::Known(target_version),
             target_age,
             advisory_release_lookup: None,
+        }
+    }
+    pub const fn manager_resolved(target_age: TargetAgeLookupResult) -> Self {
+        Self {
+            target: PlannedTarget::ManagerResolved,
+            target_age,
+            advisory_release_lookup: None,
+        }
+    }
+    pub const fn target_version(&self) -> Option<&VersionText> {
+        match self.target.as_ref() {
+            PlannedTargetRef::Known(version) => Some(version),
+            PlannedTargetRef::ManagerResolved => None,
         }
     }
     pub fn with_advisory_release_lookup(
@@ -184,9 +203,9 @@ pub struct UpdateCandidate {
     pub tool_id: ToolId,
     pub package_name: PackageName,
     pub installed_version: VersionText,
-    pub target_version: VersionText,
+    pub target: PlannedTarget,
     pub version_scheme: VersionScheme,
-    pub execution_eligibility: ExecutionEligibility,
+    pub execution_support: ExecutionSupport,
     pub execution_target_kind: ExecutionTargetKind,
     pub policy_warnings: Vec<PolicyWarning>,
     pub diagnostics: PlanDiagnostics,
@@ -199,15 +218,34 @@ impl UpdateCandidate {
         installed_version: VersionText,
         target_version: VersionText,
         version_scheme: VersionScheme,
-        execution_eligibility: ExecutionEligibility,
+        execution_support: ExecutionSupport,
     ) -> Self {
         Self {
             tool_id,
             package_name,
             installed_version,
-            target_version,
+            target: PlannedTarget::Known(target_version),
             version_scheme,
-            execution_eligibility,
+            execution_support,
+            execution_target_kind: ExecutionTargetKind::Standard,
+            policy_warnings: Vec::new(),
+            diagnostics: PlanDiagnostics::default(),
+        }
+    }
+    pub fn manager_resolved(
+        tool_id: ToolId,
+        package_name: PackageName,
+        installed_version: VersionText,
+        version_scheme: VersionScheme,
+        execution_support: ExecutionSupport,
+    ) -> Self {
+        Self {
+            tool_id,
+            package_name,
+            installed_version,
+            target: PlannedTarget::ManagerResolved,
+            version_scheme,
+            execution_support,
             execution_target_kind: ExecutionTargetKind::Standard,
             policy_warnings: Vec::new(),
             diagnostics: PlanDiagnostics::default(),
@@ -237,38 +275,159 @@ impl UpdateCandidate {
     pub const fn installed_version(&self) -> &VersionText {
         &self.installed_version
     }
-    pub const fn target_version(&self) -> &VersionText {
-        &self.target_version
+    pub const fn target(&self) -> PlannedTargetRef<'_> {
+        self.target.as_ref()
+    }
+    pub const fn target_version(&self) -> Option<&VersionText> {
+        match self.target.as_ref() {
+            PlannedTargetRef::Known(version) => Some(version),
+            PlannedTargetRef::ManagerResolved => None,
+        }
     }
     pub const fn version_scheme(&self) -> VersionScheme {
         self.version_scheme
     }
-    pub const fn execution_eligibility(&self) -> ExecutionEligibility {
-        self.execution_eligibility
+    pub const fn execution_support(&self) -> ExecutionSupport {
+        self.execution_support
     }
     pub const fn execution_target_kind(&self) -> ExecutionTargetKind {
         self.execution_target_kind
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlannedTarget {
+    Known(VersionText),
+    ManagerResolved,
+}
+
+impl PlannedTarget {
+    pub const fn as_ref(&self) -> PlannedTargetRef<'_> {
+        match self {
+            Self::Known(version) => PlannedTargetRef::Known(version),
+            Self::ManagerResolved => PlannedTargetRef::ManagerResolved,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecutionEligibility {
-    /// The item can use either a selected native update command or an exact
-    /// target command. Execution chooses native selected only when the selected
-    /// plan semantics make the manager's resolver safe to use.
-    NativeOrExact,
-    /// The item can only be updated by installing a concrete target version.
-    ExactOnly,
-    /// The item can use an exact target command, and may participate in a safe
-    /// manager-level native global update when the selected set matches all
-    /// eligible updates.
-    ExactOrNativeGlobal,
-    /// The item can only use a selected native update command, where the
-    /// manager chooses the final target for that selected tool.
-    NativeOnly,
-    /// The item can only use a resolver-native command, where apply re-runs the
-    /// manager resolver for this item instead of installing an exact version.
-    ResolverNativeOnly,
+pub enum PlannedTargetRef<'a> {
+    Known(&'a VersionText),
+    ManagerResolved,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExecutionSupport {
+    pub exact: bool,
+    pub native_selected: bool,
+    pub native_global: bool,
+    pub grouped_native: bool,
+    pub resolver_native_selected: ResolverNativeSupport,
+    pub resolver_native_global: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolverNativeSupport {
+    pub selected: bool,
+    pub min_age_constraint: MinAgeConstraintSupport,
+    pub manager_resolved_target: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MinAgeConstraintSupport {
+    NotApplicable,
+    Required,
+    Optional,
+}
+
+impl ResolverNativeSupport {
+    pub const fn none() -> Self {
+        Self {
+            selected: false,
+            min_age_constraint: MinAgeConstraintSupport::NotApplicable,
+            manager_resolved_target: false,
+        }
+    }
+    pub const fn selected(
+        min_age_constraint: MinAgeConstraintSupport,
+        manager_resolved_target: bool,
+    ) -> Self {
+        Self {
+            selected: true,
+            min_age_constraint,
+            manager_resolved_target,
+        }
+    }
+}
+
+impl ExecutionSupport {
+    pub const fn exact_only() -> Self {
+        Self {
+            exact: true,
+            native_selected: false,
+            native_global: false,
+            grouped_native: false,
+            resolver_native_selected: ResolverNativeSupport::none(),
+            resolver_native_global: false,
+        }
+    }
+    pub const fn native_or_exact() -> Self {
+        Self {
+            exact: true,
+            native_selected: true,
+            native_global: true,
+            grouped_native: false,
+            resolver_native_selected: ResolverNativeSupport::none(),
+            resolver_native_global: false,
+        }
+    }
+    pub const fn exact_or_native_global() -> Self {
+        Self {
+            exact: true,
+            native_selected: false,
+            native_global: true,
+            grouped_native: false,
+            resolver_native_selected: ResolverNativeSupport::none(),
+            resolver_native_global: false,
+        }
+    }
+    pub const fn native_only() -> Self {
+        Self {
+            exact: false,
+            native_selected: true,
+            native_global: true,
+            grouped_native: false,
+            resolver_native_selected: ResolverNativeSupport::none(),
+            resolver_native_global: false,
+        }
+    }
+    pub const fn grouped_native_only() -> Self {
+        Self {
+            exact: false,
+            native_selected: true,
+            native_global: false,
+            grouped_native: true,
+            resolver_native_selected: ResolverNativeSupport::none(),
+            resolver_native_global: false,
+        }
+    }
+    pub const fn resolver_native(
+        min_age_constraint: MinAgeConstraintSupport,
+        manager_resolved_target: bool,
+        resolver_native_global: bool,
+    ) -> Self {
+        Self {
+            exact: false,
+            native_selected: false,
+            native_global: false,
+            grouped_native: false,
+            resolver_native_selected: ResolverNativeSupport::selected(
+                min_age_constraint,
+                manager_resolved_target,
+            ),
+            resolver_native_global,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,24 +442,29 @@ pub enum ExecutionTargetKind {
     BrewCask,
 }
 
-impl ExecutionEligibility {
+impl ExecutionSupport {
     pub const fn supports_exact_target(self) -> bool {
-        matches!(
-            self,
-            Self::NativeOrExact | Self::ExactOnly | Self::ExactOrNativeGlobal
-        )
+        self.exact
     }
     pub const fn supports_native_target(self) -> bool {
-        matches!(self, Self::NativeOrExact | Self::NativeOnly)
+        self.native_selected
     }
     pub const fn supports_native_global(self) -> bool {
-        matches!(
-            self,
-            Self::NativeOrExact | Self::NativeOnly | Self::ExactOrNativeGlobal
-        )
+        self.native_global
     }
     pub const fn supports_resolver_native(self) -> bool {
-        matches!(self, Self::ResolverNativeOnly)
+        self.resolver_native_selected.selected
+    }
+    pub const fn supports_manager_resolved_target(self) -> bool {
+        self.native_selected || self.resolver_native_selected.manager_resolved_target
+    }
+    pub const fn supports_age_bypass(self) -> bool {
+        self.exact
+            || self.native_selected
+            || matches!(
+                self.resolver_native_selected.min_age_constraint,
+                MinAgeConstraintSupport::Optional | MinAgeConstraintSupport::NotApplicable
+            )
     }
 }
 
@@ -506,7 +670,7 @@ pub struct CandidateEvaluationFact {
 pub enum MissingMetadataKind {
     ReleaseTimeline,
     DiscoveredTarget,
-    SelectedTarget,
+    SelectedUpdate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

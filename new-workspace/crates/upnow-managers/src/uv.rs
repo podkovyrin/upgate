@@ -8,13 +8,15 @@ use chrono::DateTime;
 use pep440_rs::Version as Pep440Version;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
-    ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput, PackageName, ReleaseEntry,
-    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
-    TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    DomainError, ExecutionSupport, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
+    ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput, MinAgeConstraintSupport,
+    PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
+    ReleaseTimestamp, TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed,
+    VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionPlan,
+    ResolvedExecutionTarget,
 };
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
 
@@ -255,7 +257,7 @@ pub fn update_inputs(
             installed,
             selected_target,
             VersionScheme::Pep440,
-            ExecutionEligibility::ResolverNativeOnly,
+            ExecutionSupport::resolver_native(MinAgeConstraintSupport::Optional, true, false),
         )));
     }
     Ok(inputs)
@@ -351,7 +353,12 @@ pub fn commands_for_execution_plan(
             ExecutionCommandIntent::ResolverNative(item) => {
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
-                    command: tool_install_command(&item.package_name, &min_age_arg),
+                    command: tool_install_command(
+                        &item.package_name,
+                        &min_age_arg,
+                        item.bypass_min_release_age
+                            || matches!(item.target, ResolvedExecutionTarget::ManagerResolved),
+                    ),
                 });
             }
             ExecutionCommandIntent::ResolverNativeGlobal(_) => {
@@ -381,19 +388,31 @@ pub fn commands_for_execution_plan(
     }
     Ok(commands)
 }
-fn tool_install_command(package_name: &PackageName, min_age_arg: &str) -> CommandSpec {
-    CommandSpec::new(
-        "uv",
-        [
-            "tool",
-            "install",
-            "--upgrade",
-            "--exclude-newer",
-            min_age_arg,
-            package_name.as_str(),
-        ],
-    )
-    .mutating()
+fn tool_install_command(
+    package_name: &PackageName,
+    min_age_arg: &str,
+    bypass_min_release_age: bool,
+) -> CommandSpec {
+    if bypass_min_release_age {
+        CommandSpec::new(
+            "uv",
+            ["tool", "install", "--upgrade", package_name.as_str()],
+        )
+        .mutating()
+    } else {
+        CommandSpec::new(
+            "uv",
+            [
+                "tool",
+                "install",
+                "--upgrade",
+                "--exclude-newer",
+                min_age_arg,
+                package_name.as_str(),
+            ],
+        )
+        .mutating()
+    }
 }
 
 fn uv_tool_dir(process: &ProcessRunner) -> Result<String, UvError> {
@@ -644,5 +663,156 @@ fn adapter_error(err: &UvError) -> ManagerAdapterError {
         manager_id: MANAGER_ID.to_owned(),
         kind,
         detail: err.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use upnow_domain::{ExecutionTargetKind, ManagerUpdateInput, PlanItemId};
+    use upnow_execution::{
+        ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan,
+        ResolvedExecutionTarget,
+    };
+    use upnow_infra::{CommandOutput, Env, HttpClient, ProcessRunner};
+
+    use super::*;
+
+    #[test]
+    fn declares_resolver_native_manager_resolved_support_for_real_uv_tool_rows() {
+        let process = ProcessRunner::fake([
+            Ok(CommandOutput::from_parts(
+                success_status(),
+                "/tmp/uv-tools\n",
+                "",
+            )),
+            Ok(CommandOutput::from_parts(
+                success_status(),
+                "ruff v0.1.0\n",
+                "",
+            )),
+            Ok(CommandOutput::from_parts(
+                success_status(),
+                "+ ruff==0.2.0\n",
+                "",
+            )),
+        ]);
+        let http = HttpClient::fake([]);
+        let env = Env::fixed([]);
+
+        let inputs = update_inputs(&process, &http, &env, Duration::from_secs(604_800))
+            .expect("uv update inputs should be collected");
+
+        let [ManagerUpdateInput::Seed(seed)] = inputs.as_slice() else {
+            panic!("expected one uv seed");
+        };
+        assert!(seed.execution_support.resolver_native_selected.selected);
+        assert_eq!(
+            seed.execution_support
+                .resolver_native_selected
+                .min_age_constraint,
+            MinAgeConstraintSupport::Optional
+        );
+        assert!(
+            seed.execution_support
+                .resolver_native_selected
+                .manager_resolved_target
+        );
+        assert!(!seed.execution_support.resolver_native_global);
+    }
+
+    #[test]
+    fn resolver_native_command_includes_exclude_newer_for_normal_selected_update() {
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::ResolverNative(resolved_item(
+                false,
+                ResolvedExecutionTarget::Known(version("0.2.0")),
+            ))],
+        };
+
+        let commands = commands_for_execution_plan(&plan, Duration::from_secs(604_800))
+            .expect("uv command should be built");
+
+        assert_eq!(
+            commands[0].command.display(),
+            "uv tool install --upgrade --exclude-newer 7d ruff"
+        );
+    }
+
+    #[test]
+    fn resolver_native_command_omits_exclude_newer_for_forced_update() {
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::ResolverNative(resolved_item(
+                true,
+                ResolvedExecutionTarget::Known(version("0.2.0")),
+            ))],
+        };
+
+        let commands = commands_for_execution_plan(&plan, Duration::from_secs(604_800))
+            .expect("uv command should be built");
+
+        assert_eq!(
+            commands[0].command.display(),
+            "uv tool install --upgrade ruff"
+        );
+    }
+
+    #[test]
+    fn resolver_native_command_omits_exclude_newer_for_manager_resolved_update() {
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::ResolverNative(resolved_item(
+                false,
+                ResolvedExecutionTarget::ManagerResolved,
+            ))],
+        };
+
+        let commands = commands_for_execution_plan(&plan, Duration::from_secs(604_800))
+            .expect("uv command should be built");
+
+        assert_eq!(
+            commands[0].command.display(),
+            "uv tool install --upgrade ruff"
+        );
+    }
+
+    fn resolved_item(
+        bypass_min_release_age: bool,
+        target: ResolvedExecutionTarget,
+    ) -> ResolvedExecutionItem {
+        ResolvedExecutionItem {
+            plan_item_id: PlanItemId::new("uv:ruff").expect("valid id"),
+            package_name: package("ruff"),
+            installed_version: version("0.1.0"),
+            target,
+            execution_support: ExecutionSupport::resolver_native(
+                MinAgeConstraintSupport::Optional,
+                true,
+                false,
+            ),
+            execution_target_kind: ExecutionTargetKind::Standard,
+            exact_target_required: false,
+            bypass_min_release_age,
+        }
+    }
+
+    fn package(value: &str) -> PackageName {
+        PackageName::new(value).expect("valid package")
+    }
+
+    fn version(value: &str) -> VersionText {
+        VersionText::new(value).expect("valid version")
+    }
+
+    #[cfg(unix)]
+    fn success_status() -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(0)
+    }
+
+    #[cfg(windows)]
+    fn success_status() -> std::process::ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(0)
     }
 }

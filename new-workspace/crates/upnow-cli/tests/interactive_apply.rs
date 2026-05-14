@@ -6,9 +6,8 @@ use upnow_cli::{
     ConfirmedInteractiveManagerApply, execute_confirmed_interactive_apply_with_config_path,
 };
 use upnow_domain::{
-    ExecutionEligibility, ManagerId, PackageName, PlanItem, PlanItemId, PlanSelection,
-    SelectedItem, ToolId, UpdateCandidate, UpdatePlan, UpdateSelectionPolicy, VersionScheme,
-    VersionText,
+    ExecutionSupport, ManagerId, PackageName, PlanItem, PlanItemId, PlanSelection, SelectedItem,
+    ToolId, UpdateCandidate, UpdatePlan, UpdateSelectionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::progress::ExecutionProgressStatus;
 use upnow_infra::{CommandOutput, Env, ProcessRunner};
@@ -69,7 +68,7 @@ fn update_plan(manager_id: &str, package_name: &str) -> UpdatePlan {
                 VersionText::new("1.0.0").expect("valid version"),
                 VersionText::new("1.2.0").expect("valid version"),
                 VersionScheme::SemVer,
-                ExecutionEligibility::NativeOrExact,
+                ExecutionSupport::native_or_exact(),
             ),
         }],
     )

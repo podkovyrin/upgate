@@ -6,7 +6,7 @@ use upnow_domain::{
     ScanReport, SkipReason, UnsupportedReason, UpdateCandidate, UpdatePlan, UpdateSeed,
     VersionPolicy,
 };
-use upnow_execution::{ExecutionReport, ExecutionStatus};
+use upnow_execution::{ExecutionReport, ExecutionStatus, ResolvedExecutionTarget};
 
 use crate::{
     OutcomeNote, OutcomeRow, OutcomeStatusView, OutcomeTable, OutcomeVersionEmphasis,
@@ -245,11 +245,14 @@ fn blocked_row(
     diagnostics: &PlanDiagnostics,
     options: BatchRenderOptions,
 ) -> OutcomeRow {
-    let versions = OutcomeVersionsView::Change {
-        from: seed.installed.installed_version.clone(),
-        to: seed.target_selection.target_version().clone(),
-        emphasis: OutcomeVersionEmphasis::Current,
-    };
+    let versions = seed.target_selection.target_version().map_or_else(
+        || OutcomeVersionsView::manager_resolved(seed.installed.installed_version.clone()),
+        |target_version| OutcomeVersionsView::Change {
+            from: seed.installed.installed_version.clone(),
+            to: crate::OutcomeTargetView::Known(target_version.clone()),
+            emphasis: OutcomeVersionEmphasis::Current,
+        },
+    );
     let mut row = match reason {
         BlockReason::VersionPolicy(_) => OutcomeRow::item(
             OutcomeStatusView::Current,
@@ -322,9 +325,14 @@ fn candidate_row(
         status,
         manager_id.clone(),
         candidate.package_name.clone(),
-        OutcomeVersionsView::change(
-            candidate.installed_version.clone(),
-            candidate.target_version.clone(),
+        candidate.target_version().map_or_else(
+            || OutcomeVersionsView::manager_resolved(candidate.installed_version.clone()),
+            |target_version| {
+                OutcomeVersionsView::change(
+                    candidate.installed_version.clone(),
+                    target_version.clone(),
+                )
+            },
         ),
     )
 }
@@ -342,10 +350,14 @@ pub fn execution_report_table(report: &ExecutionReport, issues: &[PlanIssue]) ->
     }
 
     rows.extend(report.items.iter().map(|item| {
-        let versions = OutcomeVersionsView::change(
-            item.installed_version.clone(),
-            item.target_version.clone(),
-        );
+        let versions = match &item.target {
+            ResolvedExecutionTarget::Known(target_version) => {
+                OutcomeVersionsView::change(item.installed_version.clone(), target_version.clone())
+            }
+            ResolvedExecutionTarget::ManagerResolved => {
+                OutcomeVersionsView::manager_resolved(item.installed_version.clone())
+            }
+        };
         match &item.status {
             ExecutionStatus::Succeeded {
                 command,

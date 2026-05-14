@@ -1,7 +1,7 @@
 use upnow_domain::{
-    DomainError, ExecutionEligibility, PackageName, PlanItem, PlanItemId, PlanSelection,
-    SelectedItem, ToolId, UpdateCandidate, UpdatePlan, UpdateSelectionMode, UpdateSelectionPolicy,
-    VersionScheme, VersionText,
+    DomainError, ExecutionSupport, PackageName, PlanItem, PlanItemId, PlanSelection, SelectedItem,
+    ToolId, UpdateCandidate, UpdatePlan, UpdateSelectionMode, UpdateSelectionPolicy, VersionScheme,
+    VersionText,
 };
 
 fn candidate(name: &str) -> UpdateCandidate {
@@ -11,7 +11,7 @@ fn candidate(name: &str) -> UpdateCandidate {
         VersionText::new("1.0.0").expect("valid installed version"),
         VersionText::new("1.2.0").expect("valid target version"),
         VersionScheme::SemVer,
-        ExecutionEligibility::NativeOrExact,
+        ExecutionSupport::native_or_exact(),
     )
 }
 
@@ -62,5 +62,28 @@ fn plan_selection_rejects_policy_exception_outside_plan() {
             policy,
         ),
         Err(DomainError::UnknownSelectionPackage("beta".to_owned()))
+    );
+}
+
+#[test]
+fn plan_selection_rejects_selected_update_outside_plan() {
+    let plan = UpdatePlan::new(
+        upnow_domain::ManagerId::new("pnpm").expect("valid manager id"),
+        vec![PlanItem::Update {
+            id: PlanItemId::new("pnpm:alpha").expect("valid plan item id"),
+            candidate: candidate("alpha"),
+        }],
+    )
+    .expect("plan should be valid");
+
+    assert_eq!(
+        PlanSelection::new(
+            &plan,
+            vec![SelectedItem::manager_resolved(
+                PlanItemId::new("pnpm:beta").expect("valid plan item id")
+            )],
+            UpdateSelectionPolicy::default(),
+        ),
+        Err(DomainError::UnknownPlanItemId("pnpm:beta".to_owned()))
     );
 }

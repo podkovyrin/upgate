@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
-    BlockReason, ExecutionEligibility, InstalledTool, ManagerId, ManagerMetadata,
+    BlockReason, ExecutionSupport, InstalledTool, ManagerId, ManagerMetadata,
     ManagerSelectedTarget, PackageName, PlanItem, PlanItemId, ReleaseEntry, ReleaseLookupResult,
     ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName,
     UpdateSeed, VersionPolicy, VersionScheme, VersionText,
@@ -43,7 +43,7 @@ fn manager_selected_seed(
         installed_tool(package, installed_version),
         ManagerSelectedTarget::new(version(target_version), target_age),
         VersionScheme::SemVer,
-        ExecutionEligibility::NativeOrExact,
+        ExecutionSupport::native_or_exact(),
     )
 }
 
@@ -66,7 +66,7 @@ fn advisory_latest_does_not_replace_manager_selected_target() {
         installed_tool("alpha", "1.0.0"),
         selected_target,
         VersionScheme::SemVer,
-        ExecutionEligibility::NativeOrExact,
+        ExecutionSupport::native_or_exact(),
     );
 
     let item = evaluate_seed(
@@ -80,7 +80,10 @@ fn advisory_latest_does_not_replace_manager_selected_target() {
     let PlanItem::Update { candidate, .. } = item else {
         panic!("expected update")
     };
-    assert_eq!(candidate.target_version.as_str(), "1.1.0");
+    assert_eq!(
+        candidate.target_version().expect("known target").as_str(),
+        "1.1.0"
+    );
 }
 
 #[test]
@@ -110,7 +113,7 @@ fn manager_selected_target_missing_required_evidence_blocks_the_item() {
 }
 
 #[test]
-fn planner_preserves_manager_produced_item_execution_eligibility() {
+fn planner_preserves_manager_produced_item_execution_support() {
     let seed = UpdateSeed::new(
         installed_tool("alpha", "1.0.0"),
         version("1.1.0"),
@@ -119,7 +122,7 @@ fn planner_preserves_manager_produced_item_execution_eligibility() {
             version("1.1.0"),
             ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 86_400)),
         )])),
-        ExecutionEligibility::ExactOnly,
+        ExecutionSupport::exact_only(),
     );
 
     let PlanItem::Update { candidate, .. } = evaluate_seed(
@@ -132,8 +135,5 @@ fn planner_preserves_manager_produced_item_execution_eligibility() {
         panic!("expected update")
     };
 
-    assert_eq!(
-        candidate.execution_eligibility,
-        ExecutionEligibility::ExactOnly
-    );
+    assert_eq!(candidate.execution_support, ExecutionSupport::exact_only());
 }

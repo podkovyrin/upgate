@@ -1,10 +1,10 @@
-use upnow_domain::{ExecutionEligibility, ManagerId, PackageName, PlanItemId, VersionText};
+use upnow_domain::{ExecutionSupport, ManagerId, PackageName, PlanItemId, VersionText};
 use upnow_execution::progress::{
     ExecutionProgressEvent, ExecutionProgressState, ExecutionProgressStatus,
 };
 use upnow_execution::{
     ExecutionCommandIntent, ExecutionItemResult, ExecutionReport, ExecutionStatus,
-    ResolvedExecutionItem, ResolvedExecutionPlan,
+    ResolvedExecutionItem, ResolvedExecutionPlan, ResolvedExecutionTarget,
 };
 
 #[test]
@@ -80,8 +80,8 @@ fn item(id: &str, package_name: &str) -> ResolvedExecutionItem {
         plan_item_id: PlanItemId::new(id).expect("valid plan item id"),
         package_name: PackageName::new(package_name).expect("valid package name"),
         installed_version: VersionText::new("1.0.0").expect("valid version"),
-        target_version: VersionText::new("1.2.0").expect("valid version"),
-        execution_eligibility: ExecutionEligibility::ExactOnly,
+        target: ResolvedExecutionTarget::Known(VersionText::new("1.2.0").expect("valid version")),
+        execution_support: ExecutionSupport::exact_only(),
         execution_target_kind: upnow_domain::ExecutionTargetKind::Standard,
         exact_target_required: true,
         bypass_min_release_age: false,
@@ -93,7 +93,7 @@ fn result(id: &str, package_name: &str, status: ExecutionStatus) -> ExecutionIte
         plan_item_id: PlanItemId::new(id).expect("valid plan item id"),
         package_name: PackageName::new(package_name).expect("valid package name"),
         installed_version: VersionText::new("1.0.0").expect("valid version"),
-        target_version: VersionText::new("1.2.0").expect("valid version"),
+        target: ResolvedExecutionTarget::Known(VersionText::new("1.2.0").expect("valid version")),
         status,
     }
 }

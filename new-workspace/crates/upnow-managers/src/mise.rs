@@ -8,13 +8,15 @@ use pep440_rs::Version as Pep440Version;
 use semver::Version as SemverVersion;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionEligibility, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
-    ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput, PackageName, ReleaseEntry,
-    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
-    TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    DomainError, ExecutionSupport, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
+    ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput, MinAgeConstraintSupport,
+    PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
+    ReleaseTimestamp, TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed,
+    VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionPlan,
+    ResolvedExecutionTarget,
 };
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
 
@@ -422,7 +424,7 @@ pub fn update_inputs(
             installed,
             selected,
             version_scheme(&item.from_version, &item.to_version),
-            ExecutionEligibility::ResolverNativeOnly,
+            ExecutionSupport::resolver_native(MinAgeConstraintSupport::Optional, true, true),
         )));
     }
     Ok(inputs)
@@ -444,7 +446,12 @@ pub fn commands_for_execution_plan(
             ExecutionCommandIntent::ResolverNative(item) => {
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
-                    command: selected_upgrade_command(&min_age_arg, &item.package_name),
+                    command: selected_upgrade_command(
+                        &min_age_arg,
+                        &item.package_name,
+                        matches!(item.target, ResolvedExecutionTarget::ManagerResolved)
+                            || item.bypass_min_release_age,
+                    ),
                 });
             }
             ExecutionCommandIntent::ResolverNativeGlobal(items) => {
@@ -475,8 +482,16 @@ pub fn commands_for_execution_plan(
     }
     Ok(commands)
 }
-fn selected_upgrade_command(min_age_arg: &str, tool: &PackageName) -> CommandSpec {
-    CommandSpec::new("mise", ["upgrade", "--before", min_age_arg, tool.as_str()]).mutating()
+fn selected_upgrade_command(
+    min_age_arg: &str,
+    tool: &PackageName,
+    bypass_min_release_age: bool,
+) -> CommandSpec {
+    if bypass_min_release_age {
+        CommandSpec::new("mise", ["upgrade", tool.as_str()]).mutating()
+    } else {
+        CommandSpec::new("mise", ["upgrade", "--before", min_age_arg, tool.as_str()]).mutating()
+    }
 }
 fn global_upgrade_command(min_age_arg: &str) -> CommandSpec {
     CommandSpec::new("mise", ["upgrade", "--before", min_age_arg]).mutating()
@@ -906,6 +921,113 @@ fn duration_arg(duration: Duration) -> String {
         format!("{}m", seconds / 60)
     } else {
         format!("{seconds}s")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use upnow_domain::{ExecutionTargetKind, PlanItemId};
+    use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem};
+
+    use super::*;
+
+    #[test]
+    fn resolver_native_selected_update_uses_age_limited_tool_command() {
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::ResolverNative(resolved_item(
+                "mise:node",
+                "node",
+                ResolvedExecutionTarget::Known(version("22.0.0")),
+                false,
+            ))],
+        };
+
+        let commands = commands_for_execution_plan(&plan, Duration::from_secs(7 * 24 * 60 * 60))
+            .expect("mise resolver-native command should be supported");
+
+        assert_eq!(
+            commands[0].command.display(),
+            "mise upgrade --before 7d node"
+        );
+    }
+
+    #[test]
+    fn resolver_native_forced_candidate_omits_age_limit() {
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::ResolverNative(resolved_item(
+                "mise:node",
+                "node",
+                ResolvedExecutionTarget::Known(version("22.0.0")),
+                true,
+            ))],
+        };
+
+        let commands = commands_for_execution_plan(&plan, Duration::from_secs(7 * 24 * 60 * 60))
+            .expect("mise resolver-native force command should be supported");
+
+        assert_eq!(commands[0].command.display(), "mise upgrade node");
+    }
+
+    #[test]
+    fn resolver_native_manager_resolved_omits_age_limit() {
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::ResolverNative(resolved_item(
+                "mise:node",
+                "node",
+                ResolvedExecutionTarget::ManagerResolved,
+                false,
+            ))],
+        };
+
+        let commands = commands_for_execution_plan(&plan, Duration::from_secs(7 * 24 * 60 * 60))
+            .expect("mise resolver-native manager-resolved command should be supported");
+
+        assert_eq!(commands[0].command.display(), "mise upgrade node");
+    }
+
+    #[test]
+    fn resolver_native_global_keeps_age_limit() {
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::ResolverNativeGlobal(vec![
+                resolved_item(
+                    "mise:node",
+                    "node",
+                    ResolvedExecutionTarget::Known(version("22.0.0")),
+                    false,
+                ),
+            ])],
+        };
+
+        let commands = commands_for_execution_plan(&plan, Duration::from_secs(7 * 24 * 60 * 60))
+            .expect("mise resolver-native global command should be supported");
+
+        assert_eq!(commands[0].command.display(), "mise upgrade --before 7d");
+    }
+
+    fn resolved_item(
+        plan_item_id: &str,
+        package_name: &str,
+        target: ResolvedExecutionTarget,
+        bypass_min_release_age: bool,
+    ) -> ResolvedExecutionItem {
+        ResolvedExecutionItem {
+            plan_item_id: PlanItemId::new(plan_item_id).expect("valid plan item id"),
+            package_name: PackageName::new(package_name).expect("valid package name"),
+            installed_version: version("20.0.0"),
+            target,
+            execution_support: ExecutionSupport::resolver_native(
+                MinAgeConstraintSupport::Optional,
+                true,
+                true,
+            ),
+            execution_target_kind: ExecutionTargetKind::Standard,
+            exact_target_required: false,
+            bypass_min_release_age,
+        }
+    }
+
+    fn version(value: &str) -> VersionText {
+        VersionText::new(value).expect("valid version")
     }
 }
 

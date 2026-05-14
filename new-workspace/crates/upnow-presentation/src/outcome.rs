@@ -84,7 +84,7 @@ pub enum OutcomeVersionsView {
     },
     Change {
         from: VersionText,
-        to: VersionText,
+        to: OutcomeTargetView,
         emphasis: OutcomeVersionEmphasis,
     },
 }
@@ -93,10 +93,23 @@ impl OutcomeVersionsView {
     pub const fn change(from: VersionText, to: VersionText) -> Self {
         Self::Change {
             from,
-            to,
+            to: OutcomeTargetView::Known(to),
             emphasis: OutcomeVersionEmphasis::Target,
         }
     }
+    pub const fn manager_resolved(from: VersionText) -> Self {
+        Self::Change {
+            from,
+            to: OutcomeTargetView::ManagerResolved,
+            emphasis: OutcomeVersionEmphasis::Target,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutcomeTargetView {
+    Known(VersionText),
+    ManagerResolved,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -291,7 +304,10 @@ fn version_cells(versions: &OutcomeVersionsView, theme: OutputTheme) -> (TableCe
         ),
         OutcomeVersionsView::Change { from, to, emphasis } => {
             let from = version_label(from.as_str());
-            let to = version_label(to.as_str());
+            let to = match to {
+                OutcomeTargetView::Known(version) => version_label(version.as_str()),
+                OutcomeTargetView::ManagerResolved => "manager-resolved".to_owned(),
+            };
             (
                 TableCell::new(render_from_version(
                     &from,

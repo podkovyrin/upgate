@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt::{self, Display};
 
 use upnow_domain::{
-    PlanItemId, PlanSelection, SelectedItem, SelectedTarget, UpdatePlan, UpdateSelectionPolicy,
+    PlanItemId, PlanSelection, SelectedItem, SelectedUpdate, UpdatePlan, UpdateSelectionPolicy,
     VersionText,
 };
 
@@ -12,7 +12,7 @@ use crate::{SelectionRow, SelectionRowStatus, SelectionView, TargetOption};
 pub struct InteractiveSelectionState {
     rows: Vec<SelectionRow>,
     selection_policy: UpdateSelectionPolicy,
-    selected_targets: BTreeMap<PlanItemId, SelectedTarget>,
+    selected_targets: BTreeMap<PlanItemId, SelectedUpdate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,7 +44,7 @@ impl InteractiveSelectionState {
             .rows
             .iter()
             .filter(|row| row.initially_selected)
-            .map(|row| (row.plan_item_id.clone(), SelectedTarget::Recommended))
+            .map(|row| (row.plan_item_id.clone(), SelectedUpdate::Recommended))
             .collect();
 
         Self {
@@ -56,7 +56,7 @@ impl InteractiveSelectionState {
     pub fn rows(&self) -> &[SelectionRow] {
         &self.rows
     }
-    pub fn selected_target(&self, plan_item_id: &PlanItemId) -> Option<&SelectedTarget> {
+    pub fn selected_target(&self, plan_item_id: &PlanItemId) -> Option<&SelectedUpdate> {
         self.selected_targets.get(plan_item_id)
     }
     pub fn selected_items(&self) -> Vec<SelectedItem> {
@@ -87,7 +87,7 @@ impl InteractiveSelectionState {
         }
         let package_name = row.package_name.clone();
         self.selected_targets
-            .insert(plan_item_id.clone(), SelectedTarget::Recommended);
+            .insert(plan_item_id.clone(), SelectedUpdate::Recommended);
         self.selection_policy.set_included(package_name, true);
         Ok(())
     }
@@ -130,7 +130,7 @@ impl InteractiveSelectionState {
             ));
         }
         self.selected_targets
-            .insert(plan_item_id.clone(), SelectedTarget::ForcedCandidate);
+            .insert(plan_item_id.clone(), SelectedUpdate::ForcePlannedCandidate);
         Ok(())
     }
 
@@ -162,8 +162,27 @@ impl InteractiveSelectionState {
         }
         self.selected_targets.insert(
             plan_item_id.clone(),
-            SelectedTarget::AlternateExact { target_version },
+            SelectedUpdate::Exact { target_version },
         );
+        Ok(())
+    }
+
+    pub fn choose_manager_resolved(
+        &mut self,
+        plan_item_id: &PlanItemId,
+    ) -> Result<(), SelectionStateError> {
+        let row = self.row(plan_item_id)?;
+        if !row
+            .target_options
+            .iter()
+            .any(|option| matches!(option, TargetOption::ManagerResolved { .. }))
+        {
+            return Err(SelectionStateError::TargetUnavailable(
+                plan_item_id.as_str().to_owned(),
+            ));
+        }
+        self.selected_targets
+            .insert(plan_item_id.clone(), SelectedUpdate::ManagerResolved);
         Ok(())
     }
 
@@ -206,7 +225,7 @@ impl InteractiveSelectionState {
         for row in &self.rows {
             if row.status == SelectionRowStatus::Update {
                 self.selected_targets
-                    .insert(row.plan_item_id.clone(), SelectedTarget::Recommended);
+                    .insert(row.plan_item_id.clone(), SelectedUpdate::Recommended);
             }
         }
     }

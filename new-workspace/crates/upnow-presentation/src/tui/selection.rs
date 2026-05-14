@@ -20,7 +20,7 @@ use ratatui::widgets::{Cell, Paragraph, Row};
 use unicode_width::UnicodeWidthStr;
 use upnow_domain::{
     ManagerId, PlanIssue, PlanItemId, PolicyBlockReason, PolicyWarning, SelectedItem,
-    SelectedTarget, SkipReason, UpdateSelectionPolicy,
+    SelectedUpdate, SkipReason, UpdateSelectionPolicy,
 };
 
 use crate::outcome::version_label;
@@ -819,6 +819,9 @@ impl InteractiveSelectionScreen {
                         .state
                         .choose_alternate_exact(&row.plan_item_id, target_version.clone())?;
                 }
+                TargetOption::ManagerResolved { .. } => {
+                    manager.state.choose_manager_resolved(&row.plan_item_id)?;
+                }
             }
         }
 
@@ -1295,10 +1298,20 @@ fn selection_render_rows(screen: &InteractiveSelectionScreen) -> Vec<SelectionRe
             let manager = &screen.managers[visible.manager_idx];
             let row = screen.row(visible);
             let selected = manager.state.selected_target(&row.plan_item_id).is_some();
-            let target = row
-                .target_version
-                .as_ref()
-                .map_or_else(|| "-".to_owned(), |version| version_label(version.as_str()));
+            let target = row.target_version.as_ref().map_or_else(
+                || {
+                    if row
+                        .target_options
+                        .iter()
+                        .any(|option| matches!(option, TargetOption::ManagerResolved { .. }))
+                    {
+                        "manager-resolved".to_owned()
+                    } else {
+                        "unavailable".to_owned()
+                    }
+                },
+                |version| version_label(version.as_str()),
+            );
             let forced = row
                 .target_options
                 .iter()
@@ -1324,7 +1337,7 @@ fn selection_table_row(
 ) -> Row<'static> {
     let style = theme.row_for_selectable_state(highlighted, row.forced && !row.selected);
     let marker = if row.selected { "[x]" } else { "[ ]" };
-    let target = if row.target == "-" {
+    let target = if row.target == "unavailable" || row.target == "manager-resolved" {
         Line::from(Span::styled(row.target.clone(), style))
     } else {
         Line::from(version_diff_spans(
@@ -1486,7 +1499,11 @@ fn target_picker_table_row(
 ) -> Row<'static> {
     let style = theme.row_for_selectable_state(highlighted, false);
     let marker = if selected { "[x]" } else { "[ ]" };
-    let target = version_diff_spans(current, &row.target, style, theme, highlighted);
+    let target = if row.target == "manager-resolved" {
+        vec![Span::styled(row.target.clone(), style)]
+    } else {
+        version_diff_spans(current, &row.target, style, theme, highlighted)
+    };
     let mut target_spans = vec![
         Span::styled(row.option.clone(), theme.emphasis(style)),
         Span::styled(" ", style),
@@ -1507,7 +1524,10 @@ fn target_picker_rows(options: &[TargetOption]) -> Vec<TargetPickerRenderRow> {
         .iter()
         .map(|option| TargetPickerRenderRow {
             option: target_option_kind_label(option).to_owned(),
-            target: version_label(option.target_version().as_str()),
+            target: option.target_version().map_or_else(
+                || "manager-resolved".to_owned(),
+                |version| version_label(version.as_str()),
+            ),
             note_parts: option.note_parts().to_vec(),
         })
         .collect()
@@ -1518,6 +1538,7 @@ const fn target_option_kind_label(option: &TargetOption) -> &'static str {
         TargetOption::Recommended { .. } => "recommended",
         TargetOption::ForcedCandidate { .. } => "force",
         TargetOption::AlternateExact { .. } => "exact",
+        TargetOption::ManagerResolved { .. } => "manager",
     }
 }
 
@@ -1530,16 +1551,17 @@ fn target_picker_width(area: Rect) -> u16 {
     area.width.saturating_sub(4).clamp(62, 96)
 }
 
-fn target_option_matches_selected(option: &TargetOption, target: &SelectedTarget) -> bool {
+fn target_option_matches_selected(option: &TargetOption, target: &SelectedUpdate) -> bool {
     match (option, target) {
-        (TargetOption::Recommended { .. }, SelectedTarget::Recommended)
-        | (TargetOption::ForcedCandidate { .. }, SelectedTarget::ForcedCandidate) => true,
+        (TargetOption::Recommended { .. }, SelectedUpdate::Recommended)
+        | (TargetOption::ForcedCandidate { .. }, SelectedUpdate::ForcePlannedCandidate) => true,
         (
             TargetOption::AlternateExact { target_version, .. },
-            SelectedTarget::AlternateExact {
+            SelectedUpdate::Exact {
                 target_version: selected,
             },
         ) => target_version == selected,
+        (TargetOption::ManagerResolved { .. }, SelectedUpdate::ManagerResolved) => true,
         _ => false,
     }
 }
