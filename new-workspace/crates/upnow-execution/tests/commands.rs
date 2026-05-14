@@ -1,10 +1,11 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
-    CandidateEvaluationFact, ExecutionEligibility, ExecutionTargetKind, ManagerCapabilities,
-    ManagerId, PackageName, PlanDiagnostics, PlanItem, PlanItemId, PlanSelection, SelectedItem,
-    ToolId, UpdateCandidate, UpdatePlan, UpdateSelectionPolicy, VersionPolicy, VersionScheme,
-    VersionText,
+    BlockReason, CandidateEvaluationFact, ExecutionEligibility, ExecutionTargetKind, InstalledTool,
+    ManagerCapabilities, ManagerId, ManagerMetadata, PackageName, PlanDiagnostics, PlanItem,
+    PlanItemId, PlanSelection, PolicyBlockReason, ReleaseEntry, ReleaseLookupResult,
+    ReleaseTimeline, ReleaseTimestamp, SelectedItem, ToolId, ToolName, UpdateCandidate, UpdatePlan,
+    UpdateSeed, UpdateSelectionPolicy, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ExecutionStatus,
@@ -251,6 +252,37 @@ fn alternate_exact_too_fresh_target_bypasses_min_release_age() {
     ));
 }
 
+#[test]
+fn forced_policy_blocked_item_resolves_exact_intent() {
+    let plan = plan(vec![blocked_policy_item(
+        "pnpm:alpha-blocked",
+        "alpha-blocked",
+        ExecutionEligibility::ExactOnly,
+    )]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![SelectedItem::forced_candidate(
+            PlanItemId::new("pnpm:alpha-blocked").expect("valid id"),
+        )],
+        UpdateSelectionPolicy::default(),
+    )
+    .expect("valid selection");
+
+    let resolved = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        ManagerCapabilities::new(),
+        VersionPolicy::Stable,
+    )
+    .expect("selection should resolve");
+
+    assert!(matches!(
+        resolved.intents.as_slice(),
+        [ExecutionCommandIntent::Exact(item)]
+            if item.target_version.as_str() == "2.0.0" && item.exact_target_required
+    ));
+}
+
 fn update_item(id: &str, package: &str, eligibility: ExecutionEligibility) -> PlanItem {
     update_item_with_target_kind(id, package, eligibility, ExecutionTargetKind::Standard)
 }
@@ -300,6 +332,51 @@ fn update_item_with_target_kind(
         )
         .with_execution_target_kind(target_kind),
     }
+}
+
+fn blocked_policy_item(id: &str, package: &str, eligibility: ExecutionEligibility) -> PlanItem {
+    PlanItem::Blocked {
+        id: PlanItemId::new(id).expect("valid id"),
+        seed: UpdateSeed::new(
+            installed_tool(package),
+            VersionText::new("2.0.0").expect("valid version"),
+            VersionScheme::SemVer,
+            release_lookup("2.0.0"),
+            eligibility,
+        ),
+        reason: BlockReason::VersionPolicy(PolicyBlockReason::PreReleaseBlocked),
+        policy_warnings: Vec::new(),
+        diagnostics: PlanDiagnostics {
+            required_age: Duration::from_secs(7 * 24 * 60 * 60),
+            candidates: vec![CandidateEvaluationFact {
+                version: VersionText::new("2.0.0").expect("valid version"),
+                age: Some(Duration::from_secs(30 * 24 * 60 * 60)),
+                policy_allowed: false,
+                age_allowed: true,
+                policy_block_reason: Some(PolicyBlockReason::PreReleaseBlocked),
+                policy_warning: None,
+            }],
+            ..PlanDiagnostics::default()
+        },
+    }
+}
+
+fn installed_tool(package: &str) -> InstalledTool {
+    InstalledTool::new(
+        ManagerId::new("pnpm").expect("valid manager"),
+        ToolId::new(format!("pnpm:{package}")).expect("valid tool id"),
+        PackageName::new(package).expect("valid package"),
+        ToolName::new(package).expect("valid tool name"),
+        VersionText::new("1.0.0").expect("valid version"),
+        ManagerMetadata::empty(),
+    )
+}
+
+fn release_lookup(version: &str) -> ReleaseLookupResult {
+    ReleaseLookupResult::Known(ReleaseTimeline::new(vec![ReleaseEntry::new(
+        VersionText::new(version).expect("valid release version"),
+        ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
+    )]))
 }
 
 fn plan(items: Vec<PlanItem>) -> UpdatePlan {

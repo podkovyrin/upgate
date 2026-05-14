@@ -1,9 +1,11 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
-    CandidateEvaluationFact, ExecutionEligibility, ManagerId, PackageName, PlanDiagnostics,
-    PlanIssue, PlanItem, PlanItemId, PolicyBlockReason, SelectedTarget, ToolId, UpdateCandidate,
-    UpdatePlan, UpdateSelectionPolicy, VersionScheme, VersionText,
+    BlockReason, CandidateEvaluationFact, ExecutionEligibility, InstalledTool, ManagerId,
+    ManagerMetadata, PackageName, PlanDiagnostics, PlanIssue, PlanItem, PlanItemId,
+    PolicyBlockReason, ReleaseEntry, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
+    SelectedTarget, ToolId, ToolName, UpdateCandidate, UpdatePlan, UpdateSeed,
+    UpdateSelectionPolicy, VersionScheme, VersionText,
 };
 use upnow_presentation::tui::{
     InteractiveSelectionPlan, InteractiveSelectionPlanningEvent, InteractiveSelectionScreen,
@@ -246,6 +248,66 @@ fn picker_can_choose_alternate_exact_target() {
 }
 
 #[test]
+fn view_all_hidden_forceable_row_opens_details_and_confirms_forced_target() {
+    let mut screen = screen(&plan(
+        "pnpm",
+        vec![blocked_policy_item(
+            "pnpm:alpha",
+            "alpha",
+            ExecutionEligibility::ExactOnly,
+        )],
+    ));
+
+    assert!(screen.visible_rows().is_empty());
+    screen
+        .handle_input(SelectionInput::ToggleViewAll)
+        .expect("view all should be handled");
+    assert_eq!(screen.visible_rows().len(), 1);
+
+    screen
+        .handle_input(SelectionInput::OpenTargetPicker)
+        .expect("visible forceable row should open details");
+    assert!(screen.target_picker_open());
+    assert!(matches!(
+        screen.target_picker_options()[0],
+        TargetOption::ForcedCandidate { .. }
+    ));
+
+    screen
+        .handle_input(SelectionInput::PickerConfirm)
+        .expect("force target should confirm");
+    let selections = screen.selection_drafts();
+
+    assert!(!screen.target_picker_open());
+    assert_eq!(
+        selections[0].selected_items[0].target,
+        SelectedTarget::ForcedCandidate
+    );
+}
+
+#[test]
+fn view_all_error_rows_do_not_open_details() {
+    let mut screen = screen(&plan(
+        "pnpm",
+        vec![PlanItem::ResolverError {
+            id: plan_item_id("pnpm:alpha"),
+            installed: installed_tool("pnpm", "alpha"),
+            message: "resolver failed".to_owned(),
+        }],
+    ));
+
+    screen
+        .handle_input(SelectionInput::ToggleViewAll)
+        .expect("view all should be handled");
+    assert_eq!(screen.visible_rows().len(), 1);
+    screen
+        .handle_input(SelectionInput::OpenTargetPicker)
+        .expect("error row input should be ignored");
+
+    assert!(!screen.target_picker_open());
+}
+
+#[test]
 fn picker_cancel_closes_picker_but_global_cancel_cancels_selection() {
     let mut screen = screen(&plan(
         "pnpm",
@@ -321,6 +383,37 @@ fn update(id: &str, name: &str, execution_eligibility: ExecutionEligibility) -> 
     }
 }
 
+fn blocked_policy_item(
+    id: &str,
+    name: &str,
+    execution_eligibility: ExecutionEligibility,
+) -> PlanItem {
+    PlanItem::Blocked {
+        id: plan_item_id(id),
+        seed: UpdateSeed::new(
+            installed_tool("pnpm", name),
+            VersionText::new("2.0.0").expect("valid target version"),
+            VersionScheme::SemVer,
+            release_lookup("2.0.0"),
+            execution_eligibility,
+        ),
+        reason: BlockReason::VersionPolicy(PolicyBlockReason::PreReleaseBlocked),
+        policy_warnings: Vec::new(),
+        diagnostics: PlanDiagnostics {
+            required_age: Duration::from_secs(7 * 24 * 60 * 60),
+            candidates: vec![CandidateEvaluationFact {
+                version: VersionText::new("2.0.0").expect("valid version"),
+                age: Some(Duration::from_secs(30 * 24 * 60 * 60)),
+                policy_allowed: false,
+                age_allowed: true,
+                policy_block_reason: Some(PolicyBlockReason::PreReleaseBlocked),
+                policy_warning: None,
+            }],
+            ..PlanDiagnostics::default()
+        },
+    }
+}
+
 fn candidate(id: &str, name: &str, execution_eligibility: ExecutionEligibility) -> UpdateCandidate {
     UpdateCandidate::new(
         ToolId::new(id).expect("valid tool"),
@@ -371,6 +464,24 @@ fn candidate_with_diagnostics(
 
 fn package(name: &str) -> PackageName {
     PackageName::new(name).expect("valid package")
+}
+
+fn installed_tool(manager: &str, name: &str) -> InstalledTool {
+    InstalledTool::new(
+        manager_id(manager),
+        ToolId::new(format!("{manager}:{name}")).expect("valid tool"),
+        package(name),
+        ToolName::new(name).expect("valid tool name"),
+        VersionText::new("1.0.0").expect("valid installed version"),
+        ManagerMetadata::empty(),
+    )
+}
+
+fn release_lookup(version: &str) -> ReleaseLookupResult {
+    ReleaseLookupResult::Known(ReleaseTimeline::new(vec![ReleaseEntry::new(
+        VersionText::new(version).expect("valid release version"),
+        ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
+    )]))
 }
 
 fn plan_item_id(id: &str) -> PlanItemId {

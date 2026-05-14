@@ -1,7 +1,7 @@
 use upnow_domain::{
     AdvisoryLatestFact, BlockReason, CandidateAgeFact, CandidateEvaluationFact, DelayReason,
     ManagerId, PackageName, PlanDiagnostics, PlanItem, PlanItemId, PolicyBlockReason,
-    PolicyWarning, ReleaseLookupError, SkipReason, UpdateCandidate, UpdatePlan,
+    PolicyWarning, ReleaseLookupError, SkipReason, UpdateCandidate, UpdatePlan, UpdateSeed,
     UpdateSelectionPolicy, VersionText,
 };
 
@@ -198,20 +198,24 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
             reason,
             policy_warnings,
             diagnostics,
-        } => SelectionRow {
-            plan_item_id: id.clone(),
-            package_name: seed.installed.package_name.clone(),
-            installed_version: seed.installed.installed_version.clone(),
-            target_version: Some(seed.target_selection.target_version().clone()),
-            status: SelectionRowStatus::Blocked,
-            default_visibility: SelectionRowVisibility::HiddenUntilViewAll,
-            notes: blocked_notes(reason, policy_warnings, diagnostics),
-            initially_selected: false,
-            policy_exception: selection_policy
-                .except
-                .contains(&seed.installed.package_name),
-            target_options: Vec::new(),
-        },
+        } => {
+            let notes = blocked_notes(reason, policy_warnings, diagnostics);
+            let target_options = blocked_target_options(seed, reason, notes.clone(), diagnostics);
+            SelectionRow {
+                plan_item_id: id.clone(),
+                package_name: seed.installed.package_name.clone(),
+                installed_version: seed.installed.installed_version.clone(),
+                target_version: Some(seed.target_selection.target_version().clone()),
+                status: SelectionRowStatus::Blocked,
+                default_visibility: SelectionRowVisibility::HiddenUntilViewAll,
+                notes,
+                initially_selected: false,
+                policy_exception: selection_policy
+                    .except
+                    .contains(&seed.installed.package_name),
+                target_options,
+            }
+        }
         PlanItem::Skipped {
             id,
             installed,
@@ -273,12 +277,46 @@ fn delayed_target_options(
     notes: Vec<CandidateNotePart>,
 ) -> Vec<TargetOption> {
     if candidate.execution_eligibility.supports_exact_target() {
-        return vec![TargetOption::ForcedCandidate {
+        let mut options = vec![TargetOption::ForcedCandidate {
             target_version: candidate.target_version.clone(),
-            note_parts: notes,
+            note_parts: notes.clone(),
         }];
+        options.extend(exact_target_options(candidate, notes));
+        return options;
     }
     Vec::new()
+}
+
+fn blocked_target_options(
+    seed: &UpdateSeed,
+    reason: &BlockReason,
+    notes: Vec<CandidateNotePart>,
+    diagnostics: &PlanDiagnostics,
+) -> Vec<TargetOption> {
+    if !matches!(reason, BlockReason::VersionPolicy(_))
+        || !seed.execution_eligibility.supports_exact_target()
+    {
+        return Vec::new();
+    }
+
+    let target_version = seed.target_selection.target_version().clone();
+    let candidate = UpdateCandidate::new(
+        seed.installed.tool_id.clone(),
+        seed.installed.package_name.clone(),
+        seed.installed.installed_version.clone(),
+        target_version.clone(),
+        seed.version_scheme,
+        seed.execution_eligibility,
+    )
+    .with_execution_target_kind(seed.execution_target_kind)
+    .with_diagnostics(diagnostics.clone());
+
+    let mut options = vec![TargetOption::ForcedCandidate {
+        target_version,
+        note_parts: notes.clone(),
+    }];
+    options.extend(exact_target_options(&candidate, notes));
+    options
 }
 
 fn exact_target_options(

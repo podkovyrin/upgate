@@ -650,13 +650,18 @@ impl InteractiveSelectionScreen {
     fn select_visible(&mut self, selected: bool) -> Result<(), SelectionStateError> {
         for visible in self.visible_row_refs() {
             let row = self.row(visible).clone();
-            if row.status != SelectionRowStatus::Update {
-                continue;
-            }
             let manager = &mut self.managers[visible.manager_idx];
             if selected {
-                manager.state.select_recommended(&row.plan_item_id)?;
-            } else {
+                if row.status == SelectionRowStatus::Update {
+                    manager.state.select_recommended(&row.plan_item_id)?;
+                } else if row
+                    .target_options
+                    .iter()
+                    .any(|option| matches!(option, TargetOption::ForcedCandidate { .. }))
+                {
+                    manager.state.force_candidate(&row.plan_item_id)?;
+                }
+            } else if manager.state.selected_target(&row.plan_item_id).is_some() {
                 manager.state.deselect(&row.plan_item_id)?;
             }
         }

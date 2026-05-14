@@ -6,9 +6,9 @@ pub mod progress;
 use std::fmt::{self, Display};
 
 use upnow_domain::{
-    ExecutionEligibility, ExecutionTargetKind, ManagerCapabilities, ManagerId, PackageName,
-    PlanItem, PlanItemId, PlanSelection, SelectedTarget, UpdateCandidate, UpdatePlan,
-    VersionPolicy, VersionText,
+    BlockReason, ExecutionEligibility, ExecutionTargetKind, ManagerCapabilities, ManagerId,
+    PackageName, PlanDiagnostics, PlanItem, PlanItemId, PlanSelection, SelectedTarget,
+    UpdateCandidate, UpdatePlan, UpdateSeed, VersionPolicy, VersionText,
 };
 use upnow_infra::{CommandCheck, CommandSpec, InfraError, ProcessRunner};
 
@@ -253,6 +253,63 @@ fn selected_execution_items(
                     item.id().as_str().to_owned(),
                 ));
             }
+            (
+                PlanItem::Blocked {
+                    seed,
+                    reason: BlockReason::VersionPolicy(_),
+                    diagnostics,
+                    ..
+                },
+                SelectedTarget::ForcedCandidate,
+            ) if seed.execution_eligibility.supports_exact_target() => resolved_seed_item(
+                selected.plan_item_id.clone(),
+                seed,
+                seed.target_selection.target_version().clone(),
+                true,
+                target_bypasses_min_release_age(
+                    diagnostics,
+                    seed.target_selection.target_version(),
+                ),
+            ),
+            (
+                PlanItem::Blocked {
+                    seed,
+                    reason: BlockReason::VersionPolicy(_),
+                    ..
+                },
+                SelectedTarget::ForcedCandidate,
+            ) if !seed.execution_eligibility.supports_exact_target() => {
+                return Err(ExecutionSelectionError::ExactTargetUnsupported(
+                    item.id().as_str().to_owned(),
+                ));
+            }
+            (
+                PlanItem::Blocked {
+                    seed,
+                    reason: BlockReason::VersionPolicy(_),
+                    diagnostics,
+                    ..
+                },
+                SelectedTarget::AlternateExact { target_version },
+            ) if seed.execution_eligibility.supports_exact_target() => resolved_seed_item(
+                selected.plan_item_id.clone(),
+                seed,
+                target_version.clone(),
+                true,
+                target_bypasses_min_release_age(diagnostics, target_version),
+            ),
+            (
+                PlanItem::Blocked {
+                    seed,
+                    reason: BlockReason::VersionPolicy(_),
+                    ..
+                },
+                SelectedTarget::AlternateExact { .. },
+            ) if !seed.execution_eligibility.supports_exact_target() => {
+                return Err(ExecutionSelectionError::ExactTargetUnsupported(
+                    item.id().as_str().to_owned(),
+                ));
+            }
             _ => {
                 return Err(ExecutionSelectionError::ItemNotExecutable(
                     item.id().as_str().to_owned(),
@@ -278,6 +335,25 @@ fn resolved_item(
         target_version,
         execution_eligibility: candidate.execution_eligibility,
         execution_target_kind: candidate.execution_target_kind,
+        exact_target_required,
+        bypass_min_release_age,
+    }
+}
+
+fn resolved_seed_item(
+    plan_item_id: PlanItemId,
+    seed: &UpdateSeed,
+    target_version: VersionText,
+    exact_target_required: bool,
+    bypass_min_release_age: bool,
+) -> ResolvedExecutionItem {
+    ResolvedExecutionItem {
+        plan_item_id,
+        package_name: seed.installed.package_name.clone(),
+        installed_version: seed.installed.installed_version.clone(),
+        target_version,
+        execution_eligibility: seed.execution_eligibility,
+        execution_target_kind: seed.execution_target_kind,
         exact_target_required,
         bypass_min_release_age,
     }
@@ -395,8 +471,14 @@ fn exact_target_bypasses_min_release_age(
     candidate: &UpdateCandidate,
     target_version: &VersionText,
 ) -> bool {
-    candidate
-        .diagnostics
+    target_bypasses_min_release_age(&candidate.diagnostics, target_version)
+}
+
+fn target_bypasses_min_release_age(
+    diagnostics: &PlanDiagnostics,
+    target_version: &VersionText,
+) -> bool {
+    diagnostics
         .candidates
         .iter()
         .find(|evaluated| &evaluated.version == target_version)
