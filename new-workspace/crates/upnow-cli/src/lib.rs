@@ -1186,10 +1186,7 @@ fn verbose_scan_item(
             }
         }
         ReleaseLookupResult::MissingMetadata => Ok(ScanItem::Installed(tool)),
-        ReleaseLookupResult::LookupFailed(err) => Ok(ScanItem::Skipped {
-            tool,
-            reason: ScanIssue::ReleaseLookupFailed { detail: err.detail },
-        }),
+        ReleaseLookupResult::LookupFailed(_) => Ok(ScanItem::Installed(tool)),
     }
 }
 
@@ -1400,4 +1397,92 @@ fn selected_manager_ids(selected_managers: &[String]) -> Result<Vec<ManagerId>, 
         }
     }
     Ok(manager_ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::SystemTime;
+
+    use super::*;
+    use upnow_domain::{
+        ManagerCapabilities, ManagerMetadata, ManagerUpdateInput, PackageName, ReleaseLookupError,
+        ToolId, ToolName, VersionText,
+    };
+    use upnow_execution::{ExecutionCommand, ResolvedExecutionPlan};
+    use upnow_infra::{CommandOutput, HttpResponse};
+
+    struct LookupFailedManager;
+
+    impl ManagerAdapter for LookupFailedManager {
+        fn capabilities(&self) -> ManagerCapabilities {
+            ManagerCapabilities::new()
+        }
+
+        fn scan_inputs(
+            &self,
+            _process: &ProcessRunner,
+            _env: &Env,
+        ) -> Result<Vec<ManagerScanInput>, ManagerAdapterError> {
+            Ok(Vec::new())
+        }
+
+        fn release_lookup(
+            &self,
+            _process: &ProcessRunner,
+            _http: &HttpClient,
+            _env: &Env,
+            _subject: ReleaseLookupSubject<'_>,
+        ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
+            Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
+                "registry unavailable",
+            )))
+        }
+
+        fn update_inputs(
+            &self,
+            _process: &ProcessRunner,
+            _http: &HttpClient,
+            _env: &Env,
+        ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
+            Ok(Vec::new())
+        }
+
+        fn commands_for_execution_plan(
+            &self,
+            _process: &ProcessRunner,
+            _env: &Env,
+            _plan: &ResolvedExecutionPlan,
+        ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn verbose_scan_keeps_installed_row_when_release_lookup_fails() {
+        let manager = LookupFailedManager;
+        let process =
+            ProcessRunner::fake(Vec::<Result<CommandOutput, upnow_infra::InfraError>>::new());
+        let http = HttpClient::fake(Vec::<(String, HttpResponse)>::new());
+        let env = Env::fixed([]);
+        let tool = InstalledTool::new(
+            ManagerId::new("test").expect("valid manager id"),
+            ToolId::new("test:alpha").expect("valid tool id"),
+            PackageName::new("alpha").expect("valid package name"),
+            ToolName::new("alpha").expect("valid tool name"),
+            VersionText::new("1.0.0").expect("valid version"),
+            ManagerMetadata::empty(),
+        );
+
+        let item = verbose_scan_item(
+            &manager,
+            &process,
+            &http,
+            &env,
+            SystemTime::UNIX_EPOCH,
+            tool.clone(),
+        )
+        .expect("scan item should be built");
+
+        assert_eq!(item, ScanItem::Installed(tool));
+    }
 }

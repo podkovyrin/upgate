@@ -126,6 +126,9 @@ pub enum CandidateNoteKind {
     ReleaseLookupFailed {
         error: Option<ReleaseLookupError>,
     },
+    AdvisoryLookupFailed {
+        error: ReleaseLookupError,
+    },
     Skipped(SkipReason),
     ResolverError {
         message: String,
@@ -410,6 +413,7 @@ fn update_notes(candidate: &UpdateCandidate) -> Vec<CandidateNotePart> {
         }));
     }
     notes.extend(policy_notes(&candidate.diagnostics));
+    notes.extend(advisory_warning_notes(&candidate.diagnostics));
     notes.extend(
         candidate
             .policy_warnings
@@ -465,6 +469,7 @@ fn delayed_notes(reason: &DelayReason, diagnostics: &PlanDiagnostics) -> Vec<Can
                     .map(|target| target.age),
                 required_age: diagnostics.required_age,
             }));
+            notes.extend(advisory_warning_notes(diagnostics));
             notes
         }
     }
@@ -493,6 +498,7 @@ fn blocked_notes(
         )],
     };
     notes.extend(policy_notes(diagnostics));
+    notes.extend(advisory_warning_notes(diagnostics));
     notes.extend(
         policy_warnings
             .iter()
@@ -514,6 +520,27 @@ fn policy_notes(diagnostics: &PlanDiagnostics) -> Vec<CandidateNotePart> {
                 .map(CandidateNotePart::violation)
         })
         .collect()
+}
+
+fn advisory_warning_notes(diagnostics: &PlanDiagnostics) -> Vec<CandidateNotePart> {
+    let mut notes = Vec::new();
+    if let Some(error) = diagnostics.advisory_lookup_failure.as_ref() {
+        notes.push(CandidateNotePart::normal(
+            CandidateNoteKind::AdvisoryLookupFailed {
+                error: error.clone(),
+            },
+        ));
+    }
+    if let Some(AdvisoryLatestFact::LookupFailed { error, .. }) =
+        diagnostics.advisory_latest.as_ref()
+    {
+        notes.push(CandidateNotePart::normal(
+            CandidateNoteKind::AdvisoryLookupFailed {
+                error: error.clone(),
+            },
+        ));
+    }
+    notes
 }
 
 fn latest_too_fresh(diagnostics: &PlanDiagnostics) -> Option<&CandidateAgeFact> {

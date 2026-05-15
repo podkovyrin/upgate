@@ -328,11 +328,11 @@ fn selected_execution_items(
                 PlanItem::Blocked {
                     seed,
                     reason: BlockReason::VersionPolicy(_),
-                    diagnostics,
+                    diagnostics: _,
                     ..
                 },
                 SelectedUpdate::ForcePlannedCandidate,
-            ) => resolve_forced_seed(selected.plan_item_id.clone(), seed, diagnostics)?,
+            ) => resolve_forced_seed(selected.plan_item_id.clone(), seed)?,
             (
                 PlanItem::Blocked {
                     seed,
@@ -472,11 +472,6 @@ fn resolve_forced_candidate(
             true,
         ));
     }
-    if support.native_selected && support.supports_manager_resolved_target() {
-        let target =
-            known_candidate_target(candidate).unwrap_or(ResolvedExecutionTarget::ManagerResolved);
-        return Ok(resolved_item(plan_item_id, candidate, target, false, true));
-    }
     Err(ExecutionSelectionError::ExactTargetUnsupported(
         plan_item_id.as_str().to_owned(),
     ))
@@ -485,7 +480,6 @@ fn resolve_forced_candidate(
 fn resolve_forced_seed(
     plan_item_id: PlanItemId,
     seed: &UpdateSeed,
-    diagnostics: &PlanDiagnostics,
 ) -> Result<ResolvedExecutionItem, ExecutionSelectionError> {
     let support = seed.execution_support;
     if support.resolver_native_selected.selected
@@ -497,22 +491,6 @@ fn resolve_forced_seed(
             known_seed_target(seed)?,
             false,
             true,
-        ));
-    }
-    if support.native_selected && support.supports_manager_resolved_target() {
-        let bypass = seed
-            .target_selection
-            .target_version()
-            .is_some_and(|target_version| {
-                target_bypasses_min_release_age(diagnostics, target_version)
-            });
-        let target = known_seed_target(seed).unwrap_or(ResolvedExecutionTarget::ManagerResolved);
-        return Ok(resolved_seed_item(
-            plan_item_id,
-            seed,
-            target,
-            false,
-            bypass,
         ));
     }
     Err(ExecutionSelectionError::ExactTargetUnsupported(

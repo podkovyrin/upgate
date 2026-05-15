@@ -237,6 +237,9 @@ pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, D
     if !output.status().success() {
         let stdout = output.stdout_string_lossy();
         let stderr = output.stderr_string_lossy();
+        if dotnet_missing_sdk_hint(&stdout) || dotnet_missing_sdk_hint(&stderr) {
+            return Ok(Vec::new());
+        }
         return Err(DotnetError::Infra(format!(
             "dotnet tool list --global --format json failed: {}",
             if stderr.trim().is_empty() {
@@ -250,6 +253,17 @@ pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, D
         .into_iter()
         .map(installed_tool)
         .collect()
+}
+
+fn dotnet_missing_sdk_hint(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let no_sdk_found =
+        lower.contains(".net sdk") && lower.contains("no") && lower.contains("found");
+    let cannot_find_installed = lower.contains("installed .net sdk")
+        && lower.contains("not possible")
+        && lower.contains("find");
+
+    no_sdk_found || cannot_find_installed
 }
 
 /// Builds planning inputs for .NET global tools.
@@ -507,5 +521,50 @@ fn adapter_error(err: &DotnetError) -> ManagerAdapterError {
         manager_id: MANAGER_ID.to_owned(),
         kind,
         detail: err.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use upnow_infra::CommandOutput;
+
+    #[test]
+    fn missing_sdk_tool_list_output_is_empty_inventory() {
+        let process = ProcessRunner::fake([Ok(CommandOutput::from_parts(
+            failure_status(),
+            "",
+            "No .NET SDKs were found.\n",
+        ))]);
+
+        let tools = installed_global(&process).expect("missing SDK should not fail discovery");
+
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn arbitrary_tool_list_failure_remains_discovery_error() {
+        let process = ProcessRunner::fake([Ok(CommandOutput::from_parts(
+            failure_status(),
+            "",
+            "permission denied\n",
+        ))]);
+
+        let err = installed_global(&process).expect_err("unexpected failure should be reported");
+
+        assert!(matches!(err, DotnetError::Infra(_)));
+        assert!(err.to_string().contains("permission denied"));
+    }
+
+    #[cfg(unix)]
+    fn failure_status() -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(1 << 8)
+    }
+
+    #[cfg(windows)]
+    fn failure_status() -> std::process::ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(1)
     }
 }

@@ -221,6 +221,7 @@ fn update_row(
     if let Some(note) = latest_too_fresh_note(&candidate.diagnostics, options.theme) {
         row = row.with_note(note);
     }
+    row = append_advisory_warning_notes(row, &candidate.diagnostics);
     row = append_policy_notes(row, &candidate.diagnostics, options.version_policy);
     append_policy_warning_notes(row, &candidate.policy_warnings)
 }
@@ -233,6 +234,7 @@ fn delayed_row(
 ) -> OutcomeRow {
     let mut row = candidate_row(OutcomeStatusView::Delayed, manager_id, candidate);
     row = row.with_note(delayed_note(reason, &candidate.diagnostics, options.theme));
+    row = append_advisory_warning_notes(row, &candidate.diagnostics);
     row = append_policy_notes(row, &candidate.diagnostics, options.version_policy);
     append_policy_warning_notes(row, &candidate.policy_warnings)
 }
@@ -284,6 +286,7 @@ fn blocked_row(
     if matches!(reason, BlockReason::VersionPolicy(_)) {
         row = append_policy_notes(row, diagnostics, options.version_policy);
     }
+    row = append_advisory_warning_notes(row, diagnostics);
     append_policy_warning_notes(row, policy_warnings)
 }
 
@@ -415,6 +418,23 @@ fn append_policy_warning_notes(mut row: OutcomeRow, warnings: &[PolicyWarning]) 
             "(version policy warning: {})",
             policy_warning_text(*warning)
         )));
+    }
+    row
+}
+
+fn append_advisory_warning_notes(mut row: OutcomeRow, diagnostics: &PlanDiagnostics) -> OutcomeRow {
+    let advisory_failure =
+        diagnostics.advisory_lookup_failure.as_ref().or_else(|| {
+            match diagnostics.advisory_latest.as_ref() {
+                Some(AdvisoryLatestFact::LookupFailed { error, .. }) => Some(error),
+                _ => None,
+            }
+        });
+    if let Some(error) = advisory_failure {
+        row = row.with_note(OutcomeNote::warning(parenthesized(format!(
+            "advisory latest lookup failed: {}",
+            error.detail
+        ))));
     }
     row
 }
@@ -609,4 +629,75 @@ fn human_age(age: Duration) -> String {
         return format!("{minutes}m");
     }
     format!("{seconds}s")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use upnow_domain::{
+        ExecutionSupport, PlanItemId, ReleaseLookupError, ToolId, VersionScheme, VersionText,
+    };
+
+    use super::*;
+    use crate::OutcomeNoteTone;
+
+    // This test must exist because advisory failures are user-visible warnings,
+    // while the uv dry-run selected target remains the product authority.
+    #[test]
+    fn advisory_lookup_failure_renders_as_warning_without_blocking_update() {
+        let manager_id = manager_id("uv");
+        let package_name = package_name("ruff");
+        let candidate = UpdateCandidate::new(
+            ToolId::new("uv:ruff").expect("valid tool id"),
+            package_name,
+            version("0.1.0"),
+            version("0.2.0"),
+            VersionScheme::Pep440,
+            ExecutionSupport::resolver_native(
+                upnow_domain::MinAgeConstraintSupport::Optional,
+                true,
+                false,
+            ),
+        )
+        .with_diagnostics(PlanDiagnostics {
+            required_age: Duration::from_secs(604_800),
+            advisory_lookup_failure: Some(ReleaseLookupError::new(
+                "uv tool list --outdated failed (exit 1): network unavailable",
+            )),
+            ..PlanDiagnostics::default()
+        });
+        let plan = UpdatePlan::new(
+            manager_id,
+            vec![PlanItem::Update {
+                id: PlanItemId::new("uv:ruff").expect("valid plan item id"),
+                candidate,
+            }],
+        )
+        .expect("valid plan");
+
+        let table = update_plan_table(&plan, BatchRenderOptions::new(OutputTheme::plain(false)));
+
+        let [row] = table.rows.as_slice() else {
+            panic!("expected one rendered row");
+        };
+        assert_eq!(row.status, OutcomeStatusView::Update);
+        assert!(row.notes.iter().any(|note| {
+            note.tone == OutcomeNoteTone::Warning
+                && note.text.contains("advisory latest lookup failed")
+                && note.text.contains("uv tool list --outdated failed")
+        }));
+    }
+
+    fn manager_id(value: &str) -> ManagerId {
+        ManagerId::new(value).expect("valid manager id")
+    }
+
+    fn package_name(value: &str) -> upnow_domain::PackageName {
+        upnow_domain::PackageName::new(value).expect("valid package name")
+    }
+
+    fn version(value: &str) -> VersionText {
+        VersionText::new(value).expect("valid version")
+    }
 }

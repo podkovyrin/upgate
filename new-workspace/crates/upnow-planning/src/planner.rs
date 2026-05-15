@@ -45,7 +45,7 @@ pub fn update_plan_from_inputs(
     for input in inputs {
         match input {
             ManagerUpdateInput::Seed(seed) => {
-                let id = plan_item_id(&manager_id, seed.installed.package_name.as_str())?;
+                let id = plan_item_id(&manager_id, seed.installed.tool_id.as_str())?;
                 items.push(evaluate_seed(
                     id,
                     seed,
@@ -55,7 +55,7 @@ pub fn update_plan_from_inputs(
                 ));
             }
             ManagerUpdateInput::Skipped { installed, reason } => {
-                let id = plan_item_id(&manager_id, installed.package_name.as_str())?;
+                let id = plan_item_id(&manager_id, installed.tool_id.as_str())?;
                 items.push(PlanItem::Skipped {
                     id,
                     installed,
@@ -63,7 +63,7 @@ pub fn update_plan_from_inputs(
                 });
             }
             ManagerUpdateInput::ResolverError { installed, message } => {
-                let id = plan_item_id(&manager_id, installed.package_name.as_str())?;
+                let id = plan_item_id(&manager_id, installed.tool_id.as_str())?;
                 items.push(PlanItem::ResolverError {
                     id,
                     installed,

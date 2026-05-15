@@ -412,7 +412,10 @@ pub fn update_inputs(
         let installed = installed_tool_from_plan_item(&item)?;
         let target_age = lookup_target_age(process, http, env, &item.tool, &item.to_version);
         let mut selected = ManagerSelectedTarget::new(item.to_version.clone(), target_age);
-        if let Some(latest) = advisory_latest.get(&item.tool)
+        if let Some(failure) = advisory_latest.failure.as_ref() {
+            selected = selected.with_advisory_lookup_failure(failure.clone());
+        }
+        if let Some(latest) = advisory_latest.latest.get(&item.tool)
             && latest != &item.to_version
         {
             selected = selected.with_advisory_release_lookup(
@@ -511,18 +514,46 @@ fn upgrade_dry_run(process: &ProcessRunner, before: &str) -> Result<Vec<MisePlan
     parse_upgrade_dry_run(output.stdout()?)
 }
 
-fn advisory_latest_map(
-    process: &ProcessRunner,
-) -> Result<BTreeMap<PackageName, VersionText>, MiseError> {
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct MiseAdvisoryLatest {
+    latest: BTreeMap<PackageName, VersionText>,
+    failure: Option<ReleaseLookupError>,
+}
+
+fn advisory_latest_map(process: &ProcessRunner) -> Result<MiseAdvisoryLatest, MiseError> {
     let output = match process.run(
         &CommandSpec::new("mise", ["outdated", "--json"]),
         &CommandCheck::Success,
     ) {
         Ok(output) => output,
         Err(err) if err.is_interruption() => return Err(MiseError::from(err)),
-        Err(_) => return Ok(BTreeMap::new()),
+        Err(err) => {
+            return Ok(MiseAdvisoryLatest {
+                latest: BTreeMap::new(),
+                failure: Some(ReleaseLookupError::new(err.to_string())),
+            });
+        }
     };
-    parse_outdated_json(output.stdout()?).or_else(|_| Ok(BTreeMap::new()))
+    let raw = match output.stdout() {
+        Ok(raw) => raw,
+        Err(err) => {
+            return Ok(MiseAdvisoryLatest {
+                latest: BTreeMap::new(),
+                failure: Some(ReleaseLookupError::new(err.to_string())),
+            });
+        }
+    };
+    parse_outdated_json(raw)
+        .map(|latest| MiseAdvisoryLatest {
+            latest,
+            failure: None,
+        })
+        .or_else(|err| {
+            Ok(MiseAdvisoryLatest {
+                latest: BTreeMap::new(),
+                failure: Some(ReleaseLookupError::new(err.to_string())),
+            })
+        })
 }
 
 fn lookup_target_age(
@@ -926,8 +957,9 @@ fn duration_arg(duration: Duration) -> String {
 
 #[cfg(test)]
 mod tests {
-    use upnow_domain::{ExecutionTargetKind, PlanItemId};
+    use upnow_domain::{ExecutionTargetKind, PlanItemId, TargetSelection};
     use upnow_execution::{ExecutionCommandIntent, ResolvedExecutionItem};
+    use upnow_infra::CommandOutput;
 
     use super::*;
 
@@ -1004,6 +1036,54 @@ mod tests {
         assert_eq!(commands[0].command.display(), "mise upgrade --before 7d");
     }
 
+    #[test]
+    fn update_inputs_retains_advisory_failure_without_replacing_dry_run_target() {
+        let process = ProcessRunner::fake([
+            Ok(CommandOutput::from_parts(
+                success_status(),
+                "Would uninstall npm:eslint@8.0.0\nWould install npm:eslint@8.1.0\n",
+                "",
+            )),
+            Ok(CommandOutput::from_parts(
+                failure_status(),
+                "",
+                "outdated unavailable",
+            )),
+            Ok(CommandOutput::from_parts(
+                success_status(),
+                r#"{"8.1.0":"2021-01-01T00:00:00Z"}"#,
+                "",
+            )),
+        ]);
+        let http = HttpClient::fake([]);
+        let env = Env::fixed([]);
+
+        let inputs = update_inputs(&process, &http, &env, Duration::from_secs(604_800))
+            .expect("mise update inputs should be collected");
+
+        let [ManagerUpdateInput::Seed(seed)] = inputs.as_slice() else {
+            panic!("expected one mise seed");
+        };
+        let TargetSelection::ManagerSelected(selected_target) = &seed.target_selection else {
+            panic!("expected manager-selected mise target");
+        };
+        assert_eq!(
+            selected_target
+                .target_version()
+                .expect("selected target")
+                .as_str(),
+            "8.1.0"
+        );
+        assert_eq!(
+            selected_target
+                .advisory_lookup_failure
+                .as_ref()
+                .expect("advisory failure should be retained")
+                .detail,
+            "mise outdated --json failed (exit 1): outdated unavailable"
+        );
+    }
+
     fn resolved_item(
         plan_item_id: &str,
         package_name: &str,
@@ -1028,6 +1108,30 @@ mod tests {
 
     fn version(value: &str) -> VersionText {
         VersionText::new(value).expect("valid version")
+    }
+
+    #[cfg(unix)]
+    fn success_status() -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(0)
+    }
+
+    #[cfg(windows)]
+    fn success_status() -> std::process::ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(0)
+    }
+
+    #[cfg(unix)]
+    fn failure_status() -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(1 << 8)
+    }
+
+    #[cfg(windows)]
+    fn failure_status() -> std::process::ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(1)
     }
 }
 

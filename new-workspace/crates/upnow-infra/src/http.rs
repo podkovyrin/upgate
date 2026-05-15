@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use reqwest::blocking::Client;
+use reqwest::header::{HeaderName, HeaderValue};
 
 use crate::{Env, InfraError};
 
@@ -43,15 +44,43 @@ impl HttpClient {
     /// Returns an error when the HTTP request fails, the response body cannot
     /// be read, or a fake client has no response for the URL.
     pub fn get_text(&self, url: &str) -> Result<HttpResponse, InfraError> {
+        self.get_text_with_headers(url, [])
+    }
+
+    /// Sends a GET request with request-specific headers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a header is invalid, the HTTP request fails, the
+    /// response body cannot be read, or a fake client has no response for the
+    /// URL. Fake clients match only on URL and ignore headers.
+    pub fn get_text_with_headers(
+        &self,
+        url: &str,
+        headers: impl IntoIterator<Item = HttpHeader>,
+    ) -> Result<HttpResponse, InfraError> {
         match self {
             Self::Real(client) => {
-                let response = client
-                    .get(url)
-                    .send()
-                    .map_err(|err| InfraError::HttpRequest {
-                        url: url.to_owned(),
-                        detail: err.to_string(),
+                let mut request = client.get(url);
+                for header in headers {
+                    let name = HeaderName::from_bytes(header.name.as_bytes()).map_err(|err| {
+                        InfraError::HttpRequest {
+                            url: url.to_owned(),
+                            detail: err.to_string(),
+                        }
                     })?;
+                    let value = HeaderValue::from_str(&header.value).map_err(|err| {
+                        InfraError::HttpRequest {
+                            url: url.to_owned(),
+                            detail: err.to_string(),
+                        }
+                    })?;
+                    request = request.header(name, value);
+                }
+                let response = request.send().map_err(|err| InfraError::HttpRequest {
+                    url: url.to_owned(),
+                    detail: err.to_string(),
+                })?;
                 let status = response.status().as_u16();
                 if !response.status().is_success() {
                     return Err(InfraError::HttpStatus {
@@ -102,6 +131,21 @@ impl HttpClient {
                 })
             }
             Self::Fake(fake) => fake.get_bytes(url),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpHeader {
+    pub name: String,
+    pub value: String,
+}
+
+impl HttpHeader {
+    pub fn new(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: value.into(),
         }
     }
 }

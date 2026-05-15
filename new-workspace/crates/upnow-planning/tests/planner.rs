@@ -1,9 +1,10 @@
 use upnow_domain::{
-    ExecutionSupport, ManagerId, PackageName, PlanItem, PlanItemId, SelectedUpdate, ToolId,
-    UpdateCandidate, UpdatePlan, UpdateSelectionMode, UpdateSelectionPolicy, VersionScheme,
-    VersionText,
+    ExecutionSupport, InstalledTool, ManagerId, ManagerMetadata, ManagerUpdateInput, PackageName,
+    PlanItem, PlanItemId, ReleaseEntry, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
+    SelectedUpdate, ToolId, ToolName, UpdateCandidate, UpdatePlan, UpdateSeed, UpdateSelectionMode,
+    UpdateSelectionPolicy, VersionPolicy, VersionScheme, VersionText,
 };
-use upnow_planning::default_batch_selection;
+use upnow_planning::{PlanningSettings, default_batch_selection, update_plan_from_inputs};
 
 fn manager_id() -> ManagerId {
     ManagerId::new("pnpm").expect("valid manager id")
@@ -42,6 +43,30 @@ fn plan() -> UpdatePlan {
 }
 
 #[test]
+fn plan_ids_use_tool_identity_when_packages_share_a_name() {
+    let package_name = PackageName::new("shared-name").expect("valid package name");
+    let plan = update_plan_from_inputs(
+        manager_id(),
+        vec![
+            ManagerUpdateInput::Seed(seed("formula:shared-name", package_name.clone())),
+            ManagerUpdateInput::Seed(seed("cask:shared-name", package_name)),
+        ],
+        PlanningSettings {
+            policy: VersionPolicy::None,
+            now: std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(20),
+            min_release_age: std::time::Duration::ZERO,
+        },
+    )
+    .expect("distinct tools with one package name should produce a valid plan");
+
+    let ids: Vec<&str> = plan.items.iter().map(|item| item.id().as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["pnpm:formula:shared-name", "pnpm:cask:shared-name"]
+    );
+}
+
+#[test]
 fn default_batch_selection_include_mode_excludes_exceptions() {
     let plan = plan();
     let policy = UpdateSelectionPolicy {
@@ -60,6 +85,26 @@ fn default_batch_selection_include_mode_excludes_exceptions() {
         selection.selected_items[0].selected_update,
         SelectedUpdate::Recommended
     );
+}
+
+fn seed(tool_id: &str, package_name: PackageName) -> UpdateSeed {
+    UpdateSeed::new(
+        InstalledTool::new(
+            manager_id(),
+            ToolId::new(tool_id).expect("valid tool id"),
+            package_name.clone(),
+            ToolName::new(package_name.as_str()).expect("valid tool name"),
+            VersionText::new("1.0.0").expect("valid installed version"),
+            ManagerMetadata::empty(),
+        ),
+        VersionText::new("1.1.0").expect("valid target version"),
+        VersionScheme::SemVer,
+        ReleaseLookupResult::Known(ReleaseTimeline::new(vec![ReleaseEntry::new(
+            VersionText::new("1.1.0").expect("valid release version"),
+            ReleaseTimestamp::new(std::time::SystemTime::UNIX_EPOCH),
+        )])),
+        ExecutionSupport::native_or_exact(),
+    )
 }
 
 #[test]

@@ -16,7 +16,6 @@ use upnow_domain::{
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionPlan,
-    ResolvedExecutionTarget,
 };
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
 
@@ -238,6 +237,13 @@ pub fn update_inputs(
 ) -> Result<Vec<ManagerUpdateInput>, UvError> {
     let min_age_arg = duration_arg(min_release_age);
     let installed = installed_global(process)?;
+    let advisory_latest = match outdated_latest_map(process) {
+        Ok(map) => UvAdvisoryLatest::Known(map),
+        Err(err @ UvError::Interrupted(_)) => return Err(err),
+        Err(err) => UvAdvisoryLatest::LookupFailed(ReleaseLookupError::new(format!(
+            "uv advisory latest lookup failed: {err}"
+        ))),
+    };
     let mut inputs = Vec::new();
     for tool in installed {
         let installed = installed_tool(&tool)?;
@@ -252,7 +258,8 @@ pub fn update_inputs(
                 continue;
             }
         };
-        let selected_target = lookup_uv_selected_target(http, env, &tool.name, target);
+        let selected_target =
+            lookup_uv_selected_target(http, env, &tool.name, target, &advisory_latest);
         inputs.push(ManagerUpdateInput::Seed(UpdateSeed::manager_selected(
             installed,
             selected_target,
@@ -282,6 +289,7 @@ fn lookup_uv_selected_target(
     env: &Env,
     package: &PackageName,
     target: VersionText,
+    advisory_latest: &UvAdvisoryLatest,
 ) -> ManagerSelectedTarget {
     let lookup = lookup_release(http, env, package);
     let target_age = match &lookup {
@@ -295,7 +303,63 @@ fn lookup_uv_selected_target(
         ReleaseLookupResult::MissingMetadata => TargetAgeLookupResult::MissingMetadata,
         ReleaseLookupResult::LookupFailed(err) => TargetAgeLookupResult::LookupFailed(err.clone()),
     };
-    ManagerSelectedTarget::new(target, target_age)
+    let selected = ManagerSelectedTarget::new(target, target_age);
+    match advisory_latest {
+        UvAdvisoryLatest::Known(latest) => {
+            if let Some(latest_version) = latest.get(package) {
+                selected.with_advisory_release_lookup(latest_version.clone(), lookup)
+            } else {
+                selected
+            }
+        }
+        UvAdvisoryLatest::LookupFailed(error) => {
+            selected.with_advisory_lookup_failure(error.clone())
+        }
+    }
+}
+
+enum UvAdvisoryLatest {
+    Known(BTreeMap<PackageName, VersionText>),
+    LookupFailed(ReleaseLookupError),
+}
+
+fn outdated_latest_map(
+    process: &ProcessRunner,
+) -> Result<BTreeMap<PackageName, VersionText>, UvError> {
+    let output = process.run(
+        &CommandSpec::new("uv", ["tool", "list", "--outdated"]),
+        &CommandCheck::Success,
+    )?;
+    let mut latest = BTreeMap::new();
+    for line in output.stdout()?.lines() {
+        let Some((name, _current, Some(version))) = parse_outdated_tool_line(line) else {
+            continue;
+        };
+        latest.insert(name, version);
+    }
+    Ok(latest)
+}
+
+fn parse_outdated_tool_line(line: &str) -> Option<(PackageName, VersionText, Option<VersionText>)> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('-') {
+        return None;
+    }
+
+    let mut parts = trimmed.split_whitespace();
+    let name = PackageName::new(parts.next()?).ok()?;
+    let current = VersionText::new(strip_v_prefix(parts.next()?)).ok()?;
+    let latest =
+        bracket_value(trimmed, "latest: ").and_then(|version| VersionText::new(version).ok());
+    Some((name, current, latest))
+}
+
+fn bracket_value(line: &str, marker: &str) -> Option<String> {
+    let token = format!("[{marker}");
+    let start = line.find(&token)?;
+    let after = &line[start + token.len()..];
+    let end = after.find(']')?;
+    Some(after[..end].to_owned())
 }
 
 fn matching_versions(timeline: &ReleaseTimeline, target: &VersionText) -> Vec<ReleaseEntry> {
@@ -356,8 +420,7 @@ pub fn commands_for_execution_plan(
                     command: tool_install_command(
                         &item.package_name,
                         &min_age_arg,
-                        item.bypass_min_release_age
-                            || matches!(item.target, ResolvedExecutionTarget::ManagerResolved),
+                        item.bypass_min_release_age,
                     ),
                 });
             }
@@ -670,7 +733,7 @@ fn adapter_error(err: &UvError) -> ManagerAdapterError {
 mod tests {
     use std::time::Duration;
 
-    use upnow_domain::{ExecutionTargetKind, ManagerUpdateInput, PlanItemId};
+    use upnow_domain::{ExecutionTargetKind, ManagerUpdateInput, PlanItemId, TargetSelection};
     use upnow_execution::{
         ExecutionCommandIntent, ResolvedExecutionItem, ResolvedExecutionPlan,
         ResolvedExecutionTarget,
@@ -690,6 +753,11 @@ mod tests {
             Ok(CommandOutput::from_parts(
                 success_status(),
                 "ruff v0.1.0\n",
+                "",
+            )),
+            Ok(CommandOutput::from_parts(
+                success_status(),
+                "ruff v0.1.0 [latest: 0.3.0]\n",
                 "",
             )),
             Ok(CommandOutput::from_parts(
@@ -720,6 +788,121 @@ mod tests {
                 .manager_resolved_target
         );
         assert!(!seed.execution_support.resolver_native_global);
+    }
+
+    #[test]
+    fn attaches_outdated_latest_as_advisory_metadata_without_replacing_dry_run_target() {
+        let process = ProcessRunner::fake([
+            Ok(CommandOutput::from_parts(
+                success_status(),
+                "/tmp/uv-tools\n",
+                "",
+            )),
+            Ok(CommandOutput::from_parts(
+                success_status(),
+                "ruff v0.1.0\n",
+                "",
+            )),
+            Ok(CommandOutput::from_parts(
+                success_status(),
+                "ruff v0.1.0 [latest: 0.3.0]\n",
+                "",
+            )),
+            Ok(CommandOutput::from_parts(
+                success_status(),
+                "+ ruff==0.2.0\n",
+                "",
+            )),
+        ]);
+        let http = HttpClient::fake([(
+            "https://pypi.org/pypi/ruff/json".to_owned(),
+            upnow_infra::HttpResponse {
+                status: 200,
+                body: r#"{"releases":{"0.2.0":[{"upload_time_iso_8601":"2021-01-01T00:00:00Z"}],"0.3.0":[{"upload_time_iso_8601":"2021-02-01T00:00:00Z"}]}}"#
+                    .to_owned(),
+            },
+        )]);
+        let env = Env::fixed([]);
+
+        let inputs = update_inputs(&process, &http, &env, Duration::from_secs(604_800))
+            .expect("uv update inputs should be collected");
+
+        let [ManagerUpdateInput::Seed(seed)] = inputs.as_slice() else {
+            panic!("expected one uv seed");
+        };
+        let TargetSelection::ManagerSelected(selected_target) = &seed.target_selection else {
+            panic!("expected manager-selected uv target");
+        };
+        assert_eq!(
+            selected_target
+                .target_version()
+                .expect("selected target")
+                .as_str(),
+            "0.2.0"
+        );
+        let advisory = selected_target
+            .advisory_release_lookup
+            .as_ref()
+            .expect("advisory latest should be attached");
+        assert_eq!(advisory.latest_version.as_str(), "0.3.0");
+    }
+
+    #[test]
+    fn preserves_dry_run_target_when_outdated_advisory_lookup_fails() {
+        let process = ProcessRunner::fake([
+            Ok(CommandOutput::from_parts(
+                success_status(),
+                "/tmp/uv-tools\n",
+                "",
+            )),
+            Ok(CommandOutput::from_parts(
+                success_status(),
+                "ruff v0.1.0\n",
+                "",
+            )),
+            Ok(CommandOutput::from_parts(
+                failure_status(),
+                "",
+                "network unavailable\n",
+            )),
+            Ok(CommandOutput::from_parts(
+                success_status(),
+                "+ ruff==0.2.0\n",
+                "",
+            )),
+        ]);
+        let http = HttpClient::fake([(
+            "https://pypi.org/pypi/ruff/json".to_owned(),
+            upnow_infra::HttpResponse {
+                status: 200,
+                body: r#"{"releases":{"0.2.0":[{"upload_time_iso_8601":"2021-01-01T00:00:00Z"}]}}"#
+                    .to_owned(),
+            },
+        )]);
+        let env = Env::fixed([]);
+
+        let inputs = update_inputs(&process, &http, &env, Duration::from_secs(604_800))
+            .expect("uv update inputs should be collected");
+
+        let [ManagerUpdateInput::Seed(seed)] = inputs.as_slice() else {
+            panic!("expected one uv seed");
+        };
+        let TargetSelection::ManagerSelected(selected_target) = &seed.target_selection else {
+            panic!("expected manager-selected uv target");
+        };
+        assert_eq!(
+            selected_target
+                .target_version()
+                .expect("selected target")
+                .as_str(),
+            "0.2.0"
+        );
+        let advisory = selected_target
+            .advisory_lookup_failure
+            .as_ref()
+            .expect("advisory failure should be attached");
+        assert!(advisory.detail.contains("uv advisory latest lookup failed"));
+        assert!(advisory.detail.contains("uv tool list --outdated failed"));
     }
 
     #[test]
@@ -759,7 +942,7 @@ mod tests {
     }
 
     #[test]
-    fn resolver_native_command_omits_exclude_newer_for_manager_resolved_update() {
+    fn resolver_native_command_preserves_exclude_newer_for_manager_resolved_update() {
         let plan = ResolvedExecutionPlan {
             intents: vec![ExecutionCommandIntent::ResolverNative(resolved_item(
                 false,
@@ -772,7 +955,7 @@ mod tests {
 
         assert_eq!(
             commands[0].command.display(),
-            "uv tool install --upgrade ruff"
+            "uv tool install --upgrade --exclude-newer 7d ruff"
         );
     }
 
@@ -810,9 +993,21 @@ mod tests {
         std::process::ExitStatus::from_raw(0)
     }
 
+    #[cfg(unix)]
+    fn failure_status() -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(256)
+    }
+
     #[cfg(windows)]
     fn success_status() -> std::process::ExitStatus {
         use std::os::windows::process::ExitStatusExt;
         std::process::ExitStatus::from_raw(0)
+    }
+
+    #[cfg(windows)]
+    fn failure_status() -> std::process::ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(1)
     }
 }

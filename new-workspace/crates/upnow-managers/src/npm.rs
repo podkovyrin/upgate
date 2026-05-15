@@ -137,7 +137,7 @@ impl ManagerAdapter for NpmManager {
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
-        ManagerCapabilities::new()
+        ManagerCapabilities::new().with_native_global_update(true)
     }
     fn scan_inputs(
         &self,
@@ -179,7 +179,7 @@ impl ManagerAdapter for NpmManager {
         _env: &Env,
         plan: &ResolvedExecutionPlan,
     ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
-        commands_for_execution_plan(plan).map_err(adapter_error)
+        commands_for_execution_plan(plan, self.config.min_release_age).map_err(adapter_error)
     }
 }
 
@@ -332,20 +332,22 @@ pub fn parse_npm_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTi
 /// Returns an error when the resolved execution mode is not supported by npm.
 pub fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
+    min_release_age: Duration,
 ) -> Result<Vec<ExecutionCommand>, NpmError> {
+    let min_age_days = min_release_age.as_secs() / (24 * 60 * 60);
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
             ExecutionCommandIntent::NativeSelected(item) => {
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
-                    command: selected_native_update_command_for_item(item),
+                    command: selected_native_update_command_for_item(item, min_age_days),
                 });
             }
             ExecutionCommandIntent::Exact(item) => {
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
-                    command: exact_command_for_item(item),
+                    command: exact_command_for_item(item, min_age_days),
                 });
             }
             ExecutionCommandIntent::ResolverNative(_) => {
@@ -363,35 +365,79 @@ pub fn commands_for_execution_plan(
                     "grouped-native".to_owned(),
                 ));
             }
-            ExecutionCommandIntent::NativeGlobal(_) => {
-                return Err(NpmError::UnsupportedCommandIntent(
-                    "native-global".to_owned(),
-                ));
-            }
+            ExecutionCommandIntent::NativeGlobal(items) => commands.push(ExecutionCommand {
+                items: items.iter().map(ExecutionCommandItem::from).collect(),
+                command: native_global_update_command(min_age_days),
+            }),
         }
     }
     Ok(commands)
 }
 
-fn exact_command_for_item(item: &ResolvedExecutionItem) -> CommandSpec {
+fn exact_command_for_item(item: &ResolvedExecutionItem, min_age_days: u64) -> CommandSpec {
     exact_command_parts(
         &item.package_name,
         item.known_target_version()
             .expect("exact command requires known target"),
+        min_age_days,
+        item.bypass_min_release_age,
     )
 }
 
-fn exact_command_parts(package_name: &PackageName, target_version: &VersionText) -> CommandSpec {
+fn exact_command_parts(
+    package_name: &PackageName,
+    target_version: &VersionText,
+    min_age_days: u64,
+    bypass_min_release_age: bool,
+) -> CommandSpec {
     let spec = format!("{}@{}", package_name.as_str(), target_version.as_str());
-    CommandSpec::new("npm", ["install", "-g", &spec]).mutating()
+    let mut args = vec!["install".to_owned(), "-g".to_owned(), spec];
+    if !bypass_min_release_age {
+        args.push("--min-release-age".to_owned());
+        args.push(min_age_days.to_string());
+    }
+    CommandSpec::new("npm", args).mutating()
 }
 
-fn selected_native_update_command_for_item(item: &ResolvedExecutionItem) -> CommandSpec {
-    selected_native_update_command_parts(&item.package_name)
+fn selected_native_update_command_for_item(
+    item: &ResolvedExecutionItem,
+    min_age_days: u64,
+) -> CommandSpec {
+    selected_native_update_command_parts(
+        &item.package_name,
+        min_age_days,
+        item.bypass_min_release_age,
+    )
 }
 
-fn selected_native_update_command_parts(package_name: &PackageName) -> CommandSpec {
-    CommandSpec::new("npm", ["update", "-g", package_name.as_str()]).mutating()
+fn selected_native_update_command_parts(
+    package_name: &PackageName,
+    min_age_days: u64,
+    bypass_min_release_age: bool,
+) -> CommandSpec {
+    let mut args = vec![
+        "-g".to_owned(),
+        "update".to_owned(),
+        package_name.as_str().to_owned(),
+    ];
+    if !bypass_min_release_age {
+        args.push("--min-release-age".to_owned());
+        args.push(min_age_days.to_string());
+    }
+    CommandSpec::new("npm", args).mutating()
+}
+
+fn native_global_update_command(min_age_days: u64) -> CommandSpec {
+    CommandSpec::new(
+        "npm",
+        [
+            "-g",
+            "update",
+            "--min-release-age",
+            &min_age_days.to_string(),
+        ],
+    )
+    .mutating()
 }
 
 fn installed_tool(package: NpmInstalledPackage) -> Result<InstalledTool, NpmError> {
@@ -438,7 +484,7 @@ const fn npm_execution_support() -> ExecutionSupport {
     ExecutionSupport {
         exact: true,
         native_selected: true,
-        native_global: false,
+        native_global: true,
         grouped_native: false,
         resolver_native_selected: ResolverNativeSupport::none(),
         resolver_native_global: false,
@@ -533,7 +579,27 @@ mod tests {
             ))],
         };
 
-        let commands = commands_for_execution_plan(&plan).expect("commands");
+        let commands = commands_for_execution_plan(&plan, Duration::from_secs(7 * 24 * 60 * 60))
+            .expect("commands");
+
+        assert_eq!(
+            commands[0].command.display(),
+            "npm install -g typescript@5.9.3 --min-release-age 7"
+        );
+    }
+
+    #[test]
+    fn exact_execution_omits_min_age_for_age_bypass() {
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::Exact(item(
+                ResolvedExecutionTarget::Known(version("5.9.3")),
+                true,
+                true,
+            ))],
+        };
+
+        let commands = commands_for_execution_plan(&plan, Duration::from_secs(7 * 24 * 60 * 60))
+            .expect("commands");
 
         assert_eq!(
             commands[0].command.display(),
@@ -542,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn manager_resolved_native_selected_updates_one_global_package() {
+    fn manager_resolved_native_selected_updates_one_global_package_with_min_age() {
         let plan = ResolvedExecutionPlan {
             intents: vec![ExecutionCommandIntent::NativeSelected(item(
                 ResolvedExecutionTarget::ManagerResolved,
@@ -551,12 +617,35 @@ mod tests {
             ))],
         };
 
-        let commands = commands_for_execution_plan(&plan).expect("commands");
+        let commands = commands_for_execution_plan(&plan, Duration::from_secs(7 * 24 * 60 * 60))
+            .expect("commands");
 
-        assert_eq!(commands[0].command.display(), "npm update -g typescript");
+        assert_eq!(
+            commands[0].command.display(),
+            "npm -g update typescript --min-release-age 7"
+        );
         assert_eq!(
             commands[0].items[0].target,
             ResolvedExecutionTarget::ManagerResolved
+        );
+    }
+
+    #[test]
+    fn native_global_updates_all_selected_packages_with_min_age() {
+        let plan = ResolvedExecutionPlan {
+            intents: vec![ExecutionCommandIntent::NativeGlobal(vec![item(
+                ResolvedExecutionTarget::ManagerResolved,
+                false,
+                false,
+            )])],
+        };
+
+        let commands = commands_for_execution_plan(&plan, Duration::from_secs(7 * 24 * 60 * 60))
+            .expect("commands");
+
+        assert_eq!(
+            commands[0].command.display(),
+            "npm -g update --min-release-age 7"
         );
     }
 
@@ -570,7 +659,8 @@ mod tests {
             ))],
         };
 
-        let err = commands_for_execution_plan(&plan).expect_err("unsupported intent");
+        let err = commands_for_execution_plan(&plan, Duration::from_secs(7 * 24 * 60 * 60))
+            .expect_err("unsupported intent");
 
         assert_eq!(
             err,

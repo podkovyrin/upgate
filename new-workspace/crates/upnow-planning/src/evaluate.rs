@@ -160,6 +160,7 @@ fn evaluate_manager_selected_seed(
     let mut diagnostics = PlanDiagnostics::new(min_release_age);
     diagnostics.advisory_latest =
         advisory_latest_diagnostics(target.advisory_release_lookup.as_ref(), now);
+    diagnostics.advisory_lookup_failure = target.advisory_lookup_failure.clone();
     let Some(selected_target) = target.target_version().cloned() else {
         return PlanItem::Blocked {
             id,
@@ -287,12 +288,7 @@ fn evaluate_semver_seed(
     let mut target_metadata_found = false;
     for entry in &timeline.versions {
         let Ok(parsed) = parse_semver(entry.version.as_str()) else {
-            let bad_version = entry.version.as_str().to_owned();
-            return PlanItem::ResolverError {
-                id,
-                installed: seed.installed,
-                message: format!("failed to parse release version `{bad_version}`"),
-            };
+            continue;
         };
         if parsed == parsed_discovered_target {
             target_metadata_found = true;
@@ -317,12 +313,7 @@ fn evaluate_semver_seed(
 
     for entry in &timeline.versions {
         let Ok(parsed) = parse_semver(entry.version.as_str()) else {
-            let bad_version = entry.version.as_str().to_owned();
-            return PlanItem::ResolverError {
-                id,
-                installed: seed.installed,
-                message: format!("failed to parse release version `{bad_version}`"),
-            };
+            continue;
         };
         if parsed <= installed_version {
             continue;
@@ -776,6 +767,7 @@ where
         missing_metadata: None,
         lookup_failure: None,
         advisory_latest: None,
+        advisory_lookup_failure: None,
     }
 }
 

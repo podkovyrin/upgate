@@ -15,7 +15,9 @@ use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
     ResolvedExecutionPlan,
 };
-use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
+use upnow_infra::{
+    CommandCheck, CommandSpec, Env, HttpClient, HttpHeader, InfraError, ProcessRunner,
+};
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
@@ -23,6 +25,7 @@ use crate::adapter::{
 };
 
 pub const MANAGER_ID: &str = "brew";
+const GITHUB_ACCEPT_HEADER: &str = "application/vnd.github+json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrewError {
@@ -78,7 +81,7 @@ impl BrewError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BrewPackageKind {
     Formula,
     Cask,
@@ -106,6 +109,12 @@ pub struct BrewOutdatedPackage {
 struct BrewPackageMetadata {
     tap: Option<String>,
     source_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct BrewPackageKey {
+    name: PackageName,
+    kind: BrewPackageKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -382,13 +391,16 @@ pub fn parse_installed_info_json(raw: &str) -> Result<Vec<BrewInstalledPackage>,
 /// Returns an error when JSON is malformed or package fields are blank.
 fn parse_package_info_json(
     raw: &str,
-) -> Result<BTreeMap<PackageName, BrewPackageMetadata>, BrewError> {
+) -> Result<BTreeMap<BrewPackageKey, BrewPackageMetadata>, BrewError> {
     let parsed: InfoRoot =
         serde_json::from_str(raw).map_err(|err| BrewError::Json(err.to_string()))?;
     let mut packages = BTreeMap::new();
     for formula in parsed.formulae {
         packages.insert(
-            PackageName::new(formula.full_name)?,
+            brew_package_key(
+                PackageName::new(formula.full_name)?,
+                BrewPackageKind::Formula,
+            ),
             BrewPackageMetadata {
                 tap: formula.tap,
                 source_path: formula.ruby_source_path,
@@ -397,7 +409,7 @@ fn parse_package_info_json(
     }
     for cask in parsed.casks {
         packages.insert(
-            PackageName::new(cask.token)?,
+            brew_package_key(PackageName::new(cask.token)?, BrewPackageKind::Cask),
             BrewPackageMetadata {
                 tap: cask.tap,
                 source_path: cask.ruby_source_path,
@@ -442,7 +454,10 @@ pub fn update_inputs(
 
     let mut inputs = Vec::new();
     for package in outdated {
-        let metadata = package_info.get(&package.name);
+        let metadata = package_info.get(&brew_package_key(
+            package.name.clone(),
+            package.kind.clone(),
+        ));
         let installed = installed_tool_for_outdated(&package)?;
         if package.pinned {
             inputs.push(ManagerUpdateInput::Skipped {
@@ -547,7 +562,7 @@ fn installed_packages(process: &ProcessRunner) -> Result<Vec<BrewInstalledPackag
 fn package_info_for_outdated(
     process: &ProcessRunner,
     packages: &[BrewOutdatedPackage],
-) -> Result<BTreeMap<PackageName, BrewPackageMetadata>, BrewError> {
+) -> Result<BTreeMap<BrewPackageKey, BrewPackageMetadata>, BrewError> {
     let names = packages
         .iter()
         .map(|package| package.name.clone())
@@ -558,7 +573,7 @@ fn package_info_for_outdated(
 fn package_info_for_names(
     process: &ProcessRunner,
     names: &[PackageName],
-) -> Result<BTreeMap<PackageName, BrewPackageMetadata>, BrewError> {
+) -> Result<BTreeMap<BrewPackageKey, BrewPackageMetadata>, BrewError> {
     let mut args = vec!["info".to_owned(), "--json=v2".to_owned()];
     args.extend(names.iter().map(|name| name.as_str().to_owned()));
     let output = process.run(&CommandSpec::new("brew", args), &CommandCheck::Success)?;
@@ -640,7 +655,7 @@ fn release_lookup_for_installed(
     tool: &InstalledTool,
 ) -> ReleaseLookupResult {
     let metadata = match package_info_for_names(process, std::slice::from_ref(&tool.package_name)) {
-        Ok(mut packages) => packages.remove(&tool.package_name),
+        Ok(mut packages) => metadata_for_installed_tool(&mut packages, tool),
         Err(err) => {
             return ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(err.to_string()));
         }
@@ -741,7 +756,9 @@ fn github_target_age(
         }
         query.append_pair("per_page", "1");
     }
-    let response = http.get_text(url.as_str()).map_err(|err| err.to_string())?;
+    let response = http
+        .get_text_with_headers(url.as_str(), github_request_headers(env))
+        .map_err(|err| err.to_string())?;
     let commits: Vec<GitHubCommitItem> =
         serde_json::from_str(&response.body).map_err(|err| err.to_string())?;
     let first = commits
@@ -764,6 +781,20 @@ fn github_target_age(
     let seconds = u64::try_from(parsed.timestamp())
         .map_err(|_| "GitHub commit timestamp is negative".to_owned())?;
     Ok(known_target_age(timestamp_from_unix_seconds(seconds)))
+}
+
+fn github_request_headers(env: &Env) -> Vec<HttpHeader> {
+    let mut headers = vec![HttpHeader::new("Accept", GITHUB_ACCEPT_HEADER)];
+    if let Some(token) = github_token(env) {
+        headers.push(HttpHeader::new("Authorization", format!("Bearer {token}")));
+    }
+    headers
+}
+
+fn github_token(env: &Env) -> Option<String> {
+    ["HOMEBREW_GITHUB_API_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"]
+        .into_iter()
+        .find_map(|var_name| env.non_empty_var(var_name))
 }
 
 fn parse_github_remote(remote: &str) -> Option<(String, String)> {
@@ -823,7 +854,7 @@ fn first_version(versions: Vec<String>) -> String {
 fn installed_tool(package: &BrewInstalledPackage) -> Result<InstalledTool, BrewError> {
     Ok(InstalledTool::new(
         BrewManager::id(),
-        ToolId::new(package.name.as_str().to_owned())?,
+        brew_tool_id(&package.kind, &package.name)?,
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
         package.version.clone(),
@@ -834,12 +865,36 @@ fn installed_tool(package: &BrewInstalledPackage) -> Result<InstalledTool, BrewE
 fn installed_tool_for_outdated(package: &BrewOutdatedPackage) -> Result<InstalledTool, BrewError> {
     Ok(InstalledTool::new(
         BrewManager::id(),
-        ToolId::new(package.name.as_str().to_owned())?,
+        brew_tool_id(&package.kind, &package.name)?,
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
         package.installed.clone(),
         ManagerMetadata::empty(),
     ))
+}
+
+fn brew_tool_id(kind: &BrewPackageKind, name: &PackageName) -> Result<ToolId, BrewError> {
+    let prefix = match kind {
+        BrewPackageKind::Formula => "formula",
+        BrewPackageKind::Cask => "cask",
+    };
+    ToolId::new(format!("{prefix}:{}", name.as_str())).map_err(BrewError::from)
+}
+
+const fn brew_package_key(name: PackageName, kind: BrewPackageKind) -> BrewPackageKey {
+    BrewPackageKey { name, kind }
+}
+
+fn metadata_for_installed_tool(
+    packages: &mut BTreeMap<BrewPackageKey, BrewPackageMetadata>,
+    tool: &InstalledTool,
+) -> Option<BrewPackageMetadata> {
+    for kind in [BrewPackageKind::Formula, BrewPackageKind::Cask] {
+        if brew_tool_id(&kind, &tool.package_name).ok().as_ref() == Some(&tool.tool_id) {
+            return packages.remove(&brew_package_key(tool.package_name.clone(), kind));
+        }
+    }
+    None
 }
 
 const fn execution_target_kind(kind: &BrewPackageKind) -> ExecutionTargetKind {
@@ -920,8 +975,84 @@ fn adapter_error(err: &BrewError) -> ManagerAdapterError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
     use upnow_domain::PlanItemId;
     use upnow_execution::{ResolvedExecutionItem, ResolvedExecutionTarget};
+
+    #[test]
+    fn github_fallback_sends_homebrew_token_auth_headers() {
+        let listener =
+            TcpListener::bind(("127.0.0.1", 0)).expect("test server should bind locally");
+        let base_url = format!(
+            "http://{}",
+            listener
+                .local_addr()
+                .expect("test server address should exist")
+        );
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("test server should accept request");
+            let mut reader = BufReader::new(stream.try_clone().expect("test stream should clone"));
+            let mut headers = Vec::new();
+            loop {
+                let mut line = String::new();
+                reader
+                    .read_line(&mut line)
+                    .expect("test server should read request");
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                headers.push(line.trim_end().to_owned());
+            }
+
+            let body =
+                r#"[{"commit":{"author":{"date":"2024-01-02T03:04:05Z"},"committer":null}}]"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("test server should write response");
+            headers
+        });
+        let http = HttpClient::real(&upnow_infra::HttpSettings::default_client_settings())
+            .expect("HTTP client should build");
+        let env = Env::fixed([
+            ("UPNOW_BREW_GITHUB_API_BASE_URL".to_owned(), base_url),
+            (
+                "HOMEBREW_GITHUB_API_TOKEN".to_owned(),
+                "  homebrew-token  ".to_owned(),
+            ),
+            ("GITHUB_TOKEN".to_owned(), "github-token".to_owned()),
+        ]);
+
+        let result = github_target_age(
+            &http,
+            &env,
+            "https://github.com/Homebrew/homebrew-core",
+            Some("main"),
+            "Formula/w/wget.rb",
+        )
+        .expect("GitHub fallback should parse response");
+
+        assert!(matches!(result, TargetAgeLookupResult::Known(_)));
+        let headers = server.join().expect("test server should finish");
+        assert!(has_header(
+            &headers,
+            "Accept",
+            "application/vnd.github+json"
+        ));
+        assert!(has_header(
+            &headers,
+            "Authorization",
+            "Bearer homebrew-token"
+        ));
+    }
 
     #[test]
     fn manager_resolved_formula_uses_scoped_formula_upgrade() {
@@ -1049,11 +1180,84 @@ mod tests {
         );
     }
 
+    #[test]
+    fn package_info_keeps_same_name_formula_and_cask_metadata_distinct() {
+        let raw = r#"{
+            "formulae": [
+                {
+                    "full_name": "shared",
+                    "tap": "homebrew/core",
+                    "ruby_source_path": "Formula/s/shared.rb"
+                }
+            ],
+            "casks": [
+                {
+                    "token": "shared",
+                    "tap": "homebrew/cask",
+                    "ruby_source_path": "Casks/s/shared.rb"
+                }
+            ]
+        }"#;
+
+        let parsed = parse_package_info_json(raw).expect("package info should parse");
+
+        let formula = parsed
+            .get(&brew_package_key(
+                package("shared"),
+                BrewPackageKind::Formula,
+            ))
+            .expect("formula metadata should be present");
+        assert_eq!(formula.tap.as_deref(), Some("homebrew/core"));
+        assert_eq!(formula.source_path.as_deref(), Some("Formula/s/shared.rb"));
+        let cask = parsed
+            .get(&brew_package_key(package("shared"), BrewPackageKind::Cask))
+            .expect("cask metadata should be present");
+        assert_eq!(cask.tap.as_deref(), Some("homebrew/cask"));
+        assert_eq!(cask.source_path.as_deref(), Some("Casks/s/shared.rb"));
+    }
+
+    #[test]
+    fn same_name_formula_and_cask_have_distinct_tool_ids() {
+        let formula = installed_tool(&BrewInstalledPackage {
+            name: package("shared"),
+            version: VersionText::new("1.0.0").expect("valid version"),
+            kind: BrewPackageKind::Formula,
+            tap: None,
+            source_path: None,
+        })
+        .expect("formula tool should build");
+        let cask = installed_tool(&BrewInstalledPackage {
+            name: package("shared"),
+            version: VersionText::new("1.0.0").expect("valid version"),
+            kind: BrewPackageKind::Cask,
+            tap: None,
+            source_path: None,
+        })
+        .expect("cask tool should build");
+
+        assert_eq!(formula.package_name, cask.package_name);
+        assert_ne!(formula.tool_id, cask.tool_id);
+        assert_eq!(formula.tool_id.as_str(), "formula:shared");
+        assert_eq!(cask.tool_id.as_str(), "cask:shared");
+    }
+
     fn command_displays(commands: &[ExecutionCommand]) -> Vec<String> {
         commands
             .iter()
             .map(|command| command.command.display())
             .collect()
+    }
+
+    fn has_header(headers: &[String], name: &str, value: &str) -> bool {
+        headers.iter().any(|header| {
+            header.split_once(':').is_some_and(|(header_name, rest)| {
+                header_name.eq_ignore_ascii_case(name) && rest.trim() == value
+            })
+        })
+    }
+
+    fn package(value: &str) -> PackageName {
+        PackageName::new(value).expect("valid package")
     }
 
     fn item(

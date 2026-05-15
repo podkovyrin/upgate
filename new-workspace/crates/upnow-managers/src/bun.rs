@@ -302,26 +302,27 @@ pub fn lookup_release_with_bun(
         ],
     );
     match process.run(&command, &CommandCheck::IgnoreStatus) {
-        Ok(output) if !output.status().success() => {
-            let detail = output.stderr().unwrap_or_default().to_owned();
-            Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
-                detail,
-            )))
-        }
-        Ok(output) => match output.stdout() {
-            Ok(stdout) => match parse_bun_time_json(package, stdout) {
-                Ok(timeline) => Ok(ReleaseLookupResult::Known(timeline)),
-                Err(BunError::MissingReleaseMetadata(_)) => {
-                    Ok(ReleaseLookupResult::MissingMetadata)
-                }
+        Ok(output) => {
+            if !output.status().success() && output.status().code().is_none() {
+                return Err(BunError::Interrupted(
+                    "bun pm view time --json failed (exit signal)".to_owned(),
+                ));
+            }
+            match output.stdout() {
+                Ok(stdout) => match parse_bun_time_json(package, stdout) {
+                    Ok(timeline) => Ok(ReleaseLookupResult::Known(timeline)),
+                    Err(BunError::MissingReleaseMetadata(_)) => {
+                        Ok(ReleaseLookupResult::MissingMetadata)
+                    }
+                    Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
+                        err.to_string(),
+                    ))),
+                },
                 Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
                     err.to_string(),
                 ))),
-            },
-            Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
-                err.to_string(),
-            ))),
-        },
+            }
+        }
         Err(err) if err.is_interruption() => Err(BunError::from(err)),
         Err(err) => Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
             err.to_string(),
@@ -535,7 +536,7 @@ fn update_input(tool: InstalledTool, lookup: ReleaseLookupResult) -> ManagerUpda
         discovered_target,
         VersionScheme::SemVer,
         lookup,
-        ExecutionSupport::native_or_exact(),
+        ExecutionSupport::exact_or_native_global(),
     ))
 }
 
@@ -625,7 +626,7 @@ mod tests {
     use upnow_infra::CommandOutput;
 
     #[test]
-    fn update_input_declares_selected_native_support() {
+    fn update_input_declares_exact_and_native_global_support() {
         let input = update_input(
             installed_tool_for_test("typescript"),
             ReleaseLookupResult::MissingMetadata,
@@ -634,54 +635,31 @@ mod tests {
             panic!("update input should be a seed");
         };
 
-        assert_eq!(seed.execution_support, ExecutionSupport::native_or_exact());
-    }
-
-    #[test]
-    fn manager_resolved_selected_update_builds_scoped_global_command() {
-        let process = bun_runtime_process();
-        let plan = ResolvedExecutionPlan {
-            intents: vec![ExecutionCommandIntent::NativeSelected(resolved_item(
-                "typescript",
-                ResolvedExecutionTarget::ManagerResolved,
-                false,
-            ))],
-        };
-
-        let commands =
-            commands_for_execution_plan(&process, &plan, Duration::from_secs(7 * 24 * 60 * 60))
-                .expect("native selected command should be supported");
-
-        assert_eq!(commands.len(), 1);
         assert_eq!(
-            commands[0].command.display(),
-            "/opt/bin/bun update -g typescript --minimum-release-age 604800"
+            seed.execution_support,
+            ExecutionSupport::exact_or_native_global()
         );
-        assert!(matches!(
-            commands[0].items[0].target,
-            ResolvedExecutionTarget::ManagerResolved
-        ));
     }
 
     #[test]
-    fn forced_selected_update_omits_min_release_age() {
+    fn forced_exact_update_omits_min_release_age() {
         let process = bun_runtime_process();
         let plan = ResolvedExecutionPlan {
-            intents: vec![ExecutionCommandIntent::NativeSelected(resolved_item(
+            intents: vec![ExecutionCommandIntent::Exact(resolved_item(
                 "typescript",
-                ResolvedExecutionTarget::ManagerResolved,
+                ResolvedExecutionTarget::Known(VersionText::new("5.5.0").expect("valid version")),
                 true,
             ))],
         };
 
         let commands =
             commands_for_execution_plan(&process, &plan, Duration::from_secs(7 * 24 * 60 * 60))
-                .expect("native selected command should be supported");
+                .expect("exact command should be supported");
 
         assert_eq!(commands.len(), 1);
         assert_eq!(
             commands[0].command.display(),
-            "/opt/bin/bun update -g typescript"
+            "/opt/bin/bun update -g typescript@5.5.0"
         );
     }
 
@@ -722,6 +700,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn release_lookup_parses_valid_stdout_from_nonzero_status() {
+        let process = ProcessRunner::fake([Ok(CommandOutput::from_parts(
+            failure_status(),
+            r#"{"1.0.0":"2024-01-01T00:00:00.000Z"}"#,
+            "bun reported a lookup warning",
+        ))]);
+        let env = Env::fixed([("HOME".to_owned(), "/tmp/home".to_owned())]);
+        let package = PackageName::new("typescript").expect("valid package");
+
+        let lookup = lookup_release_with_bun(&process, &env, "/opt/bin/bun", &package)
+            .expect("non-signal command failure should not abort lookup");
+
+        let ReleaseLookupResult::Known(timeline) = lookup else {
+            panic!("valid JSON stdout should produce a release timeline");
+        };
+        assert_eq!(timeline.versions.len(), 1);
+        assert_eq!(timeline.versions[0].version.as_str(), "1.0.0");
+    }
+
     fn resolved_item(
         package: &str,
         target: ResolvedExecutionTarget,
@@ -732,7 +730,7 @@ mod tests {
             package_name: PackageName::new(package).expect("valid package"),
             installed_version: VersionText::new("1.0.0").expect("valid version"),
             target,
-            execution_support: ExecutionSupport::native_or_exact(),
+            execution_support: ExecutionSupport::exact_or_native_global(),
             execution_target_kind: ExecutionTargetKind::Standard,
             exact_target_required: false,
             bypass_min_release_age,
@@ -768,5 +766,17 @@ mod tests {
     fn success_status() -> std::process::ExitStatus {
         use std::os::windows::process::ExitStatusExt;
         std::process::ExitStatus::from_raw(0)
+    }
+
+    #[cfg(unix)]
+    fn failure_status() -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(1 << 8)
+    }
+
+    #[cfg(windows)]
+    fn failure_status() -> std::process::ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(1)
     }
 }

@@ -2,9 +2,9 @@ use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
     BlockReason, ExecutionSupport, InstalledTool, ManagerId, ManagerMetadata,
-    ManagerSelectedTarget, PackageName, PlanItem, PlanItemId, ReleaseEntry, ReleaseLookupResult,
-    ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName,
-    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    ManagerSelectedTarget, PackageName, PlanItem, PlanItemId, ReleaseEntry, ReleaseLookupError,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
+    TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_planning::evaluate_seed;
 
@@ -110,6 +110,47 @@ fn manager_selected_target_missing_required_evidence_blocks_the_item() {
             ..
         }
     ));
+}
+
+#[test]
+fn advisory_lookup_failure_is_non_blocking_diagnostic_for_manager_selected_target() {
+    let seed = UpdateSeed::manager_selected(
+        installed_tool("alpha", "1.0.0"),
+        ManagerSelectedTarget::new(
+            version("1.1.0"),
+            TargetAgeLookupResult::Known(TargetAgeEvidence::PublishedAt(ReleaseTimestamp::new(
+                SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 10_000),
+            ))),
+        )
+        .with_advisory_lookup_failure(ReleaseLookupError::new("mise outdated failed")),
+        VersionScheme::SemVer,
+        ExecutionSupport::native_or_exact(),
+    );
+
+    let item = evaluate_seed(
+        item_id("item"),
+        seed,
+        VersionPolicy::None,
+        SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
+        Duration::from_secs(0),
+    );
+
+    let PlanItem::Update { candidate, .. } = item else {
+        panic!("expected update")
+    };
+    assert_eq!(
+        candidate.target_version().expect("known target").as_str(),
+        "1.1.0"
+    );
+    assert_eq!(
+        candidate
+            .diagnostics
+            .advisory_lookup_failure
+            .as_ref()
+            .expect("advisory lookup failure should be retained")
+            .detail,
+        "mise outdated failed"
+    );
 }
 
 #[test]

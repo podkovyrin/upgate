@@ -138,6 +138,7 @@ pub struct ManagerSelectedTarget {
     pub target: PlannedTarget,
     pub target_age: TargetAgeLookupResult,
     pub advisory_release_lookup: Option<AdvisoryReleaseLookup>,
+    pub advisory_lookup_failure: Option<ReleaseLookupError>,
 }
 
 impl ManagerSelectedTarget {
@@ -146,6 +147,7 @@ impl ManagerSelectedTarget {
             target: PlannedTarget::Known(target_version),
             target_age,
             advisory_release_lookup: None,
+            advisory_lookup_failure: None,
         }
     }
     pub const fn manager_resolved(target_age: TargetAgeLookupResult) -> Self {
@@ -153,6 +155,7 @@ impl ManagerSelectedTarget {
             target: PlannedTarget::ManagerResolved,
             target_age,
             advisory_release_lookup: None,
+            advisory_lookup_failure: None,
         }
     }
     pub const fn target_version(&self) -> Option<&VersionText> {
@@ -170,6 +173,10 @@ impl ManagerSelectedTarget {
             latest_version,
             release_lookup: advisory_release_lookup,
         });
+        self
+    }
+    pub fn with_advisory_lookup_failure(mut self, failure: ReleaseLookupError) -> Self {
+        self.advisory_lookup_failure = Some(failure);
         self
     }
 }
@@ -460,11 +467,11 @@ impl ExecutionSupport {
     }
     pub const fn supports_age_bypass(self) -> bool {
         self.exact
-            || self.native_selected
-            || matches!(
-                self.resolver_native_selected.min_age_constraint,
-                MinAgeConstraintSupport::Optional | MinAgeConstraintSupport::NotApplicable
-            )
+            || (self.resolver_native_selected.selected
+                && matches!(
+                    self.resolver_native_selected.min_age_constraint,
+                    MinAgeConstraintSupport::Optional | MinAgeConstraintSupport::NotApplicable
+                ))
     }
 }
 
@@ -612,6 +619,7 @@ pub struct PlanDiagnostics {
     pub missing_metadata: Option<MissingMetadataKind>,
     pub lookup_failure: Option<ReleaseLookupError>,
     pub advisory_latest: Option<AdvisoryLatestFact>,
+    pub advisory_lookup_failure: Option<ReleaseLookupError>,
 }
 
 impl PlanDiagnostics {

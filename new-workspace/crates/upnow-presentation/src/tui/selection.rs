@@ -1611,6 +1611,9 @@ fn note_part_text(part: &CandidateNotePart) -> String {
             || "release lookup failed".to_owned(),
             |error| format!("release lookup failed: {}", error.detail),
         ),
+        CandidateNoteKind::AdvisoryLookupFailed { error } => {
+            format!("advisory latest lookup failed: {}", error.detail)
+        }
         CandidateNoteKind::Skipped(reason) => skip_reason_text(reason),
         CandidateNoteKind::ResolverError { message } => message.clone(),
     }

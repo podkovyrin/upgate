@@ -16,6 +16,7 @@ use upnow_execution::{
     ResolvedExecutionPlan,
 };
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
+use upnow_release::newest_semver_version;
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
@@ -149,12 +150,16 @@ impl ManagerAdapter for GemManager {
         env: &Env,
         subject: ReleaseLookupSubject<'_>,
     ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
-        let ruby_runtime = ruby_runtime_version(process).map_err(|err| adapter_error(&err))?;
+        let ruby_runtime = match ruby_runtime_version(process) {
+            Ok(version) => Some(version),
+            Err(err) if err.is_interruption() => return Err(adapter_error(&err)),
+            Err(_) => None,
+        };
         Ok(lookup_release(
             http,
             env,
             subject.package_name(),
-            Some(&ruby_runtime),
+            ruby_runtime.as_ref(),
         ))
     }
 
@@ -327,9 +332,10 @@ pub fn update_inputs(
     let ruby_runtime = ruby_runtime_version(process)?;
     let mut inputs = Vec::new();
     for package in candidates {
-        let discovered_target = package.current.clone();
         let tool = installed_tool_from_outdated(package)?;
         let lookup = lookup_release(http, env, &tool.package_name, Some(&ruby_runtime));
+        let discovered_target = discovered_target_from_lookup(&lookup)
+            .unwrap_or_else(|| tool.installed_version.clone());
         inputs.push(update_input(tool, discovered_target, lookup));
     }
     Ok(inputs)
@@ -430,6 +436,13 @@ pub fn commands_for_execution_plan(
         }
     }
     Ok(commands)
+}
+
+fn discovered_target_from_lookup(lookup: &ReleaseLookupResult) -> Option<VersionText> {
+    match lookup {
+        ReleaseLookupResult::Known(timeline) => newest_semver_version(timeline),
+        ReleaseLookupResult::MissingMetadata | ReleaseLookupResult::LookupFailed(_) => None,
+    }
 }
 
 fn ruby_runtime_version(process: &ProcessRunner) -> Result<Version, GemError> {
@@ -655,5 +668,134 @@ fn adapter_error(err: &GemError) -> ManagerAdapterError {
         manager_id: MANAGER_ID.to_owned(),
         kind,
         detail: err.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use upnow_domain::{ManagerMode, ManagerUpdateInput, TargetSelection, UpdateSelectionPolicy};
+    use upnow_infra::{CommandOutput, HttpResponse};
+
+    use super::*;
+
+    #[test]
+    fn update_discovery_uses_newest_rubygems_candidate_as_planner_target() {
+        let process = ProcessRunner::fake([
+            Ok(CommandOutput::from_parts(
+                success_status(),
+                "rake (1.0.0)\n",
+                "",
+            )),
+            Ok(CommandOutput::from_parts(
+                success_status(),
+                "rake (1.0.0 < 2.0.0)\n",
+                "",
+            )),
+            Ok(CommandOutput::from_parts(success_status(), "3.2.0", "")),
+        ]);
+        let http = HttpClient::fake([rubygems_response(
+            "rake",
+            r#"[
+                {"number":"1.0.0","created_at":"2021-01-01T00:00:00Z","ruby_version":">= 2.7"},
+                {"number":"2.0.0","created_at":"2021-02-01T00:00:00Z","ruby_version":">= 3.0"}
+            ]"#,
+        )]);
+        let env = Env::fixed([]);
+
+        let inputs = update_inputs(&process, &http, &env).expect("gem update inputs");
+
+        let [ManagerUpdateInput::Seed(seed)] = inputs.as_slice() else {
+            panic!("expected one gem seed");
+        };
+        let TargetSelection::PlannerSelectable {
+            discovered_target, ..
+        } = &seed.target_selection
+        else {
+            panic!("expected planner-selectable gem seed");
+        };
+        assert_eq!(discovered_target.as_str(), "2.0.0");
+    }
+
+    #[test]
+    fn verbose_scan_release_lookup_ignores_ruby_runtime_probe_failure() {
+        let manager = GemManager::new(manager_config());
+        let process = ProcessRunner::fake([Ok(CommandOutput::from_parts(
+            failure_status(),
+            "",
+            "ruby unavailable\n",
+        ))]);
+        let http = HttpClient::fake([rubygems_response(
+            "rake",
+            r#"[
+                {"number":"2.0.0","created_at":"2021-02-01T00:00:00Z","ruby_version":">= 99.0"}
+            ]"#,
+        )]);
+        let env = Env::fixed([]);
+        let package = package("rake");
+
+        let lookup = manager
+            .release_lookup(
+                &process,
+                &http,
+                &env,
+                ReleaseLookupSubject::Package(&package),
+            )
+            .expect("runtime probe failure should not fail scan release lookup");
+
+        let ReleaseLookupResult::Known(timeline) = lookup else {
+            panic!("expected permissive RubyGems timeline");
+        };
+        assert_eq!(timeline.versions[0].version.as_str(), "2.0.0");
+    }
+
+    fn manager_config() -> ManagerConfig {
+        ManagerConfig {
+            manager_id: GemManager::id(),
+            mode: ManagerMode::Plan,
+            min_release_age: Duration::from_secs(0),
+            version_policy: VersionPolicy::None,
+            no_update: false,
+            selection: UpdateSelectionPolicy::include_all(),
+        }
+    }
+
+    fn rubygems_response(package: &str, body: &str) -> (String, HttpResponse) {
+        (
+            format!("https://rubygems.org/api/v1/versions/{package}.json"),
+            HttpResponse {
+                status: 200,
+                body: body.to_owned(),
+            },
+        )
+    }
+
+    fn package(value: &str) -> PackageName {
+        PackageName::new(value).expect("valid package")
+    }
+
+    #[cfg(unix)]
+    fn success_status() -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(0)
+    }
+
+    #[cfg(windows)]
+    fn success_status() -> std::process::ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(0)
+    }
+
+    #[cfg(unix)]
+    fn failure_status() -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(1 << 8)
+    }
+
+    #[cfg(windows)]
+    fn failure_status() -> std::process::ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(1)
     }
 }
