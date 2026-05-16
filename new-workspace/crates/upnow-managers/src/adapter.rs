@@ -7,7 +7,7 @@ use upnow_domain::{
     VersionPolicy, VersionText,
 };
 use upnow_execution::{ExecutionCommand, ResolvedExecutionPlan};
-use upnow_infra::{Env, HttpClient, ProcessRunner};
+use upnow_infra::{Env, HttpClient, ProcessRunner, run_ordered_parallel};
 use upnow_release::release_evidence_for_version;
 
 pub use upnow_domain::ManagerCapabilities;
@@ -112,7 +112,7 @@ pub enum ManagerConfigRuleError {
     MinReleaseAgeMustBeWholeDays,
 }
 
-pub trait ManagerAdapter {
+pub trait ManagerAdapter: Sync {
     fn default_config() -> ManagerConfigDefaults
     where
         Self: Sized,
@@ -192,10 +192,11 @@ pub trait ManagerAdapter {
         env: &Env,
         max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerScanEvidenceInput>, ManagerAdapterError> {
-        let _ = max_parallel_checks_per_manager;
-        self.scan_inputs(process, env)?
-            .into_iter()
-            .map(|input| match input {
+        run_ordered_parallel(
+            self.scan_inputs(process, env)?,
+            max_parallel_checks_per_manager.max(1),
+            "verbose scan release evidence",
+            |input| match input {
                 ManagerScanInput::Installed(tool) => match self.release_lookup(
                     process,
                     http,
@@ -223,8 +224,15 @@ pub trait ManagerAdapter {
                 ManagerScanInput::Skipped { installed, reason } => {
                     Ok(ManagerScanEvidenceInput::Skipped { installed, reason })
                 }
-            })
-            .collect()
+            },
+        )
+        .map_err(|err| ManagerAdapterError::Manager {
+            manager_id: "adapter".to_owned(),
+            kind: ManagerAdapterErrorKind::Infra,
+            detail: err.to_string(),
+        })?
+        .into_iter()
+        .collect()
     }
 
     /// Looks up release metadata for a package or installed tool.
@@ -250,6 +258,7 @@ pub trait ManagerAdapter {
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
+        max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError>;
 
     /// Builds manager commands for an execution plan.

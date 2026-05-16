@@ -318,6 +318,7 @@ pub fn run_interactive_apply_with_sources(
         clock,
         selected_managers,
         overrides,
+        DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER,
         None,
     )
 }
@@ -331,6 +332,7 @@ fn run_interactive_apply_with_sources_and_manager_concurrency_override(
     clock: Clock,
     selected_managers: &[String],
     overrides: &[String],
+    max_parallel_checks_per_manager: usize,
     manager_concurrency_override: Option<usize>,
 ) -> Result<String, AppError> {
     let (mut config, manager_configs) =
@@ -346,6 +348,7 @@ fn run_interactive_apply_with_sources_and_manager_concurrency_override(
         http,
         env,
         clock,
+        max_parallel_checks_per_manager,
         manager_concurrency,
     )? {
         Some((config, confirmed)) => {
@@ -482,6 +485,7 @@ pub fn build_interactive_apply_selection_plans_with_sources(
         clock,
         selected_managers,
         overrides,
+        DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER,
     )?;
     Ok(prepared
         .managers
@@ -501,6 +505,7 @@ fn prepare_interactive_apply_with_sources(
     clock: Clock,
     selected_managers: &[String],
     overrides: &[String],
+    max_parallel_checks_per_manager: usize,
 ) -> Result<PreparedInteractiveApply, AppError> {
     let (config, manager_configs) =
         prepare_interactive_manager_configs(config, selected_managers, overrides)?;
@@ -511,8 +516,15 @@ fn prepare_interactive_apply_with_sources(
         "interactive planning managers",
         |manager_config| {
             let manager = configured_manager(manager_config.clone()).map_err(map_manager_error)?;
-            let plan =
-                build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config)?;
+            let plan = build_manager_plan(
+                manager.as_ref(),
+                process,
+                http,
+                env,
+                clock,
+                &manager_config,
+                max_parallel_checks_per_manager,
+            )?;
             Ok(PreparedInteractiveManagerApply {
                 plan,
                 manager_config,
@@ -626,6 +638,7 @@ fn run_live_confirmed_selection(
     http: &HttpClient,
     env: &Env,
     clock: Clock,
+    max_parallel_checks_per_manager: usize,
     manager_concurrency: usize,
 ) -> Result<Option<(UpnowConfig, Vec<ConfirmedInteractiveManagerApply>)>, AppError> {
     let manager_ids = manager_configs
@@ -647,6 +660,7 @@ fn run_live_confirmed_selection(
             &http,
             &env,
             clock,
+            max_parallel_checks_per_manager,
             manager_concurrency,
             &event_tx,
             &worker_stop,
@@ -698,6 +712,7 @@ fn prepare_interactive_apply_with_events(
     http: &HttpClient,
     env: &Env,
     clock: Clock,
+    max_parallel_checks_per_manager: usize,
     manager_concurrency: usize,
     event_tx: &mpsc::Sender<InteractiveSelectionPlanningEvent>,
     stop_requested: &AtomicBool,
@@ -708,6 +723,7 @@ fn prepare_interactive_apply_with_events(
         http,
         env,
         clock,
+        max_parallel_checks_per_manager,
         manager_concurrency,
         event_tx,
         stop_requested,
@@ -751,6 +767,7 @@ fn run_interactive_planning_workers(
     http: &HttpClient,
     env: &Env,
     clock: Clock,
+    max_parallel_checks_per_manager: usize,
     manager_concurrency: usize,
     event_tx: &mpsc::Sender<InteractiveSelectionPlanningEvent>,
     stop_requested: &AtomicBool,
@@ -767,6 +784,7 @@ fn run_interactive_planning_workers(
                 http,
                 env,
                 clock,
+                max_parallel_checks_per_manager,
                 event_tx,
             )
         },
@@ -783,6 +801,7 @@ fn prepare_one_interactive_manager_with_events(
     http: &HttpClient,
     env: &Env,
     clock: Clock,
+    max_parallel_checks_per_manager: usize,
     event_tx: &mpsc::Sender<InteractiveSelectionPlanningEvent>,
 ) -> Result<InteractivePlanningWorkerResult, AppError> {
     let manager_id = manager_config.manager_id.clone();
@@ -803,7 +822,15 @@ fn prepare_one_interactive_manager_with_events(
         }
     };
 
-    match build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config) {
+    match build_manager_plan(
+        manager.as_ref(),
+        process,
+        http,
+        env,
+        clock,
+        &manager_config,
+        max_parallel_checks_per_manager,
+    ) {
         Ok(plan) => {
             let selection_policy = manager_config.selection.clone();
             let view = selection_view(&plan, &selection_policy);
@@ -1099,6 +1126,7 @@ fn run_batch_for_managers(
             env,
             clock,
             theme,
+            max_parallel_checks_per_manager,
             manager_concurrency,
             manager_ids,
         );
@@ -1223,8 +1251,15 @@ fn run_manager_scan_or_plan_batch(
         }
         BatchCommand::Plan => {
             let manager = configured_manager(manager_config.clone()).map_err(map_manager_error)?;
-            let plan =
-                build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config)?;
+            let plan = build_manager_plan(
+                manager.as_ref(),
+                process,
+                http,
+                env,
+                clock,
+                &manager_config,
+                max_parallel_checks_per_manager,
+            )?;
             Ok(ManagerBatchOutput {
                 table: update_plan_table(
                     &plan,
@@ -1248,6 +1283,7 @@ fn run_batch_apply_for_managers(
     env: &Env,
     clock: Clock,
     theme: OutputTheme,
+    max_parallel_checks_per_manager: usize,
     manager_concurrency: usize,
     manager_ids: &[ManagerId],
 ) -> Result<String, AppError> {
@@ -1258,8 +1294,15 @@ fn run_batch_apply_for_managers(
         "apply planning managers",
         &stop_requested,
         |manager_id| {
-            let result =
-                prepare_manager_batch_apply(config, process, http, env, clock, &manager_id);
+            let result = prepare_manager_batch_apply(
+                config,
+                process,
+                http,
+                env,
+                clock,
+                &manager_id,
+                max_parallel_checks_per_manager,
+            );
             (manager_id, result)
         },
         |(_, result)| result.as_ref().is_err_and(AppError::is_interruption),
@@ -1311,6 +1354,7 @@ fn prepare_manager_batch_apply(
     env: &Env,
     clock: Clock,
     manager_id: &ManagerId,
+    max_parallel_checks_per_manager: usize,
 ) -> Result<ManagerApplyPreparation, AppError> {
     ensure_known_manager(manager_id.as_str()).map_err(map_manager_error)?;
     let manager_config = config.resolve_manager(manager_id.as_str())?;
@@ -1319,7 +1363,15 @@ fn prepare_manager_batch_apply(
     }
 
     let manager = configured_manager(manager_config.clone()).map_err(map_manager_error)?;
-    let plan = build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config)?;
+    let plan = build_manager_plan(
+        manager.as_ref(),
+        process,
+        http,
+        env,
+        clock,
+        &manager_config,
+        max_parallel_checks_per_manager,
+    )?;
     let selection = default_batch_selection(&plan, &manager_config.selection)
         .map_err(|err| AppError::Planning(err.to_string()))?;
     let execution_plan = resolve_selection_for_execution(
@@ -1527,6 +1579,7 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
             Clock::system(),
             &cli.managers,
             &cli.overrides,
+            cli.max_parallel_checks_per_manager,
             cli.manager_concurrency.map(NonZeroUsize::get),
         );
     }
@@ -1663,6 +1716,7 @@ fn build_manager_plan(
     env: &Env,
     clock: Clock,
     manager_config: &ManagerConfig,
+    max_parallel_checks_per_manager: usize,
 ) -> Result<UpdatePlan, AppError> {
     match manager.unsupported_manager_version(process) {
         Ok(Some(unsupported)) => {
@@ -1691,7 +1745,7 @@ fn build_manager_plan(
     }
     let now = clock.now();
     let inputs = manager
-        .update_inputs(process, http, env)
+        .update_inputs(process, http, env, max_parallel_checks_per_manager)
         .map_err(map_manager_error)?;
     update_plan_from_inputs(
         manager_config.manager_id.clone(),

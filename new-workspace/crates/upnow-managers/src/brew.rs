@@ -301,13 +301,21 @@ impl ManagerAdapter for BrewManager {
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
+        max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
         validate_version_policy(
             &self.config.manager_id,
             Self::supports_version_policy(self.config.version_policy),
             self.config.version_policy,
         )?;
-        update_inputs(process, http, env, self.config.no_update).map_err(|err| adapter_error(&err))
+        update_inputs(
+            process,
+            http,
+            env,
+            self.config.no_update,
+            max_parallel_checks_per_manager,
+        )
+        .map_err(|err| adapter_error(&err))
     }
 
     fn commands_for_execution_plan(
@@ -442,6 +450,7 @@ pub fn update_inputs(
     http: &HttpClient,
     env: &Env,
     no_update: bool,
+    max_parallel_checks_per_manager: usize,
 ) -> Result<Vec<ManagerUpdateInput>, BrewError> {
     if !no_update {
         let _ = process.run(
@@ -465,40 +474,44 @@ pub fn update_inputs(
         tap_metadata(process).unwrap_or_default()
     };
 
-    let mut inputs = Vec::new();
-    for package in outdated {
-        let metadata = package_info.get(&brew_package_key(
-            package.name.clone(),
-            package.kind.clone(),
-        ));
-        let installed = installed_tool_for_outdated(&package)?;
-        if package.pinned {
-            inputs.push(ManagerUpdateInput::Skipped {
-                installed,
-                reason: SkipReason::Pinned,
-            });
-            continue;
-        }
-        let target_age = package_info_error.as_ref().map_or_else(
-            || lookup_target_age(process, http, env, metadata, &tap_metadata),
-            |detail| {
-                TargetAgeLookupResult::LookupFailed(ReleaseLookupError::new(format!(
-                    "failed to read brew package metadata: {detail}"
-                )))
-            },
-        );
-        let selected = ManagerSelectedTarget::new(package.target.clone(), target_age);
-        inputs.push(ManagerUpdateInput::Seed(
-            UpdateSeed::manager_selected(
-                installed,
-                selected,
-                VersionScheme::ManagerNative,
-                ExecutionSupport::grouped_native_only(),
-            )
-            .with_execution_target_kind(execution_target_kind(&package.kind)),
-        ));
-    }
-    Ok(inputs)
+    run_ordered_parallel(
+        outdated,
+        max_parallel_checks_per_manager.max(1),
+        MANAGER_ID,
+        |package| {
+            let metadata = package_info.get(&brew_package_key(
+                package.name.clone(),
+                package.kind.clone(),
+            ));
+            let installed = installed_tool_for_outdated(&package)?;
+            if package.pinned {
+                return Ok(ManagerUpdateInput::Skipped {
+                    installed,
+                    reason: SkipReason::Pinned,
+                });
+            }
+            let target_age = package_info_error.as_ref().map_or_else(
+                || lookup_target_age(process, http, env, metadata, &tap_metadata),
+                |detail| {
+                    TargetAgeLookupResult::LookupFailed(ReleaseLookupError::new(format!(
+                        "failed to read brew package metadata: {detail}"
+                    )))
+                },
+            );
+            let selected = ManagerSelectedTarget::new(package.target.clone(), target_age);
+            Ok(ManagerUpdateInput::Seed(
+                UpdateSeed::manager_selected(
+                    installed,
+                    selected,
+                    VersionScheme::ManagerNative,
+                    ExecutionSupport::grouped_native_only(),
+                )
+                .with_execution_target_kind(execution_target_kind(&package.kind)),
+            ))
+        },
+    )?
+    .into_iter()
+    .collect()
 }
 
 /// Creates Brew commands for a resolved execution plan.

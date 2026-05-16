@@ -14,7 +14,10 @@ use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
     ResolvedExecutionPlan,
 };
-use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
+use upnow_infra::{
+    CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner, effective_parallelism,
+    run_ordered_parallel,
+};
 use upnow_release::newest_semver_version;
 
 use crate::adapter::{
@@ -24,6 +27,7 @@ use crate::adapter::{
 use crate::platform_artifacts::is_platform_artifact_version;
 
 pub const MANAGER_ID: &str = "npm";
+const NPM_MAX_PARALLEL_CHECKS: usize = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NpmError {
@@ -165,13 +169,19 @@ impl ManagerAdapter for NpmManager {
         process: &ProcessRunner,
         _http: &HttpClient,
         _env: &Env,
+        max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
         validate_version_policy(
             &self.config.manager_id,
             Self::supports_version_policy(self.config.version_policy),
             self.config.version_policy,
         )?;
-        update_inputs(process, self.config.version_policy).map_err(adapter_error)
+        update_inputs(
+            process,
+            self.config.version_policy,
+            max_parallel_checks_per_manager,
+        )
+        .map_err(adapter_error)
     }
 
     fn commands_for_execution_plan(
@@ -267,6 +277,7 @@ pub fn outdated_global(process: &ProcessRunner) -> Result<Vec<NpmOutdatedPackage
 pub fn update_inputs(
     process: &ProcessRunner,
     version_policy: VersionPolicy,
+    max_parallel_checks_per_manager: usize,
 ) -> Result<Vec<ManagerUpdateInput>, NpmError> {
     let installed = match version_policy {
         VersionPolicy::None => outdated_global(process)?
@@ -275,12 +286,13 @@ pub fn update_inputs(
             .collect::<Result<Vec<_>, _>>()?,
         VersionPolicy::Stable | VersionPolicy::SameTrack => installed_global(process)?,
     };
-    let mut inputs = Vec::new();
-    for tool in installed {
+    let threads = effective_parallelism(max_parallel_checks_per_manager, NPM_MAX_PARALLEL_CHECKS);
+    run_ordered_parallel(installed, threads, MANAGER_ID, |tool| {
         let lookup = lookup_release(process, &tool.package_name)?;
-        inputs.push(update_input(tool, lookup));
-    }
-    Ok(inputs)
+        Ok(update_input(tool, lookup))
+    })?
+    .into_iter()
+    .collect()
 }
 
 /// Looks up npm registry release metadata.

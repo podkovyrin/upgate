@@ -17,7 +17,10 @@ use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
     ResolvedExecutionPlan,
 };
-use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
+use upnow_infra::{
+    CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner, effective_parallelism,
+    run_ordered_parallel,
+};
 use upnow_release::newest_semver_version;
 
 use crate::adapter::{
@@ -26,6 +29,7 @@ use crate::adapter::{
 };
 
 pub const MANAGER_ID: &str = "cargo";
+const CARGO_MAX_PARALLEL_CHECKS: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CargoError {
@@ -165,13 +169,15 @@ impl ManagerAdapter for CargoManager {
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
+        max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
         validate_version_policy(
             &self.config.manager_id,
             Self::supports_version_policy(self.config.version_policy),
             self.config.version_policy,
         )?;
-        update_inputs(process, http, env).map_err(|err| adapter_error(&err))
+        update_inputs(process, http, env, max_parallel_checks_per_manager)
+            .map_err(|err| adapter_error(&err))
     }
 
     fn commands_for_execution_plan(
@@ -255,10 +261,7 @@ fn parse_ledger_key_name(key: &str) -> Option<String> {
 /// # Errors
 ///
 /// Returns an error when no exact row is found or the version is not `SemVer`.
-fn parse_search_latest_version(
-    crate_name: &PackageName,
-    raw: &str,
-) -> Result<Version, CargoError> {
+fn parse_search_latest_version(crate_name: &PackageName, raw: &str) -> Result<Version, CargoError> {
     for line in raw.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with("...") || trimmed.starts_with("note:") {
@@ -307,29 +310,35 @@ pub fn update_inputs(
     process: &ProcessRunner,
     http: &HttpClient,
     env: &Env,
+    max_parallel_checks_per_manager: usize,
 ) -> Result<Vec<ManagerUpdateInput>, CargoError> {
-    let mut inputs = Vec::new();
-    for tool in installed_global(process)? {
-        match search_latest_version(process, &tool.package_name) {
+    let tools = installed_global(process)?;
+    let threads = effective_parallelism(max_parallel_checks_per_manager, CARGO_MAX_PARALLEL_CHECKS);
+    run_ordered_parallel(
+        tools,
+        threads,
+        MANAGER_ID,
+        |tool| match search_latest_version(process, &tool.package_name) {
             Ok(_target) => {
                 let lookup = lookup_release(http, env, &tool.package_name);
                 let target = discovered_target(&tool, &lookup);
-                inputs.push(ManagerUpdateInput::Seed(UpdateSeed::new(
+                Ok(ManagerUpdateInput::Seed(UpdateSeed::new(
                     tool,
                     target,
                     VersionScheme::SemVer,
                     lookup,
                     ExecutionSupport::exact_only(),
-                )));
+                )))
             }
-            Err(err) if err.is_interruption() => return Err(err),
-            Err(err) => inputs.push(ManagerUpdateInput::ResolverError {
+            Err(err) if err.is_interruption() => Err(err),
+            Err(err) => Ok(ManagerUpdateInput::ResolverError {
                 installed: tool,
                 message: err.to_string(),
             }),
-        }
-    }
-    Ok(inputs)
+        },
+    )?
+    .into_iter()
+    .collect()
 }
 
 /// Looks up crates.io release metadata.

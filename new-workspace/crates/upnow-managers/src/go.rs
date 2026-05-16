@@ -19,7 +19,10 @@ use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
     ResolvedExecutionPlan,
 };
-use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
+use upnow_infra::{
+    CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner, effective_parallelism,
+    run_ordered_parallel,
+};
 use upnow_release::release_evidence_for_version;
 
 use crate::adapter::{
@@ -28,6 +31,7 @@ use crate::adapter::{
 };
 
 pub const MANAGER_ID: &str = "go";
+const GO_MAX_PARALLEL_CHECKS: usize = 4;
 
 const MISSING_BUILD_METADATA: &str = "missing go build metadata";
 const MISSING_MODULE_METADATA: &str = "missing go module/version metadata";
@@ -213,13 +217,15 @@ impl ManagerAdapter for GoManager {
         process: &ProcessRunner,
         _http: &HttpClient,
         env: &Env,
+        max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
         validate_version_policy(
             &self.config.manager_id,
             Self::supports_version_policy(self.config.version_policy),
             self.config.version_policy,
         )?;
-        update_inputs(process, env).map_err(|err| adapter_error(&err))
+        update_inputs(process, env, max_parallel_checks_per_manager)
+            .map_err(|err| adapter_error(&err))
     }
 
     fn commands_for_execution_plan(
@@ -387,23 +393,27 @@ pub fn scan_inputs(process: &ProcessRunner, env: &Env) -> Result<Vec<ManagerScan
 pub fn update_inputs(
     process: &ProcessRunner,
     env: &Env,
+    max_parallel_checks_per_manager: usize,
 ) -> Result<Vec<ManagerUpdateInput>, GoError> {
-    let mut inputs = Vec::new();
-    for discovered in discover_global_tools(process, env)? {
-        match discovered {
+    let discovered = discover_global_tools(process, env)?;
+    let threads = effective_parallelism(max_parallel_checks_per_manager, GO_MAX_PARALLEL_CHECKS);
+    run_ordered_parallel(
+        discovered,
+        threads,
+        MANAGER_ID,
+        |discovered| match discovered {
             GoDiscoveredTool::Managed(tool) => {
                 let lookup = lookup_release_by_module(process, &tool.module_path)?;
-                inputs.push(update_input(&tool, lookup));
+                Ok(update_input(&tool, lookup))
             }
-            GoDiscoveredTool::Skipped { name, reason } => {
-                inputs.push(ManagerUpdateInput::Skipped {
-                    installed: placeholder_installed_tool(&name)?,
-                    reason: SkipReason::ManagerRule(reason),
-                });
-            }
-        }
-    }
-    Ok(inputs)
+            GoDiscoveredTool::Skipped { name, reason } => Ok(ManagerUpdateInput::Skipped {
+                installed: placeholder_installed_tool(&name)?,
+                reason: SkipReason::ManagerRule(reason),
+            }),
+        },
+    )?
+    .into_iter()
+    .collect()
 }
 
 /// Looks up release metadata for a Go package name by rediscovering its module.

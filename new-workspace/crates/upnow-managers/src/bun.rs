@@ -13,7 +13,10 @@ use upnow_domain::{
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionPlan,
 };
-use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
+use upnow_infra::{
+    CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner, effective_parallelism,
+    run_ordered_parallel,
+};
 use upnow_release::{newest_semver_version, release_evidence_for_version};
 
 use crate::adapter::{
@@ -22,6 +25,7 @@ use crate::adapter::{
 };
 
 pub const MANAGER_ID: &str = "bun";
+const BUN_MAX_PARALLEL_CHECKS: usize = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BunError {
@@ -193,13 +197,15 @@ impl ManagerAdapter for BunManager {
         process: &ProcessRunner,
         _http: &HttpClient,
         env: &Env,
+        max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
         validate_version_policy(
             &self.config.manager_id,
             Self::supports_version_policy(self.config.version_policy),
             self.config.version_policy,
         )?;
-        update_inputs(process, env).map_err(|err| adapter_error(&err))
+        update_inputs(process, env, max_parallel_checks_per_manager)
+            .map_err(|err| adapter_error(&err))
     }
 
     fn commands_for_execution_plan(
@@ -306,15 +312,18 @@ fn installed_global_with_bun(
 pub fn update_inputs(
     process: &ProcessRunner,
     env: &Env,
+    max_parallel_checks_per_manager: usize,
 ) -> Result<Vec<ManagerUpdateInput>, BunError> {
     let runtime = BunRuntime::resolve(process);
-    let mut inputs = Vec::new();
-    for tool in installed_global_with_bun(process, runtime.executable())? {
+    let tools = installed_global_with_bun(process, runtime.executable())?;
+    let threads = effective_parallelism(max_parallel_checks_per_manager, BUN_MAX_PARALLEL_CHECKS);
+    run_ordered_parallel(tools, threads, MANAGER_ID, |tool| {
         let lookup =
             lookup_release_with_bun(process, env, runtime.executable(), &tool.package_name)?;
-        inputs.push(update_input(tool, lookup));
-    }
-    Ok(inputs)
+        Ok(update_input(tool, lookup))
+    })?
+    .into_iter()
+    .collect()
 }
 
 /// Looks up Bun registry release metadata.

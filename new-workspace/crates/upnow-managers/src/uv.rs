@@ -17,7 +17,10 @@ use upnow_domain::{
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionPlan,
 };
-use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
+use upnow_infra::{
+    CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner, effective_parallelism,
+    run_ordered_parallel,
+};
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
@@ -25,6 +28,7 @@ use crate::adapter::{
 };
 
 pub const MANAGER_ID: &str = "uv";
+const UV_MAX_PARALLEL_CHECKS: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UvError {
@@ -145,14 +149,21 @@ impl ManagerAdapter for UvManager {
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
+        max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
         validate_version_policy(
             &self.config.manager_id,
             Self::supports_version_policy(self.config.version_policy),
             self.config.version_policy,
         )?;
-        update_inputs(process, http, env, self.config.min_release_age)
-            .map_err(|err| adapter_error(&err))
+        update_inputs(
+            process,
+            http,
+            env,
+            self.config.min_release_age,
+            max_parallel_checks_per_manager,
+        )
+        .map_err(|err| adapter_error(&err))
     }
 
     fn commands_for_execution_plan(
@@ -234,6 +245,7 @@ pub fn update_inputs(
     http: &HttpClient,
     env: &Env,
     min_release_age: Duration,
+    max_parallel_checks_per_manager: usize,
 ) -> Result<Vec<ManagerUpdateInput>, UvError> {
     let min_age_arg = duration_arg(min_release_age);
     let installed = installed_global(process)?;
@@ -244,17 +256,38 @@ pub fn update_inputs(
             "uv advisory latest lookup failed: {err}"
         ))),
     };
-    let mut inputs = Vec::new();
-    for tool in installed {
-        let installed = installed_tool(&tool)?;
+    let threads = effective_parallelism(max_parallel_checks_per_manager, UV_MAX_PARALLEL_CHECKS);
+    let resolved = run_ordered_parallel(installed, threads, MANAGER_ID, |tool| {
+        let installed_tool = installed_tool(&tool)?;
         let target = match resolve_target_with_exclude_newer(process, &tool, &min_age_arg) {
             Ok(target) => target,
             Err(err @ UvError::Interrupted(_)) => return Err(err),
             Err(err) => {
-                inputs.push(ManagerUpdateInput::ResolverError {
-                    installed,
+                return Ok(RawUvResolvedTool::ResolverError {
+                    installed: installed_tool,
                     message: err.to_string(),
                 });
+            }
+        };
+        Ok(RawUvResolvedTool::Selected {
+            tool,
+            installed: installed_tool,
+            target,
+        })
+    })?
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()?;
+
+    let mut inputs = Vec::new();
+    for resolved_tool in resolved {
+        let (tool, installed, target) = match resolved_tool {
+            RawUvResolvedTool::Selected {
+                tool,
+                installed,
+                target,
+            } => (tool, installed, target),
+            RawUvResolvedTool::ResolverError { installed, message } => {
+                inputs.push(ManagerUpdateInput::ResolverError { installed, message });
                 continue;
             }
         };
@@ -268,6 +301,18 @@ pub fn update_inputs(
         )));
     }
     Ok(inputs)
+}
+
+enum RawUvResolvedTool {
+    Selected {
+        tool: UvTool,
+        installed: InstalledTool,
+        target: VersionText,
+    },
+    ResolverError {
+        installed: InstalledTool,
+        message: String,
+    },
 }
 
 /// Looks up `PyPI` release metadata for a uv tool.
@@ -769,7 +814,7 @@ mod tests {
         let http = HttpClient::fake([]);
         let env = Env::fixed([]);
 
-        let inputs = update_inputs(&process, &http, &env, Duration::from_secs(604_800))
+        let inputs = update_inputs(&process, &http, &env, Duration::from_secs(604_800), 2)
             .expect("uv update inputs should be collected");
 
         let [ManagerUpdateInput::Seed(seed)] = inputs.as_slice() else {
@@ -824,7 +869,7 @@ mod tests {
         )]);
         let env = Env::fixed([]);
 
-        let inputs = update_inputs(&process, &http, &env, Duration::from_secs(604_800))
+        let inputs = update_inputs(&process, &http, &env, Duration::from_secs(604_800), 2)
             .expect("uv update inputs should be collected");
 
         let [ManagerUpdateInput::Seed(seed)] = inputs.as_slice() else {
@@ -881,7 +926,7 @@ mod tests {
         )]);
         let env = Env::fixed([]);
 
-        let inputs = update_inputs(&process, &http, &env, Duration::from_secs(604_800))
+        let inputs = update_inputs(&process, &http, &env, Duration::from_secs(604_800), 2)
             .expect("uv update inputs should be collected");
 
         let [ManagerUpdateInput::Seed(seed)] = inputs.as_slice() else {

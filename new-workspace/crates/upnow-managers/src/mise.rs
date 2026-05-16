@@ -18,7 +18,10 @@ use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionPlan,
     ResolvedExecutionTarget,
 };
-use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
+use upnow_infra::{
+    CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner, effective_parallelism,
+    run_ordered_parallel,
+};
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
@@ -26,6 +29,7 @@ use crate::adapter::{
 };
 
 pub const MANAGER_ID: &str = "mise";
+const MISE_AGE_MAX_PARALLEL_CHECKS: usize = 4;
 
 const VERSIONS_HOST_BASE_URL: &str = "https://mise-versions.jdx.dev";
 const VERSIONS_HOST_BASE_URL_ENV: &str = "UPNOW_MISE_VERSIONS_BASE_URL";
@@ -169,14 +173,21 @@ impl ManagerAdapter for MiseManager {
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
+        max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
         validate_version_policy(
             &self.config.manager_id,
             Self::supports_version_policy(self.config.version_policy),
             self.config.version_policy,
         )?;
-        update_inputs(process, http, env, self.config.min_release_age)
-            .map_err(|err| adapter_error(&err))
+        update_inputs(
+            process,
+            http,
+            env,
+            self.config.min_release_age,
+            max_parallel_checks_per_manager,
+        )
+        .map_err(|err| adapter_error(&err))
     }
 
     fn commands_for_execution_plan(
@@ -399,6 +410,7 @@ pub fn update_inputs(
     http: &HttpClient,
     env: &Env,
     min_release_age: Duration,
+    max_parallel_checks_per_manager: usize,
 ) -> Result<Vec<ManagerUpdateInput>, MiseError> {
     let min_age_arg = duration_arg(min_release_age);
     let plan_items = upgrade_dry_run(process, &min_age_arg)?;
@@ -407,8 +419,11 @@ pub fn update_inputs(
     }
     let advisory_latest = advisory_latest_map(process)?;
 
-    let mut inputs = Vec::new();
-    for item in plan_items {
+    let threads = effective_parallelism(
+        max_parallel_checks_per_manager,
+        MISE_AGE_MAX_PARALLEL_CHECKS,
+    );
+    run_ordered_parallel(plan_items, threads, MANAGER_ID, |item| {
         let installed = installed_tool_from_plan_item(&item)?;
         let target_age = lookup_target_age(process, http, env, &item.tool, &item.to_version);
         let mut selected = ManagerSelectedTarget::new(item.to_version.clone(), target_age);
@@ -423,14 +438,15 @@ pub fn update_inputs(
                 lookup_release_for_tool(process, http, env, &item.tool, Some(latest)),
             );
         }
-        inputs.push(ManagerUpdateInput::Seed(UpdateSeed::manager_selected(
+        Ok(ManagerUpdateInput::Seed(UpdateSeed::manager_selected(
             installed,
             selected,
             version_scheme(&item.from_version, &item.to_version),
             ExecutionSupport::resolver_native(MinAgeConstraintSupport::Optional, true, true),
-        )));
-    }
-    Ok(inputs)
+        )))
+    })?
+    .into_iter()
+    .collect()
 }
 
 /// Creates mise commands for a resolved execution plan.
@@ -1077,7 +1093,7 @@ mod tests {
         let http = HttpClient::fake([]);
         let env = Env::fixed([]);
 
-        let inputs = update_inputs(&process, &http, &env, Duration::from_secs(604_800))
+        let inputs = update_inputs(&process, &http, &env, Duration::from_secs(604_800), 4)
             .expect("mise update inputs should be collected");
 
         let [ManagerUpdateInput::Seed(seed)] = inputs.as_slice() else {

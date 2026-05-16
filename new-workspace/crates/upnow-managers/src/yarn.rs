@@ -14,7 +14,10 @@ use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
     ResolvedExecutionPlan,
 };
-use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
+use upnow_infra::{
+    CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner, effective_parallelism,
+    run_ordered_parallel,
+};
 use upnow_release::newest_semver_version;
 
 use crate::adapter::{
@@ -23,6 +26,7 @@ use crate::adapter::{
 };
 
 pub const MANAGER_ID: &str = "yarn";
+const YARN_MAX_PARALLEL_CHECKS: usize = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum YarnError {
@@ -175,13 +179,14 @@ impl ManagerAdapter for YarnManager {
         process: &ProcessRunner,
         _http: &HttpClient,
         _env: &Env,
+        max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
         validate_version_policy(
             &self.config.manager_id,
             Self::supports_version_policy(self.config.version_policy),
             self.config.version_policy,
         )?;
-        update_inputs(process).map_err(|err| adapter_error(&err))
+        update_inputs(process, max_parallel_checks_per_manager).map_err(|err| adapter_error(&err))
     }
 
     fn commands_for_execution_plan(
@@ -268,13 +273,18 @@ fn installed_global_classic(process: &ProcessRunner) -> Result<Vec<InstalledTool
 /// # Errors
 ///
 /// Returns an error when discovery fails.
-pub fn update_inputs(process: &ProcessRunner) -> Result<Vec<ManagerUpdateInput>, YarnError> {
-    let mut inputs = Vec::new();
-    for tool in installed_global_classic(process)? {
+pub fn update_inputs(
+    process: &ProcessRunner,
+    max_parallel_checks_per_manager: usize,
+) -> Result<Vec<ManagerUpdateInput>, YarnError> {
+    let tools = installed_global_classic(process)?;
+    let threads = effective_parallelism(max_parallel_checks_per_manager, YARN_MAX_PARALLEL_CHECKS);
+    run_ordered_parallel(tools, threads, MANAGER_ID, |tool| {
         let lookup = lookup_release(process, &tool.package_name)?;
-        inputs.push(update_input(tool, lookup));
-    }
-    Ok(inputs)
+        Ok(update_input(tool, lookup))
+    })?
+    .into_iter()
+    .collect()
 }
 
 /// Looks up Yarn classic registry release metadata.

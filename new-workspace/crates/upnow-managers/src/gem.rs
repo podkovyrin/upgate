@@ -15,7 +15,10 @@ use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
     ResolvedExecutionPlan,
 };
-use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
+use upnow_infra::{
+    CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner, effective_parallelism,
+    run_ordered_parallel,
+};
 use upnow_release::{newest_semver_version, release_evidence_for_version};
 
 use crate::adapter::{
@@ -24,6 +27,7 @@ use crate::adapter::{
 };
 
 pub const MANAGER_ID: &str = "gem";
+const GEM_MAX_PARALLEL_CHECKS: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GemError {
@@ -204,13 +208,15 @@ impl ManagerAdapter for GemManager {
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
+        max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
         validate_version_policy(
             &self.config.manager_id,
             Self::supports_version_policy(self.config.version_policy),
             self.config.version_policy,
         )?;
-        update_inputs(process, http, env).map_err(|err| adapter_error(&err))
+        update_inputs(process, http, env, max_parallel_checks_per_manager)
+            .map_err(|err| adapter_error(&err))
     }
 
     fn commands_for_execution_plan(
@@ -335,6 +341,7 @@ pub fn update_inputs(
     process: &ProcessRunner,
     http: &HttpClient,
     env: &Env,
+    max_parallel_checks_per_manager: usize,
 ) -> Result<Vec<ManagerUpdateInput>, GemError> {
     let installed = parse_gem_list(
         process
@@ -366,15 +373,16 @@ pub fn update_inputs(
         return Ok(Vec::new());
     }
     let ruby_runtime = ruby_runtime_version(process)?;
-    let mut inputs = Vec::new();
-    for package in candidates {
+    let threads = effective_parallelism(max_parallel_checks_per_manager, GEM_MAX_PARALLEL_CHECKS);
+    run_ordered_parallel(candidates, threads, MANAGER_ID, |package| {
         let tool = installed_tool_from_outdated(package)?;
         let lookup = lookup_release(http, env, &tool.package_name, Some(&ruby_runtime));
         let discovered_target = discovered_target_from_lookup(&lookup)
             .unwrap_or_else(|| tool.installed_version.clone());
-        inputs.push(update_input(tool, discovered_target, lookup));
-    }
-    Ok(inputs)
+        Ok(update_input(tool, discovered_target, lookup))
+    })?
+    .into_iter()
+    .collect()
 }
 
 /// Looks up `RubyGems` release metadata.
@@ -741,7 +749,7 @@ mod tests {
         )]);
         let env = Env::fixed([]);
 
-        let inputs = update_inputs(&process, &http, &env).expect("gem update inputs");
+        let inputs = update_inputs(&process, &http, &env, 4).expect("gem update inputs");
 
         let [ManagerUpdateInput::Seed(seed)] = inputs.as_slice() else {
             panic!("expected one gem seed");
