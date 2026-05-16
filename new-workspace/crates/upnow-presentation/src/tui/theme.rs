@@ -8,6 +8,7 @@ pub(super) struct TuiTheme {
     pub title: Style,
     pub header: Style,
     pub selected: Style,
+    pub selected_row_highlight: Style,
     pub keycap: Style,
     pub note: Style,
     pub forced: Style,
@@ -39,6 +40,7 @@ impl TuiTheme {
                     .fg(Color::Magenta)
                     .add_modifier(Modifier::BOLD),
                 selected: Style::default().fg(Color::Black).bg(Color::Cyan),
+                selected_row_highlight: Style::default().bg(Color::Cyan),
                 keycap: Style::default()
                     .fg(Color::Black)
                     .bg(Color::Gray)
@@ -66,6 +68,7 @@ impl TuiTheme {
             title: emphasized,
             header: emphasized,
             selected,
+            selected_row_highlight: selected,
             keycap: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
             note: Style::default().add_modifier(Modifier::ITALIC),
             forced: emphasized,

@@ -3,7 +3,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use crate::{
-    CandidateNoteKind, CandidateNotePart, SelectionRow, SelectionRowStatus, SelectionRowVisibility,
+    CandidateNotePart, CandidateNoteTone, SelectionRow, SelectionRowStatus, SelectionRowVisibility,
     SelectionView, TargetOption,
 };
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -19,11 +19,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row};
 use unicode_width::UnicodeWidthStr;
 use upnow_domain::{
-    ManagerId, PlanIssue, PlanItemId, PolicyBlockReason, PolicyWarning, SelectedItem,
-    SelectedUpdate, SkipReason, UpdateSelectionPolicy,
+    ManagerId, PlanIssue, PlanItemId, SelectedItem, SelectedUpdate, UpdateSelectionPolicy,
 };
 
 use crate::outcome::version_label;
+use crate::selection_view::note_part_text;
 use crate::tui::components::{
     KeyBinding, TuiTable, app_block, key_footer, render_modal_frame, render_selection_table,
     render_separator, render_table, render_tabs, version_picker_columns, visible_tabs,
@@ -243,7 +243,6 @@ struct SelectionRenderRow {
 
 #[derive(Debug, Clone)]
 struct TargetPickerRenderRow {
-    option: String,
     target: String,
     note_parts: Vec<CandidateNotePart>,
 }
@@ -654,12 +653,6 @@ impl InteractiveSelectionScreen {
             if selected {
                 if row.status == SelectionRowStatus::Update {
                     manager.state.select_recommended(&row.plan_item_id)?;
-                } else if row
-                    .target_options
-                    .iter()
-                    .any(|option| matches!(option, TargetOption::ForcedCandidate { .. }))
-                {
-                    manager.state.force_candidate(&row.plan_item_id)?;
                 }
             } else if manager.state.selected_target(&row.plan_item_id).is_some() {
                 manager.state.deselect(&row.plan_item_id)?;
@@ -1078,7 +1071,8 @@ fn selection_input_from_event(event: &Event, target_picker_open: bool) -> Select
     }
 
     let input = match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => SelectionInput::Cancel,
+        KeyCode::Char('q') => SelectionInput::Cancel,
+        KeyCode::Esc => SelectionInput::Ignore,
         KeyCode::Char('C') => SelectionInput::Confirm,
         KeyCode::Up | KeyCode::Char('k') => SelectionInput::Up,
         KeyCode::Down | KeyCode::Char('j') => SelectionInput::Down,
@@ -1110,7 +1104,7 @@ fn selection_input_from_event(event: &Event, target_picker_open: bool) -> Select
             SelectionInput::Up => SelectionInput::PickerUp,
             SelectionInput::Down => SelectionInput::PickerDown,
             SelectionInput::OpenTargetPicker => SelectionInput::PickerConfirm,
-            SelectionInput::Cancel if key.code == KeyCode::Esc => SelectionInput::PickerCancel,
+            SelectionInput::Ignore if key.code == KeyCode::Esc => SelectionInput::PickerCancel,
             SelectionInput::Cancel => SelectionInput::Ignore,
             _ => input,
         }
@@ -1297,7 +1291,8 @@ fn selection_render_rows(screen: &InteractiveSelectionScreen) -> Vec<SelectionRe
         .map(|visible| {
             let manager = &screen.managers[visible.manager_idx];
             let row = screen.row(visible);
-            let selected = manager.state.selected_target(&row.plan_item_id).is_some();
+            let selected_target = manager.state.selected_target(&row.plan_item_id);
+            let selected = selected_target.is_some();
             let target = row.target_version.as_ref().map_or_else(
                 || {
                     if row
@@ -1312,10 +1307,7 @@ fn selection_render_rows(screen: &InteractiveSelectionScreen) -> Vec<SelectionRe
                 },
                 |version| version_label(version.as_str()),
             );
-            let forced = row
-                .target_options
-                .iter()
-                .any(|option| matches!(option, TargetOption::ForcedCandidate { .. }));
+            let forced = matches!(selected_target, Some(SelectedUpdate::ForcePlannedCandidate));
 
             SelectionRenderRow {
                 selected,
@@ -1335,7 +1327,7 @@ fn selection_table_row(
     highlighted: bool,
     theme: &TuiTheme,
 ) -> Row<'static> {
-    let style = theme.row_for_selectable_state(highlighted, row.forced && !row.selected);
+    let style = theme.row_for_selectable_state(highlighted, false);
     let marker = if row.selected { "[x]" } else { "[ ]" };
     let target = if row.target == "unavailable" || row.target == "manager-resolved" {
         Line::from(Span::styled(row.target.clone(), style))
@@ -1352,7 +1344,6 @@ fn selection_table_row(
         forced_note_cell(&row.note_parts, style, highlighted, theme)
     } else {
         Cell::new(note_line(&row.note_parts, theme.note_for(style), theme))
-            .style(theme.note_for(style))
     };
 
     Row::new(vec![
@@ -1372,11 +1363,12 @@ fn forced_note_cell(
     highlighted: bool,
     theme: &TuiTheme,
 ) -> Cell<'static> {
-    let mut spans = vec![Span::styled("forced", theme.forced_note_for(highlighted))];
+    let forced_style = theme.forced_note_for(highlighted);
+    let mut spans = vec![Span::styled("forced", forced_style)];
     let note = note_text(note_parts);
     if !note.is_empty() {
-        spans.push(Span::styled(", ", theme.note_for(base_style)));
-        spans.push(Span::styled(note, theme.note_for(base_style)));
+        spans.push(Span::styled(", ", forced_style));
+        spans.push(Span::styled(note, forced_style));
     }
 
     Cell::new(Line::from(spans)).style(theme.note_for(base_style))
@@ -1485,7 +1477,7 @@ fn draw_target_picker_rows(
         area,
         TuiTable::new(table_rows, version_picker_columns())
             .selected(selected)
-            .row_highlight_style(theme.selected),
+            .row_highlight_style(theme.selected_row_highlight),
         theme,
     );
 }
@@ -1504,17 +1496,12 @@ fn target_picker_table_row(
     } else {
         version_diff_spans(current, &row.target, style, theme, highlighted)
     };
-    let mut target_spans = vec![
-        Span::styled(row.option.clone(), theme.emphasis(style)),
-        Span::styled(" ", style),
-    ];
-    target_spans.extend(target);
     let note = note_line(&row.note_parts, theme.note_for(style), theme);
 
     Row::new(vec![
         Cell::new(marker).style(style),
-        Cell::new(Line::from(target_spans)).style(style),
-        Cell::new(note).style(theme.note_for(style)),
+        Cell::new(Line::from(target)).style(style),
+        Cell::new(note),
     ])
     .style(style)
 }
@@ -1523,7 +1510,6 @@ fn target_picker_rows(options: &[TargetOption]) -> Vec<TargetPickerRenderRow> {
     options
         .iter()
         .map(|option| TargetPickerRenderRow {
-            option: target_option_kind_label(option).to_owned(),
             target: option.target_version().map_or_else(
                 || "manager-resolved".to_owned(),
                 |version| version_label(version.as_str()),
@@ -1531,15 +1517,6 @@ fn target_picker_rows(options: &[TargetOption]) -> Vec<TargetPickerRenderRow> {
             note_parts: option.note_parts().to_vec(),
         })
         .collect()
-}
-
-const fn target_option_kind_label(option: &TargetOption) -> &'static str {
-    match option {
-        TargetOption::Recommended { .. } => "recommended",
-        TargetOption::ForcedCandidate { .. } => "force",
-        TargetOption::AlternateExact { .. } => "exact",
-        TargetOption::ManagerResolved { .. } => "manager",
-    }
 }
 
 fn target_picker_height(option_count: usize) -> u16 {
@@ -1570,12 +1547,12 @@ fn note_line(note_parts: &[CandidateNotePart], style: Style, theme: &TuiTheme) -
     let mut spans = Vec::new();
     for (idx, part) in note_parts.iter().enumerate() {
         if idx > 0 {
-            spans.push(Span::styled("; ", style));
+            spans.push(Span::styled("; ", theme.muted));
         }
-        let part_style = if part.violation {
-            style.patch(theme.forced)
-        } else {
-            style
+        let part_style = match part.tone {
+            CandidateNoteTone::Normal => style,
+            CandidateNoteTone::Metadata => theme.muted,
+            CandidateNoteTone::Violation => style.patch(theme.forced),
         };
         spans.push(Span::styled(note_part_text(part), part_style));
     }
@@ -1589,74 +1566,6 @@ fn note_text(note_parts: &[CandidateNotePart]) -> String {
         .map(note_part_text)
         .collect::<Vec<_>>()
         .join("; ")
-}
-
-fn note_part_text(part: &CandidateNotePart) -> String {
-    match &part.kind {
-        CandidateNoteKind::Released { age } => format!("released {}", human_age(*age)),
-        CandidateNoteKind::TooFresh { age, required_age } => age.as_ref().map_or_else(
-            || format!("too fresh: need {}", human_age(*required_age)),
-            |age| {
-                format!(
-                    "too fresh: {} old, need {}",
-                    human_age(*age),
-                    human_age(*required_age)
-                )
-            },
-        ),
-        CandidateNoteKind::VersionPolicyBlocked(reason) => policy_block_reason_text(reason),
-        CandidateNoteKind::PolicyWarning(warning) => policy_warning_text(*warning).to_owned(),
-        CandidateNoteKind::MissingReleaseMetadata => "missing release metadata".to_owned(),
-        CandidateNoteKind::ReleaseLookupFailed { error } => error.as_ref().map_or_else(
-            || "release lookup failed".to_owned(),
-            |error| format!("release lookup failed: {}", error.detail),
-        ),
-        CandidateNoteKind::AdvisoryLookupFailed { error } => {
-            format!("advisory latest lookup failed: {}", error.detail)
-        }
-        CandidateNoteKind::Skipped(reason) => skip_reason_text(reason),
-        CandidateNoteKind::ResolverError { message } => message.clone(),
-    }
-}
-
-fn policy_block_reason_text(reason: &PolicyBlockReason) -> String {
-    match reason {
-        PolicyBlockReason::PreReleaseBlocked => "pre-release blocked by policy".to_owned(),
-        PolicyBlockReason::TrackRegression => "track regression blocked by policy".to_owned(),
-        PolicyBlockReason::UnknownStability => "unknown stability blocked by policy".to_owned(),
-    }
-}
-
-const fn policy_warning_text(warning: PolicyWarning) -> &'static str {
-    match warning {
-        PolicyWarning::InstalledTrackUnknownFallbackStable => {
-            "same-track fell back to stable because installed track is unknown"
-        }
-    }
-}
-
-fn skip_reason_text(reason: &SkipReason) -> String {
-    match reason {
-        SkipReason::Pinned => "pinned".to_owned(),
-        SkipReason::ManagerRule(detail) => detail.clone(),
-    }
-}
-
-fn human_age(age: Duration) -> String {
-    let seconds = age.as_secs();
-    let days = seconds / (24 * 60 * 60);
-    if days > 0 {
-        return format!("{days}d");
-    }
-    let hours = seconds / (60 * 60);
-    if hours > 0 {
-        return format!("{hours}h");
-    }
-    let minutes = seconds / 60;
-    if minutes > 0 {
-        return format!("{minutes}m");
-    }
-    format!("{seconds}s")
 }
 
 fn plan_issue_label(issue: &PlanIssue) -> String {

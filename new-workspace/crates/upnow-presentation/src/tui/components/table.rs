@@ -84,7 +84,7 @@ pub fn render_selection_table(
         TuiTable::new(rows, selection_update_columns())
             .header(update_header_row(theme))
             .selected(selected)
-            .row_highlight_style(theme.selected),
+            .row_highlight_style(theme.selected_row_highlight),
         theme,
     );
 }

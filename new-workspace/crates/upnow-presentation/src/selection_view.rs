@@ -7,6 +7,8 @@ use upnow_domain::{
 
 use std::time::Duration;
 
+use crate::notes;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectionView {
     pub manager_id: ManagerId,
@@ -86,29 +88,47 @@ impl TargetOption {
         }
     }
     pub fn has_violation(&self) -> bool {
-        self.note_parts().iter().any(|part| part.violation)
+        self.note_parts()
+            .iter()
+            .any(CandidateNotePart::is_violation)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateNotePart {
     pub kind: CandidateNoteKind,
-    pub violation: bool,
+    pub tone: CandidateNoteTone,
 }
 
 impl CandidateNotePart {
     pub const fn normal(kind: CandidateNoteKind) -> Self {
         Self {
             kind,
-            violation: false,
+            tone: CandidateNoteTone::Normal,
+        }
+    }
+    pub const fn metadata(kind: CandidateNoteKind) -> Self {
+        Self {
+            kind,
+            tone: CandidateNoteTone::Metadata,
         }
     }
     pub const fn violation(kind: CandidateNoteKind) -> Self {
         Self {
             kind,
-            violation: true,
+            tone: CandidateNoteTone::Violation,
         }
     }
+    pub const fn is_violation(&self) -> bool {
+        matches!(self.tone, CandidateNoteTone::Violation)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateNoteTone {
+    Normal,
+    Metadata,
+    Violation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +137,7 @@ pub enum CandidateNoteKind {
         age: Duration,
     },
     TooFresh {
+        version: Option<VersionText>,
         age: Option<Duration>,
         required_age: Duration,
     },
@@ -275,26 +296,7 @@ fn update_target_options(
     candidate: &UpdateCandidate,
     notes: Vec<CandidateNotePart>,
 ) -> Vec<TargetOption> {
-    let mut options = match candidate.target_version() {
-        Some(target_version) => vec![TargetOption::Recommended {
-            target_version: target_version.clone(),
-            note_parts: notes.clone(),
-        }],
-        None if candidate
-            .execution_support
-            .supports_manager_resolved_target() =>
-        {
-            vec![TargetOption::ManagerResolved {
-                note_parts: notes.clone(),
-            }]
-        }
-        None => Vec::new(),
-    };
-    if candidate.execution_support.supports_exact_target() {
-        let exact_options = exact_target_options(candidate, notes);
-        options.extend(exact_options);
-    }
-    options
+    primary_target_options(candidate, notes, TargetOptionKind::Recommended)
 }
 
 fn delayed_target_options(
@@ -311,14 +313,12 @@ fn delayed_target_options(
             }
             return Vec::new();
         };
-        let mut options = vec![TargetOption::ForcedCandidate {
+        return target_options_for_known_primary(
+            candidate,
             target_version,
-            note_parts: notes.clone(),
-        }];
-        if candidate.execution_support.supports_exact_target() {
-            options.extend(exact_target_options(candidate, notes));
-        }
-        return options;
+            notes,
+            TargetOptionKind::ForcedCandidate,
+        );
     }
     Vec::new()
 }
@@ -364,28 +364,88 @@ fn blocked_target_options(
     .with_execution_target_kind(seed.execution_target_kind)
     .with_diagnostics(diagnostics.clone());
 
-    let mut options = vec![TargetOption::ForcedCandidate {
+    target_options_for_known_primary(
+        &candidate,
         target_version,
-        note_parts: notes.clone(),
-    }];
-    if seed.execution_support.supports_exact_target() {
-        options.extend(exact_target_options(&candidate, notes));
+        notes,
+        TargetOptionKind::ForcedCandidate,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetOptionKind {
+    Recommended,
+    ForcedCandidate,
+}
+
+fn primary_target_options(
+    candidate: &UpdateCandidate,
+    notes: Vec<CandidateNotePart>,
+    kind: TargetOptionKind,
+) -> Vec<TargetOption> {
+    let Some(target_version) = candidate.target_version().cloned() else {
+        if candidate
+            .execution_support
+            .supports_manager_resolved_target()
+        {
+            return vec![TargetOption::ManagerResolved { note_parts: notes }];
+        }
+        return Vec::new();
+    };
+
+    target_options_for_known_primary(candidate, target_version, notes, kind)
+}
+
+fn target_options_for_known_primary(
+    candidate: &UpdateCandidate,
+    target_version: VersionText,
+    notes: Vec<CandidateNotePart>,
+    kind: TargetOptionKind,
+) -> Vec<TargetOption> {
+    let mut options = if candidate.execution_support.supports_exact_target() {
+        exact_target_options(candidate)
+            .into_iter()
+            .map(|option| match option {
+                TargetOption::AlternateExact {
+                    target_version: exact_target,
+                    note_parts,
+                } if exact_target == target_version => {
+                    primary_option(kind, exact_target, note_parts)
+                }
+                option => option,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    if options.is_empty() {
+        options.push(primary_option(kind, target_version, notes));
     }
+
     options
 }
 
-fn exact_target_options(
-    candidate: &UpdateCandidate,
-    fallback_notes: Vec<CandidateNotePart>,
-) -> Vec<TargetOption> {
+fn primary_option(
+    kind: TargetOptionKind,
+    target_version: VersionText,
+    note_parts: Vec<CandidateNotePart>,
+) -> TargetOption {
+    match kind {
+        TargetOptionKind::Recommended => TargetOption::Recommended {
+            target_version,
+            note_parts,
+        },
+        TargetOptionKind::ForcedCandidate => TargetOption::ForcedCandidate {
+            target_version,
+            note_parts,
+        },
+    }
+}
+
+fn exact_target_options(candidate: &UpdateCandidate) -> Vec<TargetOption> {
     if candidate.diagnostics.candidates.is_empty() {
-        return vec![TargetOption::AlternateExact {
-            target_version: candidate
-                .target_version()
-                .expect("exact option requires known target")
-                .clone(),
-            note_parts: fallback_notes,
-        }];
+        return Vec::new();
     }
 
     candidate
@@ -394,7 +454,7 @@ fn exact_target_options(
         .iter()
         .map(|evaluated| TargetOption::AlternateExact {
             target_version: evaluated.version.clone(),
-            note_parts: candidate_evaluation_notes(evaluated, candidate.diagnostics.required_age),
+            note_parts: candidate_evaluation_notes(evaluated),
         })
         .collect()
 }
@@ -402,12 +462,13 @@ fn exact_target_options(
 fn update_notes(candidate: &UpdateCandidate) -> Vec<CandidateNotePart> {
     let mut notes = Vec::new();
     if let Some(target) = candidate.diagnostics.selected_target.as_ref() {
-        notes.push(CandidateNotePart::normal(CandidateNoteKind::Released {
+        notes.push(CandidateNotePart::metadata(CandidateNoteKind::Released {
             age: target.age,
         }));
     }
     if let Some(latest) = latest_too_fresh(&candidate.diagnostics) {
-        notes.push(CandidateNotePart::normal(CandidateNoteKind::TooFresh {
+        notes.push(CandidateNotePart::metadata(CandidateNoteKind::TooFresh {
+            version: Some(latest.version.clone()),
             age: Some(latest.age),
             required_age: candidate.diagnostics.required_age,
         }));
@@ -424,20 +485,11 @@ fn update_notes(candidate: &UpdateCandidate) -> Vec<CandidateNotePart> {
     notes
 }
 
-fn candidate_evaluation_notes(
-    candidate: &CandidateEvaluationFact,
-    required_age: Duration,
-) -> Vec<CandidateNotePart> {
+fn candidate_evaluation_notes(candidate: &CandidateEvaluationFact) -> Vec<CandidateNotePart> {
     let mut notes = Vec::new();
     if let Some(age) = candidate.age {
-        notes.push(CandidateNotePart::normal(CandidateNoteKind::Released {
+        notes.push(CandidateNotePart::metadata(CandidateNoteKind::Released {
             age,
-        }));
-    }
-    if !candidate.age_allowed {
-        notes.push(CandidateNotePart::violation(CandidateNoteKind::TooFresh {
-            age: candidate.age,
-            required_age,
         }));
     }
     if let Some(reason) = candidate.policy_block_reason.clone() {
@@ -457,12 +509,8 @@ fn delayed_notes(reason: &DelayReason, diagnostics: &PlanDiagnostics) -> Vec<Can
     match reason {
         DelayReason::ReleaseTooFresh => {
             let mut notes = Vec::new();
-            if let Some(target) = diagnostics.selected_target.as_ref() {
-                notes.push(CandidateNotePart::normal(CandidateNoteKind::Released {
-                    age: target.age,
-                }));
-            }
             notes.push(CandidateNotePart::violation(CandidateNoteKind::TooFresh {
+                version: None,
                 age: diagnostics
                     .selected_target
                     .as_ref()
@@ -482,7 +530,7 @@ fn blocked_notes(
 ) -> Vec<CandidateNotePart> {
     let mut notes = match reason {
         BlockReason::MissingReleaseMetadata => {
-            vec![CandidateNotePart::violation(
+            vec![CandidateNotePart::metadata(
                 CandidateNoteKind::MissingReleaseMetadata,
             )]
         }
@@ -569,5 +617,31 @@ fn advisory_latest_age_fact(advisory: &AdvisoryLatestFact) -> Option<&CandidateA
         AdvisoryLatestFact::MissingMetadata { .. } | AdvisoryLatestFact::LookupFailed { .. } => {
             None
         }
+    }
+}
+
+pub(crate) fn note_part_text(part: &CandidateNotePart) -> String {
+    match &part.kind {
+        CandidateNoteKind::Released { age } => notes::released(*age),
+        CandidateNoteKind::TooFresh {
+            version,
+            age,
+            required_age,
+        } => version.as_ref().map_or_else(
+            || notes::too_fresh(*age, *required_age),
+            |version| notes::latest_too_fresh(version, *age, Some(*required_age), true),
+        ),
+        CandidateNoteKind::VersionPolicyBlocked(reason) => notes::version_policy_blocked(reason),
+        CandidateNoteKind::PolicyWarning(warning) => notes::policy_warning(*warning).to_owned(),
+        CandidateNoteKind::MissingReleaseMetadata => "missing release metadata".to_owned(),
+        CandidateNoteKind::ReleaseLookupFailed { error } => error.as_ref().map_or_else(
+            || "release lookup failed".to_owned(),
+            |error| format!("release lookup failed: {}", error.detail),
+        ),
+        CandidateNoteKind::AdvisoryLookupFailed { error } => {
+            format!("advisory latest lookup failed: {}", error.detail)
+        }
+        CandidateNoteKind::Skipped(reason) => notes::skip_reason(reason),
+        CandidateNoteKind::ResolverError { message } => message.clone(),
     }
 }

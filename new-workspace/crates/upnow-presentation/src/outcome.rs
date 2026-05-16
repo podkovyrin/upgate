@@ -274,12 +274,17 @@ fn outcome_table_row(row: &OutcomeRow, theme: OutputTheme) -> RenderedOutcomeTab
 }
 
 fn render_notes(notes: &[OutcomeNote], theme: OutputTheme) -> String {
+    let separator = if theme.color() {
+        "; ".dimmed().to_string()
+    } else {
+        "; ".to_owned()
+    };
     notes
         .iter()
         .filter(|note| note.visibility == OutcomeVisibility::Always || theme.verbose)
         .map(|note| render_note(note, theme.color()))
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(&separator)
 }
 
 fn render_note(note: &OutcomeNote, color: bool) -> String {

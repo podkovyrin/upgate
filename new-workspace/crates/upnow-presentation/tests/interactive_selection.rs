@@ -226,21 +226,21 @@ fn picker_can_choose_alternate_exact_target() {
         .handle_input(SelectionInput::OpenTargetPicker)
         .expect("picker should open");
     let options = screen.target_picker_options();
-    assert_eq!(options.len(), 4);
-    assert!(matches!(options[0], TargetOption::Recommended { .. }));
-    assert!(matches!(options[1], TargetOption::AlternateExact { .. }));
+    assert_eq!(options.len(), 3);
+    assert!(matches!(options[0], TargetOption::AlternateExact { .. }));
     assert_eq!(
-        options[1].target_version().expect("known target").as_str(),
+        options[0].target_version().expect("known target").as_str(),
         "2.0.0"
     );
-    assert!(options[1].has_violation());
+    assert!(!options[0].has_violation());
     assert_eq!(
-        options[2].target_version().expect("known target").as_str(),
+        options[1].target_version().expect("known target").as_str(),
         "1.3.0-beta.1"
     );
-    assert!(options[2].has_violation());
+    assert!(options[1].has_violation());
+    assert!(matches!(options[2], TargetOption::Recommended { .. }));
     assert_eq!(
-        options[3].target_version().expect("known target").as_str(),
+        options[2].target_version().expect("known target").as_str(),
         "1.2.0"
     );
     screen
