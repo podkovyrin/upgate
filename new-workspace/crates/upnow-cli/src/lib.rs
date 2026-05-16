@@ -16,8 +16,8 @@ use clap::{Parser, Subcommand};
 use config::{ConfigError, UpnowConfig};
 use registry::{available_manager_ids, configured_manager, ensure_known_manager};
 use upnow_domain::{
-    ManagerConfig, ManagerId, ManagerMode, ManagerScanInput, PlanIssue, PlanSelection, ScanIssue,
-    ScanItem, ScanReport, UpdatePlan, UpdateSelectionPolicy,
+    ManagerConfig, ManagerId, ManagerMode, ManagerScanEvidenceInput, ManagerScanInput, PlanIssue,
+    PlanSelection, ScanIssue, ScanItem, ScanReport, UpdatePlan, UpdateSelectionPolicy,
 };
 use upnow_execution::progress::{
     ExecutionProgressEvent, ExecutionProgressState, ExecutionProgressSummary,
@@ -43,6 +43,7 @@ use upnow_presentation::{
     terminal::{BatchTerminal, BatchTerminalAction, MutationNotice},
     update_plan_table,
 };
+use upnow_release::release_age_for_evidence;
 
 const DEFAULT_MAX_PARALLEL_CHECKS: usize = 6;
 
@@ -1171,8 +1172,15 @@ fn build_verbose_scan_report(
             ));
         }
     }
-    match manager.scan_items_with_release_evidence(process, http, env, now, max_parallel_checks) {
-        Ok(items) => Ok(ScanReport::new(manager_id, items, Vec::new())),
+    match manager.scan_inputs_with_release_evidence(process, http, env, max_parallel_checks) {
+        Ok(inputs) => Ok(ScanReport::new(
+            manager_id,
+            inputs
+                .into_iter()
+                .map(|input| scan_item_from_evidence_input(input, now))
+                .collect(),
+            Vec::new(),
+        )),
         Err(err) if err.is_interruption() => Err(map_manager_error(err)),
         Err(err) => Ok(ScanReport::new(
             manager_id,
@@ -1181,6 +1189,26 @@ fn build_verbose_scan_report(
                 detail: err.to_string(),
             }],
         )),
+    }
+}
+
+fn scan_item_from_evidence_input(input: ManagerScanEvidenceInput, now: SystemTime) -> ScanItem {
+    match input {
+        ManagerScanEvidenceInput::Installed {
+            tool,
+            release_evidence: Some(evidence),
+        } => ScanItem::InstalledWithReleaseAge {
+            tool,
+            age: release_age_for_evidence(&evidence, now),
+        },
+        ManagerScanEvidenceInput::Installed {
+            tool,
+            release_evidence: None,
+        } => ScanItem::Installed(tool),
+        ManagerScanEvidenceInput::Skipped { installed, reason } => ScanItem::Skipped {
+            tool: installed,
+            reason,
+        },
     }
 }
 

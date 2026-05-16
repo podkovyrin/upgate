@@ -1,13 +1,14 @@
 use std::fmt::{self, Display};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use upnow_domain::{
-    InstalledTool, ManagerId, ManagerMode, ManagerScanInput, ManagerUpdateInput, PackageName,
-    ReleaseLookupResult, ScanItem, UnsupportedReason, VersionPolicy, VersionText,
+    InstalledTool, ManagerId, ManagerMode, ManagerScanEvidenceInput, ManagerScanInput,
+    ManagerUpdateInput, PackageName, ReleaseEvidenceSource, ReleaseLookupResult, UnsupportedReason,
+    VersionPolicy, VersionText,
 };
 use upnow_execution::{ExecutionCommand, ResolvedExecutionPlan};
 use upnow_infra::{Env, HttpClient, ProcessRunner};
-use upnow_release::release_age_for_version;
+use upnow_release::release_evidence_for_version;
 
 pub use upnow_domain::ManagerCapabilities;
 
@@ -174,7 +175,7 @@ pub trait ManagerAdapter {
         env: &Env,
     ) -> Result<Vec<ManagerScanInput>, ManagerAdapterError>;
 
-    /// Discovers scan items with optional release-age evidence.
+    /// Discovers scan inputs with optional release evidence.
     ///
     /// Managers should override this when efficient verbose scan depends on
     /// manager-owned discovery, runtime resolution, batch metadata APIs, or
@@ -184,14 +185,13 @@ pub trait ManagerAdapter {
     /// # Errors
     ///
     /// Returns a manager adapter error when scan discovery or lookup fails.
-    fn scan_items_with_release_evidence(
+    fn scan_inputs_with_release_evidence(
         &self,
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
-        now: SystemTime,
         max_parallel_checks: usize,
-    ) -> Result<Vec<ScanItem>, ManagerAdapterError> {
+    ) -> Result<Vec<ManagerScanEvidenceInput>, ManagerAdapterError> {
         let _ = max_parallel_checks;
         self.scan_inputs(process, env)?
             .into_iter()
@@ -203,19 +203,26 @@ pub trait ManagerAdapter {
                     ReleaseLookupSubject::Installed(&tool),
                 )? {
                     ReleaseLookupResult::Known(timeline) => {
-                        match release_age_for_version(&timeline, &tool.installed_version, now) {
-                            Some(age) => Ok(ScanItem::InstalledWithReleaseAge { tool, age }),
-                            None => Ok(ScanItem::Installed(tool)),
-                        }
+                        let release_evidence = release_evidence_for_version(
+                            &timeline,
+                            &tool.installed_version,
+                            ReleaseEvidenceSource::ReleaseTimeline,
+                        );
+                        Ok(ManagerScanEvidenceInput::Installed {
+                            tool,
+                            release_evidence,
+                        })
                     }
                     ReleaseLookupResult::MissingMetadata | ReleaseLookupResult::LookupFailed(_) => {
-                        Ok(ScanItem::Installed(tool))
+                        Ok(ManagerScanEvidenceInput::Installed {
+                            tool,
+                            release_evidence: None,
+                        })
                     }
                 },
-                ManagerScanInput::Skipped { installed, reason } => Ok(ScanItem::Skipped {
-                    tool: installed,
-                    reason,
-                }),
+                ManagerScanInput::Skipped { installed, reason } => {
+                    Ok(ManagerScanEvidenceInput::Skipped { installed, reason })
+                }
             })
             .collect()
     }

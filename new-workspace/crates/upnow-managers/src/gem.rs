@@ -7,16 +7,16 @@ use semver::Version;
 use serde::Deserialize;
 use upnow_domain::{
     DomainError, ExecutionSupport, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
-    ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ScanItem, ToolId, ToolName, UpdateSeed,
-    VersionPolicy, VersionScheme, VersionText,
+    ManagerScanEvidenceInput, ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry,
+    ReleaseEvidenceSource, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
+    ReleaseTimestamp, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
     ResolvedExecutionPlan,
 };
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
-use upnow_release::{newest_semver_version, release_age_for_version};
+use upnow_release::{newest_semver_version, release_evidence_for_version};
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
@@ -143,14 +143,13 @@ impl ManagerAdapter for GemManager {
             .map_err(|err| adapter_error(&err))
     }
 
-    fn scan_items_with_release_evidence(
+    fn scan_inputs_with_release_evidence(
         &self,
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
-        now: SystemTime,
         _max_parallel_checks: usize,
-    ) -> Result<Vec<ScanItem>, ManagerAdapterError> {
+    ) -> Result<Vec<ManagerScanEvidenceInput>, ManagerAdapterError> {
         let installed = installed_global(process).map_err(|err| adapter_error(&err))?;
         let ruby_runtime = match ruby_runtime_version(process) {
             Ok(version) => Some(version),
@@ -161,14 +160,19 @@ impl ManagerAdapter for GemManager {
             .into_iter()
             .map(|tool| {
                 match lookup_release(http, env, &tool.package_name, ruby_runtime.as_ref()) {
-                    ReleaseLookupResult::Known(timeline) => {
-                        match release_age_for_version(&timeline, &tool.installed_version, now) {
-                            Some(age) => ScanItem::InstalledWithReleaseAge { tool, age },
-                            None => ScanItem::Installed(tool),
-                        }
-                    }
+                    ReleaseLookupResult::Known(timeline) => ManagerScanEvidenceInput::Installed {
+                        release_evidence: release_evidence_for_version(
+                            &timeline,
+                            &tool.installed_version,
+                            ReleaseEvidenceSource::ReleaseTimeline,
+                        ),
+                        tool,
+                    },
                     ReleaseLookupResult::MissingMetadata | ReleaseLookupResult::LookupFailed(_) => {
-                        ScanItem::Installed(tool)
+                        ManagerScanEvidenceInput::Installed {
+                            tool,
+                            release_evidence: None,
+                        }
                     }
                 }
             })

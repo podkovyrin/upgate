@@ -7,8 +7,9 @@ use upnow_domain::{
     AdvisoryLatestFact, AdvisoryReleaseLookup, BlockReason, CandidateAgeFact, CandidateAgeSource,
     CandidateEvaluationFact, DelayReason, ManagerSelectedTarget, MissingMetadataKind,
     PlanDiagnostics, PlanItem, PlanItemId, PolicyBlockReason, PolicyWarning, ReleaseEntry,
-    ReleaseLookupResult, ReleaseTimeline, TargetAgeEvidence, TargetAgeLookupResult,
-    TargetSelection, UpdateCandidate, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    ReleaseEvidenceSource, ReleaseLookupResult, ReleaseTimeline, TargetAgeEvidence,
+    TargetAgeLookupResult, TargetSelection, UpdateCandidate, UpdateSeed, VersionPolicy,
+    VersionReleaseEvidence, VersionScheme, VersionText,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,6 +221,7 @@ fn evaluate_manager_selected_seed(
                 selected_target.clone(),
                 evidence_age(&evidence, now),
                 candidate_age_source(&evidence),
+                VersionReleaseEvidence::from_target_age(selected_target.clone(), &evidence),
             ));
             evidence
         }
@@ -379,6 +381,8 @@ fn evaluate_semver_seed(
         };
     };
 
+    let mut diagnostics = diagnostics;
+    diagnostics.selected_target = Some(policy_candidate.candidate_age());
     let candidate = candidate_from_seed(
         &seed,
         policy_candidate.version,
@@ -394,14 +398,14 @@ fn evaluate_semver_seed(
         };
     };
 
+    let selected_target = age_candidate.candidate_age();
     PlanItem::Update {
         id,
-        candidate: candidate_from_seed(
-            &seed,
-            age_candidate.version,
-            age_candidate.warnings,
-            diagnostics,
-        ),
+        candidate: candidate_from_seed(&seed, age_candidate.version, age_candidate.warnings, {
+            let mut diagnostics = diagnostics;
+            diagnostics.selected_target = Some(selected_target);
+            diagnostics
+        }),
     }
 }
 
@@ -533,6 +537,8 @@ fn evaluate_pep440_seed(
         };
     };
 
+    let mut diagnostics = diagnostics;
+    diagnostics.selected_target = Some(policy_candidate.candidate_age());
     let candidate = candidate_from_seed(
         &seed,
         policy_candidate.version,
@@ -548,14 +554,14 @@ fn evaluate_pep440_seed(
         };
     };
 
+    let selected_target = age_candidate.candidate_age();
     PlanItem::Update {
         id,
-        candidate: candidate_from_seed(
-            &seed,
-            age_candidate.version,
-            age_candidate.warnings,
-            diagnostics,
-        ),
+        candidate: candidate_from_seed(&seed, age_candidate.version, age_candidate.warnings, {
+            let mut diagnostics = diagnostics;
+            diagnostics.selected_target = Some(selected_target);
+            diagnostics
+        }),
     }
 }
 
@@ -729,6 +735,11 @@ fn advisory_latest_diagnostics(
                         entry.version.clone(),
                         release_age(entry, now),
                         CandidateAgeSource::ReleaseTimeline,
+                        VersionReleaseEvidence::new(
+                            entry.version.clone(),
+                            entry.published_at.clone(),
+                            ReleaseEvidenceSource::ReleaseTimeline,
+                        ),
                     )
                 })
                 .collect(),
@@ -775,6 +786,7 @@ where
 struct CandidateFact {
     version: VersionText,
     age: Duration,
+    published_at: upnow_domain::ReleaseTimestamp,
     age_allowed: bool,
     policy_allowed: bool,
     policy_block_reason: Option<PolicyBlockReason>,
@@ -792,6 +804,7 @@ impl CandidateFact {
         Self {
             version: entry.version.clone(),
             age,
+            published_at: entry.published_at.clone(),
             age_allowed: age >= min_release_age,
             policy_allowed: policy_decision.allowed(),
             policy_block_reason: policy_decision.block_reason(),
@@ -804,6 +817,11 @@ impl CandidateFact {
             self.version.clone(),
             self.age,
             CandidateAgeSource::ReleaseTimeline,
+            VersionReleaseEvidence::new(
+                self.version.clone(),
+                self.published_at.clone(),
+                ReleaseEvidenceSource::ReleaseTimeline,
+            ),
         )
     }
 

@@ -10,16 +10,17 @@ use semver::Version;
 use serde::Deserialize;
 use upnow_domain::{
     DomainError, ExecutionSupport, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
-    ManagerRuleReason, ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry,
-    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ScanIssue,
-    ScanItem, SkipReason, ToolId, ToolName, UpdateSeed, VersionScheme, VersionText,
+    ManagerRuleReason, ManagerScanEvidenceInput, ManagerScanInput, ManagerUpdateInput, PackageName,
+    ReleaseEntry, ReleaseEvidenceSource, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
+    ReleaseTimestamp, ScanIssue, SkipReason, ToolId, ToolName, UpdateSeed, VersionScheme,
+    VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
     ResolvedExecutionPlan,
 };
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
-use upnow_release::release_age_for_version;
+use upnow_release::release_evidence_for_version;
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
@@ -145,14 +146,13 @@ impl ManagerAdapter for GoManager {
         scan_inputs(process, env).map_err(|err| adapter_error(&err))
     }
 
-    fn scan_items_with_release_evidence(
+    fn scan_inputs_with_release_evidence(
         &self,
         process: &ProcessRunner,
         _http: &HttpClient,
         env: &Env,
-        now: SystemTime,
         _max_parallel_checks: usize,
-    ) -> Result<Vec<ScanItem>, ManagerAdapterError> {
+    ) -> Result<Vec<ManagerScanEvidenceInput>, ManagerAdapterError> {
         let discovered = discover_global_tools(process, env).map_err(|err| adapter_error(&err))?;
         discovered
             .into_iter()
@@ -163,30 +163,33 @@ impl ManagerAdapter for GoManager {
                         .map_err(|err| adapter_error(&err))?
                     {
                         ReleaseLookupResult::Known(timeline) => {
-                            match release_age_for_version(
-                                &timeline,
-                                &installed.installed_version,
-                                now,
-                            ) {
-                                Some(age) => Ok(ScanItem::InstalledWithReleaseAge {
-                                    tool: installed,
-                                    age,
-                                }),
-                                None => Ok(ScanItem::Installed(installed)),
-                            }
+                            Ok(ManagerScanEvidenceInput::Installed {
+                                release_evidence: release_evidence_for_version(
+                                    &timeline,
+                                    &installed.installed_version,
+                                    ReleaseEvidenceSource::ReleaseTimeline,
+                                ),
+                                tool: installed,
+                            })
                         }
                         ReleaseLookupResult::MissingMetadata
                         | ReleaseLookupResult::LookupFailed(_) => {
-                            Ok(ScanItem::Installed(installed))
+                            Ok(ManagerScanEvidenceInput::Installed {
+                                tool: installed,
+                                release_evidence: None,
+                            })
                         }
                     }
                 }
-                GoDiscoveredTool::Skipped { name, reason } => Ok(ScanItem::Skipped {
-                    tool: placeholder_installed_tool(&name).map_err(|err| adapter_error(&err))?,
-                    reason: ScanIssue::ExcludedByManagerRule(ManagerRuleReason::Other {
-                        detail: reason,
-                    }),
-                }),
+                GoDiscoveredTool::Skipped { name, reason } => {
+                    Ok(ManagerScanEvidenceInput::Skipped {
+                        installed: placeholder_installed_tool(&name)
+                            .map_err(|err| adapter_error(&err))?,
+                        reason: ScanIssue::ExcludedByManagerRule(ManagerRuleReason::Other {
+                            detail: reason,
+                        }),
+                    })
+                }
             })
             .collect()
     }

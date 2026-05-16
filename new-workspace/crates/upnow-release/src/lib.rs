@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 
 use pep440_rs::Version as Pep440Version;
 use semver::Version;
-use upnow_domain::{ReleaseTimeline, VersionText};
+use upnow_domain::{ReleaseEvidenceSource, ReleaseTimeline, VersionReleaseEvidence, VersionText};
 pub fn release_age_for_version(
     timeline: &ReleaseTimeline,
     version: &VersionText,
@@ -20,6 +20,23 @@ pub fn release_age_for_version(
             now.duration_since(*entry.published_at.as_system_time())
                 .unwrap_or(Duration::ZERO)
         })
+}
+pub fn release_evidence_for_version(
+    timeline: &ReleaseTimeline,
+    version: &VersionText,
+    source: ReleaseEvidenceSource,
+) -> Option<VersionReleaseEvidence> {
+    timeline
+        .versions
+        .iter()
+        .find(|entry| entry.version == *version)
+        .map(|entry| {
+            VersionReleaseEvidence::new(entry.version.clone(), entry.published_at.clone(), source)
+        })
+}
+pub fn release_age_for_evidence(evidence: &VersionReleaseEvidence, now: SystemTime) -> Duration {
+    now.duration_since(*evidence.published_at.as_system_time())
+        .unwrap_or(Duration::ZERO)
 }
 pub fn newest_semver_version(timeline: &ReleaseTimeline) -> Option<VersionText> {
     timeline

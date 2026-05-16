@@ -27,11 +27,12 @@ pub use plan::{
 };
 pub use policy::{PolicyWarning, VersionPolicy};
 pub use release::{
-    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
-    TargetAgeEvidence, TargetAgeLookupResult,
+    ReleaseEntry, ReleaseEvidenceSource, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
+    ReleaseTimestamp, TargetAgeEvidence, TargetAgeLookupResult, VersionReleaseEvidence,
 };
 pub use scan::{
-    ManagerRuleReason, ManagerScanInput, ScanIssue, ScanItem, ScanReport, UnsupportedReason,
+    ManagerRuleReason, ManagerScanEvidenceInput, ManagerScanInput, ScanIssue, ScanItem, ScanReport,
+    UnsupportedReason,
 };
 pub use selection::{
     PlanSelection, SelectedItem, SelectedUpdate, UpdateSelectionMode, UpdateSelectionPolicy,

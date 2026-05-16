@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::{InstalledTool, ManagerId};
+use crate::{InstalledTool, ManagerId, VersionReleaseEvidence};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnsupportedReason {
@@ -27,6 +27,18 @@ impl ScanReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManagerScanInput {
     Installed(InstalledTool),
+    Skipped {
+        installed: InstalledTool,
+        reason: ScanIssue,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagerScanEvidenceInput {
+    Installed {
+        tool: InstalledTool,
+        release_evidence: Option<VersionReleaseEvidence>,
+    },
     Skipped {
         installed: InstalledTool,
         reason: ScanIssue,

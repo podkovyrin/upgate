@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use crate::{
     DomainError, InstalledTool, ManagerId, PackageName, PolicyWarning, ReleaseLookupError,
-    ReleaseLookupResult, TargetAgeLookupResult, ToolId, UnsupportedReason, VersionScheme,
-    VersionText,
+    ReleaseLookupResult, TargetAgeLookupResult, ToolId, UnsupportedReason, VersionReleaseEvidence,
+    VersionScheme, VersionText,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -644,14 +644,21 @@ pub struct CandidateAgeFact {
     pub version: VersionText,
     pub age: Duration,
     pub age_source: CandidateAgeSource,
+    pub release_evidence: VersionReleaseEvidence,
 }
 
 impl CandidateAgeFact {
-    pub const fn new(version: VersionText, age: Duration, age_source: CandidateAgeSource) -> Self {
+    pub const fn new(
+        version: VersionText,
+        age: Duration,
+        age_source: CandidateAgeSource,
+        release_evidence: VersionReleaseEvidence,
+    ) -> Self {
         Self {
             version,
             age,
             age_source,
+            release_evidence,
         }
     }
 }

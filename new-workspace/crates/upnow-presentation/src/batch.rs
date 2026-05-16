@@ -218,6 +218,9 @@ fn update_row(
     options: BatchRenderOptions,
 ) -> OutcomeRow {
     let mut row = candidate_row(OutcomeStatusView::Update, manager_id, candidate);
+    if let Some(note) = target_release_note(&candidate.diagnostics) {
+        row = row.with_note(note);
+    }
     if let Some(note) = latest_too_fresh_note(&candidate.diagnostics, options.theme) {
         row = row.with_note(note);
     }
@@ -233,6 +236,9 @@ fn delayed_row(
     options: BatchRenderOptions,
 ) -> OutcomeRow {
     let mut row = candidate_row(OutcomeStatusView::Delayed, manager_id, candidate);
+    if let Some(note) = target_release_note(&candidate.diagnostics) {
+        row = row.with_note(note);
+    }
     row = row.with_note(delayed_note(reason, &candidate.diagnostics, options.theme));
     row = append_advisory_warning_notes(row, &candidate.diagnostics);
     row = append_policy_notes(row, &candidate.diagnostics, options.version_policy);
@@ -536,6 +542,12 @@ fn release_age_note(age: Duration, is_old: bool) -> OutcomeNote {
     OutcomeNote::metadata(text)
 }
 
+fn target_release_note(diagnostics: &PlanDiagnostics) -> Option<OutcomeNote> {
+    diagnostics.selected_target.as_ref().map(|target| {
+        release_age_note(target.age, false).with_visibility(OutcomeVisibility::VerboseOnly)
+    })
+}
+
 fn lookup_failure_text(diagnostics: &PlanDiagnostics) -> String {
     diagnostics.lookup_failure.as_ref().map_or_else(
         || "release lookup failed".to_owned(),
@@ -633,10 +645,12 @@ fn human_age(age: Duration) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
 
     use upnow_domain::{
-        ExecutionSupport, PlanItemId, ReleaseLookupError, ToolId, VersionScheme, VersionText,
+        CandidateAgeFact, CandidateAgeSource, ExecutionSupport, PlanItemId, ReleaseEvidenceSource,
+        ReleaseLookupError, ReleaseTimestamp, ToolId, VersionReleaseEvidence, VersionScheme,
+        VersionText,
     };
 
     use super::*;
@@ -687,6 +701,50 @@ mod tests {
                 && note.text.contains("advisory latest lookup failed")
                 && note.text.contains("uv tool list --outdated failed")
         }));
+    }
+
+    // This test must exist because plan verbose release age is user-visible CLI
+    // behavior and should remain a presentation concern over typed plan evidence.
+    #[test]
+    fn plan_verbose_renders_target_release_age() {
+        let manager_id = manager_id("npm");
+        let package_name = package_name("alpha");
+        let target = version("2.0.0");
+        let candidate = UpdateCandidate::new(
+            ToolId::new("npm:alpha").expect("valid tool id"),
+            package_name,
+            version("1.0.0"),
+            target.clone(),
+            VersionScheme::SemVer,
+            ExecutionSupport::exact_only(),
+        )
+        .with_diagnostics(PlanDiagnostics {
+            selected_target: Some(CandidateAgeFact::new(
+                target.clone(),
+                Duration::from_secs(3 * 24 * 60 * 60),
+                CandidateAgeSource::ReleaseTimeline,
+                VersionReleaseEvidence::new(
+                    target,
+                    ReleaseTimestamp::new(UNIX_EPOCH),
+                    ReleaseEvidenceSource::ReleaseTimeline,
+                ),
+            )),
+            ..PlanDiagnostics::default()
+        });
+        let plan = UpdatePlan::new(
+            manager_id,
+            vec![PlanItem::Update {
+                id: PlanItemId::new("npm:alpha").expect("valid plan item id"),
+                candidate,
+            }],
+        )
+        .expect("valid plan");
+
+        let regular = render_update_plan(&plan, BatchRenderOptions::new(OutputTheme::plain(false)));
+        let verbose = render_update_plan(&plan, BatchRenderOptions::new(OutputTheme::plain(true)));
+
+        assert!(!regular.contains("(released: 3d)"));
+        assert!(verbose.contains("(released: 3d)"));
     }
 
     fn manager_id(value: &str) -> ManagerId {

@@ -6,10 +6,11 @@ use chrono::DateTime;
 use serde::Deserialize;
 use upnow_domain::{
     DomainError, ExecutionSupport, ExecutionTargetKind, InstalledTool, ManagerConfig, ManagerId,
-    ManagerMetadata, ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput, PackageName,
-    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
-    ScanItem, SkipReason, TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed,
-    VersionScheme, VersionText,
+    ManagerMetadata, ManagerScanEvidenceInput, ManagerScanInput, ManagerSelectedTarget,
+    ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseEvidenceSource, ReleaseLookupError,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, SkipReason, TargetAgeEvidence,
+    TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionReleaseEvidence, VersionScheme,
+    VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -19,7 +20,6 @@ use upnow_infra::{
     CommandCheck, CommandSpec, Env, HttpClient, HttpHeader, InfraError, ProcessRunner,
     run_ordered_parallel,
 };
-use upnow_release::release_age_for_version;
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
@@ -270,15 +270,14 @@ impl ManagerAdapter for BrewManager {
             .map_err(|err| adapter_error(&err))
     }
 
-    fn scan_items_with_release_evidence(
+    fn scan_inputs_with_release_evidence(
         &self,
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
-        now: SystemTime,
         max_parallel_checks: usize,
-    ) -> Result<Vec<ScanItem>, ManagerAdapterError> {
-        scan_items_with_release_evidence(process, http, env, now, max_parallel_checks)
+    ) -> Result<Vec<ManagerScanEvidenceInput>, ManagerAdapterError> {
+        scan_inputs_with_release_evidence(process, http, env, max_parallel_checks)
             .map_err(|err| adapter_error(&err))
     }
 
@@ -573,13 +572,12 @@ fn installed_packages(process: &ProcessRunner) -> Result<Vec<BrewInstalledPackag
     parse_installed_info_json(output.stdout()?)
 }
 
-fn scan_items_with_release_evidence(
+fn scan_inputs_with_release_evidence(
     process: &ProcessRunner,
     http: &HttpClient,
     env: &Env,
-    now: SystemTime,
     max_parallel_checks: usize,
-) -> Result<Vec<ScanItem>, BrewError> {
+) -> Result<Vec<ManagerScanEvidenceInput>, BrewError> {
     let packages = installed_packages(process)?;
     let taps = tap_metadata(process).unwrap_or_default();
     let jobs = packages
@@ -601,7 +599,7 @@ fn scan_items_with_release_evidence(
         "brew verbose scan",
         |job| {
             let lookup = lookup_target_age(process, http, env, Some(&job.metadata), &taps);
-            scan_item_for_target_age(job.tool, lookup, now)
+            scan_input_for_target_age(job.tool, lookup)
         },
     )
     .map_err(BrewError::from)
@@ -727,24 +725,29 @@ fn release_lookup_for_installed(
     }
 }
 
-fn scan_item_for_target_age(
+fn scan_input_for_target_age(
     tool: InstalledTool,
     lookup: TargetAgeLookupResult,
-    now: SystemTime,
-) -> ScanItem {
+) -> ManagerScanEvidenceInput {
     match lookup {
-        TargetAgeLookupResult::Known(evidence) => {
-            let timeline = ReleaseTimeline::new(vec![ReleaseEntry::new(
+        TargetAgeLookupResult::Known(evidence) => ManagerScanEvidenceInput::Installed {
+            release_evidence: Some(VersionReleaseEvidence::new(
                 tool.installed_version.clone(),
                 evidence.timestamp().clone(),
-            )]);
-            match release_age_for_version(&timeline, &tool.installed_version, now) {
-                Some(age) => ScanItem::InstalledWithReleaseAge { tool, age },
-                None => ScanItem::Installed(tool),
-            }
-        }
+                match evidence {
+                    TargetAgeEvidence::PublishedAt(_) => ReleaseEvidenceSource::PublishedAt,
+                    TargetAgeEvidence::ManagerNativeTimestamp(_) => {
+                        ReleaseEvidenceSource::ManagerNativeTimestamp
+                    }
+                },
+            )),
+            tool,
+        },
         TargetAgeLookupResult::MissingMetadata | TargetAgeLookupResult::LookupFailed(_) => {
-            ScanItem::Installed(tool)
+            ManagerScanEvidenceInput::Installed {
+                tool,
+                release_evidence: None,
+            }
         }
     }
 }
