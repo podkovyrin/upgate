@@ -7,14 +7,14 @@ use serde::Deserialize;
 use upnow_domain::{
     DomainError, ExecutionSupport, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ScanItem, ToolId, ToolName, UpdateSeed,
     VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionPlan,
 };
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
-use upnow_release::newest_semver_version;
+use upnow_release::{newest_semver_version, release_age_for_version};
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
@@ -132,6 +132,42 @@ impl ManagerAdapter for BunManager {
         installed_global(process)
             .map(|tools| tools.into_iter().map(ManagerScanInput::Installed).collect())
             .map_err(|err| adapter_error(&err))
+    }
+
+    fn scan_items_with_release_evidence(
+        &self,
+        process: &ProcessRunner,
+        _http: &HttpClient,
+        env: &Env,
+        now: SystemTime,
+        _max_parallel_checks: usize,
+    ) -> Result<Vec<ScanItem>, ManagerAdapterError> {
+        let runtime = BunRuntime::resolve(process);
+        let installed = installed_global_with_bun(process, runtime.executable())
+            .map_err(|err| adapter_error(&err))?;
+        installed
+            .into_iter()
+            .map(|tool| {
+                match lookup_release_with_bun(
+                    process,
+                    env,
+                    runtime.executable(),
+                    &tool.package_name,
+                )
+                .map_err(|err| adapter_error(&err))?
+                {
+                    ReleaseLookupResult::Known(timeline) => {
+                        match release_age_for_version(&timeline, &tool.installed_version, now) {
+                            Some(age) => Ok(ScanItem::InstalledWithReleaseAge { tool, age }),
+                            None => Ok(ScanItem::Installed(tool)),
+                        }
+                    }
+                    ReleaseLookupResult::MissingMetadata | ReleaseLookupResult::LookupFailed(_) => {
+                        Ok(ScanItem::Installed(tool))
+                    }
+                }
+            })
+            .collect()
     }
 
     fn release_lookup(

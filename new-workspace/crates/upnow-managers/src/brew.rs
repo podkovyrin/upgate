@@ -8,7 +8,7 @@ use upnow_domain::{
     DomainError, ExecutionSupport, ExecutionTargetKind, InstalledTool, ManagerConfig, ManagerId,
     ManagerMetadata, ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput, PackageName,
     ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
-    SkipReason, TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed,
+    ScanItem, SkipReason, TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed,
     VersionScheme, VersionText,
 };
 use upnow_execution::{
@@ -17,7 +17,9 @@ use upnow_execution::{
 };
 use upnow_infra::{
     CommandCheck, CommandSpec, Env, HttpClient, HttpHeader, InfraError, ProcessRunner,
+    run_ordered_parallel,
 };
+use upnow_release::release_age_for_version;
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
@@ -265,6 +267,18 @@ impl ManagerAdapter for BrewManager {
                     .map(|package| installed_tool(&package).map(ManagerScanInput::Installed))
                     .collect::<Result<Vec<_>, _>>()
             })
+            .map_err(|err| adapter_error(&err))
+    }
+
+    fn scan_items_with_release_evidence(
+        &self,
+        process: &ProcessRunner,
+        http: &HttpClient,
+        env: &Env,
+        now: SystemTime,
+        max_parallel_checks: usize,
+    ) -> Result<Vec<ScanItem>, ManagerAdapterError> {
+        scan_items_with_release_evidence(process, http, env, now, max_parallel_checks)
             .map_err(|err| adapter_error(&err))
     }
 
@@ -559,6 +573,46 @@ fn installed_packages(process: &ProcessRunner) -> Result<Vec<BrewInstalledPackag
     parse_installed_info_json(output.stdout()?)
 }
 
+fn scan_items_with_release_evidence(
+    process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
+    now: SystemTime,
+    max_parallel_checks: usize,
+) -> Result<Vec<ScanItem>, BrewError> {
+    let packages = installed_packages(process)?;
+    let taps = tap_metadata(process).unwrap_or_default();
+    let jobs = packages
+        .into_iter()
+        .map(|package| {
+            Ok(BrewVerboseScanJob {
+                tool: installed_tool(&package)?,
+                metadata: BrewPackageMetadata {
+                    tap: package.tap,
+                    source_path: package.source_path,
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, BrewError>>()?;
+
+    run_ordered_parallel(
+        jobs,
+        max_parallel_checks.max(1),
+        "brew verbose scan",
+        |job| {
+            let lookup = lookup_target_age(process, http, env, Some(&job.metadata), &taps);
+            scan_item_for_target_age(job.tool, lookup, now)
+        },
+    )
+    .map_err(BrewError::from)
+}
+
+#[derive(Debug, Clone)]
+struct BrewVerboseScanJob {
+    tool: InstalledTool,
+    metadata: BrewPackageMetadata,
+}
+
 fn package_info_for_outdated(
     process: &ProcessRunner,
     packages: &[BrewOutdatedPackage],
@@ -670,6 +724,28 @@ fn release_lookup_for_installed(
         }
         TargetAgeLookupResult::MissingMetadata => ReleaseLookupResult::MissingMetadata,
         TargetAgeLookupResult::LookupFailed(err) => ReleaseLookupResult::LookupFailed(err),
+    }
+}
+
+fn scan_item_for_target_age(
+    tool: InstalledTool,
+    lookup: TargetAgeLookupResult,
+    now: SystemTime,
+) -> ScanItem {
+    match lookup {
+        TargetAgeLookupResult::Known(evidence) => {
+            let timeline = ReleaseTimeline::new(vec![ReleaseEntry::new(
+                tool.installed_version.clone(),
+                evidence.timestamp().clone(),
+            )]);
+            match release_age_for_version(&timeline, &tool.installed_version, now) {
+                Some(age) => ScanItem::InstalledWithReleaseAge { tool, age },
+                None => ScanItem::Installed(tool),
+            }
+        }
+        TargetAgeLookupResult::MissingMetadata | TargetAgeLookupResult::LookupFailed(_) => {
+            ScanItem::Installed(tool)
+        }
     }
 }
 

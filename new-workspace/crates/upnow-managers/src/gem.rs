@@ -8,7 +8,7 @@ use serde::Deserialize;
 use upnow_domain::{
     DomainError, ExecutionSupport, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ScanItem, ToolId, ToolName, UpdateSeed,
     VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
@@ -16,7 +16,7 @@ use upnow_execution::{
     ResolvedExecutionPlan,
 };
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
-use upnow_release::newest_semver_version;
+use upnow_release::{newest_semver_version, release_age_for_version};
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
@@ -141,6 +141,38 @@ impl ManagerAdapter for GemManager {
         installed_global(process)
             .map(|tools| tools.into_iter().map(ManagerScanInput::Installed).collect())
             .map_err(|err| adapter_error(&err))
+    }
+
+    fn scan_items_with_release_evidence(
+        &self,
+        process: &ProcessRunner,
+        http: &HttpClient,
+        env: &Env,
+        now: SystemTime,
+        _max_parallel_checks: usize,
+    ) -> Result<Vec<ScanItem>, ManagerAdapterError> {
+        let installed = installed_global(process).map_err(|err| adapter_error(&err))?;
+        let ruby_runtime = match ruby_runtime_version(process) {
+            Ok(version) => Some(version),
+            Err(err) if err.is_interruption() => return Err(adapter_error(&err)),
+            Err(_) => None,
+        };
+        Ok(installed
+            .into_iter()
+            .map(|tool| {
+                match lookup_release(http, env, &tool.package_name, ruby_runtime.as_ref()) {
+                    ReleaseLookupResult::Known(timeline) => {
+                        match release_age_for_version(&timeline, &tool.installed_version, now) {
+                            Some(age) => ScanItem::InstalledWithReleaseAge { tool, age },
+                            None => ScanItem::Installed(tool),
+                        }
+                    }
+                    ReleaseLookupResult::MissingMetadata | ReleaseLookupResult::LookupFailed(_) => {
+                        ScanItem::Installed(tool)
+                    }
+                }
+            })
+            .collect())
     }
 
     fn release_lookup(

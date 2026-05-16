@@ -16,9 +16,8 @@ use clap::{Parser, Subcommand};
 use config::{ConfigError, UpnowConfig};
 use registry::{available_manager_ids, configured_manager, ensure_known_manager};
 use upnow_domain::{
-    InstalledTool, ManagerConfig, ManagerId, ManagerMode, ManagerScanInput, PlanIssue,
-    PlanSelection, ReleaseLookupResult, ScanIssue, ScanItem, ScanReport, UpdatePlan,
-    UpdateSelectionPolicy,
+    ManagerConfig, ManagerId, ManagerMode, ManagerScanInput, PlanIssue, PlanSelection, ScanIssue,
+    ScanItem, ScanReport, UpdatePlan, UpdateSelectionPolicy,
 };
 use upnow_execution::progress::{
     ExecutionProgressEvent, ExecutionProgressState, ExecutionProgressSummary,
@@ -31,7 +30,7 @@ use upnow_infra::{
     Clock, Env, HttpClient, HttpSettings, LoggingOptions, MutationMode, ProcessRunner,
     REQUIRE_MUTATION_MODE_ENV, init_logging,
 };
-use upnow_managers::adapter::{ManagerAdapter, ManagerAdapterError, ReleaseLookupSubject};
+use upnow_managers::adapter::{ManagerAdapter, ManagerAdapterError};
 use upnow_planning::{PlanningSettings, default_batch_selection, update_plan_from_inputs};
 use upnow_presentation::tui::{
     InteractiveManagerSelectionDraft, InteractiveSelectionOutcome, InteractiveSelectionPlan,
@@ -44,7 +43,8 @@ use upnow_presentation::{
     terminal::{BatchTerminal, BatchTerminalAction, MutationNotice},
     update_plan_table,
 };
-use upnow_release::release_age_for_version;
+
+const DEFAULT_MAX_PARALLEL_CHECKS: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchCommand {
@@ -70,6 +70,9 @@ struct Cli {
     overrides: Vec<String>,
     #[arg(long, global = true)]
     verbose: bool,
+    /// Maximum concurrent metadata checks.
+    #[arg(long, default_value_t = DEFAULT_MAX_PARALLEL_CHECKS, global = true)]
+    max_parallel_checks: usize,
     #[arg(long, global = true)]
     no_color: bool,
     #[arg(long, global = true)]
@@ -225,6 +228,7 @@ pub fn run_batch(
         &env,
         clock,
         OutputTheme::plain(verbose),
+        DEFAULT_MAX_PARALLEL_CHECKS,
         selected_managers,
         overrides,
     )
@@ -336,6 +340,7 @@ pub fn run_batch_with_sources(
         env,
         clock,
         OutputTheme::plain(verbose),
+        DEFAULT_MAX_PARALLEL_CHECKS,
         selected_managers,
         overrides,
     )
@@ -350,6 +355,7 @@ fn run_batch_with_theme_and_sources(
     env: &Env,
     clock: Clock,
     theme: OutputTheme,
+    max_parallel_checks: usize,
     selected_managers: &[String],
     overrides: &[String],
 ) -> Result<String, AppError> {
@@ -363,6 +369,7 @@ fn run_batch_with_theme_and_sources(
         clock,
         theme,
         terminal,
+        max_parallel_checks,
         selected_managers,
         overrides,
     )
@@ -378,6 +385,7 @@ fn run_batch_with_terminal_and_sources(
     clock: Clock,
     theme: OutputTheme,
     terminal: BatchTerminal,
+    max_parallel_checks: usize,
     selected_managers: &[String],
     overrides: &[String],
 ) -> Result<String, AppError> {
@@ -397,6 +405,7 @@ fn run_batch_with_terminal_and_sources(
         clock,
         theme,
         terminal,
+        max_parallel_checks,
         &manager_ids,
     )
 }
@@ -940,13 +949,23 @@ fn run_batch_for_managers(
     clock: Clock,
     theme: OutputTheme,
     terminal: BatchTerminal,
+    max_parallel_checks: usize,
     manager_ids: &[ManagerId],
 ) -> Result<String, AppError> {
     let mut table = OutcomeTable::default();
     let mut had_error = false;
     for manager_id in manager_ids {
         match run_manager_batch(
-            command, config, process, http, env, clock, theme, terminal, manager_id,
+            command,
+            config,
+            process,
+            http,
+            env,
+            clock,
+            theme,
+            terminal,
+            manager_id,
+            max_parallel_checks,
         ) {
             Ok(manager_output) => {
                 had_error |= manager_output.failed;
@@ -985,6 +1004,7 @@ fn run_manager_batch(
     theme: OutputTheme,
     terminal: BatchTerminal,
     manager_id: &ManagerId,
+    max_parallel_checks: usize,
 ) -> Result<ManagerBatchOutput, AppError> {
     ensure_known_manager(manager_id.as_str()).map_err(map_manager_error)?;
     let manager_config = config.resolve_manager(manager_id.as_str())?;
@@ -1011,6 +1031,7 @@ fn run_manager_batch(
                         http,
                         env,
                         clock.now(),
+                        max_parallel_checks,
                     )?,
                     options,
                 ),
@@ -1125,6 +1146,7 @@ fn build_verbose_scan_report(
     http: &HttpClient,
     env: &Env,
     now: SystemTime,
+    max_parallel_checks: usize,
 ) -> Result<ScanReport, AppError> {
     match manager.unsupported_manager_version(process) {
         Ok(Some(unsupported)) => {
@@ -1149,36 +1171,17 @@ fn build_verbose_scan_report(
             ));
         }
     }
-    let inputs = match manager.scan_inputs(process, env) {
-        Ok(inputs) => inputs,
-        Err(err) if err.is_interruption() => return Err(map_manager_error(err)),
-        Err(err) => {
-            return Ok(ScanReport::new(
-                manager_id,
-                Vec::new(),
-                vec![ScanIssue::DiscoveryFailed {
-                    detail: err.to_string(),
-                }],
-            ));
-        }
-    };
-
-    let mut items = Vec::new();
-    for input in inputs {
-        match input {
-            ManagerScanInput::Installed(tool) => {
-                items.push(verbose_scan_item(manager, process, http, env, now, tool)?);
-            }
-            ManagerScanInput::Skipped { installed, reason } => {
-                items.push(ScanItem::Skipped {
-                    tool: installed,
-                    reason,
-                });
-            }
-        }
+    match manager.scan_items_with_release_evidence(process, http, env, now, max_parallel_checks) {
+        Ok(items) => Ok(ScanReport::new(manager_id, items, Vec::new())),
+        Err(err) if err.is_interruption() => Err(map_manager_error(err)),
+        Err(err) => Ok(ScanReport::new(
+            manager_id,
+            Vec::new(),
+            vec![ScanIssue::DiscoveryFailed {
+                detail: err.to_string(),
+            }],
+        )),
     }
-
-    Ok(ScanReport::new(manager_id, items, Vec::new()))
 }
 
 fn scan_item_from_input(input: ManagerScanInput) -> ScanItem {
@@ -1188,29 +1191,6 @@ fn scan_item_from_input(input: ManagerScanInput) -> ScanItem {
             tool: installed,
             reason,
         },
-    }
-}
-
-fn verbose_scan_item(
-    manager: &dyn ManagerAdapter,
-    process: &ProcessRunner,
-    http: &HttpClient,
-    env: &Env,
-    now: SystemTime,
-    tool: InstalledTool,
-) -> Result<ScanItem, AppError> {
-    match manager
-        .release_lookup(process, http, env, ReleaseLookupSubject::Installed(&tool))
-        .map_err(map_manager_error)?
-    {
-        ReleaseLookupResult::Known(timeline) => {
-            match release_age_for_version(&timeline, &tool.installed_version, now) {
-                Some(age) => Ok(ScanItem::InstalledWithReleaseAge { tool, age }),
-                None => Ok(ScanItem::Installed(tool)),
-            }
-        }
-        ReleaseLookupResult::MissingMetadata => Ok(ScanItem::Installed(tool)),
-        ReleaseLookupResult::LookupFailed(_) => Ok(ScanItem::Installed(tool)),
     }
 }
 
@@ -1264,6 +1244,7 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
         Clock::system(),
         theme,
         terminal,
+        cli.max_parallel_checks,
         &cli.managers,
         &cli.overrides,
     )
@@ -1465,92 +1446,4 @@ fn selected_manager_ids(selected_managers: &[String]) -> Result<Vec<ManagerId>, 
         }
     }
     Ok(manager_ids)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::SystemTime;
-
-    use super::*;
-    use upnow_domain::{
-        ManagerCapabilities, ManagerMetadata, ManagerUpdateInput, PackageName, ReleaseLookupError,
-        ToolId, ToolName, VersionText,
-    };
-    use upnow_execution::{ExecutionCommand, ResolvedExecutionPlan};
-    use upnow_infra::{CommandOutput, HttpResponse};
-
-    struct LookupFailedManager;
-
-    impl ManagerAdapter for LookupFailedManager {
-        fn capabilities(&self) -> ManagerCapabilities {
-            ManagerCapabilities::new()
-        }
-
-        fn scan_inputs(
-            &self,
-            _process: &ProcessRunner,
-            _env: &Env,
-        ) -> Result<Vec<ManagerScanInput>, ManagerAdapterError> {
-            Ok(Vec::new())
-        }
-
-        fn release_lookup(
-            &self,
-            _process: &ProcessRunner,
-            _http: &HttpClient,
-            _env: &Env,
-            _subject: ReleaseLookupSubject<'_>,
-        ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
-            Ok(ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(
-                "registry unavailable",
-            )))
-        }
-
-        fn update_inputs(
-            &self,
-            _process: &ProcessRunner,
-            _http: &HttpClient,
-            _env: &Env,
-        ) -> Result<Vec<ManagerUpdateInput>, ManagerAdapterError> {
-            Ok(Vec::new())
-        }
-
-        fn commands_for_execution_plan(
-            &self,
-            _process: &ProcessRunner,
-            _env: &Env,
-            _plan: &ResolvedExecutionPlan,
-        ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
-            Ok(Vec::new())
-        }
-    }
-
-    #[test]
-    fn verbose_scan_keeps_installed_row_when_release_lookup_fails() {
-        let manager = LookupFailedManager;
-        let process =
-            ProcessRunner::fake(Vec::<Result<CommandOutput, upnow_infra::InfraError>>::new());
-        let http = HttpClient::fake(Vec::<(String, HttpResponse)>::new());
-        let env = Env::fixed([]);
-        let tool = InstalledTool::new(
-            ManagerId::new("test").expect("valid manager id"),
-            ToolId::new("test:alpha").expect("valid tool id"),
-            PackageName::new("alpha").expect("valid package name"),
-            ToolName::new("alpha").expect("valid tool name"),
-            VersionText::new("1.0.0").expect("valid version"),
-            ManagerMetadata::empty(),
-        );
-
-        let item = verbose_scan_item(
-            &manager,
-            &process,
-            &http,
-            &env,
-            SystemTime::UNIX_EPOCH,
-            tool.clone(),
-        )
-        .expect("scan item should be built");
-
-        assert_eq!(item, ScanItem::Installed(tool));
-    }
 }

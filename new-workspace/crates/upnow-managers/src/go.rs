@@ -12,13 +12,14 @@ use upnow_domain::{
     DomainError, ExecutionSupport, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
     ManagerRuleReason, ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry,
     ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ScanIssue,
-    SkipReason, ToolId, ToolName, UpdateSeed, VersionScheme, VersionText,
+    ScanItem, SkipReason, ToolId, ToolName, UpdateSeed, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
     ResolvedExecutionPlan,
 };
 use upnow_infra::{CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner};
+use upnow_release::release_age_for_version;
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
@@ -142,6 +143,52 @@ impl ManagerAdapter for GoManager {
         env: &Env,
     ) -> Result<Vec<ManagerScanInput>, ManagerAdapterError> {
         scan_inputs(process, env).map_err(|err| adapter_error(&err))
+    }
+
+    fn scan_items_with_release_evidence(
+        &self,
+        process: &ProcessRunner,
+        _http: &HttpClient,
+        env: &Env,
+        now: SystemTime,
+        _max_parallel_checks: usize,
+    ) -> Result<Vec<ScanItem>, ManagerAdapterError> {
+        let discovered = discover_global_tools(process, env).map_err(|err| adapter_error(&err))?;
+        discovered
+            .into_iter()
+            .map(|discovered| match discovered {
+                GoDiscoveredTool::Managed(tool) => {
+                    let installed = installed_tool(&tool);
+                    match lookup_release_by_module(process, &tool.module_path)
+                        .map_err(|err| adapter_error(&err))?
+                    {
+                        ReleaseLookupResult::Known(timeline) => {
+                            match release_age_for_version(
+                                &timeline,
+                                &installed.installed_version,
+                                now,
+                            ) {
+                                Some(age) => Ok(ScanItem::InstalledWithReleaseAge {
+                                    tool: installed,
+                                    age,
+                                }),
+                                None => Ok(ScanItem::Installed(installed)),
+                            }
+                        }
+                        ReleaseLookupResult::MissingMetadata
+                        | ReleaseLookupResult::LookupFailed(_) => {
+                            Ok(ScanItem::Installed(installed))
+                        }
+                    }
+                }
+                GoDiscoveredTool::Skipped { name, reason } => Ok(ScanItem::Skipped {
+                    tool: placeholder_installed_tool(&name).map_err(|err| adapter_error(&err))?,
+                    reason: ScanIssue::ExcludedByManagerRule(ManagerRuleReason::Other {
+                        detail: reason,
+                    }),
+                }),
+            })
+            .collect()
     }
 
     fn release_lookup(

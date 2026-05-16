@@ -1,12 +1,13 @@
 use std::fmt::{self, Display};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
     InstalledTool, ManagerId, ManagerMode, ManagerScanInput, ManagerUpdateInput, PackageName,
-    ReleaseLookupResult, UnsupportedReason, VersionPolicy, VersionText,
+    ReleaseLookupResult, ScanItem, UnsupportedReason, VersionPolicy, VersionText,
 };
 use upnow_execution::{ExecutionCommand, ResolvedExecutionPlan};
 use upnow_infra::{Env, HttpClient, ProcessRunner};
+use upnow_release::release_age_for_version;
 
 pub use upnow_domain::ManagerCapabilities;
 
@@ -172,6 +173,52 @@ pub trait ManagerAdapter {
         process: &ProcessRunner,
         env: &Env,
     ) -> Result<Vec<ManagerScanInput>, ManagerAdapterError>;
+
+    /// Discovers scan items with optional release-age evidence.
+    ///
+    /// Managers should override this when efficient verbose scan depends on
+    /// manager-owned discovery, runtime resolution, batch metadata APIs, or
+    /// native target-age evidence. The default preserves the item-by-item
+    /// lookup behavior used by managers without a specialized evidence path.
+    ///
+    /// # Errors
+    ///
+    /// Returns a manager adapter error when scan discovery or lookup fails.
+    fn scan_items_with_release_evidence(
+        &self,
+        process: &ProcessRunner,
+        http: &HttpClient,
+        env: &Env,
+        now: SystemTime,
+        max_parallel_checks: usize,
+    ) -> Result<Vec<ScanItem>, ManagerAdapterError> {
+        let _ = max_parallel_checks;
+        self.scan_inputs(process, env)?
+            .into_iter()
+            .map(|input| match input {
+                ManagerScanInput::Installed(tool) => match self.release_lookup(
+                    process,
+                    http,
+                    env,
+                    ReleaseLookupSubject::Installed(&tool),
+                )? {
+                    ReleaseLookupResult::Known(timeline) => {
+                        match release_age_for_version(&timeline, &tool.installed_version, now) {
+                            Some(age) => Ok(ScanItem::InstalledWithReleaseAge { tool, age }),
+                            None => Ok(ScanItem::Installed(tool)),
+                        }
+                    }
+                    ReleaseLookupResult::MissingMetadata | ReleaseLookupResult::LookupFailed(_) => {
+                        Ok(ScanItem::Installed(tool))
+                    }
+                },
+                ManagerScanInput::Skipped { installed, reason } => Ok(ScanItem::Skipped {
+                    tool: installed,
+                    reason,
+                }),
+            })
+            .collect()
+    }
 
     /// Looks up release metadata for a package or installed tool.
     ///

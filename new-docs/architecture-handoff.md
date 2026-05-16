@@ -29,7 +29,7 @@ Use a typed layered architecture with concrete manager adapters. Batch and TUI m
 
 ## Command Workflows
 ### Scan
-CLI/config -> selected managers -> installed inventory -> optional verbose release-age lookup -> batch scan renderer. Preserve current scan inclusions/exclusions, including Brew dependency filtering and default gem skipping.
+CLI/config -> selected managers -> installed inventory -> optional verbose release-age lookup -> batch scan renderer. Managers may provide a direct scan-with-release-evidence path when efficient verbose scan requires reusing manager-owned runtime discovery, installed metadata, batch metadata APIs, or native target-age evidence. Preserve current scan inclusions/exclusions, including Brew dependency filtering and default gem skipping.
 
 ### Plan
 CLI/config -> manager update discovery -> release or target-age evidence lookup -> target-selection evaluation -> version policy and min-age gates -> `UpdatePlan` -> batch renderer. No execution and no config mutation.
@@ -57,12 +57,14 @@ After planning finishes, user confirmation returns typed `PlanSelection` values 
 ## Data Flow
 Configured manager adapters produce typed update facts. A fact is either planner-selectable, where shared planning may choose from a release timeline, or manager-selected, where the manager has already selected the target and shared planning may only gate that target. Planning evaluates typed facts and returns typed outcomes. Presentation renders outcomes but does not create them. Selection modifies a typed plan selection. Execution resolves typed selections into command intents, and managers turn those intents into concrete commands.
 
-Managers may use min-release-age when it is an input to a native resolver command, such as `uv --exclude-newer` or `mise --before`. Managers must not receive `now` or compare timestamps against policy age. Clock-aware age decisions belong to planning.
+Managers may use min-release-age when it is an input to a native resolver command, such as `uv --exclude-newer` or `mise --before`. Managers must not receive `now` or compare timestamps against policy age for planning or update discovery. Clock-aware policy decisions belong to planning. Verbose scan evidence hooks may receive `now` only to calculate user-visible installed release age for `ScanItem`s.
 
 Planner-selectable managers provide a release timeline from which planning can select the newest policy/age-eligible candidate. Manager-selected target managers provide the selected target plus target evidence. For manager-selected targets, planning must not replace the selected target with another version from advisory metadata.
 
 ## Manager Abstraction
-A `ManagerAdapter` trait is justified because there are multiple real managers. It should expose identity, capabilities, installed discovery, update discovery, target/release evidence lookup requests, and execution command construction. Adapters receive resolved manager config at construction and may use it internally for manager-specific behavior such as native resolver arguments and `brew.no_update`. They must not emit outcomes, parse TUI choices, persist selection policy, compare release age against `now`, or decide batch vs interactive behavior.
+A `ManagerAdapter` trait is justified because there are multiple real managers. It should expose identity, capabilities, installed discovery, update discovery, target/release evidence lookup requests, optional scan items with release evidence, and execution command construction. Adapters receive resolved manager config at construction and may use it internally for manager-specific behavior such as native resolver arguments and `brew.no_update`. They must not emit terminal output, parse TUI choices, persist selection policy, perform planning policy decisions, or decide batch vs interactive behavior.
+
+Verbose scan evidence is an approved adapter hook when the efficient implementation depends on manager internals that should not leak into app orchestration, such as Go build metadata discovery, Ruby runtime filtering, Bun executable resolution, or Brew tap commit evidence. Such hooks may reuse manager-owned discovery/runtime state and return typed scan items with optional release age, but they must not render output, mutate config, perform update planning, or hide apply/update semantics.
 
 Do not introduce shared npm-family, Python-family, or other ecosystem helper layers only to remove duplication. Shared code is acceptable only when it is needed by the current architecture and does not hide manager-specific ownership or command semantics.
 
