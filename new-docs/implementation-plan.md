@@ -1,7 +1,7 @@
 # Implementation Plan
 
 ## Assumptions
-This rebuild happens in a new Rust workspace inside the current project folder. This document uses `<new-workspace>/` as a placeholder path. The old `/src` tree was deleted during phase 14. Do not restore or import old modules into the new workspace.
+This rebuild now lives in the repository-root Cargo workspace using the canonical `Cargo.toml` plus `crates/*` layout. Earlier phase notes used `<new-workspace>/` as a temporary placeholder; do not recreate that wrapper. The old `/src` tree was deleted during phase 14. Do not restore or import old modules into the new workspace.
 
 
 ## Test Policy For All Phases
@@ -38,13 +38,13 @@ Create the new workspace with enough structure to develop independently from the
 No product behavior yet. The new workspace builds and runs an empty CLI skeleton or placeholder binary.
 
 ### Modules/Files Likely Created Or Changed
-- `<new-workspace>/Cargo.toml`
-- `<new-workspace>/crates/upnow-cli/`
-- `<new-workspace>/crates/upnow-domain/`
-- `<new-workspace>/crates/upnow-infra/`
-- `<new-workspace>/crates/upnow-planning/`
-- `<new-workspace>/crates/upnow-managers/`
-- `<new-workspace>/crates/upnow-presentation/`
+- `Cargo.toml`
+- `crates/upnow-cli/`
+- `crates/upnow-domain/`
+- `crates/upnow-infra/`
+- `crates/upnow-planning/`
+- `crates/upnow-managers/`
+- `crates/upnow-presentation/`
 
 ### Tests Required
 - Workspace build smoke test only if it exercises the real workspace boundary.
@@ -77,9 +77,9 @@ Capture current behavior before rewriting managers.
 No new command behavior. Fixture files and tests define expected parsing/config behavior.
 
 ### Modules/Files Likely Created Or Changed
-- `<new-workspace>/tests/fixtures/managers/...`
-- `<new-workspace>/crates/upnow-managers/tests/...`
-- `<new-workspace>/crates/upnow-domain/tests/...`
+- `tests/fixtures/managers/...`
+- `crates/upnow-managers/tests/...`
+- `crates/upnow-domain/tests/...`
 
 ### Tests Required
 - Fixtures for current manager command outputs:
@@ -129,15 +129,15 @@ No CLI behavior yet. Domain types compile and are unit-tested. This phase is now
 - Stabilized `PlanSelection` to validate only stable references: selected item ids must exist in the plan, and selection-policy exception packages must exist in the plan.
 
 ### Modules/Files Likely Created Or Changed
-- `<new-workspace>/crates/upnow-domain/src/lib.rs`
-- `<new-workspace>/crates/upnow-domain/src/manager.rs`
-- `<new-workspace>/crates/upnow-domain/src/version.rs`
-- `<new-workspace>/crates/upnow-domain/src/policy.rs`
-- `<new-workspace>/crates/upnow-domain/src/release.rs`
-- `<new-workspace>/crates/upnow-domain/src/plan.rs`
-- `<new-workspace>/crates/upnow-domain/src/scan.rs`
-- `<new-workspace>/crates/upnow-domain/src/selection.rs`
-- `<new-workspace>/crates/upnow-domain/src/error.rs`
+- `crates/upnow-domain/src/lib.rs`
+- `crates/upnow-domain/src/manager.rs`
+- `crates/upnow-domain/src/version.rs`
+- `crates/upnow-domain/src/policy.rs`
+- `crates/upnow-domain/src/release.rs`
+- `crates/upnow-domain/src/plan.rs`
+- `crates/upnow-domain/src/scan.rs`
+- `crates/upnow-domain/src/selection.rs`
+- `crates/upnow-domain/src/error.rs`
 
 ### Tests Kept After Purge
 - Domain tests are limited to durable invariants that protect plan identity or other public contracts.
@@ -187,11 +187,11 @@ Implement typed version policy and min-release-age evaluation.
 Given installed version, release timeline, policy, and clock time, the planner can produce typed plan item outcomes: update, current, delayed, blocked, skipped, or resolver error. Phase 3 owns policy and release-age consistency; it must not rely on `PlanSelection` to filter invalid planner output.
 
 ### Modules/Files Likely Created Or Changed
-- `<new-workspace>/crates/upnow-planning/src/lib.rs`
-- `<new-workspace>/crates/upnow-planning/src/evaluate.rs`
-- `<new-workspace>/crates/upnow-domain/src/policy.rs`
-- `<new-workspace>/crates/upnow-domain/src/release.rs`
-- `<new-workspace>/crates/upnow-domain/src/plan.rs` only for small model adjustments required by actual evaluation.
+- `crates/upnow-planning/src/lib.rs`
+- `crates/upnow-planning/src/evaluate.rs`
+- `crates/upnow-domain/src/policy.rs`
+- `crates/upnow-domain/src/release.rs`
+- `crates/upnow-domain/src/plan.rs` only for small model adjustments required by actual evaluation.
 
 ### Tests Required
 - SemVer candidate ordering.
@@ -235,12 +235,12 @@ Add testable process, HTTP, clock, env, and parallelism infrastructure.
 No product behavior yet. Infrastructure can be faked in tests.
 
 ### Modules/Files Likely Created Or Changed
-- `<new-workspace>/crates/upnow-infra/src/lib.rs`
-- `<new-workspace>/crates/upnow-infra/src/process.rs`
-- `<new-workspace>/crates/upnow-infra/src/http.rs`
-- `<new-workspace>/crates/upnow-infra/src/clock.rs`
-- `<new-workspace>/crates/upnow-infra/src/env.rs`
-- `<new-workspace>/crates/upnow-infra/src/parallel.rs`
+- `crates/upnow-infra/src/lib.rs`
+- `crates/upnow-infra/src/process.rs`
+- `crates/upnow-infra/src/http.rs`
+- `crates/upnow-infra/src/clock.rs`
+- `crates/upnow-infra/src/env.rs`
+- `crates/upnow-infra/src/parallel.rs`
 
 ### Tests Required
 - Command success/failure classification.
@@ -276,9 +276,9 @@ Implement config loading, overrides, policy resolution, and selection-policy per
 The new CLI can resolve config values into typed domain settings, but commands may still be incomplete.
 
 ### Modules/Files Likely Created Or Changed
-- `<new-workspace>/crates/upnow-cli/src/config.rs`
-- `<new-workspace>/crates/upnow-domain/src/config.rs` if shared typed config is needed
-- `<new-workspace>/crates/upnow-cli/tests/config.rs`
+- `crates/upnow-cli/src/config.rs`
+- `crates/upnow-domain/src/config.rs` if shared typed config is needed
+- `crates/upnow-cli/tests/config.rs`
 
 ### Tests Required
 - Default manager mode and release age.
@@ -326,12 +326,12 @@ For `pnpm`, support:
 - native shortcut where valid
 
 ### Modules/Files Likely Created Or Changed
-- `<new-workspace>/crates/upnow-managers/src/lib.rs`
-- `<new-workspace>/crates/upnow-managers/src/pnpm.rs`
-- `<new-workspace>/crates/upnow-planning/src/planner.rs`
-- `<new-workspace>/crates/upnow-cli/src/main.rs`
-- `<new-workspace>/crates/upnow-presentation/src/batch.rs`
-- `<new-workspace>/crates/upnow-execution/src/lib.rs` if execution is separated as its own crate
+- `crates/upnow-managers/src/lib.rs`
+- `crates/upnow-managers/src/pnpm.rs`
+- `crates/upnow-planning/src/planner.rs`
+- `crates/upnow-cli/src/main.rs`
+- `crates/upnow-presentation/src/batch.rs`
+- `crates/upnow-execution/src/lib.rs` if execution is separated as its own crate
 
 ### Tests Required
 - `pnpm list -g --depth 0 --json` parser.
@@ -371,10 +371,10 @@ Introduce the manager adapter boundary only after at least two real managers nee
 Use `npm` to validate whole-day min age and native shortcut semantics.
 
 ### Modules/Files Likely Created Or Changed
-- `<new-workspace>/crates/upnow-managers/src/adapter.rs`
-- `<new-workspace>/crates/upnow-managers/src/registry.rs`
-- `<new-workspace>/crates/upnow-managers/src/npm.rs`
-- `<new-workspace>/crates/upnow-managers/src/pnpm.rs`
+- `crates/upnow-managers/src/adapter.rs`
+- `crates/upnow-managers/src/registry.rs`
+- `crates/upnow-managers/src/npm.rs`
+- `crates/upnow-managers/src/pnpm.rs`
 
 ### Tests Required
 - Registry selection by manager id.
@@ -409,11 +409,11 @@ Route `scan`, `plan`, and `apply` batch mode through the new shared core for mig
 The new CLI supports selected managers, config, planning, execution, and batch rendering for migrated managers.
 
 ### Modules/Files Likely Created Or Changed
-- `<new-workspace>/crates/upnow-cli/src/app.rs`
-- `<new-workspace>/crates/upnow-cli/src/cli.rs`
-- `<new-workspace>/crates/upnow-presentation/src/batch.rs`
-- `<new-workspace>/crates/upnow-execution/src/...`
-- `<new-workspace>/crates/upnow-managers/src/registry.rs`
+- `crates/upnow-cli/src/app.rs`
+- `crates/upnow-cli/src/cli.rs`
+- `crates/upnow-presentation/src/batch.rs`
+- `crates/upnow-execution/src/...`
+- `crates/upnow-managers/src/registry.rs`
 
 ### Tests Required
 - CLI command parsing.
@@ -475,13 +475,13 @@ For manager-selected targets, planning must not replace the target with another 
 - Kept clock-aware age comparison in planning; manager discovery receives min-release-age when needed by native resolver commands, but does not receive `now`.
 
 #### Modules/Files Changed
-- `<new-workspace>/crates/upnow-domain/src/plan.rs`
-- `<new-workspace>/crates/upnow-domain/src/release.rs`
-- `<new-workspace>/crates/upnow-planning/src/evaluate.rs`
-- `<new-workspace>/crates/upnow-planning/src/planner.rs`
-- `<new-workspace>/crates/upnow-execution/src/lib.rs`
-- `<new-workspace>/crates/upnow-managers/src/adapter.rs`
-- `<new-workspace>/crates/upnow-cli/src/lib.rs`
+- `crates/upnow-domain/src/plan.rs`
+- `crates/upnow-domain/src/release.rs`
+- `crates/upnow-planning/src/evaluate.rs`
+- `crates/upnow-planning/src/planner.rs`
+- `crates/upnow-execution/src/lib.rs`
+- `crates/upnow-managers/src/adapter.rs`
+- `crates/upnow-cli/src/lib.rs`
 
 #### Tests Added
 - Manager-selected target evaluation gates only the selected target.
@@ -580,9 +580,9 @@ Add typed interactive selection behavior and view-model state without rendering.
 Given an `UpdatePlan`, selection reducers can select, deselect, pin, unpin, choose typed selected targets, and return a typed `PlanSelection`. Existing typed domain pieces include `SelectedTarget` and `UpdateSelectionPolicy`; Phase 10 should build reducer behavior around those types rather than remodel execution.
 
 ### Modules/Files Likely Created Or Changed
-- `<new-workspace>/crates/upnow-domain/src/selection.rs`
-- `<new-workspace>/crates/upnow-planning/src/selection_view.rs`
-- `<new-workspace>/crates/upnow-presentation/src/tui/selection_state.rs`
+- `crates/upnow-domain/src/selection.rs`
+- `crates/upnow-planning/src/selection_view.rs`
+- `crates/upnow-presentation/src/tui/selection_state.rs`
 
 ### Tests Required
 - Include mode exception starts unselected/skipped.
@@ -624,10 +624,10 @@ Wire the tested selection domain into the TUI.
 Interactive apply can display plans and return a typed confirmed selection. UX should preserve useful current behavior: tabs, all/manager views, select all/none, view all, version picker, force visibility.
 
 ### Modules/Files Likely Created Or Changed
-- `<new-workspace>/crates/upnow-presentation/src/tui/mod.rs`
-- `<new-workspace>/crates/upnow-presentation/src/tui/selection.rs`
-- `<new-workspace>/crates/upnow-presentation/src/tui/components/...`
-- `<new-workspace>/crates/upnow-cli/src/app.rs`
+- `crates/upnow-presentation/src/tui/mod.rs`
+- `crates/upnow-presentation/src/tui/selection.rs`
+- `crates/upnow-presentation/src/tui/components/...`
+- `crates/upnow-cli/src/app.rs`
 
 ### Tests Required
 - Interaction tests only for stable user-visible selection behavior.
@@ -662,10 +662,10 @@ Execute confirmed interactive selections with typed progress reporting.
 After user confirmation, selection-policy changes persist, selected updates execute, and progress TUI shows pending/running/done/failed rows.
 
 ### Modules/Files Likely Created Or Changed
-- `<new-workspace>/crates/upnow-execution/src/progress.rs`
-- `<new-workspace>/crates/upnow-presentation/src/tui/progress.rs`
-- `<new-workspace>/crates/upnow-cli/src/app.rs`
-- `<new-workspace>/crates/upnow-cli/src/config.rs`
+- `crates/upnow-execution/src/progress.rs`
+- `crates/upnow-presentation/src/tui/progress.rs`
+- `crates/upnow-cli/src/app.rs`
+- `crates/upnow-cli/src/config.rs`
 
 ### Tests Required
 - Pin persistence occurs after confirm and before execution.
@@ -702,9 +702,9 @@ Record completed external config behavior for the collapsed no-policy mode.
 Config supports one no-policy behavior internally. Missing policy defaults to no policy, `stable` and `same-track` parse, removed `any` is rejected, and unsupported policies are reported per manager before discovery.
 
 ### Modules/Files Changed
-- `<new-workspace>/crates/upnow-cli/src/config.rs`
-- `<new-workspace>/crates/upnow-domain/src/policy.rs`
-- `<new-workspace>/crates/upnow-cli/tests/config.rs`
+- `crates/upnow-cli/src/config.rs`
+- `crates/upnow-domain/src/policy.rs`
+- `crates/upnow-cli/tests/config.rs`
 
 ### Tests Added
 - Missing policy defaults to no policy.
@@ -739,7 +739,7 @@ All commands run from the new architecture. Old `/src` is deleted, archived, or 
 
 ### Completed In This Phase
 - Converted the root manifest to a virtual Cargo workspace.
-- Set `new-workspace/crates/upnow-cli` as the default workspace member.
+- Set `crates/upnow-cli` as the default workspace member.
 - Deleted the old `/src` implementation.
 - Deleted the old root-package mock/hybrid harness tree under `/tests`.
 - Kept stable command coverage in the new CLI crate, including binary-level `scan`, `plan`, `apply`, and interactive apply persistence behavior.
