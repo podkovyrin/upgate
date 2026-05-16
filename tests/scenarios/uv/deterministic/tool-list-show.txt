@@ -1,5 +1,0 @@
-alpha-ready v1.0.0 [required: ==1.0.0] [CPython 3.14.3]
-beta-fresh-latest v1.0.0 [required: ==1.0.0] [CPython 3.14.3]
-gamma-delayed v2.0.0 [required: ==2.0.0] [CPython 3.14.3]
-pinned-pkg v3.0.0 [required: ==3.0.0] [CPython 3.14.3]
-omega-error v0.1.0 [required: ==0.1.0] [CPython 3.14.3]

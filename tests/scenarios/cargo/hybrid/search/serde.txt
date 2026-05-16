@@ -1,2 +1,0 @@
-serde = "1.0.228"    # fake search latest
-... and 1 crate more

@@ -1,7 +1,0 @@
-{
-  "short": "swiftformat",
-  "backends": [
-    "github:nicklockwood/SwiftFormat",
-    "asdf:mise-plugins/mise-swiftformat"
-  ]
-}

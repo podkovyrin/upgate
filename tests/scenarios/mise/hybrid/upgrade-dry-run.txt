@@ -1,8 +1,0 @@
-Would uninstall npm:typescript@1.0.0
-Would install npm:typescript@5.9.3
-Would uninstall npm:react@1.0.0
-Would install npm:react@19.1.0
-Would uninstall npm:eslint@1.0.0
-Would install npm:eslint@9.39.1
-Would uninstall npm:zzzz-upnow-no-such-package-000000000000@1.0.0
-Would install npm:zzzz-upnow-no-such-package-000000000000@1.0.5

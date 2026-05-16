@@ -1,7 +1,7 @@
 # Architecture Handoff
 
 ## Project Goal
-Rebuild `upnow` around `apply` as the central feature. `apply` has two modes: interactive TUI mode and batch terminal mode. `plan` exposes the planning half of `apply`; `scan` lists installed versions. The existing `/src` code is behavioral reference only, not an architecture target.
+Rebuild `upnow` around `apply` as the central feature. `apply` has two modes: interactive TUI mode and batch terminal mode. `plan` exposes the planning half of `apply`; `scan` lists installed versions. The old `/src` implementation has been deleted during phase 14 and is no longer a behavioral reference inside the repository.
 
 ## Current Problem
 The old architecture mixes manager behavior, planning, terminal rendering, TUI state, config mutation, and execution. Domain decisions are encoded in strings, display notes, indices, and fields such as `apply_spec_base`. Interactive selection mutates presentation-derived structures instead of a typed plan. Manager files emit outcomes directly and contain workflow orchestration that should be shared.
@@ -129,6 +129,7 @@ Reject preserving current wiring with typed wrappers; coupling remains. Reject a
 - Manager-selected targets are a first-class planning input. uv, Mise, and Brew must not be forced through planner-selectable timeline semantics.
 - Current migrated managers support batch scan/plan/apply through the new architecture.
 - Forced resolver-native age bypass is not implemented until a manager has explicit typed bypass command support.
+- Phase 14 cutover deletes the old `/src` implementation and root old-architecture harnesses rather than archiving them.
 
 ## Constraints For Future Codex Agents
-Do not treat old `/src` architecture as a refactor target. Preserve observed behavior, commands, parsing rules, URLs, config behavior, and TUI UX where explicitly useful. Do not preserve accidental abstractions or the tests that justify them. Do not introduce traits without multiple real implementations. Prefer simple typed structs/enums over framework-like design. Keep manager-specific workarounds isolated and named. Stop before moving manager semantics into app/CLI wiring or into shared family abstractions.
+Do not restore or recreate the old `/src` architecture as a refactor target. Preserve observed behavior, commands, parsing rules, URLs, config behavior, and TUI UX where explicitly useful. Do not preserve accidental abstractions or the tests that justify them. Do not introduce traits without multiple real implementations. Prefer simple typed structs/enums over framework-like design. Keep manager-specific workarounds isolated and named. Stop before moving manager semantics into app/CLI wiring or into shared family abstractions.

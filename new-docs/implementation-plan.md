@@ -1,7 +1,7 @@
 # Implementation Plan
 
 ## Assumptions
-This rebuild happens in a new Rust workspace inside the current project folder. This document uses `<new-workspace>/` as a placeholder path. The existing `/src` tree is read-only behavioral reference. Do not import old modules into the new workspace.
+This rebuild happens in a new Rust workspace inside the current project folder. This document uses `<new-workspace>/` as a placeholder path. The old `/src` tree was deleted during phase 14. Do not restore or import old modules into the new workspace.
 
 
 ## Test Policy For All Phases
@@ -736,6 +736,13 @@ Make the new workspace the project implementation and remove old accidental comp
 
 ### Behavior Delivered
 All commands run from the new architecture. Old `/src` is deleted, archived, or disconnected from builds according to project decision.
+
+### Completed In This Phase
+- Converted the root manifest to a virtual Cargo workspace.
+- Set `new-workspace/crates/upnow-cli` as the default workspace member.
+- Deleted the old `/src` implementation.
+- Deleted the old root-package mock/hybrid harness tree under `/tests`.
+- Kept stable command coverage in the new CLI crate, including binary-level `scan`, `plan`, `apply`, and interactive apply persistence behavior.
 
 ### Modules/Files Likely Created Or Changed
 - root `Cargo.toml`

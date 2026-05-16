@@ -1,7 +1,7 @@
-# upnow Rebuild Workspace
+# upnow Workspace
 
-This directory contains the rebuilt `upnow` crates. The repository root now owns
-the active Cargo workspace; the old `/src` tree is behavioral reference only.
+This directory contains the active `upnow` crates. The repository root owns the
+Cargo workspace, and the `upnow-cli` crate provides the `upnow` binary.
 
 ## Local Checks
 

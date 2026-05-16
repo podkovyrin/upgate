@@ -24,7 +24,7 @@ pub fn render_vertical_scrollbar(
             .begin_symbol(None)
             .end_symbol(None)
             .track_symbol(None)
-            .thumb_symbol("|")
+            .thumb_symbol("┃")
             .thumb_style(theme.scrollbar_thumb),
         area,
         &mut scrollbar_state,

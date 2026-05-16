@@ -1,6 +1,0 @@
-{
-  "short": "wrongbackend",
-  "backends": [
-    "github:example/wrongbackend"
-  ]
-}
