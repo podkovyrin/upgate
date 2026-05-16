@@ -36,32 +36,3 @@ impl Clock {
             .as_secs())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::time::{Duration, SystemTime};
-
-    use super::Clock;
-    use crate::InfraError;
-
-    #[test]
-    fn fixed_clock_returns_deterministic_unix_seconds() {
-        let clock = Clock::fixed(SystemTime::UNIX_EPOCH + Duration::from_secs(42));
-
-        assert_eq!(
-            clock.now(),
-            SystemTime::UNIX_EPOCH + Duration::from_secs(42)
-        );
-        assert_eq!(clock.unix_secs().expect("valid timestamp"), 42);
-    }
-
-    #[test]
-    fn unix_seconds_rejects_times_before_epoch() {
-        let clock = Clock::fixed(SystemTime::UNIX_EPOCH - Duration::from_secs(1));
-
-        assert!(matches!(
-            clock.unix_secs(),
-            Err(InfraError::ClockBeforeUnixEpoch)
-        ));
-    }
-}

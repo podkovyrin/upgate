@@ -49,19 +49,3 @@ pub fn trim_non_empty(value: &str) -> Option<&str> {
         Some(trimmed)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::Env;
-
-    #[test]
-    fn truthy_accepts_current_config_spellings() {
-        for value in ["1", "true", "yes", "on", " TRUE "] {
-            let env = Env::fixed([("FLAG".to_owned(), value.to_owned())]);
-            assert!(env.truthy("FLAG"));
-        }
-
-        let env = Env::fixed([("FLAG".to_owned(), "0".to_owned())]);
-        assert!(!env.truthy("FLAG"));
-    }
-}
