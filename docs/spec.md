@@ -56,8 +56,8 @@ At a high level:
 `upnow apply --interactive` allows users to choose which upgrades to apply.
 
 - All upgradable items are selected by default.
-- Deselected items are saved as manager-local pins.
-- Future runs skip pinned items until unpinned.
+- Confirmed selection changes are saved as manager-local selection policy.
+- Future runs apply that selection policy until changed.
 
 Interactive mode requires a TTY.
 
@@ -118,7 +118,7 @@ normal/verbose boundaries are part of the spec.
 | `delayed` | Newer versions exist, but no candidate is age-eligible | Show concise note: `~ Delayed [npm] foo v1.2.0 -> v1.3.0 (no eligible release yet; latest v1.3.0 too fresh)` | Age evidence: `latest v1.3.0 too fresh: 3d < 7d`; all candidate ages when diagnostics are available |
 | `delayed` | Policy and age gates together leave no eligible release | Show `no eligible release yet`, plus relevant policy note when a latest version is blocked by policy | Which candidates failed policy vs age, latest policy-eligible version, latest age-eligible version |
 | `blocked` | Missing metadata prevents a safe decision | Show item and concise reason: `x Blocked [mise] foo v1.2.0 -> v1.3.0 (missing release metadata)` | Missing field/source, fallback attempts, command or URL diagnostics |
-| `skipped` | Pinned by user/config/interactive choice | Show item and target when known: `- Skipped [npm] foo v1.2.0 -> v1.3.0 (pinned)` | Pin source, if available |
+| `skipped` | Excluded by user/config/interactive selection policy | Show item and target when known: `- Skipped [npm] foo v1.2.0 -> v1.3.0 (not selected)` | Selection source, if available |
 | `skipped` | Manager command is missing | Show manager-level skip without placeholder versions: `- Skipped [cargo] (required command 'cargo' is not available)` | Probe command and PATH-related diagnostics, when available |
 | `skipped` | Unsupported platform/environment | Show manager-level skip without placeholder versions: `- Skipped [brew] (unsupported on this platform)` | Platform details and manager support condition, when available |
 | `error` | Command, resolver, or metadata check failed unexpectedly | Show item or manager plus concise failure: `! Error [npm] foo v1.2.0 -> v1.3.0 (failed to query package metadata)` | Command, exit status, stderr summary, retry/fallback context |
@@ -132,7 +132,7 @@ user-facing reason groups:
 | Reason group | Examples |
 | --- | --- |
 | Availability | missing command, unsupported platform |
-| User intent | pinned, not selected |
+| User intent | not selected |
 | Version state | no newer version, eligible update, too fresh, no eligible release |
 | Policy | blocked by version policy, policy warning, unsupported policy |
 | Metadata | missing metadata, stale metadata, unparseable metadata |

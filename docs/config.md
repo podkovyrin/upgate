@@ -41,7 +41,10 @@ no_update = false
 mode = "apply"
 min_release_age = "7d"
 version_policy = "stable"
-pinned = ["typescript"]
+
+[npm.selection]
+mode = "include"
+except = ["typescript"]
 ```
 
 ---
@@ -91,12 +94,12 @@ Optional prerelease eligibility policy for update target selection.
 
 Supported values:
 
+- `none`: explicitly disable version policy filtering
 - `stable`: only final releases are eligible
 - `same-track`: follow the installed stability track (never move to a less stable lane)
 
-If unset, no version policy filtering is applied. The external migration
-behavior for older `version_policy = "any"` configs is intentionally not
-specified here.
+If unset, no version policy filtering is applied. Older `version_policy = "any"`
+configs are rejected.
 
 Supported by:
 
@@ -112,9 +115,26 @@ Not supported by:
 
 - `mise`, `uv`
 
-### `pinned`
+### `[manager.selection]`
 
-Optional list of package/tool names to skip for that manager.
+Interactive apply stores the default package selection policy for each manager in
+an optional nested table.
+
+```toml
+[npm.selection]
+mode = "include"
+except = ["typescript"]
+```
+
+Supported modes:
+
+- `include`: select eligible updates by default; `except` packages are skipped
+- `skip`: skip eligible updates by default; `except` packages are selected
+
+If `[manager.selection]` is omitted, the default is `mode = "include"` with no
+exceptions. The default selection policy is omitted when persisted.
+
+The old `pinned` key is no longer supported and is rejected.
 
 ### `no_update` (brew only)
 
@@ -152,14 +172,15 @@ Notes:
 
 ---
 
-## Interactive apply and pins
+## Interactive apply and selection policy
 
 With `upnow apply --interactive`:
 
 - You choose which updates to apply.
-- Deselected items are persisted to that manager’s `pinned` list.
+- The resulting package selection policy is persisted to that manager's
+  `[manager.selection]` table after confirmation and before execution.
 
-This lets users maintain a stable denylist for selected tools.
+This lets users maintain either an allow-by-default or skip-by-default policy.
 
 ---
 

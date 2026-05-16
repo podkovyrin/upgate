@@ -11,3 +11,11 @@ Run these commands from the repository root:
 cargo check --workspace
 cargo test --workspace
 ```
+
+## Documentation
+
+- [High-level spec](docs/spec.md)
+- [Architecture contract](docs/architecture.md)
+- [Configuration](docs/config.md)
+- [Version policy](docs/version-policy.md)
+- [Performance profiling](docs/perf.md)

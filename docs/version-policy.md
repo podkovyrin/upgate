@@ -59,12 +59,14 @@ If `version_policy` is not set, no version policy filtering is applied.
 ```toml
 [brew]
 no_update = true
-pinned = ["aom", "docker"]
 version_policy = "stable"
 
 [npm]
-pinned = ["npm"]
 version_policy = "stable"
+
+[npm.selection]
+mode = "include"
+except = ["npm"]
 
 [pipx]
 version_policy = "same-track"
@@ -268,7 +270,7 @@ Used when the item cannot be safely resolved, such as missing release metadata.
 
 Used for other pre-existing skip reasons such as:
 
-* pinned
+* not selected by selection policy
 * disabled manager
 * unsupported environment
 
@@ -451,16 +453,16 @@ In `apply --interactive`:
 
 Accepted values for `version_policy`:
 
+* `none`
 * `stable`
 * `same-track`
 
-Unset means no policy filtering. External migration behavior for older `any`
-configuration is not decided in this document.
+Unset means no policy filtering. Older `any` configuration is rejected.
 
 Example error:
 
 ```text
-Invalid version_policy for [npm]: expected one of "stable", "same-track", got "beta-only"
+Invalid version_policy for [npm]: expected one of "none", "stable", "same-track", got "beta-only"
 ```
 
 ---
@@ -663,8 +665,9 @@ Preferred phrases:
 
 # Summary
 
-This feature adds a per-manager optional `version_policy` gate with two values:
+This feature adds a per-manager optional `version_policy` gate with three values:
 
+* `none`
 * `stable`
 * `same-track`
 
