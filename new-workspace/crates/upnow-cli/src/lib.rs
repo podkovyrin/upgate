@@ -28,8 +28,8 @@ use upnow_execution::{
     execute_commands, resolve_selection_for_execution,
 };
 use upnow_infra::{
-    Clock, Env, HttpClient, HttpSettings, MutationMode, ProcessRunner, REQUIRE_MUTATION_MODE_ENV,
-    SKIP_MUTATING_COMMANDS_ENV,
+    Clock, Env, HttpClient, HttpSettings, LoggingOptions, MutationMode, ProcessRunner,
+    REQUIRE_MUTATION_MODE_ENV, init_logging,
 };
 use upnow_managers::adapter::{ManagerAdapter, ManagerAdapterError, ReleaseLookupSubject};
 use upnow_planning::{PlanningSettings, default_batch_selection, update_plan_from_inputs};
@@ -74,8 +74,18 @@ struct Cli {
     no_color: bool,
     #[arg(long, global = true)]
     plain: bool,
+    /// Persist full command debug logs (stdout/stderr + timing) under the legacy log location.
+    #[arg(long, global = true)]
+    debug_commands: bool,
+    /// Print each command to stderr before execution.
+    #[arg(long, visible_alias = "print-commands", global = true)]
+    show_commands: bool,
     #[arg(long, global = true)]
     interactive: bool,
+    /// Debug-only: force non-mutating behavior for mutating commands.
+    #[cfg(debug_assertions)]
+    #[arg(long, global = true)]
+    debug_no_mutate: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
@@ -109,6 +119,20 @@ impl BatchCommand {
             Self::Scan => BatchTerminalAction::Scan,
             Self::Plan => BatchTerminalAction::Plan,
             Self::Apply => BatchTerminalAction::Apply,
+        }
+    }
+}
+
+impl Cli {
+    const fn debug_no_mutate(&self) -> bool {
+        #[cfg(debug_assertions)]
+        {
+            self.debug_no_mutate
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            false
         }
     }
 }
@@ -1203,7 +1227,11 @@ pub fn run_from_env() -> Result<String, AppError> {
 fn run_cli(cli: &Cli) -> Result<String, AppError> {
     let config = UpnowConfig::load()?;
     let env = Env::real();
-    let process = ProcessRunner::new(MutationMode::from_env(&env));
+    init_command_logging(cli, &env)?;
+    let process = ProcessRunner::new(MutationMode::from_env_and_debug_no_mutate(
+        &env,
+        cli.debug_no_mutate(),
+    ));
     let command = cli.command.unwrap_or(CliCommand::Plan);
     if cli.interactive {
         if command != CliCommand::Apply {
@@ -1239,6 +1267,28 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
         &cli.managers,
         &cli.overrides,
     )
+}
+
+fn init_command_logging(cli: &Cli, env: &Env) -> Result<(), AppError> {
+    let options = LoggingOptions {
+        debug_commands: cli.debug_commands,
+        show_commands: cli.show_commands,
+    };
+
+    let path = match init_logging(options, env) {
+        Ok(path) => Some(path),
+        Err(err) if options.debug_commands => return Err(AppError::Execution(err.to_string())),
+        Err(_) => None,
+    };
+
+    if options.debug_commands
+        && !(cli.interactive && cli.command.unwrap_or(CliCommand::Plan) == CliCommand::Apply)
+    {
+        let path = path.expect("debug logging initialization succeeded");
+        eprintln!("debug logs: {}", path.display());
+    }
+
+    Ok(())
 }
 
 fn maybe_emit_apply_mutation_mode_notice(
@@ -1292,14 +1342,32 @@ fn validate_required_mutation_mode(env: &Env, mutation_mode: MutationMode) -> Re
         "skip" if mutation_mode == MutationMode::Skip => Ok(()),
         "real" if mutation_mode == MutationMode::Real => Ok(()),
         "skip" => Err(AppError::InvalidArgs(format!(
-            "{REQUIRE_MUTATION_MODE_ENV}=skip requires effective skip mode (set {SKIP_MUTATING_COMMANDS_ENV}=1)"
+            "{REQUIRE_MUTATION_MODE_ENV}=skip requires effective skip mode ({})",
+            skip_mode_hint()
         ))),
         "real" => Err(AppError::InvalidArgs(format!(
-            "{REQUIRE_MUTATION_MODE_ENV}=real requires effective real mode (set {SKIP_MUTATING_COMMANDS_ENV}=0)"
+            "{REQUIRE_MUTATION_MODE_ENV}=real requires effective real mode ({})",
+            real_mode_hint()
         ))),
         _ => Err(AppError::InvalidArgs(format!(
             "{REQUIRE_MUTATION_MODE_ENV} must be one of: skip, real (got '{raw}')"
         ))),
+    }
+}
+
+fn skip_mode_hint() -> &'static str {
+    if cfg!(debug_assertions) {
+        "set UPNOW_SKIP_MUTATING_COMMANDS=1 or --debug-no-mutate in debug builds"
+    } else {
+        "set UPNOW_SKIP_MUTATING_COMMANDS=1"
+    }
+}
+
+fn real_mode_hint() -> &'static str {
+    if cfg!(debug_assertions) {
+        "set UPNOW_SKIP_MUTATING_COMMANDS=0 and disable --debug-no-mutate"
+    } else {
+        "set UPNOW_SKIP_MUTATING_COMMANDS=0"
     }
 }
 

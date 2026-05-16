@@ -130,6 +130,70 @@ esac
 }
 
 #[test]
+fn binary_plan_print_commands_alias_prints_commands_to_stderr() {
+    let sandbox = Sandbox::new("print-commands");
+    sandbox.write_executable(
+        "npm",
+        r#"#!/bin/sh
+case "$*" in
+  "outdated -g --json")
+    printf '%s\n' '{"alpha-ready":{"current":"1.0.0"}}'
+    ;;
+  "view alpha-ready time --json")
+    printf '%s\n' '{"1.0.0":"2021-01-01T00:00:00.000Z","1.2.0":"2021-12-01T00:00:00.000Z"}'
+    ;;
+  *)
+    echo "unexpected npm command: $*" >&2
+    exit 42
+    ;;
+esac
+"#,
+    );
+
+    let output = sandbox.run(["--manager", "npm", "--print-commands", "plan"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success());
+    assert!(stderr.contains("$ npm outdated -g --json"));
+    assert!(stderr.contains("$ npm view alpha-ready time --json"));
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn binary_apply_debug_no_mutate_skips_mutating_command() {
+    let sandbox = Sandbox::new("debug-no-mutate");
+    let mutation_marker = sandbox.root.join("mutation-ran");
+    sandbox.write_executable(
+        "npm",
+        &format!(
+            r#"#!/bin/sh
+case "$*" in
+  "outdated -g --json")
+    printf '%s\n' '{{"alpha-ready":{{"current":"1.0.0"}}}}'
+    ;;
+  "view alpha-ready time --json")
+    printf '%s\n' '{{"1.0.0":"2021-01-01T00:00:00.000Z","1.2.0":"2021-12-01T00:00:00.000Z"}}'
+    ;;
+  "-g update --min-release-age 7")
+    printf changed > {}
+    ;;
+  *)
+    echo "unexpected npm command: $*" >&2
+    exit 42
+    ;;
+esac
+"#,
+            mutation_marker.display()
+        ),
+    );
+
+    let output = sandbox.run(["--manager", "npm", "--debug-no-mutate", "apply"]);
+
+    assert!(output.status.success());
+    assert!(!mutation_marker.exists());
+}
+
+#[test]
 fn binary_interruption_exits_130() {
     let sandbox = Sandbox::new("interruption");
     sandbox.write_executable(
@@ -149,6 +213,8 @@ struct Sandbox {
     root: PathBuf,
     bin: PathBuf,
     config_home: PathBuf,
+    state_home: PathBuf,
+    home: PathBuf,
 }
 
 impl Sandbox {
@@ -163,12 +229,18 @@ impl Sandbox {
         ));
         let bin = root.join("bin");
         let config_home = root.join("config");
+        let state_home = root.join("state");
+        let home = root.join("home");
         fs::create_dir_all(&bin).expect("test bin dir should be created");
         fs::create_dir_all(&config_home).expect("test config dir should be created");
+        fs::create_dir_all(&state_home).expect("test state dir should be created");
+        fs::create_dir_all(&home).expect("test home dir should be created");
         Self {
             root,
             bin,
             config_home,
+            state_home,
+            home,
         }
     }
 
@@ -196,7 +268,9 @@ impl Sandbox {
             .args(args)
             .env_clear()
             .env("PATH", &self.bin)
-            .env("XDG_CONFIG_HOME", &self.config_home);
+            .env("XDG_CONFIG_HOME", &self.config_home)
+            .env("XDG_STATE_HOME", &self.state_home)
+            .env("HOME", &self.home);
         for (key, value) in envs {
             command.env(key, value);
         }

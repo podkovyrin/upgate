@@ -3,10 +3,11 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::process::{Command, ExitStatus, Output};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use serde::de::DeserializeOwned;
 
-use crate::{Env, InfraError};
+use crate::{Env, InfraError, logging};
 
 pub const SKIP_MUTATING_COMMANDS_ENV: &str = "UPNOW_SKIP_MUTATING_COMMANDS";
 pub const REQUIRE_MUTATION_MODE_ENV: &str = "UPNOW_REQUIRE_MUTATION_MODE";
@@ -29,6 +30,14 @@ pub enum MutationMode {
 impl MutationMode {
     pub fn from_env(env: &Env) -> Self {
         if env.truthy(SKIP_MUTATING_COMMANDS_ENV) {
+            Self::Skip
+        } else {
+            Self::Real
+        }
+    }
+
+    pub fn from_env_and_debug_no_mutate(env: &Env, debug_no_mutate: bool) -> Self {
+        if debug_no_mutate || env.truthy(SKIP_MUTATING_COMMANDS_ENV) {
             Self::Skip
         } else {
             Self::Real
@@ -167,22 +176,38 @@ fn run_real(
     check: &CommandCheck,
 ) -> Result<CommandOutput, InfraError> {
     let display = spec.display();
+    logging::on_command_start(&display, spec.is_mutation);
+    let started_at = Instant::now();
     let output = if spec.is_mutation && mutation_mode == MutationMode::Skip {
         CommandOutput::from_skipped_mutation(success_exit_status(), display.clone())
     } else {
         let mut command = Command::new(&spec.program);
         command.args(&spec.args);
         CommandOutput::from_process_output(
-            command.output().map_err(|err| InfraError::ProcessSpawn {
-                command: display.clone(),
-                detail: err.to_string(),
+            command.output().map_err(|err| {
+                logging::on_command_spawn_error(&display, spec.is_mutation, &err);
+                InfraError::ProcessSpawn {
+                    command: display.clone(),
+                    detail: err.to_string(),
+                }
             })?,
             false,
             display.clone(),
         )
     };
 
-    if status_allowed(output.status, check) {
+    let status_allowed = status_allowed(output.status, check);
+    logging::on_command_finish(
+        &display,
+        output.status,
+        &output.stdout,
+        &output.stderr,
+        spec.is_mutation,
+        status_allowed,
+        started_at.elapsed(),
+    );
+
+    if status_allowed {
         Ok(output)
     } else {
         Err(InfraError::CommandFailed(CommandFailure::new(

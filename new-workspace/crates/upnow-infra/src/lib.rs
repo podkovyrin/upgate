@@ -6,6 +6,7 @@ use std::fmt;
 pub mod clock;
 pub mod env;
 pub mod http;
+pub mod logging;
 pub mod parallel;
 pub mod process;
 
@@ -15,6 +16,7 @@ pub use http::{
     FakeHttpClient, HTTP_TIMEOUT, HTTP_USER_AGENT, HttpBytesResponse, HttpClient, HttpHeader,
     HttpResponse, HttpSettings, blocking_client, env_base_url,
 };
+pub use logging::{LoggingOptions, init_logging};
 pub use parallel::{effective_parallelism, run_ordered_parallel};
 pub use process::{
     CommandCheck, CommandFailure, CommandOutput, CommandSpec, FakeProcess, MUTATION_ENABLE_NOTICE,
@@ -51,6 +53,9 @@ pub enum InfraError {
     },
     JsonParse {
         command: String,
+        detail: String,
+    },
+    Logging {
         detail: String,
     },
     FakeProcessState {
@@ -107,6 +112,7 @@ impl fmt::Display for InfraError {
                     "failed to parse JSON output from {command}: {detail}"
                 )
             }
+            Self::Logging { detail } => write!(formatter, "failed to initialize logging: {detail}"),
             Self::FakeProcessState { detail } => {
                 write!(formatter, "fake process state unavailable: {detail}")
             }
