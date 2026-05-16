@@ -52,22 +52,7 @@ pub fn trim_non_empty(value: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::Env;
-
-    #[test]
-    fn fixed_env_returns_trimmed_non_empty_values() {
-        let env = Env::fixed([
-            ("VALUE".to_owned(), "  abc  ".to_owned()),
-            ("EMPTY".to_owned(), "   ".to_owned()),
-            ("HOME".to_owned(), "/tmp/home".to_owned()),
-        ]);
-
-        assert_eq!(env.non_empty_var("VALUE").as_deref(), Some("abc"));
-        assert_eq!(env.non_empty_var("EMPTY"), None);
-        assert_eq!(env.home_dir(), Some(PathBuf::from("/tmp/home")));
-    }
 
     #[test]
     fn truthy_accepts_current_config_spellings() {

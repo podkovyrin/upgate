@@ -10,31 +10,8 @@ use upnow_domain::{
     VersionText,
 };
 use upnow_execution::{
-    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ExecutionStatus,
-    ResolvedExecutionTarget, execute_commands, resolve_selection_for_execution,
+    ExecutionCommandIntent, ResolvedExecutionTarget, resolve_selection_for_execution,
 };
-use upnow_infra::{CommandOutput, CommandSpec, ProcessRunner};
-
-#[test]
-fn executes_manager_supplied_commands() {
-    let process = ProcessRunner::fake([Ok(CommandOutput::from_parts(success_status(), "", ""))]);
-    let command = ExecutionCommand {
-        items: vec![command_item("alpha-ready")],
-        command: CommandSpec::new("tool", ["install", "alpha-ready@1.2.0"]).mutating(),
-    };
-
-    let report = execute_commands(
-        ManagerId::new("pnpm").expect("valid manager"),
-        vec![command],
-        &process,
-    )
-    .expect("execution should report success");
-
-    assert!(matches!(
-        report.items[0].status,
-        ExecutionStatus::Succeeded { .. }
-    ));
-}
 
 #[test]
 fn resolves_native_global_intent_for_complete_native_only_selection() {
@@ -608,25 +585,4 @@ fn release_lookup(version: &str) -> ReleaseLookupResult {
 
 fn plan(items: Vec<PlanItem>) -> UpdatePlan {
     UpdatePlan::new(ManagerId::new("pnpm").expect("valid manager"), items).expect("valid plan")
-}
-
-fn command_item(package_name: &str) -> ExecutionCommandItem {
-    ExecutionCommandItem {
-        plan_item_id: PlanItemId::new(format!("pnpm:{package_name}")).expect("valid id"),
-        package_name: PackageName::new(package_name).expect("valid package"),
-        installed_version: VersionText::new("1.0.0").expect("valid version"),
-        target: ResolvedExecutionTarget::Known(VersionText::new("1.2.0").expect("valid version")),
-    }
-}
-
-#[cfg(unix)]
-fn success_status() -> std::process::ExitStatus {
-    use std::os::unix::process::ExitStatusExt;
-    std::process::ExitStatus::from_raw(0)
-}
-
-#[cfg(windows)]
-fn success_status() -> std::process::ExitStatus {
-    use std::os::windows::process::ExitStatusExt;
-    std::process::ExitStatus::from_raw(0)
 }

@@ -1293,20 +1293,26 @@ fn selection_render_rows(screen: &InteractiveSelectionScreen) -> Vec<SelectionRe
             let row = screen.row(visible);
             let selected_target = manager.state.selected_target(&row.plan_item_id);
             let selected = selected_target.is_some();
-            let target = row.target_version.as_ref().map_or_else(
-                || {
-                    if row
-                        .target_options
-                        .iter()
-                        .any(|option| matches!(option, TargetOption::ManagerResolved { .. }))
-                    {
-                        "manager-resolved".to_owned()
-                    } else {
-                        "unavailable".to_owned()
+            let target =
+                match selected_target {
+                    Some(SelectedUpdate::Exact { target_version }) => {
+                        version_label(target_version.as_str())
                     }
-                },
-                |version| version_label(version.as_str()),
-            );
+                    Some(SelectedUpdate::ManagerResolved) => "manager-resolved".to_owned(),
+                    Some(SelectedUpdate::Recommended | SelectedUpdate::ForcePlannedCandidate)
+                    | None => row.target_version.as_ref().map_or_else(
+                        || {
+                            if row.target_options.iter().any(|option| {
+                                matches!(option, TargetOption::ManagerResolved { .. })
+                            }) {
+                                "manager-resolved".to_owned()
+                            } else {
+                                "unavailable".to_owned()
+                            }
+                        },
+                        |version| version_label(version.as_str()),
+                    ),
+                };
             let forced = matches!(selected_target, Some(SelectedUpdate::ForcePlannedCandidate));
 
             SelectionRenderRow {
@@ -1578,5 +1584,71 @@ fn plan_issue_label(issue: &PlanIssue) -> String {
             "unsupported manager version {} {reason:?}",
             installed_version.as_str()
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use upnow_domain::{PackageName, VersionText};
+
+    #[test]
+    fn rendered_list_target_tracks_chosen_alternate_exact_target() {
+        // This test must exist because the main-list target is user-visible and can diverge from the typed selection.
+        let plan_item_id = PlanItemId::new("pnpm:alpha").expect("valid plan item id");
+        let recommended = version("1.2.0");
+        let alternate = version("2.0.0");
+        let view = SelectionView {
+            manager_id: ManagerId::new("pnpm").expect("valid manager id"),
+            rows: vec![SelectionRow {
+                plan_item_id: plan_item_id.clone(),
+                package_name: PackageName::new("alpha").expect("valid package name"),
+                installed_version: version("1.0.0"),
+                target_version: Some(recommended.clone()),
+                status: SelectionRowStatus::Update,
+                default_visibility: SelectionRowVisibility::Visible,
+                notes: Vec::new(),
+                initially_selected: true,
+                policy_exception: false,
+                target_options: vec![
+                    TargetOption::AlternateExact {
+                        target_version: alternate,
+                        note_parts: Vec::new(),
+                    },
+                    TargetOption::Recommended {
+                        target_version: recommended.clone(),
+                        note_parts: Vec::new(),
+                    },
+                ],
+            }],
+        };
+        let mut screen = InteractiveSelectionScreen::new(vec![InteractiveSelectionPlan::new(
+            view,
+            Vec::new(),
+            UpdateSelectionPolicy::default(),
+        )]);
+
+        assert_eq!(screen.visible_rows()[0].target_version, Some(recommended));
+        assert_eq!(selection_render_rows(&screen)[0].target, "v1.2.0");
+
+        screen
+            .handle_input(SelectionInput::OpenTargetPicker)
+            .expect("picker should open");
+        screen
+            .handle_input(SelectionInput::PickerDown)
+            .expect("picker should move to alternate exact target");
+        screen
+            .handle_input(SelectionInput::PickerConfirm)
+            .expect("picker should confirm alternate exact target");
+
+        assert!(matches!(
+            screen.selection_drafts()[0].selected_items[0].selected_update,
+            SelectedUpdate::Exact { ref target_version } if target_version.as_str() == "2.0.0"
+        ));
+        assert_eq!(selection_render_rows(&screen)[0].target, "v2.0.0");
+    }
+
+    fn version(value: &str) -> VersionText {
+        VersionText::new(value).expect("valid version")
     }
 }

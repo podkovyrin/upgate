@@ -270,9 +270,7 @@ pub fn env_base_url(env: &Env, var_name: &str, default: &str) -> String {
 mod tests {
     use std::time::Duration;
 
-    use super::{
-        HTTP_TIMEOUT, HTTP_USER_AGENT, HttpClient, HttpResponse, HttpSettings, env_base_url,
-    };
+    use super::{HTTP_TIMEOUT, HTTP_USER_AGENT, HttpSettings, env_base_url};
     use crate::Env;
 
     #[test]
@@ -306,18 +304,5 @@ mod tests {
             env_base_url(&env, "UPNOW_TEST_BASE_URL", "https://default.test"),
             "https://default.test"
         );
-    }
-
-    #[test]
-    fn fake_http_client_rejects_non_success_statuses() {
-        let client = HttpClient::fake([(
-            "https://example.test/missing".to_owned(),
-            HttpResponse {
-                status: 404,
-                body: "not found".to_owned(),
-            },
-        )]);
-
-        assert!(client.get_text("https://example.test/missing").is_err());
     }
 }

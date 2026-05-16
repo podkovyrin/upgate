@@ -21,6 +21,7 @@ use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
     ManagerConfigRuleError, ReleaseLookupSubject, validate_version_policy,
 };
+use crate::platform_artifacts::is_platform_artifact_version;
 
 pub const MANAGER_ID: &str = "npm";
 
@@ -507,6 +508,9 @@ fn time_map_to_timeline(
         if version == "created" || version == "modified" {
             continue;
         }
+        if is_platform_artifact_version(&version) {
+            continue;
+        }
         let parsed = parse_timestamp(&timestamp).ok_or_else(|| NpmError::InvalidTimestamp {
             version: version.clone(),
             value: timestamp.clone(),
@@ -665,6 +669,35 @@ mod tests {
         assert_eq!(
             err,
             NpmError::UnsupportedCommandIntent("resolver-native".to_owned())
+        );
+    }
+
+    #[test]
+    fn registry_time_ignores_platform_artifact_versions() {
+        let timeline = parse_npm_time_json(
+            &package("@openai/codex"),
+            r#"{
+                "created": "2026-04-30T16:40:00.000Z",
+                "modified": "2026-05-09T06:16:00.000Z",
+                "0.130.0": "2026-05-08T23:12:58.744Z",
+                "0.130.0-win32-x64": "2026-05-08T23:12:27.201Z",
+                "0.131.0-alpha.4": "2026-05-09T06:15:55.547Z",
+                "0.131.0-alpha.4-win32-x64": "2026-05-09T06:15:27.184Z"
+            }"#,
+        )
+        .expect("timeline");
+
+        let versions = timeline
+            .versions
+            .iter()
+            .map(|entry| entry.version.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(versions, vec!["0.130.0", "0.131.0-alpha.4"]);
+        assert_eq!(
+            newest_semver_version(&timeline)
+                .expect("newest version")
+                .as_str(),
+            "0.131.0-alpha.4"
         );
     }
 

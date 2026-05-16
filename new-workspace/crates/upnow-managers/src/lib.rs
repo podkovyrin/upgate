@@ -11,6 +11,7 @@ pub mod go;
 pub mod mise;
 pub mod npm;
 pub mod pipx;
+pub(crate) mod platform_artifacts;
 pub mod pnpm;
 pub mod uv;
 pub mod yarn;

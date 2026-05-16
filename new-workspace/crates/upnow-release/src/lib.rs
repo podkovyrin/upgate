@@ -61,10 +61,16 @@ pub fn newest_semver_version(timeline: &ReleaseTimeline) -> Option<VersionText> 
                 }
                 Version::parse(&padded.join("."))
             });
-            parsed.ok().map(|version| (version, entry.version.clone()))
+            parsed.ok().map(|version| (entry, version))
         })
-        .max_by(|(left, _), (right, _)| left.cmp(right))
-        .map(|(_, version)| version)
+        .max_by(|(left_entry, left_version), (right_entry, right_version)| {
+            left_entry
+                .published_at
+                .as_system_time()
+                .cmp(right_entry.published_at.as_system_time())
+                .then_with(|| left_version.cmp(right_version))
+        })
+        .map(|(entry, _)| entry.version.clone())
 }
 pub fn newest_pep440_version(timeline: &ReleaseTimeline) -> Option<VersionText> {
     timeline
@@ -73,8 +79,14 @@ pub fn newest_pep440_version(timeline: &ReleaseTimeline) -> Option<VersionText> 
         .filter_map(|entry| {
             Pep440Version::from_str(entry.version.as_str())
                 .ok()
-                .map(|version| (version, entry.version.clone()))
+                .map(|version| (entry, version))
         })
-        .max_by(|(left, _), (right, _)| left.cmp(right))
-        .map(|(_, version)| version)
+        .max_by(|(left_entry, left_version), (right_entry, right_version)| {
+            left_entry
+                .published_at
+                .as_system_time()
+                .cmp(right_entry.published_at.as_system_time())
+                .then_with(|| left_version.cmp(right_version))
+        })
+        .map(|(entry, _)| entry.version.clone())
 }

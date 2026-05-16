@@ -328,7 +328,7 @@ fn evaluate_semver_seed(
         candidate_facts.push((parsed.clone(), fact.clone()));
         if newest_overall
             .as_ref()
-            .is_none_or(|(current, _)| parsed > *current)
+            .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
         {
             newest_overall = Some((parsed.clone(), fact.clone()));
         }
@@ -336,14 +336,14 @@ fn evaluate_semver_seed(
         if policy_allowed {
             if newest_policy_eligible
                 .as_ref()
-                .is_none_or(|(current, _)| parsed > *current)
+                .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
             {
                 newest_policy_eligible = Some((parsed.clone(), fact.clone()));
             }
             if fact.age_allowed
                 && newest_age_eligible
                     .as_ref()
-                    .is_none_or(|(current, _)| parsed > *current)
+                    .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
             {
                 newest_age_eligible = Some((parsed, fact));
             }
@@ -484,7 +484,7 @@ fn evaluate_pep440_seed(
         candidate_facts.push((parsed.clone(), fact.clone()));
         if newest_overall
             .as_ref()
-            .is_none_or(|(current, _)| parsed > *current)
+            .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
         {
             newest_overall = Some((parsed.clone(), fact.clone()));
         }
@@ -492,14 +492,14 @@ fn evaluate_pep440_seed(
         if policy_allowed {
             if newest_policy_eligible
                 .as_ref()
-                .is_none_or(|(current, _)| parsed > *current)
+                .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
             {
                 newest_policy_eligible = Some((parsed.clone(), fact.clone()));
             }
             if fact.age_allowed
                 && newest_age_eligible
                     .as_ref()
-                    .is_none_or(|(current, _)| parsed > *current)
+                    .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
             {
                 newest_age_eligible = Some((parsed, fact));
             }
@@ -780,6 +780,21 @@ where
         advisory_latest: None,
         advisory_lookup_failure: None,
     }
+}
+
+fn candidate_is_newer_by_date<T>(
+    parsed: &T,
+    fact: &CandidateFact,
+    current: &(T, CandidateFact),
+) -> bool
+where
+    T: Ord,
+{
+    fact.published_at
+        .as_system_time()
+        .cmp(current.1.published_at.as_system_time())
+        .then_with(|| parsed.cmp(&current.0))
+        .is_gt()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

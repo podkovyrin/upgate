@@ -178,3 +178,108 @@ fn planner_preserves_manager_produced_item_execution_support() {
 
     assert_eq!(candidate.execution_support, ExecutionSupport::exact_only());
 }
+
+#[test]
+fn planner_selects_publish_date_newest_target_before_version_newest_target() {
+    let seed = UpdateSeed::new(
+        installed_tool("alpha", "3.0.0"),
+        version("4.0.0-alpha.13"),
+        VersionScheme::SemVer,
+        ReleaseLookupResult::Known(ReleaseTimeline::new(vec![
+            ReleaseEntry::new(
+                version("4.0.0-alpha.13"),
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 200)),
+            ),
+            ReleaseEntry::new(
+                version("3.9.0"),
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 100)),
+            ),
+        ])),
+        ExecutionSupport::exact_only(),
+    );
+
+    let PlanItem::Update { candidate, .. } = evaluate_seed(
+        item_id("item"),
+        seed,
+        VersionPolicy::None,
+        SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
+        Duration::ZERO,
+    ) else {
+        panic!("expected update")
+    };
+
+    assert_eq!(
+        candidate.target_version().expect("known target").as_str(),
+        "3.9.0"
+    );
+    assert_eq!(
+        candidate
+            .diagnostics
+            .latest_overall
+            .expect("latest overall")
+            .version
+            .as_str(),
+        "3.9.0"
+    );
+    assert_eq!(
+        candidate.diagnostics.candidates[0].version.as_str(),
+        "4.0.0-alpha.13"
+    );
+}
+
+#[test]
+fn planner_age_gate_selects_publish_date_newest_eligible_target() {
+    let seed = UpdateSeed::new(
+        installed_tool("alpha", "3.0.0"),
+        version("4.0.0-alpha.13"),
+        VersionScheme::SemVer,
+        ReleaseLookupResult::Known(ReleaseTimeline::new(vec![
+            ReleaseEntry::new(
+                version("4.0.0-alpha.13"),
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 300)),
+            ),
+            ReleaseEntry::new(
+                version("3.9.0"),
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 200)),
+            ),
+            ReleaseEntry::new(
+                version("3.10.0"),
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 10)),
+            ),
+        ])),
+        ExecutionSupport::exact_only(),
+    );
+
+    let PlanItem::Update { candidate, .. } = evaluate_seed(
+        item_id("item"),
+        seed,
+        VersionPolicy::None,
+        SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
+        Duration::from_secs(100),
+    ) else {
+        panic!("expected update")
+    };
+
+    assert_eq!(
+        candidate.target_version().expect("known target").as_str(),
+        "3.9.0"
+    );
+    assert_eq!(
+        candidate
+            .diagnostics
+            .latest_overall
+            .expect("latest overall")
+            .version
+            .as_str(),
+        "3.10.0"
+    );
+    assert_eq!(
+        candidate
+            .diagnostics
+            .latest_age_eligible
+            .expect("latest age eligible")
+            .version
+            .as_str(),
+        "3.9.0"
+    );
+}

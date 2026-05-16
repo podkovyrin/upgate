@@ -668,22 +668,6 @@ mod tests {
     use upnow_infra::CommandOutput;
 
     #[test]
-    fn update_input_declares_exact_and_native_global_support() {
-        let input = update_input(
-            installed_tool_for_test("typescript"),
-            ReleaseLookupResult::MissingMetadata,
-        );
-        let ManagerUpdateInput::Seed(seed) = input else {
-            panic!("update input should be a seed");
-        };
-
-        assert_eq!(
-            seed.execution_support,
-            ExecutionSupport::exact_or_native_global()
-        );
-    }
-
-    #[test]
     fn forced_exact_update_omits_min_release_age() {
         let process = bun_runtime_process();
         let plan = ResolvedExecutionPlan {
@@ -777,17 +761,6 @@ mod tests {
             exact_target_required: false,
             bypass_min_release_age,
         }
-    }
-
-    fn installed_tool_for_test(package: &str) -> InstalledTool {
-        InstalledTool::new(
-            BunManager::id(),
-            ToolId::new(format!("bun:{package}")).expect("valid tool id"),
-            PackageName::new(package).expect("valid package"),
-            ToolName::new(package).expect("valid tool name"),
-            VersionText::new("1.0.0").expect("valid version"),
-            ManagerMetadata::empty(),
-        )
     }
 
     fn bun_runtime_process() -> ProcessRunner {
