@@ -174,13 +174,16 @@ Notes:
 
 ## Interactive apply and selection policy
 
-With `upnow apply --interactive`:
+With `upnow apply`:
 
 - You choose which updates to apply.
 - The resulting package selection policy is persisted to that manager's
   `[manager.selection]` table after confirmation and before execution.
 
 This lets users maintain either an allow-by-default or skip-by-default policy.
+
+Use `upnow apply --yolo` for non-interactive batch apply. `--yes` and
+`--no-approval` are accepted aliases.
 
 ---
 

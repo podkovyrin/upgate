@@ -60,7 +60,7 @@ esac
 "#,
     );
 
-    let output = sandbox.run(["--manager", "npm", "apply"]);
+    let output = sandbox.run(["--manager", "npm", "--yolo", "apply"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(output.status.code(), Some(1));
@@ -83,7 +83,7 @@ exit 42
     );
 
     let output = sandbox.run_with_env(
-        ["--manager", "npm", "apply"],
+        ["--manager", "npm", "--yolo", "apply"],
         [("UPNOW_REQUIRE_MUTATION_MODE", "skip")],
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -115,7 +115,7 @@ esac
     );
 
     let output = sandbox.run_with_env(
-        ["--manager", "npm", "apply"],
+        ["--manager", "npm", "--no-approval", "apply"],
         [
             ("UPNOW_REQUIRE_MUTATION_MODE", "skip"),
             ("UPNOW_SKIP_MUTATING_COMMANDS", "1"),
@@ -127,6 +127,17 @@ esac
     assert!(stdout.contains("[npm]"));
     assert!(stdout.contains("+ Update"));
     assert!(!stdout.contains("apply runs"));
+}
+
+#[test]
+fn binary_yolo_is_apply_only() {
+    let sandbox = Sandbox::new("yolo-apply-only");
+
+    let output = sandbox.run(["--yolo", "plan"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr.contains("--yolo is only supported with apply"));
 }
 
 #[test]
@@ -187,7 +198,7 @@ esac
         ),
     );
 
-    let output = sandbox.run(["--manager", "npm", "--debug-no-mutate", "apply"]);
+    let output = sandbox.run(["--manager", "npm", "--debug-no-mutate", "--yolo", "apply"]);
 
     assert!(output.status.success());
     assert!(!mutation_marker.exists());

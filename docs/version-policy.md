@@ -439,7 +439,7 @@ value is rejected.
 
 ## Default behavior
 
-In `apply --interactive`:
+In interactive `apply`:
 
 * only items with status `update` are selected by default
 * items excluded by version policy are not selected

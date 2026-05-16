@@ -53,13 +53,18 @@ At a high level:
 
 ## Interactive apply
 
-`upnow apply --interactive` allows users to choose which upgrades to apply.
+`upnow apply` opens the interactive selection UI and allows users to choose
+which upgrades to apply.
 
 - All upgradable items are selected by default.
 - Confirmed selection changes are saved as manager-local selection policy.
 - Future runs apply that selection policy until changed.
 
 Interactive mode requires a TTY.
+
+`upnow apply --yolo` skips the interactive UI and applies the default selected
+updates non-interactively. `--yes` and `--no-approval` are accepted aliases for
+the same behavior.
 
 ---
 

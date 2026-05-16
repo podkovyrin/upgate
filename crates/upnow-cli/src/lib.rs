@@ -88,8 +88,9 @@ struct Cli {
     /// Print each command to stderr before execution.
     #[arg(long, visible_alias = "print-commands", global = true)]
     show_commands: bool,
-    #[arg(long, global = true)]
-    interactive: bool,
+    /// Apply without the interactive selection UI.
+    #[arg(long, visible_aliases = ["yes", "no-approval"], global = true)]
+    yolo: bool,
     /// Debug-only: force non-mutating behavior for mutating commands.
     #[cfg(debug_assertions)]
     #[arg(long, global = true)]
@@ -1564,12 +1565,12 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
         cli.debug_no_mutate(),
     ));
     let command = cli.command.unwrap_or(CliCommand::Plan);
-    if cli.interactive {
-        if command != CliCommand::Apply {
-            return Err(AppError::InvalidArgs(
-                "--interactive is only supported with apply".to_owned(),
-            ));
-        }
+    if cli.yolo && command != CliCommand::Apply {
+        return Err(AppError::InvalidArgs(
+            "--yolo is only supported with apply".to_owned(),
+        ));
+    }
+    if command == CliCommand::Apply && !cli.yolo {
         return run_interactive_apply_with_sources_and_manager_concurrency_override(
             config,
             &process,
@@ -1620,7 +1621,7 @@ fn init_command_logging(cli: &Cli, env: &Env) -> Result<(), AppError> {
     };
 
     if options.debug_commands
-        && !(cli.interactive && cli.command.unwrap_or(CliCommand::Plan) == CliCommand::Apply)
+        && (cli.yolo || cli.command.unwrap_or(CliCommand::Plan) != CliCommand::Apply)
     {
         let path = path.expect("debug logging initialization succeeded");
         eprintln!("debug logs: {}", path.display());
