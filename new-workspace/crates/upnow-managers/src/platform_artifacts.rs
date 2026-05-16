@@ -1,4 +1,4 @@
-pub(crate) fn is_platform_artifact_version(version: &str) -> bool {
+pub fn is_platform_artifact_version(version: &str) -> bool {
     let Some((head, cpu)) = version.rsplit_once('-') else {
         return false;
     };

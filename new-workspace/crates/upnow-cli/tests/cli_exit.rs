@@ -285,9 +285,8 @@ impl Drop for Sandbox {
 }
 
 fn binary_path() -> PathBuf {
-    std::env::var_os("CARGO_BIN_EXE_upnow")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target/debug/upnow")
-        })
+    std::env::var_os("CARGO_BIN_EXE_upnow").map_or_else(
+        || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target/debug/upnow"),
+        PathBuf::from,
+    )
 }

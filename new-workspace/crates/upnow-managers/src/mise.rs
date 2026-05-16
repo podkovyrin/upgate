@@ -955,6 +955,25 @@ fn duration_arg(duration: Duration) -> String {
     }
 }
 
+fn adapter_error(err: &MiseError) -> ManagerAdapterError {
+    let kind = match err {
+        MiseError::Interrupted(_) => ManagerAdapterErrorKind::Interrupted,
+        MiseError::Json(_)
+        | MiseError::Toml(_)
+        | MiseError::Domain(_)
+        | MiseError::InvalidTimestamp { .. }
+        | MiseError::InvalidDryRun(_)
+        | MiseError::MissingReleaseMetadata(_) => ManagerAdapterErrorKind::Parse,
+        MiseError::UnsupportedCommandIntent(_) => ManagerAdapterErrorKind::CommandConstruction,
+        MiseError::Infra(_) => ManagerAdapterErrorKind::Infra,
+    };
+    ManagerAdapterError::Manager {
+        manager_id: MANAGER_ID.to_owned(),
+        kind,
+        detail: err.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use upnow_domain::{ExecutionTargetKind, PlanItemId, TargetSelection};
@@ -1132,24 +1151,5 @@ mod tests {
     fn failure_status() -> std::process::ExitStatus {
         use std::os::windows::process::ExitStatusExt;
         std::process::ExitStatus::from_raw(1)
-    }
-}
-
-fn adapter_error(err: &MiseError) -> ManagerAdapterError {
-    let kind = match err {
-        MiseError::Interrupted(_) => ManagerAdapterErrorKind::Interrupted,
-        MiseError::Json(_)
-        | MiseError::Toml(_)
-        | MiseError::Domain(_)
-        | MiseError::InvalidTimestamp { .. }
-        | MiseError::InvalidDryRun(_)
-        | MiseError::MissingReleaseMetadata(_) => ManagerAdapterErrorKind::Parse,
-        MiseError::UnsupportedCommandIntent(_) => ManagerAdapterErrorKind::CommandConstruction,
-        MiseError::Infra(_) => ManagerAdapterErrorKind::Infra,
-    };
-    ManagerAdapterError::Manager {
-        manager_id: MANAGER_ID.to_owned(),
-        kind,
-        detail: err.to_string(),
     }
 }

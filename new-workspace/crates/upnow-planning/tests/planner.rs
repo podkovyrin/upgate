@@ -48,8 +48,8 @@ fn plan_ids_use_tool_identity_when_packages_share_a_name() {
     let plan = update_plan_from_inputs(
         manager_id(),
         vec![
-            ManagerUpdateInput::Seed(seed("formula:shared-name", package_name.clone())),
-            ManagerUpdateInput::Seed(seed("cask:shared-name", package_name)),
+            ManagerUpdateInput::Seed(seed("formula:shared-name", &package_name)),
+            ManagerUpdateInput::Seed(seed("cask:shared-name", &package_name)),
         ],
         PlanningSettings {
             policy: VersionPolicy::None,
@@ -87,7 +87,7 @@ fn default_batch_selection_include_mode_excludes_exceptions() {
     );
 }
 
-fn seed(tool_id: &str, package_name: PackageName) -> UpdateSeed {
+fn seed(tool_id: &str, package_name: &PackageName) -> UpdateSeed {
     UpdateSeed::new(
         InstalledTool::new(
             manager_id(),

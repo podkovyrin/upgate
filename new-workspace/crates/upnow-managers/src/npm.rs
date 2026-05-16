@@ -348,7 +348,7 @@ pub fn commands_for_execution_plan(
             ExecutionCommandIntent::Exact(item) => {
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
-                    command: exact_command_for_item(item, min_age_days),
+                    command: exact_command_for_item(item, min_age_days)?,
                 });
             }
             ExecutionCommandIntent::ResolverNative(_) => {
@@ -375,14 +375,18 @@ pub fn commands_for_execution_plan(
     Ok(commands)
 }
 
-fn exact_command_for_item(item: &ResolvedExecutionItem, min_age_days: u64) -> CommandSpec {
-    exact_command_parts(
+fn exact_command_for_item(
+    item: &ResolvedExecutionItem,
+    min_age_days: u64,
+) -> Result<CommandSpec, NpmError> {
+    Ok(exact_command_parts(
         &item.package_name,
-        item.known_target_version()
-            .expect("exact command requires known target"),
+        item.known_target_version().ok_or_else(|| {
+            NpmError::UnsupportedCommandIntent("exact-without-known-target".to_owned())
+        })?,
         min_age_days,
         item.bypass_min_release_age,
-    )
+    ))
 }
 
 fn exact_command_parts(

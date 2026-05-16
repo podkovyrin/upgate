@@ -221,7 +221,7 @@ pub fn parse_install_list(raw: &str) -> Result<Vec<InstalledCrate>, CargoError> 
 /// # Errors
 ///
 /// Returns an error when JSON is malformed.
-pub fn parse_install_ledger(raw: &str) -> Result<BTreeMap<String, CargoInstallMeta>, CargoError> {
+fn parse_install_ledger(raw: &str) -> Result<BTreeMap<String, CargoInstallMeta>, CargoError> {
     let parsed: CargoInstallLedger =
         serde_json::from_str(raw).map_err(|err| CargoError::Json(err.to_string()))?;
     let mut out = BTreeMap::new();
@@ -240,7 +240,7 @@ pub fn parse_install_ledger(raw: &str) -> Result<BTreeMap<String, CargoInstallMe
     }
     Ok(out)
 }
-pub fn parse_ledger_key_name(key: &str) -> Option<String> {
+fn parse_ledger_key_name(key: &str) -> Option<String> {
     let (left, _) = key.split_once(" (")?;
     let (name, _) = left.rsplit_once(' ')?;
     if name.is_empty() {
@@ -255,7 +255,7 @@ pub fn parse_ledger_key_name(key: &str) -> Option<String> {
 /// # Errors
 ///
 /// Returns an error when no exact row is found or the version is not `SemVer`.
-pub fn parse_search_latest_version(
+fn parse_search_latest_version(
     crate_name: &PackageName,
     raw: &str,
 ) -> Result<Version, CargoError> {
@@ -385,7 +385,7 @@ pub fn commands_for_execution_plan(
                 let meta = install_meta.get(item.package_name.as_str());
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
-                    command: exact_command_for_item(item, meta),
+                    command: exact_command_for_item(item, meta)?,
                 });
             }
             ExecutionCommandIntent::NativeSelected(_) => {
@@ -440,13 +440,14 @@ pub fn search_latest_version(
 fn exact_command_for_item(
     item: &ResolvedExecutionItem,
     meta: Option<&CargoInstallMeta>,
-) -> CommandSpec {
-    exact_command_parts(
+) -> Result<CommandSpec, CargoError> {
+    Ok(exact_command_parts(
         &item.package_name,
-        item.known_target_version()
-            .expect("exact command requires known target"),
+        item.known_target_version().ok_or_else(|| {
+            CargoError::UnsupportedCommandIntent("exact-without-known-target".to_owned())
+        })?,
         meta,
-    )
+    ))
 }
 
 fn exact_command_parts(

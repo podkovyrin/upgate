@@ -22,6 +22,12 @@ struct Logger {
 static LOGGER: OnceLock<Logger> = OnceLock::new();
 static OPTIONS: OnceLock<LoggingOptions> = OnceLock::new();
 
+/// Initializes command logging and returns the session directory.
+///
+/// # Errors
+///
+/// Returns a logging error when the legacy log directory cannot be resolved,
+/// created, or written.
 pub fn init_logging(options: LoggingOptions, env: &Env) -> Result<PathBuf, InfraError> {
     let _ = OPTIONS.set(options);
 

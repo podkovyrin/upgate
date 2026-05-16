@@ -1072,6 +1072,10 @@ fn selection_input_from_event(event: &Event, target_picker_open: bool) -> Select
 
     let input = match key.code {
         KeyCode::Char('q') => SelectionInput::Cancel,
+        #[expect(
+            clippy::match_same_arms,
+            reason = "Esc is intentionally reserved for target-picker handling below"
+        )]
         KeyCode::Esc => SelectionInput::Ignore,
         KeyCode::Char('C') => SelectionInput::Confirm,
         KeyCode::Up | KeyCode::Char('k') => SelectionInput::Up,
@@ -1537,14 +1541,14 @@ fn target_picker_width(area: Rect) -> u16 {
 fn target_option_matches_selected(option: &TargetOption, target: &SelectedUpdate) -> bool {
     match (option, target) {
         (TargetOption::Recommended { .. }, SelectedUpdate::Recommended)
-        | (TargetOption::ForcedCandidate { .. }, SelectedUpdate::ForcePlannedCandidate) => true,
+        | (TargetOption::ForcedCandidate { .. }, SelectedUpdate::ForcePlannedCandidate)
+        | (TargetOption::ManagerResolved { .. }, SelectedUpdate::ManagerResolved) => true,
         (
             TargetOption::AlternateExact { target_version, .. },
             SelectedUpdate::Exact {
                 target_version: selected,
             },
         ) => target_version == selected,
-        (TargetOption::ManagerResolved { .. }, SelectedUpdate::ManagerResolved) => true,
         _ => false,
     }
 }
@@ -1601,7 +1605,7 @@ mod tests {
         let view = SelectionView {
             manager_id: ManagerId::new("pnpm").expect("valid manager id"),
             rows: vec![SelectionRow {
-                plan_item_id: plan_item_id.clone(),
+                plan_item_id,
                 package_name: PackageName::new("alpha").expect("valid package name"),
                 installed_version: version("1.0.0"),
                 target_version: Some(recommended.clone()),
@@ -1609,7 +1613,6 @@ mod tests {
                 default_visibility: SelectionRowVisibility::Visible,
                 notes: Vec::new(),
                 initially_selected: true,
-                policy_exception: false,
                 target_options: vec![
                     TargetOption::AlternateExact {
                         target_version: alternate,

@@ -6,8 +6,8 @@ use semver::Version as SemverVersion;
 use upnow_domain::{
     AdvisoryLatestFact, AdvisoryReleaseLookup, BlockReason, CandidateAgeFact, CandidateAgeSource,
     CandidateEvaluationFact, DelayReason, ManagerSelectedTarget, MissingMetadataKind,
-    PlanDiagnostics, PlanItem, PlanItemId, PolicyBlockReason, PolicyWarning, ReleaseEntry,
-    ReleaseEvidenceSource, ReleaseLookupResult, ReleaseTimeline, TargetAgeEvidence,
+    PlanDiagnostics, PlanItem, PlanItemId, PlannedTargetRef, PolicyBlockReason, PolicyWarning,
+    ReleaseEntry, ReleaseEvidenceSource, ReleaseLookupResult, ReleaseTimeline, TargetAgeEvidence,
     TargetAgeLookupResult, TargetSelection, UpdateCandidate, UpdateSeed, VersionPolicy,
     VersionReleaseEvidence, VersionScheme, VersionText,
 };
@@ -150,6 +150,7 @@ fn evaluate_planner_selectable_seed(
     }
 }
 
+#[expect(clippy::too_many_lines)]
 fn evaluate_manager_selected_seed(
     id: PlanItemId,
     seed: UpdateSeed,
@@ -158,11 +159,17 @@ fn evaluate_manager_selected_seed(
     now: SystemTime,
     min_release_age: Duration,
 ) -> PlanItem {
+    let ManagerSelectedTarget {
+        target,
+        target_age,
+        advisory_release_lookup,
+        advisory_lookup_failure,
+    } = target;
     let mut diagnostics = PlanDiagnostics::new(min_release_age);
     diagnostics.advisory_latest =
-        advisory_latest_diagnostics(target.advisory_release_lookup.as_ref(), now);
-    diagnostics.advisory_lookup_failure = target.advisory_lookup_failure.clone();
-    let Some(selected_target) = target.target_version().cloned() else {
+        advisory_latest_diagnostics(advisory_release_lookup.as_ref(), now);
+    diagnostics.advisory_lookup_failure = advisory_lookup_failure;
+    let PlannedTargetRef::Known(selected_target) = target.as_ref() else {
         return PlanItem::Blocked {
             id,
             seed,
@@ -171,6 +178,7 @@ fn evaluate_manager_selected_seed(
             diagnostics: diagnostics.with_missing_metadata(MissingMetadataKind::SelectedUpdate),
         };
     };
+    let selected_target = selected_target.clone();
     match selected_target_is_update(&seed, &selected_target) {
         Ok(false) => {
             return PlanItem::Current {
@@ -196,9 +204,9 @@ fn evaluate_manager_selected_seed(
     let policy_decision = evaluate_policy(policy, installed_class, target_class);
     diagnostics.candidates.push(CandidateEvaluationFact {
         version: selected_target.clone(),
-        age: target_age_duration(&target.target_age, now),
+        age: target_age_duration(&target_age, now),
         policy_allowed: policy_decision.allowed(),
-        age_allowed: target_age_is_old_enough(&target.target_age, now, min_release_age),
+        age_allowed: target_age_is_old_enough(&target_age, now, min_release_age),
         policy_block_reason: policy_decision.block_reason(),
         policy_warning: policy_decision.warning(),
     });
@@ -215,7 +223,7 @@ fn evaluate_manager_selected_seed(
         }
     };
 
-    let target_age = match target.target_age {
+    let target_age = match target_age {
         TargetAgeLookupResult::Known(evidence) => {
             diagnostics.selected_target = Some(CandidateAgeFact::new(
                 selected_target.clone(),

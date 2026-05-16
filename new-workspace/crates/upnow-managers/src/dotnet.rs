@@ -336,7 +336,7 @@ pub fn commands_for_execution_plan(
             ExecutionCommandIntent::Exact(item) => {
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
-                    command: exact_command_for_item(item),
+                    command: exact_command_for_item(item)?,
                 });
             }
             ExecutionCommandIntent::NativeSelected(_) => {
@@ -441,12 +441,13 @@ fn fetch_registration_text(
     Ok(out)
 }
 
-fn exact_command_for_item(item: &ResolvedExecutionItem) -> CommandSpec {
-    exact_command_parts(
+fn exact_command_for_item(item: &ResolvedExecutionItem) -> Result<CommandSpec, DotnetError> {
+    Ok(exact_command_parts(
         &item.package_name,
-        item.known_target_version()
-            .expect("exact command requires known target"),
-    )
+        item.known_target_version().ok_or_else(|| {
+            DotnetError::UnsupportedCommandIntent("exact-without-known-target".to_owned())
+        })?,
+    ))
 }
 
 fn exact_command_parts(package_name: &PackageName, target_version: &VersionText) -> CommandSpec {

@@ -30,8 +30,9 @@ impl Display for SelectionStateError {
             Self::TargetUnavailable(id) => {
                 write!(formatter, "selection target is unavailable for `{id}`")
             }
-            Self::InvalidSelection(message) => write!(formatter, "{message}"),
-            Self::PlanningFailed(message) => write!(formatter, "{message}"),
+            Self::InvalidSelection(message) | Self::PlanningFailed(message) => {
+                write!(formatter, "{message}")
+            }
         }
     }
 }
@@ -167,6 +168,12 @@ impl InteractiveSelectionState {
         Ok(())
     }
 
+    /// Selects the manager-resolved target for an item.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the item is unknown or has no manager-resolved
+    /// target option.
     pub fn choose_manager_resolved(
         &mut self,
         plan_item_id: &PlanItemId,

@@ -4,11 +4,11 @@ use upnow_domain::{PolicyBlockReason, PolicyWarning, SkipReason, VersionPolicy, 
 
 use crate::version_label;
 
-pub(crate) fn released(age: Duration) -> String {
+pub fn released(age: Duration) -> String {
     format!("released: {}", human_age(age))
 }
 
-pub(crate) fn too_fresh(age: Option<Duration>, required_age: Duration) -> String {
+pub fn too_fresh(age: Option<Duration>, required_age: Duration) -> String {
     age.map_or_else(
         || format!("too fresh: need {}", human_age(required_age)),
         |age| {
@@ -21,7 +21,7 @@ pub(crate) fn too_fresh(age: Option<Duration>, required_age: Duration) -> String
     )
 }
 
-pub(crate) fn latest_too_fresh(
+pub fn latest_too_fresh(
     version: &VersionText,
     age: Option<Duration>,
     required_age: Option<Duration>,
@@ -38,7 +38,7 @@ pub(crate) fn latest_too_fresh(
     }
 }
 
-pub(crate) fn no_eligible_latest_too_fresh(
+pub fn no_eligible_latest_too_fresh(
     version: &VersionText,
     age: Option<Duration>,
     required_age: Option<Duration>,
@@ -50,7 +50,7 @@ pub(crate) fn no_eligible_latest_too_fresh(
     )
 }
 
-pub(crate) fn version_policy_blocked(reason: &PolicyBlockReason) -> String {
+pub fn version_policy_blocked(reason: &PolicyBlockReason) -> String {
     match reason {
         PolicyBlockReason::PreReleaseBlocked => "pre-release blocked by policy".to_owned(),
         PolicyBlockReason::TrackRegression => "track regression blocked by policy".to_owned(),
@@ -58,14 +58,14 @@ pub(crate) fn version_policy_blocked(reason: &PolicyBlockReason) -> String {
     }
 }
 
-pub(crate) fn latest_blocked_by_policy(version: &VersionText, policy: VersionPolicy) -> String {
+pub fn latest_blocked_by_policy(version: &VersionText, policy: VersionPolicy) -> String {
     format!(
         "latest {} blocked by version policy: {policy}",
         version_label(version.as_str())
     )
 }
 
-pub(crate) fn policy_warning(warning: PolicyWarning) -> &'static str {
+pub const fn policy_warning(warning: PolicyWarning) -> &'static str {
     match warning {
         PolicyWarning::InstalledTrackUnknownFallbackStable => {
             "same-track fell back to stable because installed track is unknown"
@@ -73,18 +73,18 @@ pub(crate) fn policy_warning(warning: PolicyWarning) -> &'static str {
     }
 }
 
-pub(crate) fn version_policy_warning(warning: PolicyWarning) -> String {
+pub fn version_policy_warning(warning: PolicyWarning) -> String {
     format!("version policy warning: {}", policy_warning(warning))
 }
 
-pub(crate) fn skip_reason(reason: &SkipReason) -> String {
+pub fn skip_reason(reason: &SkipReason) -> String {
     match reason {
         SkipReason::Pinned => "pinned".to_owned(),
         SkipReason::ManagerRule(detail) => detail.clone(),
     }
 }
 
-pub(crate) fn human_age(age: Duration) -> String {
+pub fn human_age(age: Duration) -> String {
     let seconds = age.as_secs();
     let days = seconds / (24 * 60 * 60);
     if days > 0 {

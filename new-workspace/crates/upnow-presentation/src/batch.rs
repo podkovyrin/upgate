@@ -149,13 +149,12 @@ const fn scan_issue_status(issue: &ScanIssue) -> OutcomeStatusView {
 
 fn note_for_scan_issue(issue: &ScanIssue) -> OutcomeNote {
     match issue {
-        ScanIssue::MissingReleaseMetadata | ScanIssue::ExcludedByManagerRule(_) => {
-            OutcomeNote::metadata(scan_issue_text(issue))
-        }
         ScanIssue::DiscoveryFailed { .. } | ScanIssue::ReleaseLookupFailed { .. } => {
             OutcomeNote::normal(scan_issue_text(issue))
         }
-        ScanIssue::UnsupportedManagerVersion { .. } => {
+        ScanIssue::MissingReleaseMetadata
+        | ScanIssue::ExcludedByManagerRule(_)
+        | ScanIssue::UnsupportedManagerVersion { .. } => {
             OutcomeNote::metadata(scan_issue_text(issue))
         }
     }
@@ -434,13 +433,12 @@ fn append_policy_warning_notes(mut row: OutcomeRow, warnings: &[PolicyWarning]) 
 }
 
 fn append_advisory_warning_notes(mut row: OutcomeRow, diagnostics: &PlanDiagnostics) -> OutcomeRow {
-    let advisory_failure =
-        diagnostics.advisory_lookup_failure.as_ref().or_else(|| {
-            match diagnostics.advisory_latest.as_ref() {
-                Some(AdvisoryLatestFact::LookupFailed { error, .. }) => Some(error),
-                _ => None,
-            }
-        });
+    let advisory_failure = diagnostics.advisory_lookup_failure.as_ref().or(
+        match diagnostics.advisory_latest.as_ref() {
+            Some(AdvisoryLatestFact::LookupFailed { error, .. }) => Some(error),
+            _ => None,
+        },
+    );
     if let Some(error) = advisory_failure {
         row = row.with_note(OutcomeNote::warning(format!(
             "advisory latest lookup failed: {}",

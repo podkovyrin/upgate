@@ -233,7 +233,7 @@ impl ManagerAdapter for GoManager {
 }
 
 /// Parses `go version -m <binary>` output.
-pub fn parse_go_version_m_output(text: &str) -> Option<GoBuildInfo> {
+fn parse_go_version_m_output(text: &str) -> Option<GoBuildInfo> {
     let mut install_path = None::<String>;
     let mut module_path = None::<String>;
     let mut version = None::<String>;
@@ -267,7 +267,7 @@ pub fn parse_go_version_m_output(text: &str) -> Option<GoBuildInfo> {
 /// # Errors
 ///
 /// Returns an error when the JSON is malformed.
-pub fn parse_module_versions_json(raw: &str) -> Result<Vec<String>, GoError> {
+fn parse_module_versions_json(raw: &str) -> Result<Vec<String>, GoError> {
     let parsed: GoListVersionsResponse =
         serde_json::from_str(raw).map_err(|err| GoError::Json(err.to_string()))?;
     Ok(parsed.versions)
@@ -278,7 +278,7 @@ pub fn parse_module_versions_json(raw: &str) -> Result<Vec<String>, GoError> {
 /// # Errors
 ///
 /// Returns an error when JSON or the timestamp is invalid.
-pub fn parse_module_time_json(version: &str, raw: &str) -> Result<Option<SystemTime>, GoError> {
+fn parse_module_time_json(version: &str, raw: &str) -> Result<Option<SystemTime>, GoError> {
     let parsed: GoListModuleResponse =
         serde_json::from_str(raw).map_err(|err| GoError::Json(err.to_string()))?;
     let Some(time_raw) = parsed.time.as_deref() else {
@@ -667,8 +667,9 @@ fn exact_command_for_item(
         .ok_or_else(|| GoError::MissingInstallPath(item.package_name.as_str().to_owned()))?;
     Ok(exact_command(
         install_path,
-        item.known_target_version()
-            .expect("exact command requires known target"),
+        item.known_target_version().ok_or_else(|| {
+            GoError::UnsupportedCommandIntent("exact-without-known-target".to_owned())
+        })?,
     ))
 }
 

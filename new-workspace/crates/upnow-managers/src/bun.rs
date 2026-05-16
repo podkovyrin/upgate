@@ -246,7 +246,7 @@ pub fn parse_pm_ls_json(raw: &str) -> Result<Vec<BunInstalledPackage>, BunError>
         })
         .collect()
 }
-pub fn is_missing_global_manifest(text: &str) -> bool {
+fn is_missing_global_manifest(text: &str) -> bool {
     text.contains("missing package.json")
         || text.contains("MissingPackageJSON")
         || text.contains("No package.json was found for directory")
@@ -382,7 +382,7 @@ pub fn parse_bun_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTi
         serde_json::from_str(raw).map_err(|err| BunError::Json(err.to_string()))?;
     time_map_to_timeline(package, timestamps)
 }
-pub fn bun_global_cwd_from_values(bun_install: Option<&str>, home: Option<&str>) -> Option<String> {
+fn bun_global_cwd_from_values(bun_install: Option<&str>, home: Option<&str>) -> Option<String> {
     bun_install
         .and_then(trim_non_empty)
         .map(|path| format!("{path}/install/global"))
@@ -428,13 +428,15 @@ pub fn commands_for_execution_plan(
                 });
             }
             ExecutionCommandIntent::Exact(item) => {
+                let target_version = item.known_target_version().ok_or_else(|| {
+                    BunError::UnsupportedCommandIntent("exact-without-known-target".to_owned())
+                })?;
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
                     command: exact_command_with_program(
                         runtime.executable(),
                         &item.package_name,
-                        item.known_target_version()
-                            .expect("exact command requires known target"),
+                        target_version,
                         min_release_age,
                         item.bypass_min_release_age,
                     ),

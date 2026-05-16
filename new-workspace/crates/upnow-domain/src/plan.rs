@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::BTreeSet, time::Duration};
 
 use crate::{
     DomainError, InstalledTool, ManagerId, PackageName, PolicyWarning, ReleaseLookupError,
@@ -324,6 +324,7 @@ pub enum PlannedTargetRef<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(clippy::struct_excessive_bools)]
 pub struct ExecutionSupport {
     pub exact: bool,
     pub native_selected: bool,
@@ -549,14 +550,13 @@ impl UpdatePlan {
         items: Vec<PlanItem>,
         issues: Vec<PlanIssue>,
     ) -> Result<Self, DomainError> {
-        let mut seen = Vec::new();
+        let mut seen = BTreeSet::new();
         for item in &items {
-            if seen.contains(item.id()) {
+            if !seen.insert(item.id().clone()) {
                 return Err(DomainError::DuplicatePlanItemId(
                     item.id().as_str().to_owned(),
                 ));
             }
-            seen.push(item.id().clone());
         }
 
         Ok(Self {

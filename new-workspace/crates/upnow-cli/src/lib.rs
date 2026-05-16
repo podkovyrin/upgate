@@ -1364,7 +1364,7 @@ fn validate_required_mutation_mode(env: &Env, mutation_mode: MutationMode) -> Re
     }
 }
 
-fn skip_mode_hint() -> &'static str {
+const fn skip_mode_hint() -> &'static str {
     if cfg!(debug_assertions) {
         "set UPNOW_SKIP_MUTATING_COMMANDS=1 or --debug-no-mutate in debug builds"
     } else {
@@ -1372,7 +1372,7 @@ fn skip_mode_hint() -> &'static str {
     }
 }
 
-fn real_mode_hint() -> &'static str {
+const fn real_mode_hint() -> &'static str {
     if cfg!(debug_assertions) {
         "set UPNOW_SKIP_MUTATING_COMMANDS=0 and disable --debug-no-mutate"
     } else {

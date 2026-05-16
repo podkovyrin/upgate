@@ -75,8 +75,8 @@ pub fn update_plan_from_inputs(
     UpdatePlan::new(manager_id, items)
 }
 
-fn plan_item_id(manager_id: &ManagerId, package_name: &str) -> Result<PlanItemId, DomainError> {
-    PlanItemId::new(format!("{}:{package_name}", manager_id.as_str()))
+fn plan_item_id(manager_id: &ManagerId, tool_id: &str) -> Result<PlanItemId, DomainError> {
+    PlanItemId::new(format!("{}:{tool_id}", manager_id.as_str()))
 }
 
 /// Selects default batch apply items according to the manager selection policy.

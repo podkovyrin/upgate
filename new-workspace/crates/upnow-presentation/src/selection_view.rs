@@ -25,7 +25,6 @@ pub struct SelectionRow {
     pub default_visibility: SelectionRowVisibility,
     pub notes: Vec<CandidateNotePart>,
     pub initially_selected: bool,
-    pub policy_exception: bool,
     pub target_options: Vec<TargetOption>,
 }
 
@@ -187,7 +186,6 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
                 default_visibility: SelectionRowVisibility::Visible,
                 notes,
                 initially_selected: selected,
-                policy_exception: selection_policy.except.contains(&candidate.package_name),
                 target_options,
             }
         }
@@ -200,7 +198,6 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
             default_visibility: SelectionRowVisibility::HiddenUntilViewAll,
             notes: Vec::new(),
             initially_selected: false,
-            policy_exception: selection_policy.except.contains(&installed.package_name),
             target_options: Vec::new(),
         },
         PlanItem::Delayed {
@@ -223,7 +220,6 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
                 },
                 notes,
                 initially_selected: false,
-                policy_exception: selection_policy.except.contains(&candidate.package_name),
                 target_options,
             }
         }
@@ -245,9 +241,6 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
                 default_visibility: SelectionRowVisibility::HiddenUntilViewAll,
                 notes,
                 initially_selected: false,
-                policy_exception: selection_policy
-                    .except
-                    .contains(&seed.installed.package_name),
                 target_options,
             }
         }
@@ -266,7 +259,6 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
                 reason.clone(),
             ))],
             initially_selected: false,
-            policy_exception: selection_policy.except.contains(&installed.package_name),
             target_options: Vec::new(),
         },
         PlanItem::ResolverError {
@@ -286,7 +278,6 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
                 },
             )],
             initially_selected: false,
-            policy_exception: selection_policy.except.contains(&installed.package_name),
             target_options: Vec::new(),
         },
     }
@@ -426,7 +417,7 @@ fn target_options_for_known_primary(
     options
 }
 
-fn primary_option(
+const fn primary_option(
     kind: TargetOptionKind,
     target_version: VersionText,
     note_parts: Vec<CandidateNotePart>,
