@@ -190,9 +190,9 @@ pub trait ManagerAdapter {
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
-        max_parallel_checks: usize,
+        max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerScanEvidenceInput>, ManagerAdapterError> {
-        let _ = max_parallel_checks;
+        let _ = max_parallel_checks_per_manager;
         self.scan_inputs(process, env)?
             .into_iter()
             .map(|input| match input {

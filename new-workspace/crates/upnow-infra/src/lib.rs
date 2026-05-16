@@ -17,7 +17,7 @@ pub use http::{
     HttpResponse, HttpSettings, blocking_client, env_base_url,
 };
 pub use logging::{LoggingOptions, init_logging};
-pub use parallel::{effective_parallelism, run_ordered_parallel};
+pub use parallel::{effective_parallelism, run_ordered_parallel, run_ordered_parallel_stoppable};
 pub use process::{
     CommandCheck, CommandFailure, CommandOutput, CommandSpec, FakeProcess, MUTATION_ENABLE_NOTICE,
     MUTATION_SKIP_NOTICE, MutationMode, ProcessRunner, REQUIRE_MUTATION_MODE_ENV,
@@ -65,6 +65,9 @@ pub enum InfraError {
     ParallelPoolBuild {
         label: String,
         detail: String,
+    },
+    ParallelWorkerPanic {
+        label: String,
     },
 }
 
@@ -119,6 +122,9 @@ impl fmt::Display for InfraError {
             Self::ClockBeforeUnixEpoch => formatter.write_str("system clock before UNIX epoch"),
             Self::ParallelPoolBuild { label, detail } => {
                 write!(formatter, "failed to build {label} thread pool: {detail}")
+            }
+            Self::ParallelWorkerPanic { label } => {
+                write!(formatter, "{label} worker thread panicked")
             }
         }
     }

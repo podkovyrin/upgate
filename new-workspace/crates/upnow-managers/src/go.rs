@@ -151,7 +151,7 @@ impl ManagerAdapter for GoManager {
         process: &ProcessRunner,
         _http: &HttpClient,
         env: &Env,
-        _max_parallel_checks: usize,
+        _max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerScanEvidenceInput>, ManagerAdapterError> {
         let discovered = discover_global_tools(process, env).map_err(|err| adapter_error(&err))?;
         discovered

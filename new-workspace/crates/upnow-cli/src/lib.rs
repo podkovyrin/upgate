@@ -5,6 +5,7 @@ pub mod config;
 pub mod registry;
 
 use std::fmt::{self, Display};
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,7 +29,7 @@ use upnow_execution::{
 };
 use upnow_infra::{
     Clock, Env, HttpClient, HttpSettings, LoggingOptions, MutationMode, ProcessRunner,
-    REQUIRE_MUTATION_MODE_ENV, init_logging,
+    REQUIRE_MUTATION_MODE_ENV, init_logging, run_ordered_parallel, run_ordered_parallel_stoppable,
 };
 use upnow_managers::adapter::{ManagerAdapter, ManagerAdapterError};
 use upnow_planning::{PlanningSettings, default_batch_selection, update_plan_from_inputs};
@@ -45,7 +46,7 @@ use upnow_presentation::{
 };
 use upnow_release::release_age_for_evidence;
 
-const DEFAULT_MAX_PARALLEL_CHECKS: usize = 6;
+const DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchCommand {
@@ -71,9 +72,12 @@ struct Cli {
     overrides: Vec<String>,
     #[arg(long, global = true)]
     verbose: bool,
-    /// Maximum concurrent metadata checks.
-    #[arg(long, default_value_t = DEFAULT_MAX_PARALLEL_CHECKS, global = true)]
-    max_parallel_checks: usize,
+    /// Maximum concurrent metadata checks per manager.
+    #[arg(long, default_value_t = DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER, global = true)]
+    max_parallel_checks_per_manager: usize,
+    /// Maximum managers to scan or plan concurrently.
+    #[arg(long, global = true)]
+    manager_concurrency: Option<NonZeroUsize>,
     #[arg(long, global = true)]
     no_color: bool,
     #[arg(long, global = true)]
@@ -229,9 +233,10 @@ pub fn run_batch(
         &env,
         clock,
         OutputTheme::plain(verbose),
-        DEFAULT_MAX_PARALLEL_CHECKS,
+        DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER,
         selected_managers,
         overrides,
+        None,
     )
 }
 
@@ -305,9 +310,44 @@ pub fn run_interactive_apply_with_sources(
     selected_managers: &[String],
     overrides: &[String],
 ) -> Result<String, AppError> {
-    let (config, manager_configs) =
+    run_interactive_apply_with_sources_and_manager_concurrency_override(
+        config,
+        process,
+        http,
+        env,
+        clock,
+        selected_managers,
+        overrides,
+        None,
+    )
+}
+
+#[expect(clippy::too_many_arguments)]
+fn run_interactive_apply_with_sources_and_manager_concurrency_override(
+    config: UpnowConfig,
+    process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
+    clock: Clock,
+    selected_managers: &[String],
+    overrides: &[String],
+    manager_concurrency_override: Option<usize>,
+) -> Result<String, AppError> {
+    let (mut config, manager_configs) =
         prepare_interactive_manager_configs(config, selected_managers, overrides)?;
-    match run_live_confirmed_selection(config, manager_configs, process, http, env, clock)? {
+    if let Some(manager_concurrency) = manager_concurrency_override {
+        config.set_manager_concurrency(manager_concurrency)?;
+    }
+    let manager_concurrency = config.manager_concurrency()?;
+    match run_live_confirmed_selection(
+        config,
+        manager_configs,
+        process,
+        http,
+        env,
+        clock,
+        manager_concurrency,
+    )? {
         Some((config, confirmed)) => {
             execute_confirmed_interactive_apply_live(config, process, env, confirmed)?;
             Ok(String::new())
@@ -341,9 +381,10 @@ pub fn run_batch_with_sources(
         env,
         clock,
         OutputTheme::plain(verbose),
-        DEFAULT_MAX_PARALLEL_CHECKS,
+        DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER,
         selected_managers,
         overrides,
+        None,
     )
 }
 
@@ -356,9 +397,10 @@ fn run_batch_with_theme_and_sources(
     env: &Env,
     clock: Clock,
     theme: OutputTheme,
-    max_parallel_checks: usize,
+    max_parallel_checks_per_manager: usize,
     selected_managers: &[String],
     overrides: &[String],
+    manager_concurrency_override: Option<usize>,
 ) -> Result<String, AppError> {
     let terminal = BatchTerminal::disabled(theme);
     run_batch_with_terminal_and_sources(
@@ -370,9 +412,10 @@ fn run_batch_with_theme_and_sources(
         clock,
         theme,
         terminal,
-        max_parallel_checks,
+        max_parallel_checks_per_manager,
         selected_managers,
         overrides,
+        manager_concurrency_override,
     )
 }
 
@@ -386,9 +429,10 @@ fn run_batch_with_terminal_and_sources(
     clock: Clock,
     theme: OutputTheme,
     terminal: BatchTerminal,
-    max_parallel_checks: usize,
+    max_parallel_checks_per_manager: usize,
     selected_managers: &[String],
     overrides: &[String],
+    manager_concurrency_override: Option<usize>,
 ) -> Result<String, AppError> {
     if !selected_managers.is_empty() {
         config.apply_selected_managers_cli_override(selected_managers)?;
@@ -396,7 +440,11 @@ fn run_batch_with_terminal_and_sources(
     for override_value in overrides {
         config.apply_cli_override(override_value)?;
     }
+    if let Some(manager_concurrency) = manager_concurrency_override {
+        config.set_manager_concurrency(manager_concurrency)?;
+    }
     let manager_ids = selected_manager_ids(selected_managers)?;
+    let manager_concurrency = config.manager_concurrency()?;
     run_batch_for_managers(
         command,
         &config,
@@ -406,7 +454,8 @@ fn run_batch_with_terminal_and_sources(
         clock,
         theme,
         terminal,
-        max_parallel_checks,
+        max_parallel_checks_per_manager,
+        manager_concurrency,
         &manager_ids,
     )
 }
@@ -455,16 +504,24 @@ fn prepare_interactive_apply_with_sources(
 ) -> Result<PreparedInteractiveApply, AppError> {
     let (config, manager_configs) =
         prepare_interactive_manager_configs(config, selected_managers, overrides)?;
-    let mut managers = Vec::new();
-    for manager_config in manager_configs {
-        let manager = configured_manager(manager_config.clone()).map_err(map_manager_error)?;
-        let plan =
-            build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config)?;
-        managers.push(PreparedInteractiveManagerApply {
-            plan,
-            manager_config,
-        });
-    }
+    let manager_concurrency = config.manager_concurrency()?;
+    let managers = run_ordered_parallel(
+        manager_configs,
+        manager_concurrency,
+        "interactive planning managers",
+        |manager_config| {
+            let manager = configured_manager(manager_config.clone()).map_err(map_manager_error)?;
+            let plan =
+                build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config)?;
+            Ok(PreparedInteractiveManagerApply {
+                plan,
+                manager_config,
+            })
+        },
+    )
+    .map_err(|err| AppError::Execution(err.to_string()))?
+    .into_iter()
+    .collect::<Result<Vec<_>, AppError>>()?;
     Ok(PreparedInteractiveApply {
         config,
         managers,
@@ -569,6 +626,7 @@ fn run_live_confirmed_selection(
     http: &HttpClient,
     env: &Env,
     clock: Clock,
+    manager_concurrency: usize,
 ) -> Result<Option<(UpnowConfig, Vec<ConfirmedInteractiveManagerApply>)>, AppError> {
     let manager_ids = manager_configs
         .iter()
@@ -589,6 +647,7 @@ fn run_live_confirmed_selection(
             &http,
             &env,
             clock,
+            manager_concurrency,
             &event_tx,
             &worker_stop,
         );
@@ -604,6 +663,9 @@ fn run_live_confirmed_selection(
         Ok(outcome) => outcome,
         Err(err) => {
             stop_requested.store(true, Ordering::Relaxed);
+            worker.join().map_err(|_| {
+                AppError::Planning("interactive planning worker panicked".to_owned())
+            })?;
             return Err(AppError::Planning(err.to_string()));
         }
     };
@@ -611,6 +673,9 @@ fn run_live_confirmed_selection(
     match outcome {
         InteractiveSelectionOutcome::Cancelled => {
             stop_requested.store(true, Ordering::Relaxed);
+            worker.join().map_err(|_| {
+                AppError::Planning("interactive planning worker panicked".to_owned())
+            })?;
             Ok(None)
         }
         InteractiveSelectionOutcome::Confirmed(drafts) => {
@@ -633,58 +698,32 @@ fn prepare_interactive_apply_with_events(
     http: &HttpClient,
     env: &Env,
     clock: Clock,
+    manager_concurrency: usize,
     event_tx: &mpsc::Sender<InteractiveSelectionPlanningEvent>,
     stop_requested: &AtomicBool,
 ) -> Result<PreparedInteractiveApply, AppError> {
+    let worker_results = run_interactive_planning_workers(
+        manager_configs,
+        process,
+        http,
+        env,
+        clock,
+        manager_concurrency,
+        event_tx,
+        stop_requested,
+    )?;
+
     let mut managers = Vec::new();
     let mut planning_failures = Vec::new();
-    for manager_config in manager_configs {
-        if stop_requested.load(Ordering::Relaxed) {
-            break;
-        }
-        let _ = event_tx.send(InteractiveSelectionPlanningEvent::ManagerStarted {
-            manager_id: manager_config.manager_id.clone(),
-        });
-        let manager = match configured_manager(manager_config.clone()).map_err(map_manager_error) {
-            Ok(manager) => manager,
-            Err(err @ AppError::Interrupted(_)) => return Err(err),
-            Err(err) => {
-                let detail = err.to_string();
-                let manager_id = manager_config.manager_id;
-                let _ = event_tx.send(InteractiveSelectionPlanningEvent::ManagerError {
-                    manager_id: manager_id.clone(),
-                    detail: detail.clone(),
-                });
-                planning_failures.push((manager_id, detail));
-                continue;
-            }
-        };
-        match build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config) {
-            Ok(plan) => {
-                let selection_policy = manager_config.selection.clone();
-                let view = selection_view(&plan, &selection_policy);
-                let _ = event_tx.send(InteractiveSelectionPlanningEvent::ManagerReady {
-                    view,
-                    issues: plan.issues.clone(),
-                    selection_policy,
-                });
-                managers.push(PreparedInteractiveManagerApply {
-                    plan,
-                    manager_config,
-                });
-            }
-            Err(err @ AppError::Interrupted(_)) => return Err(err),
-            Err(err) => {
-                let detail = err.to_string();
-                let manager_id = manager_config.manager_id;
-                let _ = event_tx.send(InteractiveSelectionPlanningEvent::ManagerError {
-                    manager_id: manager_id.clone(),
-                    detail: detail.clone(),
-                });
-                planning_failures.push((manager_id, detail));
-            }
+    for result in worker_results {
+        match result {
+            InteractivePlanningWorkerResult::Ready { manager, .. } => managers.push(manager),
+            InteractivePlanningWorkerResult::Failed {
+                manager_id, detail, ..
+            } => planning_failures.push((manager_id, detail)),
         }
     }
+
     if !stop_requested.load(Ordering::Relaxed) {
         let _ = event_tx.send(InteractiveSelectionPlanningEvent::Finished);
     }
@@ -693,6 +732,103 @@ fn prepare_interactive_apply_with_events(
         managers,
         planning_failures,
     })
+}
+
+enum InteractivePlanningWorkerResult {
+    Ready {
+        manager: PreparedInteractiveManagerApply,
+    },
+    Failed {
+        manager_id: ManagerId,
+        detail: String,
+    },
+}
+
+#[expect(clippy::too_many_arguments)]
+fn run_interactive_planning_workers(
+    manager_configs: Vec<ManagerConfig>,
+    process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
+    clock: Clock,
+    manager_concurrency: usize,
+    event_tx: &mpsc::Sender<InteractiveSelectionPlanningEvent>,
+    stop_requested: &AtomicBool,
+) -> Result<Vec<InteractivePlanningWorkerResult>, AppError> {
+    run_ordered_parallel_stoppable(
+        manager_configs,
+        manager_concurrency,
+        "interactive planning managers",
+        stop_requested,
+        |manager_config| {
+            prepare_one_interactive_manager_with_events(
+                manager_config,
+                process,
+                http,
+                env,
+                clock,
+                event_tx,
+            )
+        },
+        |result| result.as_ref().is_err_and(AppError::is_interruption),
+    )
+    .map_err(|err| AppError::Execution(err.to_string()))?
+    .into_iter()
+    .collect::<Result<Vec<_>, AppError>>()
+}
+
+fn prepare_one_interactive_manager_with_events(
+    manager_config: ManagerConfig,
+    process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
+    clock: Clock,
+    event_tx: &mpsc::Sender<InteractiveSelectionPlanningEvent>,
+) -> Result<InteractivePlanningWorkerResult, AppError> {
+    let manager_id = manager_config.manager_id.clone();
+    let _ = event_tx.send(InteractiveSelectionPlanningEvent::ManagerStarted {
+        manager_id: manager_id.clone(),
+    });
+
+    let manager = match configured_manager(manager_config.clone()).map_err(map_manager_error) {
+        Ok(manager) => manager,
+        Err(err @ AppError::Interrupted(_)) => return Err(err),
+        Err(err) => {
+            let detail = err.to_string();
+            let _ = event_tx.send(InteractiveSelectionPlanningEvent::ManagerError {
+                manager_id: manager_id.clone(),
+                detail: detail.clone(),
+            });
+            return Ok(InteractivePlanningWorkerResult::Failed { manager_id, detail });
+        }
+    };
+
+    match build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config) {
+        Ok(plan) => {
+            let selection_policy = manager_config.selection.clone();
+            let view = selection_view(&plan, &selection_policy);
+            let _ = event_tx.send(InteractiveSelectionPlanningEvent::ManagerReady {
+                view,
+                issues: plan.issues.clone(),
+                selection_policy,
+            });
+            Ok(InteractivePlanningWorkerResult::Ready {
+                manager: PreparedInteractiveManagerApply {
+                    plan,
+                    manager_config,
+                },
+            })
+        }
+        Err(err @ AppError::Interrupted(_)) => Err(err),
+        Err(err) => {
+            let detail = err.to_string();
+            let _ = event_tx.send(InteractiveSelectionPlanningEvent::ManagerError {
+                manager_id: manager_id.clone(),
+                detail: detail.clone(),
+            });
+            Ok(InteractivePlanningWorkerResult::Failed { manager_id, detail })
+        }
+    }
 }
 
 fn confirmed_from_drafts(
@@ -950,24 +1086,52 @@ fn run_batch_for_managers(
     clock: Clock,
     theme: OutputTheme,
     terminal: BatchTerminal,
-    max_parallel_checks: usize,
+    max_parallel_checks_per_manager: usize,
+    manager_concurrency: usize,
     manager_ids: &[ManagerId],
 ) -> Result<String, AppError> {
-    let mut table = OutcomeTable::default();
-    let mut had_error = false;
-    for manager_id in manager_ids {
-        match run_manager_batch(
-            command,
+    let _spinner = terminal.start_action_spinner(command.terminal_action());
+    if command == BatchCommand::Apply {
+        return run_batch_apply_for_managers(
             config,
             process,
             http,
             env,
             clock,
             theme,
-            terminal,
-            manager_id,
-            max_parallel_checks,
-        ) {
+            manager_concurrency,
+            manager_ids,
+        );
+    }
+
+    let stop_requested = AtomicBool::new(false);
+    let manager_outputs = run_ordered_parallel_stoppable(
+        manager_ids.to_vec(),
+        manager_concurrency,
+        &format!("{} managers", command.as_str()),
+        &stop_requested,
+        |manager_id| {
+            let result = run_manager_scan_or_plan_batch(
+                command,
+                config,
+                process,
+                http,
+                env,
+                clock,
+                theme,
+                &manager_id,
+                max_parallel_checks_per_manager,
+            );
+            (manager_id, result)
+        },
+        |(_, result)| result.as_ref().is_err_and(AppError::is_interruption),
+    )
+    .map_err(|err| AppError::Execution(err.to_string()))?;
+
+    let mut table = OutcomeTable::default();
+    let mut had_error = false;
+    for (manager_id, manager_output) in manager_outputs {
+        match manager_output {
             Ok(manager_output) => {
                 had_error |= manager_output.failed;
                 table.rows.extend(manager_output.table.rows);
@@ -976,7 +1140,7 @@ fn run_batch_for_managers(
             Err(err) => {
                 had_error = true;
                 table.rows.extend(
-                    manager_error_table(manager_id, command.as_str(), &err.to_string()).rows,
+                    manager_error_table(&manager_id, command.as_str(), &err.to_string()).rows,
                 );
             }
         }
@@ -994,8 +1158,19 @@ struct ManagerBatchOutput {
     failed: bool,
 }
 
+struct PreparedBatchApply {
+    plan: UpdatePlan,
+    manager_config: ManagerConfig,
+    execution_plan: ResolvedExecutionPlan,
+}
+
+enum ManagerApplyPreparation {
+    Skipped,
+    Ready(PreparedBatchApply),
+}
+
 #[expect(clippy::too_many_arguments)]
-fn run_manager_batch(
+fn run_manager_scan_or_plan_batch(
     command: BatchCommand,
     config: &UpnowConfig,
     process: &ProcessRunner,
@@ -1003,9 +1178,8 @@ fn run_manager_batch(
     env: &Env,
     clock: Clock,
     theme: OutputTheme,
-    terminal: BatchTerminal,
     manager_id: &ManagerId,
-    max_parallel_checks: usize,
+    max_parallel_checks_per_manager: usize,
 ) -> Result<ManagerBatchOutput, AppError> {
     ensure_known_manager(manager_id.as_str()).map_err(map_manager_error)?;
     let manager_config = config.resolve_manager(manager_id.as_str())?;
@@ -1015,8 +1189,6 @@ fn run_manager_batch(
             failed: false,
         });
     }
-
-    let _spinner = terminal.start_manager_spinner(command.terminal_action(), manager_id.as_str());
 
     match command {
         BatchCommand::Scan if theme.verbose => {
@@ -1032,7 +1204,7 @@ fn run_manager_batch(
                         http,
                         env,
                         clock.now(),
-                        max_parallel_checks,
+                        max_parallel_checks_per_manager,
                     )?,
                     options,
                 ),
@@ -1062,36 +1234,130 @@ fn run_manager_batch(
                 failed: false,
             })
         }
-        BatchCommand::Apply => {
-            let manager = configured_manager(manager_config.clone()).map_err(map_manager_error)?;
-            let plan =
-                build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config)?;
-            let selection = default_batch_selection(&plan, &manager_config.selection)
-                .map_err(|err| AppError::Planning(err.to_string()))?;
-            let execution_plan = resolve_selection_for_execution(
-                &plan,
-                &selection,
-                manager.capabilities(),
-                manager_config.version_policy,
-            )
-            .map_err(map_execution_selection_error)?;
-            let commands = manager
-                .commands_for_execution_plan(process, env, &execution_plan)
-                .map_err(map_manager_error)?;
-            let report =
-                execute_commands(plan.manager_id.clone(), commands, process).map_err(|err| {
-                    if err.is_interruption() {
-                        AppError::Interrupted(err.to_string())
-                    } else {
-                        AppError::Execution(err.to_string())
+        BatchCommand::Apply => Err(AppError::Execution(
+            "batch apply must be prepared before serial execution".to_owned(),
+        )),
+    }
+}
+
+#[expect(clippy::too_many_arguments)]
+fn run_batch_apply_for_managers(
+    config: &UpnowConfig,
+    process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
+    clock: Clock,
+    theme: OutputTheme,
+    manager_concurrency: usize,
+    manager_ids: &[ManagerId],
+) -> Result<String, AppError> {
+    let stop_requested = AtomicBool::new(false);
+    let prepared = run_ordered_parallel_stoppable(
+        manager_ids.to_vec(),
+        manager_concurrency,
+        "apply planning managers",
+        &stop_requested,
+        |manager_id| {
+            let result =
+                prepare_manager_batch_apply(config, process, http, env, clock, &manager_id);
+            (manager_id, result)
+        },
+        |(_, result)| result.as_ref().is_err_and(AppError::is_interruption),
+    )
+    .map_err(|err| AppError::Execution(err.to_string()))?;
+
+    let mut table = OutcomeTable::default();
+    let mut had_error = false;
+    for (manager_id, prepared_manager) in prepared {
+        match prepared_manager {
+            Ok(ManagerApplyPreparation::Skipped) => {}
+            Ok(ManagerApplyPreparation::Ready(prepared_manager)) => {
+                match execute_prepared_batch_apply(process, env, prepared_manager) {
+                    Ok(manager_output) => {
+                        had_error |= manager_output.failed;
+                        table.rows.extend(manager_output.table.rows);
                     }
-                })?;
-            Ok(ManagerBatchOutput {
-                table: execution_report_table(&report, &plan.issues),
-                failed: execution_report_has_failures(&report),
-            })
+                    Err(err) if err.is_interruption() => return Err(err),
+                    Err(err) => {
+                        had_error = true;
+                        table.rows.extend(
+                            manager_error_table(&manager_id, "apply", &err.to_string()).rows,
+                        );
+                    }
+                }
+            }
+            Err(err) if err.is_interruption() => return Err(err),
+            Err(err) => {
+                had_error = true;
+                table
+                    .rows
+                    .extend(manager_error_table(&manager_id, "apply", &err.to_string()).rows);
+            }
         }
     }
+
+    let output = render_batch_table(&table, theme);
+    if had_error {
+        Err(AppError::Manager(output))
+    } else {
+        Ok(output)
+    }
+}
+
+fn prepare_manager_batch_apply(
+    config: &UpnowConfig,
+    process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
+    clock: Clock,
+    manager_id: &ManagerId,
+) -> Result<ManagerApplyPreparation, AppError> {
+    ensure_known_manager(manager_id.as_str()).map_err(map_manager_error)?;
+    let manager_config = config.resolve_manager(manager_id.as_str())?;
+    if !manager_mode_allows_run(manager_config.mode, true) {
+        return Ok(ManagerApplyPreparation::Skipped);
+    }
+
+    let manager = configured_manager(manager_config.clone()).map_err(map_manager_error)?;
+    let plan = build_manager_plan(manager.as_ref(), process, http, env, clock, &manager_config)?;
+    let selection = default_batch_selection(&plan, &manager_config.selection)
+        .map_err(|err| AppError::Planning(err.to_string()))?;
+    let execution_plan = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        manager.capabilities(),
+        manager_config.version_policy,
+    )
+    .map_err(map_execution_selection_error)?;
+
+    Ok(ManagerApplyPreparation::Ready(PreparedBatchApply {
+        plan,
+        manager_config,
+        execution_plan,
+    }))
+}
+
+fn execute_prepared_batch_apply(
+    process: &ProcessRunner,
+    env: &Env,
+    prepared: PreparedBatchApply,
+) -> Result<ManagerBatchOutput, AppError> {
+    let manager = configured_manager(prepared.manager_config).map_err(map_manager_error)?;
+    let commands = manager
+        .commands_for_execution_plan(process, env, &prepared.execution_plan)
+        .map_err(map_manager_error)?;
+    let report =
+        execute_commands(prepared.plan.manager_id.clone(), commands, process).map_err(|err| {
+            if err.is_interruption() {
+                AppError::Interrupted(err.to_string())
+            } else {
+                AppError::Execution(err.to_string())
+            }
+        })?;
+    Ok(ManagerBatchOutput {
+        table: execution_report_table(&report, &prepared.plan.issues),
+        failed: execution_report_has_failures(&report),
+    })
 }
 
 fn build_scan_report(
@@ -1147,7 +1413,7 @@ fn build_verbose_scan_report(
     http: &HttpClient,
     env: &Env,
     now: SystemTime,
-    max_parallel_checks: usize,
+    max_parallel_checks_per_manager: usize,
 ) -> Result<ScanReport, AppError> {
     match manager.unsupported_manager_version(process) {
         Ok(Some(unsupported)) => {
@@ -1172,7 +1438,12 @@ fn build_verbose_scan_report(
             ));
         }
     }
-    match manager.scan_inputs_with_release_evidence(process, http, env, max_parallel_checks) {
+    match manager.scan_inputs_with_release_evidence(
+        process,
+        http,
+        env,
+        max_parallel_checks_per_manager,
+    ) {
         Ok(inputs) => Ok(ScanReport::new(
             manager_id,
             inputs
@@ -1247,12 +1518,16 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
                 "--interactive is only supported with apply".to_owned(),
             ));
         }
-        return run_interactive_apply(
+        return run_interactive_apply_with_sources_and_manager_concurrency_override(
             config,
             &process,
+            &HttpClient::real(&HttpSettings::default_client_settings())
+                .map_err(|err| AppError::Manager(err.to_string()))?,
+            &env,
             Clock::system(),
             &cli.managers,
             &cli.overrides,
+            cli.manager_concurrency.map(NonZeroUsize::get),
         );
     }
     let theme = OutputTheme::from_environment(ThemeOptions {
@@ -1272,9 +1547,10 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
         Clock::system(),
         theme,
         terminal,
-        cli.max_parallel_checks,
+        cli.max_parallel_checks_per_manager,
         &cli.managers,
         &cli.overrides,
+        cli.manager_concurrency.map(NonZeroUsize::get),
     )
 }
 

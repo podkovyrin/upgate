@@ -34,6 +34,12 @@ fn missing_config_uses_global_defaults() {
             .expect("scan age should resolve"),
         Duration::from_secs(365 * 24 * 60 * 60)
     );
+    assert_eq!(
+        config
+            .manager_concurrency()
+            .expect("manager concurrency should resolve"),
+        4
+    );
 
     let npm = config.resolve_manager("npm").expect("npm should resolve");
     assert_eq!(npm.mode, ManagerMode::Apply);
@@ -50,6 +56,7 @@ fn file_values_resolve_to_typed_manager_config() {
         r#"
 [upnow]
 scan_old_age_threshold = "30d"
+manager_concurrency = 3
 
 [brew]
 mode = "plan"
@@ -69,6 +76,12 @@ except = ["aom"]
             .scan_old_age_threshold()
             .expect("scan threshold should parse"),
         Duration::from_secs(30 * 24 * 60 * 60)
+    );
+    assert_eq!(
+        config
+            .manager_concurrency()
+            .expect("manager concurrency should parse"),
+        3
     );
 
     let brew = config.resolve_manager("brew").expect("brew should resolve");
@@ -218,6 +231,29 @@ fn cli_overrides_reject_unknown_and_non_phase_five_values() {
             value
         }) if manager_id == "npm" && value == "any"
     ));
+    assert!(matches!(
+        config.apply_cli_override("upnow.manager_concurrency=0"),
+        Err(ConfigError::InvalidManagerConcurrency { value: 0 })
+    ));
+}
+
+#[test]
+fn dedicated_manager_concurrency_override_wins_after_set_override() {
+    let mut config = UpnowConfig::default();
+
+    config
+        .apply_cli_override("upnow.manager_concurrency=2")
+        .expect("generic override should apply");
+    config
+        .set_manager_concurrency(5)
+        .expect("dedicated override should apply");
+
+    assert_eq!(
+        config
+            .manager_concurrency()
+            .expect("manager concurrency should resolve"),
+        5
+    );
 }
 
 #[test]

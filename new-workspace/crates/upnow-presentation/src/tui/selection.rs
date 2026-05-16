@@ -433,7 +433,7 @@ impl InteractiveSelectionScreen {
             .iter()
             .any(|manager| manager.planning_status == ManagerPlanningStatus::Planning)
         {
-            return Some("Planning updates...".to_owned());
+            return Some("Planning...".to_owned());
         }
         if self
             .managers
@@ -942,7 +942,7 @@ fn empty_manager_state(
 fn manager_placeholder_message(manager: &ManagerSelectionState) -> String {
     match &manager.planning_status {
         ManagerPlanningStatus::Waiting => "Waiting to plan".to_owned(),
-        ManagerPlanningStatus::Planning => "Planning updates...".to_owned(),
+        ManagerPlanningStatus::Planning => "Planning...".to_owned(),
         ManagerPlanningStatus::Ready | ManagerPlanningStatus::Empty => manager
             .issues
             .first()

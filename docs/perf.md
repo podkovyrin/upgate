@@ -14,7 +14,7 @@ Default command profiled:
 target/release/upnow -S brew.no_update=true
 ```
 
-## Compare `--max-parallel-checks`
+## Compare `--max-parallel-checks-per-manager`
 
 ```bash
 scripts/profile.sh --compare-parallel -- -S brew.no_update=true
@@ -62,4 +62,7 @@ scripts/profile.sh --runs 10 --warmup 2 -- --managers brew -S brew.no_update=tru
 
 - The profiling script defaults to `-S brew.no_update=true` to reduce brew update noise in baseline runs.
 - For realistic user-facing performance, pass explicit args without this override.
-- Avoid passing `--max-parallel-checks` directly when using `--compare-parallel`.
+- Avoid passing `--max-parallel-checks-per-manager` directly when using `--compare-parallel`.
+- Manager concurrency is configured separately with `[upnow].manager_concurrency`
+  or `--manager-concurrency`, so total metadata pressure can exceed the
+  per-manager value when multiple managers run at once.

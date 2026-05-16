@@ -30,6 +30,7 @@ Example:
 ```toml
 [upnow]
 scan_old_age_threshold = "365d"
+manager_concurrency = 4
 
 [brew]
 mode = "apply"
@@ -51,6 +52,17 @@ pinned = ["typescript"]
 
 - Default: `365d`
 - Used in verbose scan output to mark older releases.
+
+### `[upnow].manager_concurrency`
+
+- Default: `4`
+- Valid values: integers greater than `0`
+- Controls how many managers may scan or plan concurrently.
+
+Metadata lookups inside each manager are controlled separately by
+`--max-parallel-checks-per-manager`. Total metadata pressure can therefore be
+up to `manager_concurrency * max_parallel_checks_per_manager` for commands that
+perform metadata checks across multiple managers.
 
 ---
 

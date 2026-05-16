@@ -23,7 +23,7 @@ Usage: scripts/profile.sh [options] [-- <upnow args...>]
 Options:
   --runs <n>               Number of benchmark runs (default: 6)
   --warmup <n>             Number of warmup runs (default: 1)
-  --compare-parallel       Run matrix over --max-parallel-checks values
+  --compare-parallel       Run matrix over --max-parallel-checks-per-manager values
   --parallel-values <csv>  Comma-separated values for compare mode (default: 1,2,4,6,8,12)
   --results-root <path>    Root folder for benchmark artifacts (default: .perf/runs)
   --label <name>           Optional label appended to run id
@@ -164,8 +164,8 @@ else
   ARGS=("${EXTRA_ARGS[@]}")
 fi
 
-if [[ "$COMPARE_PARALLEL" == "true" ]] && contains_arg "--max-parallel-checks" "${ARGS[@]}"; then
-  echo "error: do not pass --max-parallel-checks explicitly with --compare-parallel" >&2
+if [[ "$COMPARE_PARALLEL" == "true" ]] && contains_arg "--max-parallel-checks-per-manager" "${ARGS[@]}"; then
+  echo "error: do not pass --max-parallel-checks-per-manager explicitly with --compare-parallel" >&2
   exit 1
 fi
 
@@ -232,10 +232,10 @@ HF_ARGS=(
 )
 
 if [[ "$COMPARE_PARALLEL" == "true" ]]; then
-  echo "==> Comparing --max-parallel-checks values: ${PARALLEL_VALUES_JOINED}"
+  echo "==> Comparing --max-parallel-checks-per-manager values: ${PARALLEL_VALUES_JOINED}"
 
   for parallel in "${PARALLEL_VALUES[@]}"; do
-    cmd="$(build_command_string "$BIN" --max-parallel-checks "$parallel" "${ARGS[@]}")"
+    cmd="$(build_command_string "$BIN" --max-parallel-checks-per-manager "$parallel" "${ARGS[@]}")"
     HF_ARGS+=(--command-name "checks=${parallel}" "$cmd")
   done
 else

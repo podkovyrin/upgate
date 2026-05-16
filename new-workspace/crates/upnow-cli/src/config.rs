@@ -21,6 +21,7 @@ use crate::registry::{
 
 const CONFIG_RELATIVE_PATH: &str = "upnow/config.toml";
 const DEFAULT_SCAN_OLD_AGE_THRESHOLD: &str = "365d";
+const DEFAULT_MANAGER_CONCURRENCY: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
@@ -63,6 +64,9 @@ pub enum ConfigError {
         value: String,
     },
     InvalidSelectionException(String),
+    InvalidManagerConcurrency {
+        value: usize,
+    },
     ConfigPathUnavailable,
     NonTableManagerSection(String),
 }
@@ -138,6 +142,12 @@ impl Display for ConfigError {
             Self::InvalidSelectionException(value) => {
                 write!(formatter, "invalid selection exception `{value}`")
             }
+            Self::InvalidManagerConcurrency { value } => {
+                write!(
+                    formatter,
+                    "invalid [upnow].manager_concurrency `{value}`, expected a value greater than 0"
+                )
+            }
             Self::ConfigPathUnavailable => {
                 formatter.write_str("cannot determine config path from environment")
             }
@@ -162,6 +172,7 @@ pub struct UpnowConfig {
 #[serde(default)]
 struct GlobalSectionConfig {
     scan_old_age_threshold: Option<String>,
+    manager_concurrency: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -230,6 +241,31 @@ impl UpnowConfig {
             .as_deref()
             .unwrap_or(DEFAULT_SCAN_OLD_AGE_THRESHOLD);
         parse_duration_key("[upnow].scan_old_age_threshold", raw)
+    }
+
+    /// Resolves the app-level manager concurrency budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the configured value is zero.
+    pub fn manager_concurrency(&self) -> Result<usize, ConfigError> {
+        let value = self
+            .upnow
+            .manager_concurrency
+            .unwrap_or(DEFAULT_MANAGER_CONCURRENCY);
+        validate_manager_concurrency(value)?;
+        Ok(value)
+    }
+
+    /// Overrides the app-level manager concurrency budget in memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the override value is zero.
+    pub fn set_manager_concurrency(&mut self, value: usize) -> Result<(), ConfigError> {
+        validate_manager_concurrency(value)?;
+        self.upnow.manager_concurrency = Some(value);
+        Ok(())
     }
 
     /// Resolves manager config into typed settings.
@@ -314,6 +350,12 @@ impl UpnowConfig {
                     parse_duration_key("[upnow].scan_old_age_threshold", value)?;
                     self.upnow.scan_old_age_threshold = Some(value.to_owned());
                     Ok(())
+                }
+                "manager_concurrency" => {
+                    let parsed = value
+                        .parse::<usize>()
+                        .map_err(|_| ConfigError::InvalidOverride(raw.to_owned()))?;
+                    self.set_manager_concurrency(parsed)
                 }
                 other => Err(ConfigError::UnknownKey {
                     section: section.to_owned(),
@@ -523,6 +565,14 @@ impl UpnowConfig {
                 path.display()
             ))
         })
+    }
+}
+
+fn validate_manager_concurrency(value: usize) -> Result<(), ConfigError> {
+    if value == 0 {
+        Err(ConfigError::InvalidManagerConcurrency { value })
+    } else {
+        Ok(())
     }
 }
 

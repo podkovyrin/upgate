@@ -148,7 +148,7 @@ impl ManagerAdapter for GemManager {
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
-        _max_parallel_checks: usize,
+        _max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerScanEvidenceInput>, ManagerAdapterError> {
         let installed = installed_global(process).map_err(|err| adapter_error(&err))?;
         let ruby_runtime = match ruby_runtime_version(process) {

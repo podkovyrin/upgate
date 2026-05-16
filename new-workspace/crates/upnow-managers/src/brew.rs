@@ -275,9 +275,9 @@ impl ManagerAdapter for BrewManager {
         process: &ProcessRunner,
         http: &HttpClient,
         env: &Env,
-        max_parallel_checks: usize,
+        max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerScanEvidenceInput>, ManagerAdapterError> {
-        scan_inputs_with_release_evidence(process, http, env, max_parallel_checks)
+        scan_inputs_with_release_evidence(process, http, env, max_parallel_checks_per_manager)
             .map_err(|err| adapter_error(&err))
     }
 
@@ -576,7 +576,7 @@ fn scan_inputs_with_release_evidence(
     process: &ProcessRunner,
     http: &HttpClient,
     env: &Env,
-    max_parallel_checks: usize,
+    max_parallel_checks_per_manager: usize,
 ) -> Result<Vec<ManagerScanEvidenceInput>, BrewError> {
     let packages = installed_packages(process)?;
     let taps = tap_metadata(process).unwrap_or_default();
@@ -595,7 +595,7 @@ fn scan_inputs_with_release_evidence(
 
     run_ordered_parallel(
         jobs,
-        max_parallel_checks.max(1),
+        max_parallel_checks_per_manager.max(1),
         "brew verbose scan",
         |job| {
             let lookup = lookup_target_age(process, http, env, Some(&job.metadata), &taps);

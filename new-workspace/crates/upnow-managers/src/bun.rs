@@ -139,7 +139,7 @@ impl ManagerAdapter for BunManager {
         process: &ProcessRunner,
         _http: &HttpClient,
         env: &Env,
-        _max_parallel_checks: usize,
+        _max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerScanEvidenceInput>, ManagerAdapterError> {
         let runtime = BunRuntime::resolve(process);
         let installed = installed_global_with_bun(process, runtime.executable())

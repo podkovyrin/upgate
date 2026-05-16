@@ -72,15 +72,18 @@ impl BatchTerminal {
     pub fn start_manager_spinner(
         self,
         action: BatchTerminalAction,
-        manager_id: &str,
+        _manager_id: &str,
     ) -> ManagerSpinner {
+        self.start_action_spinner(action)
+    }
+    pub fn start_action_spinner(self, action: BatchTerminalAction) -> ManagerSpinner {
         if !self.spinner_enabled() {
             return ManagerSpinner(None);
         }
 
         let progress = ProgressBar::new_spinner().with_finish(ProgressFinish::AndClear);
         progress.set_style(spinner_style(self.theme.color()));
-        progress.set_message(format!("{} {manager_id}...", action.spinner_label()));
+        progress.set_message(format!("{}...", action.spinner_label()));
         progress.enable_steady_tick(Duration::from_millis(90));
 
         ManagerSpinner(Some(progress))
