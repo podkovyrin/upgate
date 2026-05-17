@@ -9,6 +9,7 @@ use crate::{
 pub struct ExecutionProgressState {
     pub rows: Vec<ExecutionProgressRow>,
     pub manager_failures: Vec<ExecutionProgressManagerFailure>,
+    pub command_log: Vec<ExecutionCommandLogEntry>,
     pub finished: bool,
     pub stop_after_current: bool,
 }
@@ -46,9 +47,17 @@ pub struct ExecutionProgressManagerFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionCommandLogEntry {
+    pub command: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutionProgressEvent {
     ManagerStarted {
         manager_id: ManagerId,
+    },
+    CommandStarted {
+        command: String,
     },
     ManagerFinished {
         report: ExecutionReport,
@@ -87,9 +96,18 @@ impl ExecutionProgressState {
         Self {
             rows,
             manager_failures: Vec::new(),
+            command_log: Vec::new(),
             finished: false,
             stop_after_current: false,
         }
+    }
+
+    pub fn with_command_log(mut self, commands: Vec<String>) -> Self {
+        self.command_log = commands
+            .into_iter()
+            .map(|command| ExecutionCommandLogEntry { command })
+            .collect();
+        self
     }
 
     pub fn apply_event(&mut self, event: ExecutionProgressEvent) {
@@ -104,6 +122,9 @@ impl ExecutionProgressState {
                         row.status = ExecutionProgressStatus::Running;
                     }
                 }
+            }
+            ExecutionProgressEvent::CommandStarted { command } => {
+                self.command_log.push(ExecutionCommandLogEntry { command });
             }
             ExecutionProgressEvent::ManagerFinished { report } => {
                 for result in report.items {
@@ -192,6 +213,11 @@ impl ExecutionProgressState {
 impl ExecutionProgressEvent {
     pub const fn manager_started(manager_id: ManagerId) -> Self {
         Self::ManagerStarted { manager_id }
+    }
+    pub fn command_started(command: impl Into<String>) -> Self {
+        Self::CommandStarted {
+            command: command.into(),
+        }
     }
     pub const fn manager_finished(report: ExecutionReport) -> Self {
         Self::ManagerFinished { report }

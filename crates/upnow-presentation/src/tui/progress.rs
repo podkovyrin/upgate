@@ -11,6 +11,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row};
@@ -23,8 +24,8 @@ use upnow_execution::{
 };
 
 use crate::tui::components::{
-    KeyBinding, TuiTable, app_block, key_footer, progress_update_columns, render_modal_frame,
-    render_separator, render_table, update_header_row,
+    KeyBinding, TuiTable, app_block, command_log_layout, key_footer, progress_update_columns,
+    render_command_log, render_modal_frame, render_separator, render_table, update_header_row,
 };
 use crate::tui::layout::app_frame;
 use crate::tui::theme::TuiTheme;
@@ -59,6 +60,7 @@ pub struct InteractiveProgressScreen {
     state: ExecutionProgressState,
     phase: ProgressPhase,
     spinner_tick: usize,
+    show_commands: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,11 +71,12 @@ enum ProgressPhase {
 }
 
 impl InteractiveProgressScreen {
-    pub const fn new(state: ExecutionProgressState) -> Self {
+    pub const fn new(state: ExecutionProgressState, show_commands: bool) -> Self {
         Self {
             state,
             phase: ProgressPhase::Running,
             spinner_tick: 0,
+            show_commands,
         }
     }
     pub const fn state(&self) -> &ExecutionProgressState {
@@ -138,6 +141,7 @@ pub fn run_interactive_progress(
     state: ExecutionProgressState,
     rx: &Receiver<ExecutionProgressEvent>,
     stop_requested: Arc<AtomicBool>,
+    show_commands: bool,
 ) -> io::Result<ExecutionProgressSummary> {
     let mut stdout = io::stdout();
     enable_raw_mode()?;
@@ -154,7 +158,7 @@ pub fn run_interactive_progress(
             return Err(err);
         }
     };
-    let mut screen = InteractiveProgressScreen::new(state);
+    let mut screen = InteractiveProgressScreen::new(state, show_commands);
 
     let result = run_progress_loop(&mut terminal, &mut screen, rx, &stop_requested);
 
@@ -247,7 +251,7 @@ fn draw_progress(frame: &mut ratatui::Frame<'_>, screen: &InteractiveProgressScr
         app_frame.header,
     );
     render_separator(frame, app_frame.header_separator, &theme);
-    draw_progress_table(frame, screen, app_frame.body, &theme);
+    draw_progress_body(frame, screen, app_frame.body, &theme);
     render_separator(frame, app_frame.footer_separator, &theme);
     frame.render_widget(Paragraph::new(footer_line(&theme)), app_frame.footer);
 
@@ -279,10 +283,31 @@ fn header_line(screen: &InteractiveProgressScreen, theme: &TuiTheme) -> Line<'st
     Line::from(Span::styled(title, theme.title))
 }
 
+fn draw_progress_body(
+    frame: &mut ratatui::Frame<'_>,
+    screen: &InteractiveProgressScreen,
+    area: Rect,
+    theme: &TuiTheme,
+) {
+    let Some(layout) = command_log_layout(screen.show_commands, area) else {
+        draw_progress_table(frame, screen, area, theme);
+        return;
+    };
+
+    draw_progress_table(frame, screen, layout.main, theme);
+    let commands = screen
+        .state
+        .command_log
+        .iter()
+        .map(|entry| entry.command.clone())
+        .collect::<Vec<_>>();
+    render_command_log(frame, layout.separator, layout.log, &commands, theme);
+}
+
 fn draw_progress_table(
     frame: &mut ratatui::Frame<'_>,
     screen: &InteractiveProgressScreen,
-    area: ratatui::layout::Rect,
+    area: Rect,
     theme: &TuiTheme,
 ) {
     let mut rows = screen

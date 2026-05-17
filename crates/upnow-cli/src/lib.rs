@@ -8,9 +8,8 @@ use std::fmt::{self, Display};
 use std::io::IsTerminal;
 use std::num::NonZeroUsize;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::SystemTime;
 
@@ -48,6 +47,77 @@ use upnow_presentation::{
 use upnow_release::release_age_for_evidence;
 
 const DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER: usize = 6;
+
+#[derive(Clone)]
+struct InteractiveCommandLog {
+    enabled: bool,
+    entries: Arc<Mutex<Vec<String>>>,
+}
+
+impl InteractiveCommandLog {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            entries: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn disabled() -> Self {
+        Self::new(false)
+    }
+
+    const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    fn snapshot(&self) -> Vec<String> {
+        self.entries.lock().map_or_else(
+            |poisoned| poisoned.into_inner().clone(),
+            |entries| entries.clone(),
+        )
+    }
+
+    fn record(&self, command: String) {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(command);
+    }
+
+    fn process_for_selection(
+        &self,
+        process: &ProcessRunner,
+        event_tx: mpsc::Sender<InteractiveSelectionPlanningEvent>,
+    ) -> ProcessRunner {
+        if !self.enabled {
+            return process.clone();
+        }
+
+        let command_log = self.clone();
+        process.clone().with_command_start_listener(move |event| {
+            let command = event.command_display;
+            command_log.record(command.clone());
+            let _ = event_tx.send(InteractiveSelectionPlanningEvent::CommandStarted { command });
+        })
+    }
+
+    fn process_for_progress(
+        &self,
+        process: &ProcessRunner,
+        tx: mpsc::Sender<ExecutionProgressEvent>,
+    ) -> ProcessRunner {
+        if !self.enabled {
+            return process.clone();
+        }
+
+        let command_log = self.clone();
+        process.clone().with_command_start_listener(move |event| {
+            let command = event.command_display;
+            command_log.record(command.clone());
+            let _ = tx.send(ExecutionProgressEvent::command_started(command));
+        })
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchCommand {
@@ -337,6 +407,34 @@ fn run_interactive_apply_with_sources_and_manager_concurrency_override(
     max_parallel_checks_per_manager: usize,
     manager_concurrency_override: Option<usize>,
 ) -> Result<String, AppError> {
+    let command_log = InteractiveCommandLog::disabled();
+    run_interactive_apply_with_sources_and_options(
+        config,
+        process,
+        http,
+        env,
+        clock,
+        selected_managers,
+        overrides,
+        max_parallel_checks_per_manager,
+        manager_concurrency_override,
+        &command_log,
+    )
+}
+
+#[expect(clippy::too_many_arguments)]
+fn run_interactive_apply_with_sources_and_options(
+    config: UpnowConfig,
+    process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
+    clock: Clock,
+    selected_managers: &[String],
+    overrides: &[String],
+    max_parallel_checks_per_manager: usize,
+    manager_concurrency_override: Option<usize>,
+    command_log: &InteractiveCommandLog,
+) -> Result<String, AppError> {
     let (mut config, manager_configs) =
         prepare_interactive_manager_configs(config, selected_managers, overrides)?;
     if let Some(manager_concurrency) = manager_concurrency_override {
@@ -352,9 +450,10 @@ fn run_interactive_apply_with_sources_and_manager_concurrency_override(
         clock,
         max_parallel_checks_per_manager,
         manager_concurrency,
+        command_log,
     )? {
         Some((config, confirmed)) => {
-            execute_confirmed_interactive_apply_live(config, process, env, confirmed)?;
+            execute_confirmed_interactive_apply_live(config, process, env, confirmed, command_log)?;
             Ok(String::new())
         }
         None => Ok("interactive selection cancelled\n".to_owned()),
@@ -499,6 +598,7 @@ pub fn build_interactive_apply_selection_plans_with_sources(
         .collect())
 }
 
+#[expect(clippy::too_many_arguments)]
 fn prepare_interactive_apply_with_sources(
     config: UpnowConfig,
     process: &ProcessRunner,
@@ -633,6 +733,7 @@ pub fn run_interactive_apply_selection_with_sources(
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 fn run_live_confirmed_selection(
     config: UpnowConfig,
     manager_configs: Vec<ManagerConfig>,
@@ -642,6 +743,7 @@ fn run_live_confirmed_selection(
     clock: Clock,
     max_parallel_checks_per_manager: usize,
     manager_concurrency: usize,
+    command_log: &InteractiveCommandLog,
 ) -> Result<Option<(UpnowConfig, Vec<ConfirmedInteractiveManagerApply>)>, AppError> {
     let manager_ids = manager_configs
         .iter()
@@ -651,7 +753,7 @@ fn run_live_confirmed_selection(
     let (prepared_tx, prepared_rx) = mpsc::channel();
     let stop_requested = Arc::new(AtomicBool::new(false));
     let worker_stop = Arc::clone(&stop_requested);
-    let process = process.clone();
+    let process = command_log.process_for_selection(process, event_tx.clone());
     let http = http.clone();
     let env = env.clone();
     let worker = thread::spawn(move || {
@@ -675,7 +777,11 @@ fn run_live_confirmed_selection(
         let _ = prepared_tx.send(prepared);
     });
 
-    let outcome = match run_interactive_selection_with_planning_events(manager_ids, event_rx) {
+    let outcome = match run_interactive_selection_with_planning_events(
+        manager_ids,
+        event_rx,
+        command_log.enabled(),
+    ) {
         Ok(outcome) => outcome,
         Err(err) => {
             stop_requested.store(true, Ordering::Relaxed);
@@ -963,19 +1069,22 @@ fn execute_confirmed_interactive_apply_live(
     process: &ProcessRunner,
     env: &Env,
     confirmed: Vec<ConfirmedInteractiveManagerApply>,
+    command_log: &InteractiveCommandLog,
 ) -> Result<ExecutionProgressSummary, AppError> {
     let resolved = resolve_confirmed_execution_plans(&confirmed)?;
-    let initial_progress = ExecutionProgressState::from_execution_plans(resolved.clone());
+    let initial_progress = ExecutionProgressState::from_execution_plans(resolved.clone())
+        .with_command_log(command_log.snapshot());
     let (tx, rx) = mpsc::channel();
     let stop_requested = Arc::new(AtomicBool::new(false));
     let worker_stop = Arc::clone(&stop_requested);
+    let worker_process = command_log.process_for_progress(process, tx.clone());
 
     thread::scope(|scope| {
         let worker = scope.spawn(move || {
             let mut config = config;
             let result = execute_confirmed_interactive_apply_resolved(
                 &mut config,
-                process,
+                &worker_process,
                 env,
                 confirmed,
                 &resolved,
@@ -994,8 +1103,9 @@ fn execute_confirmed_interactive_apply_live(
             result
         });
 
-        let tui_result = run_interactive_progress(initial_progress, &rx, stop_requested)
-            .map_err(|err| AppError::Planning(err.to_string()));
+        let tui_result =
+            run_interactive_progress(initial_progress, &rx, stop_requested, command_log.enabled())
+                .map_err(|err| AppError::Planning(err.to_string()));
         let worker_result = worker
             .join()
             .map_err(|_| AppError::Execution("interactive apply worker panicked".to_owned()))?;
@@ -1560,19 +1670,21 @@ pub fn run_from_env() -> Result<String, AppError> {
 fn run_cli(cli: &Cli) -> Result<String, AppError> {
     let config = UpnowConfig::load()?;
     let env = Env::real();
-    init_command_logging(cli, &env)?;
+    let command = cli.command.unwrap_or(CliCommand::Plan);
+    let interactive_apply = command == CliCommand::Apply && !cli.yolo;
+    init_command_logging(cli, &env, interactive_apply)?;
     let process = ProcessRunner::new(MutationMode::from_env_and_debug_no_mutate(
         &env,
         cli.debug_no_mutate(),
     ));
-    let command = cli.command.unwrap_or(CliCommand::Plan);
     if cli.yolo && command != CliCommand::Apply {
         return Err(AppError::InvalidArgs(
             "--yolo is only supported with apply".to_owned(),
         ));
     }
-    if command == CliCommand::Apply && !cli.yolo {
-        return run_interactive_apply_with_sources_and_manager_concurrency_override(
+    if interactive_apply {
+        let command_log = InteractiveCommandLog::new(cli.show_commands);
+        return run_interactive_apply_with_sources_and_options(
             config,
             &process,
             &HttpClient::real(&HttpSettings::default_client_settings())
@@ -1583,6 +1695,7 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
             &cli.overrides,
             cli.max_parallel_checks_per_manager,
             cli.manager_concurrency.map(NonZeroUsize::get),
+            &command_log,
         );
     }
     let theme = OutputTheme::from_environment(ThemeOptions {
@@ -1614,11 +1727,13 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
     )
 }
 
-fn init_command_logging(cli: &Cli, env: &Env) -> Result<(), AppError> {
+fn init_command_logging(cli: &Cli, env: &Env, interactive_apply: bool) -> Result<(), AppError> {
     let options = LoggingOptions {
         debug_commands: cli.debug_commands,
-        show_commands: cli.show_commands,
-        show_command_colors: cli.show_commands && command_prefix_color_enabled(cli),
+        show_commands: cli.show_commands && !interactive_apply,
+        show_command_colors: cli.show_commands
+            && !interactive_apply
+            && command_prefix_color_enabled(cli),
     };
 
     let path = match init_logging(options, env) {
@@ -1641,7 +1756,7 @@ fn command_prefix_color_enabled(cli: &Cli) -> bool {
     !cli.plain
         && !cli.no_color
         && std::io::stderr().is_terminal()
-        && !std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())
+        && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
         && std::env::var("TERM").map_or(true, |value| value != "dumb")
 }
 
@@ -1667,11 +1782,11 @@ fn apply_mutation_mode_notice(
         return Ok(None);
     }
 
-    let ProcessRunner::Real { mutation_mode } = process else {
+    let Some(mutation_mode) = process.mutation_mode() else {
         return Ok(None);
     };
 
-    validate_required_mutation_mode(env, *mutation_mode)?;
+    validate_required_mutation_mode(env, mutation_mode)?;
 
     if !mutation_mode_notice_enabled(env) || !terminal.notice_enabled() {
         return Ok(None);

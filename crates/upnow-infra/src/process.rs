@@ -82,21 +82,76 @@ impl CommandSpec {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum ProcessRunner {
+#[derive(Clone)]
+pub struct ProcessRunner {
+    kind: ProcessRunnerKind,
+    command_start: Option<CommandStartListener>,
+}
+
+#[derive(Clone)]
+enum ProcessRunnerKind {
     Real { mutation_mode: MutationMode },
     Fake(FakeProcess),
 }
 
+impl fmt::Debug for ProcessRunner {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProcessRunner")
+            .field("kind", &self.kind)
+            .field("command_start", &self.command_start.is_some())
+            .finish()
+    }
+}
+
+impl fmt::Debug for ProcessRunnerKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Real { mutation_mode } => formatter
+                .debug_struct("Real")
+                .field("mutation_mode", mutation_mode)
+                .finish(),
+            Self::Fake(fake) => formatter.debug_tuple("Fake").field(fake).finish(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct CommandStartEvent {
+    pub command_display: String,
+    pub is_mutation: bool,
+}
+
+type CommandStartListener = Arc<dyn Fn(CommandStartEvent) + Send + Sync + 'static>;
+
 impl ProcessRunner {
-    pub const fn new(mutation_mode: MutationMode) -> Self {
-        Self::Real { mutation_mode }
+    pub fn new(mutation_mode: MutationMode) -> Self {
+        Self {
+            kind: ProcessRunnerKind::Real { mutation_mode },
+            command_start: None,
+        }
     }
     pub fn from_env(env: &Env) -> Self {
         Self::new(MutationMode::from_env(env))
     }
     pub fn fake(responses: impl IntoIterator<Item = Result<CommandOutput, InfraError>>) -> Self {
-        Self::Fake(FakeProcess::new(responses))
+        Self {
+            kind: ProcessRunnerKind::Fake(FakeProcess::new(responses)),
+            command_start: None,
+        }
+    }
+    pub fn with_command_start_listener(
+        mut self,
+        listener: impl Fn(CommandStartEvent) + Send + Sync + 'static,
+    ) -> Self {
+        self.command_start = Some(Arc::new(listener));
+        self
+    }
+    pub const fn mutation_mode(&self) -> Option<MutationMode> {
+        match &self.kind {
+            ProcessRunnerKind::Real { mutation_mode } => Some(*mutation_mode),
+            ProcessRunnerKind::Fake(_) => None,
+        }
     }
 
     /// Runs a command and applies the requested status policy.
@@ -110,9 +165,18 @@ impl ProcessRunner {
         spec: &CommandSpec,
         check: &CommandCheck,
     ) -> Result<CommandOutput, InfraError> {
-        match self {
-            Self::Real { mutation_mode } => run_real(*mutation_mode, spec, check),
-            Self::Fake(fake) => fake.run(spec, check),
+        let display = spec.display();
+        if let Some(listener) = &self.command_start {
+            listener(CommandStartEvent {
+                command_display: display.clone(),
+                is_mutation: spec.is_mutation,
+            });
+        }
+        match &self.kind {
+            ProcessRunnerKind::Real { mutation_mode } => {
+                run_real(*mutation_mode, spec, check, display)
+            }
+            ProcessRunnerKind::Fake(fake) => fake.run(spec, check, display),
         }
     }
 }
@@ -137,8 +201,12 @@ impl FakeProcess {
         )
     }
 
-    fn run(&self, spec: &CommandSpec, check: &CommandCheck) -> Result<CommandOutput, InfraError> {
-        let display = spec.display();
+    fn run(
+        &self,
+        spec: &CommandSpec,
+        check: &CommandCheck,
+        display: String,
+    ) -> Result<CommandOutput, InfraError> {
         self.calls
             .lock()
             .map_err(|err| InfraError::FakeProcessState {
@@ -174,8 +242,8 @@ fn run_real(
     mutation_mode: MutationMode,
     spec: &CommandSpec,
     check: &CommandCheck,
+    display: String,
 ) -> Result<CommandOutput, InfraError> {
-    let display = spec.display();
     logging::on_command_start(&display, spec.is_mutation);
     let started_at = Instant::now();
     let output = if spec.is_mutation && mutation_mode == MutationMode::Skip {

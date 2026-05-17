@@ -1,3 +1,4 @@
+mod command_log;
 mod footer;
 mod frame;
 mod modal;
@@ -5,6 +6,7 @@ mod scrollbar;
 mod table;
 mod tabs;
 
+pub use command_log::{command_log_layout, render_command_log};
 pub use footer::{KeyBinding, key_footer};
 pub use frame::{app_block, render_separator};
 pub use modal::render_modal_frame;

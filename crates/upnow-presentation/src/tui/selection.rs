@@ -25,8 +25,9 @@ use upnow_domain::{
 use crate::outcome::version_label;
 use crate::selection_view::note_part_text;
 use crate::tui::components::{
-    KeyBinding, TuiTable, app_block, key_footer, render_modal_frame, render_selection_table,
-    render_separator, render_table, render_tabs, version_picker_columns, visible_tabs,
+    KeyBinding, TuiTable, app_block, command_log_layout, key_footer, render_command_log,
+    render_modal_frame, render_selection_table, render_separator, render_table, render_tabs,
+    version_picker_columns, visible_tabs,
 };
 use crate::tui::layout::app_frame;
 use crate::tui::progress::spinner_frame;
@@ -161,6 +162,9 @@ pub enum InteractiveSelectionPlanningEvent {
     ManagerStarted {
         manager_id: ManagerId,
     },
+    CommandStarted {
+        command: String,
+    },
     ManagerReady {
         view: SelectionView,
         issues: Vec<PlanIssue>,
@@ -179,6 +183,8 @@ pub enum InteractiveSelectionPlanningEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractiveSelectionScreen {
     managers: Vec<ManagerSelectionState>,
+    command_log: Vec<String>,
+    show_commands: bool,
     planning_finished: bool,
     planning_failure: Option<String>,
     spinner_tick: usize,
@@ -270,6 +276,8 @@ impl InteractiveSelectionScreen {
 
         let mut screen = Self {
             managers,
+            command_log: Vec::new(),
+            show_commands: false,
             planning_finished: true,
             planning_failure: None,
             spinner_tick: 0,
@@ -290,6 +298,8 @@ impl InteractiveSelectionScreen {
 
         let mut screen = Self {
             managers,
+            command_log: Vec::new(),
+            show_commands: false,
             planning_finished: false,
             planning_failure: None,
             spinner_tick: 0,
@@ -301,6 +311,10 @@ impl InteractiveSelectionScreen {
         };
         screen.clamp_cursor();
         screen
+    }
+    pub fn show_commands(mut self, show_commands: bool) -> Self {
+        self.show_commands = show_commands;
+        self
     }
 
     pub const fn tick(&mut self) {
@@ -320,6 +334,9 @@ impl InteractiveSelectionScreen {
                     UpdateSelectionPolicy::default(),
                     Vec::new(),
                 );
+            }
+            InteractiveSelectionPlanningEvent::CommandStarted { command } => {
+                self.command_log.push(command);
             }
             InteractiveSelectionPlanningEvent::ManagerReady {
                 view,
@@ -973,9 +990,10 @@ pub fn run_interactive_selection(
 pub fn run_interactive_selection_with_planning_events(
     manager_ids: Vec<ManagerId>,
     planning_events: Receiver<InteractiveSelectionPlanningEvent>,
+    show_commands: bool,
 ) -> io::Result<InteractiveSelectionOutcome> {
     run_interactive_selection_screen(
-        InteractiveSelectionScreen::from_manager_ids(manager_ids),
+        InteractiveSelectionScreen::from_manager_ids(manager_ids).show_commands(show_commands),
         Some(&planning_events),
     )
 }
@@ -1140,17 +1158,47 @@ fn draw_selection_with_theme(
     draw_tabs(frame, screen, app_frame.header, theme);
     render_separator(frame, app_frame.header_separator, theme);
 
-    if let Some(message) = screen.placeholder_message() {
-        draw_centered_placeholder(frame, app_frame.body, &message, theme.muted);
-    } else {
-        draw_list_content(frame, screen, app_frame.body, theme);
-    }
+    draw_selection_body(frame, screen, app_frame.body, theme);
 
     render_separator(frame, app_frame.footer_separator, theme);
     frame.render_widget(Paragraph::new(footer_line(screen, theme)), app_frame.footer);
 
     if let Some(picker) = screen.target_picker {
         draw_target_picker(frame, screen, picker, app_frame.outer, theme);
+    }
+}
+
+fn draw_selection_body(
+    frame: &mut ratatui::Frame<'_>,
+    screen: &mut InteractiveSelectionScreen,
+    area: Rect,
+    theme: &TuiTheme,
+) {
+    let Some(layout) = command_log_layout(screen.show_commands, area) else {
+        draw_selection_main(frame, screen, area, theme);
+        return;
+    };
+
+    draw_selection_main(frame, screen, layout.main, theme);
+    render_command_log(
+        frame,
+        layout.separator,
+        layout.log,
+        &screen.command_log,
+        theme,
+    );
+}
+
+fn draw_selection_main(
+    frame: &mut ratatui::Frame<'_>,
+    screen: &mut InteractiveSelectionScreen,
+    area: Rect,
+    theme: &TuiTheme,
+) {
+    if let Some(message) = screen.placeholder_message() {
+        draw_centered_placeholder(frame, area, &message, theme.muted);
+    } else {
+        draw_list_content(frame, screen, area, theme);
     }
 }
 
