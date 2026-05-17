@@ -9,6 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+owo-colors = "4.1"
 rayon = "1.10"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 serde = "1.0"

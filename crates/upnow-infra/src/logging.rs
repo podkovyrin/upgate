@@ -5,12 +5,15 @@ use std::process::ExitStatus;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use owo_colors::OwoColorize;
+
 use crate::{Env, InfraError};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LoggingOptions {
     pub debug_commands: bool,
     pub show_commands: bool,
+    pub show_command_colors: bool,
 }
 
 struct Logger {
@@ -57,8 +60,8 @@ pub fn init_logging(options: LoggingOptions, env: &Env) -> Result<PathBuf, Infra
         &log_path,
         "INFO",
         &format!(
-            "logging initialized (debug_commands={}, show_commands={})",
-            options.debug_commands, options.show_commands
+            "logging initialized (debug_commands={}, show_commands={}, show_command_colors={})",
+            options.debug_commands, options.show_commands, options.show_command_colors
         ),
     )
     .map_err(|err| InfraError::Logging {
@@ -78,7 +81,7 @@ pub fn init_logging(options: LoggingOptions, env: &Env) -> Result<PathBuf, Infra
 pub fn on_command_start(command_display: &str, is_mutation: bool) {
     let options = OPTIONS.get().copied().unwrap_or_default();
     if options.show_commands {
-        eprintln!("$ {command_display}");
+        print_command_start(command_display, options, is_mutation);
     }
 
     let Some(logger) = LOGGER.get() else {
@@ -97,6 +100,16 @@ pub fn on_command_start(command_display: &str, is_mutation: bool) {
             "DEBUG",
             &format!("command start: {command_display}"),
         );
+    }
+}
+
+fn print_command_start(command_display: &str, options: LoggingOptions, is_mutation: bool) {
+    if !options.show_command_colors {
+        eprintln!("$ {command_display}");
+    } else if is_mutation {
+        eprintln!("{} {command_display}", "$".red());
+    } else {
+        eprintln!("{} {command_display}", "$".blue());
     }
 }
 

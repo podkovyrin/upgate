@@ -5,6 +5,7 @@ pub mod config;
 pub mod registry;
 
 use std::fmt::{self, Display};
+use std::io::IsTerminal;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
@@ -1591,6 +1592,11 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
     });
     let terminal = BatchTerminal::from_environment(theme);
     maybe_emit_apply_mutation_mode_notice(command.into(), &process, &env, terminal)?;
+    let terminal = if cli.show_commands {
+        terminal.suppress_spinner()
+    } else {
+        terminal
+    };
     run_batch_with_terminal_and_sources(
         command.into(),
         config,
@@ -1612,6 +1618,7 @@ fn init_command_logging(cli: &Cli, env: &Env) -> Result<(), AppError> {
     let options = LoggingOptions {
         debug_commands: cli.debug_commands,
         show_commands: cli.show_commands,
+        show_command_colors: cli.show_commands && command_prefix_color_enabled(cli),
     };
 
     let path = match init_logging(options, env) {
@@ -1628,6 +1635,14 @@ fn init_command_logging(cli: &Cli, env: &Env) -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+fn command_prefix_color_enabled(cli: &Cli) -> bool {
+    !cli.plain
+        && !cli.no_color
+        && std::io::stderr().is_terminal()
+        && !std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())
+        && std::env::var("TERM").map_or(true, |value| value != "dumb")
 }
 
 fn maybe_emit_apply_mutation_mode_notice(

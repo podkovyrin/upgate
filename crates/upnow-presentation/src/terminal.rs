@@ -42,6 +42,7 @@ impl MutationNotice {
 pub struct BatchTerminal {
     theme: OutputTheme,
     stderr_is_tty: bool,
+    spinner_suppressed: bool,
 }
 
 impl BatchTerminal {
@@ -49,22 +50,31 @@ impl BatchTerminal {
         Self {
             theme,
             stderr_is_tty: capabilities.stderr_is_tty,
+            spinner_suppressed: false,
         }
     }
     pub fn from_environment(theme: OutputTheme) -> Self {
         Self {
             theme,
             stderr_is_tty: std::io::IsTerminal::is_terminal(&std::io::stderr()),
+            spinner_suppressed: false,
         }
     }
     pub const fn disabled(theme: OutputTheme) -> Self {
         Self {
             theme,
             stderr_is_tty: false,
+            spinner_suppressed: true,
+        }
+    }
+    pub const fn suppress_spinner(self) -> Self {
+        Self {
+            spinner_suppressed: true,
+            ..self
         }
     }
     pub const fn spinner_enabled(self) -> bool {
-        !self.theme.is_plain() && self.stderr_is_tty
+        !self.spinner_suppressed && !self.theme.is_plain() && self.stderr_is_tty
     }
     pub const fn notice_enabled(self) -> bool {
         self.stderr_is_tty
