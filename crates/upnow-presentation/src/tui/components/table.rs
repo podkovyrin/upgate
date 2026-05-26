@@ -11,6 +11,7 @@ pub struct TuiTable<const N: usize> {
     columns: [Constraint; N],
     header: Option<Row<'static>>,
     selected: Option<usize>,
+    offset: usize,
     row_highlight_style: Option<Style>,
 }
 
@@ -21,6 +22,7 @@ impl<const N: usize> TuiTable<N> {
             columns,
             header: None,
             selected: None,
+            offset: 0,
             row_highlight_style: None,
         }
     }
@@ -32,6 +34,11 @@ impl<const N: usize> TuiTable<N> {
 
     pub(crate) const fn selected(mut self, selected: Option<usize>) -> Self {
         self.selected = selected;
+        self
+    }
+
+    pub(crate) const fn offset(mut self, offset: usize) -> Self {
+        self.offset = offset;
         self
     }
 
@@ -57,7 +64,9 @@ pub fn render_table<const N: usize>(
         table = table.row_highlight_style(style);
     }
 
-    let mut state = TableState::default().with_selected(config.selected);
+    let mut state = TableState::default()
+        .with_offset(config.offset)
+        .with_selected(config.selected);
     frame.render_stateful_widget(table, area, &mut state);
 
     let header_height = usize::from(has_header);
@@ -76,6 +85,7 @@ pub fn render_selection_table(
     area: Rect,
     rows: Vec<Row<'static>>,
     selected: Option<usize>,
+    offset: usize,
     theme: &TuiTheme,
 ) {
     render_table(
@@ -84,6 +94,7 @@ pub fn render_selection_table(
         TuiTable::new(rows, selection_update_columns())
             .header(update_header_row(theme))
             .selected(selected)
+            .offset(offset)
             .row_highlight_style(theme.selected_row_highlight),
         theme,
     );

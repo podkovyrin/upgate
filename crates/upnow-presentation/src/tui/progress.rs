@@ -4,14 +4,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row};
@@ -24,8 +27,9 @@ use upnow_execution::{
 };
 
 use crate::tui::components::{
-    KeyBinding, TuiTable, app_block, command_log_layout, key_footer, progress_update_columns,
-    render_command_log, render_modal_frame, render_separator, render_table, update_header_row,
+    KeyBinding, TuiTable, app_block, clamp_command_log_scroll, command_log_layout, key_footer,
+    key_footer_hit, progress_update_columns, render_command_log, render_modal_frame,
+    render_separator, render_table, update_header_row,
 };
 use crate::tui::layout::app_frame;
 use crate::tui::theme::TuiTheme;
@@ -46,6 +50,7 @@ const QUIT_CONFIRM_KEYS: &[KeyBinding<'static>] = &[
         label: "cancel",
     },
 ];
+const MAX_DRAINED_INPUT_EVENTS: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgressInput {
@@ -61,6 +66,8 @@ pub struct InteractiveProgressScreen {
     phase: ProgressPhase,
     spinner_tick: usize,
     show_commands: bool,
+    command_log_scroll_from_bottom: usize,
+    table_offset: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +84,8 @@ impl InteractiveProgressScreen {
             phase: ProgressPhase::Running,
             spinner_tick: 0,
             show_commands,
+            command_log_scroll_from_bottom: 0,
+            table_offset: 0,
         }
     }
     pub const fn state(&self) -> &ExecutionProgressState {
@@ -95,7 +104,13 @@ impl InteractiveProgressScreen {
 
     pub fn apply_event(&mut self, event: ExecutionProgressEvent) {
         let finished = matches!(event, ExecutionProgressEvent::Finished);
+        let command_log_len = self.state.command_log.len();
         self.state.apply_event(event);
+        if self.command_log_scroll_from_bottom > 0 {
+            self.command_log_scroll_from_bottom = self
+                .command_log_scroll_from_bottom
+                .saturating_add(self.state.command_log.len().saturating_sub(command_log_len));
+        }
         if finished {
             self.phase = ProgressPhase::Done;
         }
@@ -129,6 +144,50 @@ impl InteractiveProgressScreen {
             .iter()
             .any(|row| matches!(row.status, ExecutionProgressStatus::Running))
     }
+
+    fn scroll_command_log_by(&mut self, delta: isize, visible_height: usize) {
+        let next_scroll = if delta.is_positive() {
+            self.command_log_scroll_from_bottom
+                .saturating_add(delta.unsigned_abs())
+        } else {
+            self.command_log_scroll_from_bottom
+                .saturating_sub(delta.unsigned_abs())
+        };
+        self.command_log_scroll_from_bottom =
+            clamp_command_log_scroll(next_scroll, self.state.command_log.len(), visible_height);
+    }
+
+    fn clamp_command_log_scroll(&mut self, visible_height: usize) {
+        self.command_log_scroll_from_bottom = clamp_command_log_scroll(
+            self.command_log_scroll_from_bottom,
+            self.state.command_log.len(),
+            visible_height,
+        );
+    }
+
+    fn scroll_table_by(&mut self, delta: isize, visible_height: usize) {
+        let next_offset = if delta.is_positive() {
+            self.table_offset.saturating_add(delta.unsigned_abs())
+        } else {
+            self.table_offset.saturating_sub(delta.unsigned_abs())
+        };
+        self.table_offset = next_offset.min(progress_table_max_offset(
+            self.progress_table_row_count(),
+            visible_height,
+        ));
+    }
+
+    fn clamp_table_offset(&mut self, visible_height: usize) {
+        self.table_offset = self.table_offset.min(progress_table_max_offset(
+            self.progress_table_row_count(),
+            visible_height,
+        ));
+    }
+
+    fn progress_table_row_count(&self) -> usize {
+        let row_count = self.state.rows.len() + self.state.manager_failures.len();
+        row_count.max(1)
+    }
 }
 
 /// Runs the fullscreen interactive progress UI over a typed progress event stream.
@@ -145,7 +204,8 @@ pub fn run_interactive_progress(
 ) -> io::Result<ExecutionProgressSummary> {
     let mut stdout = io::stdout();
     enable_raw_mode()?;
-    if let Err(err) = execute!(stdout, EnterAlternateScreen) {
+    if let Err(err) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
+        let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
         let _ = disable_raw_mode();
         return Err(err);
     }
@@ -153,7 +213,7 @@ pub fn run_interactive_progress(
     let mut terminal = match Terminal::new(backend) {
         Ok(terminal) => terminal,
         Err(err) => {
-            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
             let _ = disable_raw_mode();
             return Err(err);
         }
@@ -183,8 +243,9 @@ fn run_progress_loop(
         }
 
         if event::poll(TICK_RATE)? {
-            let input = progress_input_from_event(&event::read()?, screen.quit_confirmation_open());
-            screen.handle_input(input, stop_requested);
+            let size = terminal.size()?;
+            let area = Rect::new(0, 0, size.width, size.height);
+            handle_progress_ready_events(screen, stop_requested, area)?;
         }
 
         screen.tick();
@@ -194,7 +255,11 @@ fn run_progress_loop(
 
 fn cleanup_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
     let raw_mode = disable_raw_mode();
-    let screen = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let screen = execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    );
     let cursor = terminal.show_cursor();
     raw_mode?;
     screen?;
@@ -209,6 +274,258 @@ fn drain_progress_events(
         screen.apply_event(event);
     }
 }
+
+#[derive(Debug, Default)]
+struct ProgressScrollDeltas {
+    table: isize,
+    command_log: isize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProgressScrollTarget {
+    Table,
+    CommandLog,
+}
+
+fn handle_progress_ready_events(
+    screen: &mut InteractiveProgressScreen,
+    stop_requested: &AtomicBool,
+    area: Rect,
+) -> io::Result<()> {
+    let mut scrolls = ProgressScrollDeltas::default();
+    let first_event = event::read()?;
+    handle_progress_drained_event(&first_event, screen, stop_requested, area, &mut scrolls);
+
+    for _ in 1..MAX_DRAINED_INPUT_EVENTS {
+        if !event::poll(Duration::ZERO)? {
+            break;
+        }
+        let event = event::read()?;
+        handle_progress_drained_event(&event, screen, stop_requested, area, &mut scrolls);
+    }
+    flush_progress_scrolls(screen, area, &mut scrolls);
+    Ok(())
+}
+
+fn handle_progress_drained_event(
+    event: &Event,
+    screen: &mut InteractiveProgressScreen,
+    stop_requested: &AtomicBool,
+    area: Rect,
+    scrolls: &mut ProgressScrollDeltas,
+) {
+    if let Some((target, delta)) = progress_scroll_delta(event, screen, area) {
+        match target {
+            ProgressScrollTarget::Table => scrolls.table += delta,
+            ProgressScrollTarget::CommandLog => scrolls.command_log += delta,
+        }
+        return;
+    }
+
+    if is_ignored_mouse_event(event) {
+        return;
+    }
+
+    flush_progress_scrolls(screen, area, scrolls);
+    handle_progress_event(event, screen, stop_requested, area);
+}
+
+fn progress_scroll_delta(
+    event: &Event,
+    screen: &InteractiveProgressScreen,
+    area: Rect,
+) -> Option<(ProgressScrollTarget, isize)> {
+    let Event::Mouse(mouse) = event else {
+        return None;
+    };
+    let table_delta = match mouse.kind {
+        MouseEventKind::ScrollUp => -1,
+        MouseEventKind::ScrollDown => 1,
+        _ => return None,
+    };
+    if screen.quit_confirmation_open() {
+        return None;
+    }
+    let app_frame = app_frame(area)?;
+    let body = progress_body_areas(screen.show_commands, app_frame.body);
+    if let Some(log_area) = body.log
+        && rect_contains(log_area, mouse.column, mouse.row)
+    {
+        return Some((ProgressScrollTarget::CommandLog, -table_delta));
+    }
+    rect_contains(body.main, mouse.column, mouse.row)
+        .then_some((ProgressScrollTarget::Table, table_delta))
+}
+
+fn flush_progress_scrolls(
+    screen: &mut InteractiveProgressScreen,
+    area: Rect,
+    scrolls: &mut ProgressScrollDeltas,
+) {
+    if let Some(app_frame) = app_frame(area) {
+        let body = progress_body_areas(screen.show_commands, app_frame.body);
+        if scrolls.table != 0 {
+            screen.scroll_table_by(scrolls.table, progress_table_visible_height(body.main));
+        }
+        if scrolls.command_log != 0
+            && let Some(log_area) = body.log
+        {
+            screen.scroll_command_log_by(scrolls.command_log, usize::from(log_area.height));
+        }
+    }
+    scrolls.table = 0;
+    scrolls.command_log = 0;
+}
+
+const fn is_ignored_mouse_event(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved
+                | MouseEventKind::Up(_)
+                | MouseEventKind::Drag(_)
+                | MouseEventKind::ScrollUp
+                | MouseEventKind::ScrollDown
+                | MouseEventKind::ScrollLeft
+                | MouseEventKind::ScrollRight,
+            ..
+        })
+    )
+}
+
+fn handle_progress_event(
+    event: &Event,
+    screen: &mut InteractiveProgressScreen,
+    stop_requested: &AtomicBool,
+    area: Rect,
+) {
+    if let Event::Mouse(mouse) = event {
+        handle_progress_mouse(screen, *mouse, stop_requested, area);
+        return;
+    }
+
+    let input = progress_input_from_event(event, screen.quit_confirmation_open());
+    screen.handle_input(input, stop_requested);
+}
+
+fn handle_progress_mouse(
+    screen: &mut InteractiveProgressScreen,
+    mouse: MouseEvent,
+    stop_requested: &AtomicBool,
+    area: Rect,
+) {
+    let Some(app_frame) = app_frame(area) else {
+        return;
+    };
+
+    if screen.quit_confirmation_open() {
+        handle_quit_dialog_mouse(screen, mouse, stop_requested, app_frame.inner);
+        return;
+    }
+
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            if rect_contains(app_frame.footer, mouse.column, mouse.row)
+                && key_footer_hit(FOOTER_KEYS, mouse.column - app_frame.footer.x) == Some(0)
+            {
+                screen.handle_input(ProgressInput::Quit, stop_requested);
+            }
+        }
+        MouseEventKind::Down(_)
+        | MouseEventKind::Up(_)
+        | MouseEventKind::Drag(_)
+        | MouseEventKind::Moved
+        | MouseEventKind::ScrollUp
+        | MouseEventKind::ScrollDown
+        | MouseEventKind::ScrollLeft
+        | MouseEventKind::ScrollRight => {}
+    }
+}
+
+fn handle_quit_dialog_mouse(
+    screen: &mut InteractiveProgressScreen,
+    mouse: MouseEvent,
+    stop_requested: &AtomicBool,
+    area: Rect,
+) {
+    if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+        return;
+    }
+    let Some(inner) = modal_inner_rect(area, 54, 7) else {
+        return;
+    };
+    if !rect_contains(inner, mouse.column, mouse.row) {
+        screen.handle_input(ProgressInput::CancelQuit, stop_requested);
+        return;
+    }
+    let [_, _, _, _, footer_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    if !rect_contains(footer_area, mouse.column, mouse.row) {
+        return;
+    }
+    match key_footer_hit(QUIT_CONFIRM_KEYS, mouse.column - footer_area.x) {
+        Some(0) => screen.handle_input(ProgressInput::ConfirmQuitAfterCurrent, stop_requested),
+        Some(1) => screen.handle_input(ProgressInput::CancelQuit, stop_requested),
+        _ => {}
+    }
+}
+
+struct ProgressBodyAreas {
+    main: Rect,
+    log: Option<Rect>,
+}
+
+fn progress_body_areas(show_commands: bool, area: Rect) -> ProgressBodyAreas {
+    command_log_layout(show_commands, area).map_or(
+        ProgressBodyAreas {
+            main: area,
+            log: None,
+        },
+        |layout| ProgressBodyAreas {
+            main: layout.main,
+            log: Some(layout.log),
+        },
+    )
+}
+
+fn progress_table_visible_height(area: Rect) -> usize {
+    usize::from(area.height.saturating_sub(1))
+}
+
+const fn progress_table_max_offset(row_count: usize, visible_height: usize) -> usize {
+    row_count.saturating_sub(visible_height)
+}
+
+fn modal_inner_rect(area: Rect, width: u16, height: u16) -> Option<Rect> {
+    if area.is_empty() || width == 0 || height == 0 {
+        return None;
+    }
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    Some(Rect {
+        x: popup.x.saturating_add(1),
+        y: popup.y.saturating_add(1),
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    })
+}
+
+const fn rect_contains(area: Rect, column: u16, row: u16) -> bool {
+    column >= area.x && column < area.right() && row >= area.y && row < area.bottom()
+}
+
 pub fn progress_input_from_event(event: &Event, quit_confirmation_open: bool) -> ProgressInput {
     let Event::Key(key) = event else {
         return ProgressInput::Ignore;
@@ -234,7 +551,7 @@ pub fn progress_input_from_event(event: &Event, quit_confirmation_open: bool) ->
     }
 }
 
-fn draw_progress(frame: &mut ratatui::Frame<'_>, screen: &InteractiveProgressScreen) {
+fn draw_progress(frame: &mut ratatui::Frame<'_>, screen: &mut InteractiveProgressScreen) {
     let area = frame.area();
     let theme = TuiTheme::current();
     let block = app_block(&theme);
@@ -285,7 +602,7 @@ fn header_line(screen: &InteractiveProgressScreen, theme: &TuiTheme) -> Line<'st
 
 fn draw_progress_body(
     frame: &mut ratatui::Frame<'_>,
-    screen: &InteractiveProgressScreen,
+    screen: &mut InteractiveProgressScreen,
     area: Rect,
     theme: &TuiTheme,
 ) {
@@ -301,12 +618,20 @@ fn draw_progress_body(
         .iter()
         .map(|entry| entry.command.clone())
         .collect::<Vec<_>>();
-    render_command_log(frame, layout.separator, layout.log, &commands, theme);
+    screen.clamp_command_log_scroll(usize::from(layout.log.height));
+    render_command_log(
+        frame,
+        layout.separator,
+        layout.log,
+        &commands,
+        screen.command_log_scroll_from_bottom,
+        theme,
+    );
 }
 
 fn draw_progress_table(
     frame: &mut ratatui::Frame<'_>,
-    screen: &InteractiveProgressScreen,
+    screen: &mut InteractiveProgressScreen,
     area: Rect,
     theme: &TuiTheme,
 ) {
@@ -339,10 +664,13 @@ fn draw_progress_table(
         ]));
     }
 
+    screen.clamp_table_offset(progress_table_visible_height(area));
     render_table(
         frame,
         area,
-        TuiTable::new(rows, progress_update_columns()).header(update_header_row(theme)),
+        TuiTable::new(rows, progress_update_columns())
+            .header(update_header_row(theme))
+            .offset(screen.table_offset),
         theme,
     );
 }
@@ -435,7 +763,7 @@ fn draw_quit_dialog(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect,
         Line::raw(""),
         Line::raw("Quit after the current manager command finishes?").centered(),
         Line::raw(""),
-        key_footer(QUIT_CONFIRM_KEYS, theme).centered(),
+        key_footer(QUIT_CONFIRM_KEYS, theme),
     ];
     frame.render_widget(Paragraph::new(lines), inner);
 }

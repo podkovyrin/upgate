@@ -568,7 +568,7 @@ impl UpnowConfig {
     }
 }
 
-fn validate_manager_concurrency(value: usize) -> Result<(), ConfigError> {
+const fn validate_manager_concurrency(value: usize) -> Result<(), ConfigError> {
     if value == 0 {
         Err(ConfigError::InvalidManagerConcurrency { value })
     } else {

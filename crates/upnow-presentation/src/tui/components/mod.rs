@@ -6,8 +6,8 @@ mod scrollbar;
 mod table;
 mod tabs;
 
-pub use command_log::{command_log_layout, render_command_log};
-pub use footer::{KeyBinding, key_footer};
+pub use command_log::{clamp_command_log_scroll, command_log_layout, render_command_log};
+pub use footer::{KeyBinding, key_footer, key_footer_hit};
 pub use frame::{app_block, render_separator};
 pub use modal::render_modal_frame;
 pub use table::{

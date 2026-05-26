@@ -6,7 +6,10 @@ use crate::{
     CandidateNotePart, CandidateNoteTone, SelectionRow, SelectionRowStatus, SelectionRowVisibility,
     SelectionView, TargetOption,
 };
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -25,9 +28,9 @@ use upnow_domain::{
 use crate::outcome::version_label;
 use crate::selection_view::note_part_text;
 use crate::tui::components::{
-    KeyBinding, TuiTable, app_block, command_log_layout, key_footer, render_command_log,
-    render_modal_frame, render_selection_table, render_separator, render_table, render_tabs,
-    version_picker_columns, visible_tabs,
+    KeyBinding, TuiTable, app_block, clamp_command_log_scroll, command_log_layout, key_footer,
+    key_footer_hit, render_command_log, render_modal_frame, render_selection_table,
+    render_separator, render_table, render_tabs, version_picker_columns, visible_tabs,
 };
 use crate::tui::layout::app_frame;
 use crate::tui::progress::spinner_frame;
@@ -92,6 +95,7 @@ const PICKER_MAIN_MOVE_KEY: KeyBinding<'static> = KeyBinding {
     key: "shift+up/down J/K",
     label: "row",
 };
+const MAX_DRAINED_INPUT_EVENTS: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractiveSelectionPlan {
@@ -184,6 +188,7 @@ pub enum InteractiveSelectionPlanningEvent {
 pub struct InteractiveSelectionScreen {
     managers: Vec<ManagerSelectionState>,
     command_log: Vec<String>,
+    command_log_scroll_from_bottom: usize,
     show_commands: bool,
     planning_finished: bool,
     planning_failure: Option<String>,
@@ -191,6 +196,7 @@ pub struct InteractiveSelectionScreen {
     active_tab: usize,
     tab_offset: usize,
     cursor: usize,
+    table_offset: usize,
     show_all: bool,
     target_picker: Option<TargetPickerState>,
 }
@@ -277,6 +283,7 @@ impl InteractiveSelectionScreen {
         let mut screen = Self {
             managers,
             command_log: Vec::new(),
+            command_log_scroll_from_bottom: 0,
             show_commands: false,
             planning_finished: true,
             planning_failure: None,
@@ -284,6 +291,7 @@ impl InteractiveSelectionScreen {
             active_tab: 0,
             tab_offset: 0,
             cursor: 0,
+            table_offset: 0,
             show_all: false,
             target_picker: None,
         };
@@ -299,6 +307,7 @@ impl InteractiveSelectionScreen {
         let mut screen = Self {
             managers,
             command_log: Vec::new(),
+            command_log_scroll_from_bottom: 0,
             show_commands: false,
             planning_finished: false,
             planning_failure: None,
@@ -306,13 +315,14 @@ impl InteractiveSelectionScreen {
             active_tab: 0,
             tab_offset: 0,
             cursor: 0,
+            table_offset: 0,
             show_all: false,
             target_picker: None,
         };
         screen.clamp_cursor();
         screen
     }
-    pub fn show_commands(mut self, show_commands: bool) -> Self {
+    pub const fn show_commands(mut self, show_commands: bool) -> Self {
         self.show_commands = show_commands;
         self
     }
@@ -337,6 +347,10 @@ impl InteractiveSelectionScreen {
             }
             InteractiveSelectionPlanningEvent::CommandStarted { command } => {
                 self.command_log.push(command);
+                if self.command_log_scroll_from_bottom > 0 {
+                    self.command_log_scroll_from_bottom =
+                        self.command_log_scroll_from_bottom.saturating_add(1);
+                }
             }
             InteractiveSelectionPlanningEvent::ManagerReady {
                 view,
@@ -499,6 +513,7 @@ impl InteractiveSelectionScreen {
             SelectionInput::ToggleViewAll => {
                 self.show_all = !self.show_all;
                 self.clamp_cursor();
+                self.table_offset = 0;
             }
             SelectionInput::OpenTargetPicker => self.open_target_picker(),
             SelectionInput::Confirm if self.planning_finished => {
@@ -621,12 +636,39 @@ impl InteractiveSelectionScreen {
         };
     }
 
+    fn scroll_table_by(&mut self, delta: isize, visible_height: usize) {
+        let max_offset = self.table_max_offset(visible_height);
+        if delta == 0 {
+            return;
+        }
+
+        self.table_offset = if delta.is_positive() {
+            self.table_offset
+                .saturating_add(delta.unsigned_abs())
+                .min(max_offset)
+        } else {
+            self.table_offset.saturating_sub(delta.unsigned_abs())
+        };
+        self.clamp_cursor_to_table_view(visible_height);
+    }
+
     fn next_tab(&mut self) {
         let tab_count = self.visible_tab_refs().len();
         if tab_count > 0 {
             self.active_tab = (self.active_tab + 1) % tab_count;
         }
         self.cursor = 0;
+        self.table_offset = 0;
+        self.clamp_cursor();
+    }
+
+    fn select_tab(&mut self, tab_idx: usize) {
+        let tab_count = self.visible_tab_refs().len();
+        if tab_idx < tab_count {
+            self.active_tab = tab_idx;
+        }
+        self.cursor = 0;
+        self.table_offset = 0;
         self.clamp_cursor();
     }
 
@@ -640,6 +682,7 @@ impl InteractiveSelectionScreen {
             };
         }
         self.cursor = 0;
+        self.table_offset = 0;
         self.clamp_cursor();
     }
 
@@ -873,6 +916,46 @@ impl InteractiveSelectionScreen {
         }
     }
 
+    fn clamp_table_offset(&mut self, visible_height: usize) {
+        self.table_offset = self.table_offset.min(self.table_max_offset(visible_height));
+    }
+
+    fn keep_cursor_visible(&mut self, visible_height: usize) {
+        if visible_height == 0 {
+            self.table_offset = 0;
+            return;
+        }
+        self.clamp_table_offset(visible_height);
+        if self.cursor < self.table_offset {
+            self.table_offset = self.cursor;
+        } else if self.cursor >= self.table_offset.saturating_add(visible_height) {
+            self.table_offset = self.cursor + 1 - visible_height;
+        }
+    }
+
+    fn table_max_offset(&self, visible_height: usize) -> usize {
+        self.visible_row_refs().len().saturating_sub(visible_height)
+    }
+
+    fn clamp_cursor_to_table_view(&mut self, visible_height: usize) {
+        if visible_height == 0 {
+            self.cursor = 0;
+            return;
+        }
+        self.clamp_cursor();
+        if self.cursor < self.table_offset {
+            self.cursor = self.table_offset;
+        } else {
+            let last_visible = self
+                .table_offset
+                .saturating_add(visible_height)
+                .saturating_sub(1);
+            if self.cursor > last_visible {
+                self.cursor = last_visible.min(self.visible_row_refs().len().saturating_sub(1));
+            }
+        }
+    }
+
     fn clamp_active_tab(&mut self) {
         let tab_count = self.visible_tab_refs().len();
         if tab_count == 0 {
@@ -937,6 +1020,26 @@ impl InteractiveSelectionScreen {
 
     fn row(&self, visible: VisibleRow) -> &SelectionRow {
         &self.managers[visible.manager_idx].state.rows()[visible.row_idx]
+    }
+
+    fn scroll_command_log_by(&mut self, delta: isize, visible_height: usize) {
+        let next_scroll = if delta.is_positive() {
+            self.command_log_scroll_from_bottom
+                .saturating_add(delta.unsigned_abs())
+        } else {
+            self.command_log_scroll_from_bottom
+                .saturating_sub(delta.unsigned_abs())
+        };
+        self.command_log_scroll_from_bottom =
+            clamp_command_log_scroll(next_scroll, self.command_log.len(), visible_height);
+    }
+
+    fn clamp_command_log_scroll(&mut self, visible_height: usize) {
+        self.command_log_scroll_from_bottom = clamp_command_log_scroll(
+            self.command_log_scroll_from_bottom,
+            self.command_log.len(),
+            visible_height,
+        );
     }
 }
 
@@ -1004,7 +1107,8 @@ fn run_interactive_selection_screen(
 ) -> io::Result<InteractiveSelectionOutcome> {
     let mut stdout = io::stdout();
     enable_raw_mode()?;
-    if let Err(err) = execute!(stdout, EnterAlternateScreen) {
+    if let Err(err) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
+        let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
         let _ = disable_raw_mode();
         return Err(err);
     }
@@ -1012,7 +1116,7 @@ fn run_interactive_selection_screen(
     let mut terminal = match Terminal::new(backend) {
         Ok(terminal) => terminal,
         Err(err) => {
-            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
             let _ = disable_raw_mode();
             return Err(err);
         }
@@ -1020,11 +1124,26 @@ fn run_interactive_selection_screen(
 
     let result = run_selection_loop(&mut terminal, &mut screen, planning_events);
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    let cleanup = cleanup_selection_terminal(&mut terminal);
+    match (result, cleanup) {
+        (Ok(outcome), Ok(())) => Ok(outcome),
+        (Err(err), Ok(()) | Err(_)) | (Ok(_), Err(err)) => Err(err),
+    }
+}
 
-    result
+fn cleanup_selection_terminal(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+) -> io::Result<()> {
+    let raw_mode = disable_raw_mode();
+    let screen = execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    );
+    let cursor = terminal.show_cursor();
+    raw_mode?;
+    screen?;
+    cursor
 }
 
 fn run_selection_loop(
@@ -1040,11 +1159,11 @@ fn run_selection_loop(
             continue;
         }
         drain_planning_events(screen, planning_events)?;
-        let input = selection_input_from_event(&event::read()?, screen.target_picker_open());
-        match screen
-            .handle_input(input)
-            .map_err(|err| io::Error::other(err.to_string()))?
-        {
+        let size = terminal.size()?;
+        let area = Rect::new(0, 0, size.width, size.height);
+        let control = handle_selection_ready_events(screen, area)?
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        match control {
             SelectionControl::Continue => {}
             SelectionControl::Confirm => {
                 return Ok(InteractiveSelectionOutcome::Confirmed(
@@ -1054,6 +1173,403 @@ fn run_selection_loop(
             SelectionControl::Cancel => return Ok(InteractiveSelectionOutcome::Cancelled),
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct SelectionScrollDeltas {
+    main: isize,
+    command_log: isize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionScrollTarget {
+    Main,
+    CommandLog,
+}
+
+fn handle_selection_ready_events(
+    screen: &mut InteractiveSelectionScreen,
+    area: Rect,
+) -> io::Result<Result<SelectionControl, SelectionStateError>> {
+    let mut scrolls = SelectionScrollDeltas::default();
+    let first_event = event::read()?;
+    match handle_selection_drained_event(&first_event, screen, area, &mut scrolls) {
+        Ok(SelectionControl::Continue) => {}
+        control => return Ok(control),
+    }
+
+    for _ in 1..MAX_DRAINED_INPUT_EVENTS {
+        if !event::poll(Duration::ZERO)? {
+            break;
+        }
+        let event = event::read()?;
+        match handle_selection_drained_event(&event, screen, area, &mut scrolls) {
+            Ok(SelectionControl::Continue) => {}
+            control => return Ok(control),
+        }
+    }
+
+    flush_selection_scrolls(screen, area, &mut scrolls);
+    Ok(Ok(SelectionControl::Continue))
+}
+
+fn handle_selection_drained_event(
+    event: &Event,
+    screen: &mut InteractiveSelectionScreen,
+    area: Rect,
+    scrolls: &mut SelectionScrollDeltas,
+) -> Result<SelectionControl, SelectionStateError> {
+    if let Some((target, delta)) = selection_scroll_delta(event, screen, area) {
+        match target {
+            SelectionScrollTarget::Main => scrolls.main += delta,
+            SelectionScrollTarget::CommandLog => scrolls.command_log += delta,
+        }
+        return Ok(SelectionControl::Continue);
+    }
+
+    if is_ignored_mouse_event(event) {
+        return Ok(SelectionControl::Continue);
+    }
+
+    flush_selection_scrolls(screen, area, scrolls);
+    handle_selection_event(event, screen, area)
+}
+
+fn selection_scroll_delta(
+    event: &Event,
+    screen: &InteractiveSelectionScreen,
+    area: Rect,
+) -> Option<(SelectionScrollTarget, isize)> {
+    let Event::Mouse(mouse) = event else {
+        return None;
+    };
+    let delta = match mouse.kind {
+        MouseEventKind::ScrollUp => -1,
+        MouseEventKind::ScrollDown => 1,
+        _ => return None,
+    };
+    if screen.target_picker_open() {
+        return None;
+    }
+    let app_frame = app_frame(area)?;
+    let selection_body = selection_body_areas(screen.show_commands, app_frame.body);
+    if let Some(log_area) = selection_body.log
+        && rect_contains(log_area, mouse.column, mouse.row)
+    {
+        return Some((SelectionScrollTarget::CommandLog, -delta));
+    }
+    rect_contains(selection_body.main, mouse.column, mouse.row)
+        .then_some((SelectionScrollTarget::Main, delta))
+}
+
+fn flush_selection_scrolls(
+    screen: &mut InteractiveSelectionScreen,
+    area: Rect,
+    scrolls: &mut SelectionScrollDeltas,
+) {
+    if let Some(app_frame) = app_frame(area) {
+        let selection_body = selection_body_areas(screen.show_commands, app_frame.body);
+        if scrolls.main != 0 {
+            screen.scroll_table_by(
+                scrolls.main,
+                selection_table_visible_height(selection_body.main),
+            );
+        }
+        if scrolls.command_log != 0
+            && let Some(log_area) = selection_body.log
+        {
+            screen.scroll_command_log_by(scrolls.command_log, usize::from(log_area.height));
+        }
+    }
+    scrolls.main = 0;
+    scrolls.command_log = 0;
+}
+
+const fn is_ignored_mouse_event(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved
+                | MouseEventKind::Up(_)
+                | MouseEventKind::Drag(_)
+                | MouseEventKind::ScrollUp
+                | MouseEventKind::ScrollDown
+                | MouseEventKind::ScrollLeft
+                | MouseEventKind::ScrollRight,
+            ..
+        })
+    )
+}
+
+fn handle_selection_event(
+    event: &Event,
+    screen: &mut InteractiveSelectionScreen,
+    area: Rect,
+) -> Result<SelectionControl, SelectionStateError> {
+    if let Event::Mouse(mouse) = event {
+        return handle_selection_mouse(screen, *mouse, area);
+    }
+
+    let input = selection_input_from_event(event, screen.target_picker_open());
+    screen.handle_input(input)
+}
+
+fn handle_selection_mouse(
+    screen: &mut InteractiveSelectionScreen,
+    mouse: MouseEvent,
+    area: Rect,
+) -> Result<SelectionControl, SelectionStateError> {
+    let Some(app_frame) = app_frame(area) else {
+        return Ok(SelectionControl::Continue);
+    };
+
+    if screen.target_picker.is_some() {
+        return handle_target_picker_mouse(screen, mouse, app_frame.outer);
+    }
+
+    let selection_body = selection_body_areas(screen.show_commands, app_frame.body);
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            if rect_contains(app_frame.header, mouse.column, mouse.row) {
+                handle_selection_tab_click(screen, mouse.column, app_frame.header)?;
+            } else if rect_contains(app_frame.footer, mouse.column, mouse.row) {
+                if let Some(input) = selection_footer_input(mouse.column, app_frame.footer) {
+                    return screen.handle_input(input);
+                }
+            } else if rect_contains(selection_body.main, mouse.column, mouse.row)
+                && let Some(row_idx) =
+                    selection_row_index_at(screen, selection_body.main, mouse.row)
+            {
+                screen.cursor = row_idx;
+                if selection_checkbox_hit(selection_body.main, mouse.column) {
+                    return screen.handle_input(SelectionInput::ToggleCurrent);
+                }
+                return screen.handle_input(SelectionInput::OpenTargetPicker);
+            }
+        }
+        MouseEventKind::Down(_)
+        | MouseEventKind::Up(_)
+        | MouseEventKind::Drag(_)
+        | MouseEventKind::Moved
+        | MouseEventKind::ScrollUp
+        | MouseEventKind::ScrollDown
+        | MouseEventKind::ScrollLeft
+        | MouseEventKind::ScrollRight => {}
+    }
+
+    Ok(SelectionControl::Continue)
+}
+
+fn handle_target_picker_mouse(
+    screen: &mut InteractiveSelectionScreen,
+    mouse: MouseEvent,
+    area: Rect,
+) -> Result<SelectionControl, SelectionStateError> {
+    let Some(picker) = screen.target_picker else {
+        return Ok(SelectionControl::Continue);
+    };
+    let row = screen.row(picker.visible_row);
+    let Some(inner) = target_picker_inner_rect(area, row.target_options.len()) else {
+        return Ok(SelectionControl::Continue);
+    };
+    if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+        return Ok(SelectionControl::Continue);
+    }
+    if !rect_contains(inner, mouse.column, mouse.row) {
+        return screen.handle_input(SelectionInput::PickerCancel);
+    }
+
+    let [_, _, _, _, list_area, footer_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    if rect_contains(list_area, mouse.column, mouse.row)
+        && let Some(option_idx) = target_picker_option_index_at(row, picker, list_area, mouse.row)
+    {
+        screen.target_picker = Some(TargetPickerState {
+            visible_row: picker.visible_row,
+            cursor: option_idx,
+        });
+        return screen.handle_input(SelectionInput::PickerConfirm);
+    }
+
+    if !rect_contains(footer_area, mouse.column, mouse.row) {
+        return Ok(SelectionControl::Continue);
+    }
+
+    let Some(hit) = key_footer_hit(PICKER_FOOTER_KEYS, mouse.column - footer_area.x) else {
+        return Ok(SelectionControl::Continue);
+    };
+    let input = match hit {
+        1 => SelectionInput::RecommendedTarget,
+        2 => SelectionInput::PickerCancel,
+        3 => SelectionInput::PickerConfirm,
+        _ => SelectionInput::Ignore,
+    };
+    screen.handle_input(input)
+}
+
+fn target_picker_option_index_at(
+    row: &SelectionRow,
+    picker: TargetPickerState,
+    area: Rect,
+    mouse_row: u16,
+) -> Option<usize> {
+    if area.is_empty() || mouse_row < area.y || mouse_row >= area.bottom() {
+        return None;
+    }
+    let option_count = row.target_options.len();
+    let visible_height = usize::from(area.height);
+    let offset = table_offset_for_selected(option_count, picker.cursor, visible_height);
+    let row_in_view = usize::from(mouse_row - area.y);
+    let option_idx = offset + row_in_view;
+    (option_idx < option_count).then_some(option_idx)
+}
+
+struct SelectionBodyAreas {
+    main: Rect,
+    log: Option<Rect>,
+}
+
+fn selection_body_areas(show_commands: bool, area: Rect) -> SelectionBodyAreas {
+    command_log_layout(show_commands, area).map_or(
+        SelectionBodyAreas {
+            main: area,
+            log: None,
+        },
+        |layout| SelectionBodyAreas {
+            main: layout.main,
+            log: Some(layout.log),
+        },
+    )
+}
+
+fn handle_selection_tab_click(
+    screen: &mut InteractiveSelectionScreen,
+    column: u16,
+    area: Rect,
+) -> Result<(), SelectionStateError> {
+    let tab_key_width = UnicodeWidthStr::width(TAB_KEY_LABEL);
+    let key_area_width = u16::try_from(tab_key_width)
+        .unwrap_or(u16::MAX)
+        .min(area.width);
+    let [tabs_area, key_area] =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Length(key_area_width)]).areas(area);
+
+    if rect_contains(key_area, column, area.y) {
+        screen.handle_input(SelectionInput::NextTab)?;
+        return Ok(());
+    }
+
+    let theme = TuiTheme::current();
+    let titles = selection_tab_titles(screen, &theme);
+    let tabs = visible_tabs(
+        &titles,
+        screen.active_tab,
+        screen.tab_offset,
+        tabs_area.width,
+    );
+    let left_hint_width = if tabs.has_left_overflow {
+        tabs_area.width.min(5)
+    } else {
+        0
+    };
+    let [left_area, visible_tabs_area] =
+        Layout::horizontal([Constraint::Length(left_hint_width), Constraint::Fill(1)])
+            .areas(tabs_area);
+    if tabs.has_left_overflow && rect_contains(left_area, column, area.y) {
+        screen.handle_input(SelectionInput::PreviousTab)?;
+        return Ok(());
+    }
+    if !rect_contains(visible_tabs_area, column, area.y) {
+        return Ok(());
+    }
+
+    let mut cursor = visible_tabs_area.x;
+    for (idx, title) in tabs.titles.iter().enumerate() {
+        let width = u16::try_from(title.width().saturating_add(2)).unwrap_or(u16::MAX);
+        if column >= cursor && column < cursor.saturating_add(width) {
+            screen.select_tab(tabs.start + idx);
+            return Ok(());
+        }
+        cursor = cursor.saturating_add(width);
+    }
+    Ok(())
+}
+
+fn selection_footer_input(column: u16, area: Rect) -> Option<SelectionInput> {
+    let hit = key_footer_hit(FOOTER_KEYS, column - area.x)?;
+    match hit {
+        1 => Some(SelectionInput::ToggleCurrent),
+        2 => Some(SelectionInput::SelectVisible),
+        3 => Some(SelectionInput::SelectNoneVisible),
+        4 => Some(SelectionInput::ToggleViewAll),
+        5 => Some(SelectionInput::OpenTargetPicker),
+        6 => Some(SelectionInput::Confirm),
+        7 => Some(SelectionInput::Cancel),
+        _ => None,
+    }
+}
+
+const fn selection_checkbox_hit(area: Rect, column: u16) -> bool {
+    column >= area.x && column < area.x.saturating_add(4)
+}
+
+fn selection_row_index_at(
+    screen: &InteractiveSelectionScreen,
+    area: Rect,
+    row: u16,
+) -> Option<usize> {
+    if area.height < 2 || row <= area.y || row >= area.bottom() {
+        return None;
+    }
+    let rows = screen.visible_row_refs();
+    let row_in_view = usize::from(row - area.y - 1);
+    let row_idx = screen.table_offset + row_in_view;
+    (row_idx < rows.len()).then_some(row_idx)
+}
+
+fn selection_table_visible_height(area: Rect) -> usize {
+    usize::from(area.height.saturating_sub(1))
+}
+
+fn table_offset_for_selected(row_count: usize, selected: usize, visible_height: usize) -> usize {
+    let max_offset = row_count.saturating_sub(visible_height);
+    selected
+        .saturating_sub(visible_height.saturating_sub(1))
+        .min(max_offset)
+}
+
+fn target_picker_inner_rect(area: Rect, option_count: usize) -> Option<Rect> {
+    if area.is_empty() {
+        return None;
+    }
+    let width = target_picker_width(area).min(area.width);
+    let height = target_picker_height(option_count).min(area.height);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    Some(Rect {
+        x: popup.x.saturating_add(1),
+        y: popup.y.saturating_add(1),
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    })
+}
+
+const fn rect_contains(area: Rect, column: u16, row: u16) -> bool {
+    column >= area.x && column < area.right() && row >= area.y && row < area.bottom()
 }
 
 fn drain_planning_events(
@@ -1089,22 +1605,22 @@ fn selection_input_from_event(event: &Event, target_picker_open: bool) -> Select
     }
 
     let input = match key.code {
-        KeyCode::Char('q') => SelectionInput::Cancel,
+        KeyCode::Char('q' | 'Q') => SelectionInput::Cancel,
         #[expect(
             clippy::match_same_arms,
             reason = "Esc is intentionally reserved for target-picker handling below"
         )]
         KeyCode::Esc => SelectionInput::Ignore,
         KeyCode::Char('C') => SelectionInput::Confirm,
-        KeyCode::Up | KeyCode::Char('k') => SelectionInput::Up,
-        KeyCode::Down | KeyCode::Char('j') => SelectionInput::Down,
+        KeyCode::Up | KeyCode::Char('k' | 'K') => SelectionInput::Up,
+        KeyCode::Down | KeyCode::Char('j' | 'J') => SelectionInput::Down,
         KeyCode::Tab => SelectionInput::NextTab,
         KeyCode::BackTab => SelectionInput::PreviousTab,
-        KeyCode::Char(' ' | 'x') => SelectionInput::ToggleCurrent,
-        KeyCode::Char('a') => SelectionInput::SelectVisible,
-        KeyCode::Char('n') => SelectionInput::SelectNoneVisible,
-        KeyCode::Char('v') => SelectionInput::ToggleViewAll,
-        KeyCode::Char('r') => SelectionInput::RecommendedTarget,
+        KeyCode::Char(' ' | 'x' | 'X') => SelectionInput::ToggleCurrent,
+        KeyCode::Char('a' | 'A') => SelectionInput::SelectVisible,
+        KeyCode::Char('n' | 'N') => SelectionInput::SelectNoneVisible,
+        KeyCode::Char('v' | 'V') => SelectionInput::ToggleViewAll,
+        KeyCode::Char('r' | 'R') => SelectionInput::RecommendedTarget,
         KeyCode::Enter => SelectionInput::OpenTargetPicker,
         _ => SelectionInput::Ignore,
     };
@@ -1180,11 +1696,13 @@ fn draw_selection_body(
     };
 
     draw_selection_main(frame, screen, layout.main, theme);
+    screen.clamp_command_log_scroll(usize::from(layout.log.height));
     render_command_log(
         frame,
         layout.separator,
         layout.log,
         &screen.command_log,
+        screen.command_log_scroll_from_bottom,
         theme,
     );
 }
@@ -1308,6 +1826,7 @@ fn draw_list_content(
     }
 
     screen.clamp_cursor();
+    screen.keep_cursor_visible(selection_table_visible_height(area));
     let render_rows = selection_render_rows(screen);
     let table_rows = render_rows
         .iter()
@@ -1316,7 +1835,14 @@ fn draw_list_content(
         .collect::<Vec<_>>();
 
     let selected = (screen.cursor < render_rows.len()).then_some(screen.cursor);
-    render_selection_table(frame, area, table_rows, selected, theme);
+    render_selection_table(
+        frame,
+        area,
+        table_rows,
+        selected,
+        screen.table_offset,
+        theme,
+    );
 }
 
 fn draw_centered_placeholder(
