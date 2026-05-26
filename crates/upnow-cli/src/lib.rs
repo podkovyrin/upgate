@@ -5,9 +5,10 @@ pub mod config;
 pub mod registry;
 
 use std::fmt::{self, Display};
+use std::fs;
 use std::io::IsTerminal;
 use std::num::NonZeroUsize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -16,9 +17,11 @@ use std::time::SystemTime;
 use clap::{Parser, Subcommand};
 use config::{ConfigError, UpnowConfig};
 use registry::{available_manager_ids, configured_manager, ensure_known_manager};
+use serde::Serialize;
 use upnow_domain::{
     ManagerConfig, ManagerId, ManagerMode, ManagerScanEvidenceInput, ManagerScanInput, PlanIssue,
-    PlanSelection, ScanIssue, ScanItem, ScanReport, UpdatePlan, UpdateSelectionPolicy,
+    PlanItem, PlanSelection, ScanIssue, ScanItem, ScanReport, SelectedUpdate, UpdatePlan,
+    UpdateSelectionPolicy,
 };
 use upnow_execution::progress::{
     ExecutionProgressEvent, ExecutionProgressState, ExecutionProgressSummary,
@@ -47,6 +50,7 @@ use upnow_presentation::{
 use upnow_release::release_age_for_evidence;
 
 const DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER: usize = 6;
+const APPLY_SNAPSHOT_FILE: &str = "snapshot.json";
 
 #[derive(Clone)]
 struct InteractiveCommandLog {
@@ -280,6 +284,137 @@ struct PreparedInteractiveManagerApply {
     manager_config: ManagerConfig,
 }
 
+#[derive(Debug, Serialize)]
+struct ApplySnapshotRow<'a> {
+    manager: &'a str,
+    tool_name: &'a str,
+    current: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+    action: &'static str,
+}
+
+fn write_apply_snapshot_for_selections<'a>(
+    selections: impl IntoIterator<Item = (&'a UpdatePlan, &'a PlanSelection)>,
+    log_dir: &Path,
+) -> Result<(), AppError> {
+    let rows = selections
+        .into_iter()
+        .flat_map(|(plan, selection)| snapshot_rows(plan, selection))
+        .collect::<Vec<_>>();
+    let path = log_dir.join(APPLY_SNAPSHOT_FILE);
+    let bytes = serde_json::to_vec_pretty(&rows).map_err(|err| {
+        AppError::Execution(format!(
+            "failed to serialize apply snapshot {}: {err}",
+            path.display()
+        ))
+    })?;
+    fs::write(&path, bytes).map_err(|err| {
+        AppError::Execution(format!(
+            "failed to write apply snapshot {}: {err}",
+            path.display()
+        ))
+    })
+}
+
+fn snapshot_rows<'a>(
+    plan: &'a UpdatePlan,
+    selection: &'a PlanSelection,
+) -> Vec<ApplySnapshotRow<'a>> {
+    plan.items
+        .iter()
+        .map(|item| {
+            let selected_update = selection
+                .selected_items
+                .iter()
+                .find(|selected| selected.plan_item_id == *item.id())
+                .map(|selected| &selected.selected_update);
+            snapshot_row(plan, item, selected_update)
+        })
+        .collect()
+}
+
+fn snapshot_row<'a>(
+    plan: &'a UpdatePlan,
+    item: &'a PlanItem,
+    selected_update: Option<&'a SelectedUpdate>,
+) -> ApplySnapshotRow<'a> {
+    ApplySnapshotRow {
+        manager: plan.manager_id.as_str(),
+        tool_name: snapshot_tool_name(item),
+        current: snapshot_current_version(item),
+        target: snapshot_target(item, selected_update),
+        action: snapshot_action(item, selected_update),
+    }
+}
+
+fn snapshot_action(item: &PlanItem, selected_update: Option<&SelectedUpdate>) -> &'static str {
+    if selected_update.is_some() {
+        return "update";
+    }
+
+    match item {
+        PlanItem::Update { .. } | PlanItem::Skipped { .. } => "skipped",
+        PlanItem::Current { .. } => "current",
+        PlanItem::Delayed { .. } => "delayed",
+        PlanItem::Blocked { .. } => "blocked",
+        PlanItem::ResolverError { .. } => "error",
+    }
+}
+
+fn snapshot_tool_name(item: &PlanItem) -> &str {
+    match item {
+        PlanItem::Update { candidate, .. } | PlanItem::Delayed { candidate, .. } => {
+            candidate.package_name.as_str()
+        }
+        PlanItem::Current { installed, .. }
+        | PlanItem::Skipped { installed, .. }
+        | PlanItem::ResolverError { installed, .. } => installed.tool_name.as_str(),
+        PlanItem::Blocked { seed, .. } => seed.installed.tool_name.as_str(),
+    }
+}
+
+fn snapshot_current_version(item: &PlanItem) -> &str {
+    match item {
+        PlanItem::Update { candidate, .. } | PlanItem::Delayed { candidate, .. } => {
+            candidate.installed_version.as_str()
+        }
+        PlanItem::Current { installed, .. }
+        | PlanItem::Skipped { installed, .. }
+        | PlanItem::ResolverError { installed, .. } => installed.installed_version.as_str(),
+        PlanItem::Blocked { seed, .. } => seed.installed.installed_version.as_str(),
+    }
+}
+
+fn snapshot_target(item: &PlanItem, selected_update: Option<&SelectedUpdate>) -> Option<String> {
+    if let Some(selected_update) = selected_update {
+        return match selected_update {
+            SelectedUpdate::Exact { target_version } => Some(target_version.as_str().to_owned()),
+            SelectedUpdate::ManagerResolved => None,
+            SelectedUpdate::Recommended | SelectedUpdate::ForcePlannedCandidate => {
+                snapshot_plan_target(item)
+            }
+        };
+    }
+
+    snapshot_plan_target(item)
+}
+
+fn snapshot_plan_target(item: &PlanItem) -> Option<String> {
+    match item {
+        PlanItem::Update { candidate, .. } | PlanItem::Delayed { candidate, .. } => candidate
+            .target_version()
+            .map(|target| target.as_str().to_owned()),
+        PlanItem::Blocked { seed, .. } => seed
+            .target_selection
+            .target_version()
+            .map(|target| target.as_str().to_owned()),
+        PlanItem::Current { .. } | PlanItem::Skipped { .. } | PlanItem::ResolverError { .. } => {
+            None
+        }
+    }
+}
+
 /// Runs a batch command for the migrated managers selected by config and args.
 ///
 /// # Errors
@@ -308,6 +443,7 @@ pub fn run_batch(
         DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER,
         selected_managers,
         overrides,
+        None,
         None,
     )
 }
@@ -392,6 +528,7 @@ pub fn run_interactive_apply_with_sources(
         overrides,
         DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER,
         None,
+        None,
     )
 }
 
@@ -406,6 +543,7 @@ fn run_interactive_apply_with_sources_and_manager_concurrency_override(
     overrides: &[String],
     max_parallel_checks_per_manager: usize,
     manager_concurrency_override: Option<usize>,
+    snapshot_log_dir: Option<&Path>,
 ) -> Result<String, AppError> {
     let command_log = InteractiveCommandLog::disabled();
     run_interactive_apply_with_sources_and_options(
@@ -419,6 +557,7 @@ fn run_interactive_apply_with_sources_and_manager_concurrency_override(
         max_parallel_checks_per_manager,
         manager_concurrency_override,
         &command_log,
+        snapshot_log_dir,
     )
 }
 
@@ -434,6 +573,7 @@ fn run_interactive_apply_with_sources_and_options(
     max_parallel_checks_per_manager: usize,
     manager_concurrency_override: Option<usize>,
     command_log: &InteractiveCommandLog,
+    snapshot_log_dir: Option<&Path>,
 ) -> Result<String, AppError> {
     let (mut config, manager_configs) =
         prepare_interactive_manager_configs(config, selected_managers, overrides)?;
@@ -453,6 +593,14 @@ fn run_interactive_apply_with_sources_and_options(
         command_log,
     )? {
         Some((config, confirmed)) => {
+            if let Some(log_dir) = snapshot_log_dir {
+                write_apply_snapshot_for_selections(
+                    confirmed
+                        .iter()
+                        .map(|manager| (&manager.plan, &manager.selection)),
+                    log_dir,
+                )?;
+            }
             execute_confirmed_interactive_apply_live(config, process, env, confirmed, command_log)?;
             Ok(String::new())
         }
@@ -489,6 +637,7 @@ pub fn run_batch_with_sources(
         selected_managers,
         overrides,
         None,
+        None,
     )
 }
 
@@ -505,6 +654,7 @@ fn run_batch_with_theme_and_sources(
     selected_managers: &[String],
     overrides: &[String],
     manager_concurrency_override: Option<usize>,
+    snapshot_log_dir: Option<&Path>,
 ) -> Result<String, AppError> {
     let terminal = BatchTerminal::disabled(theme);
     run_batch_with_terminal_and_sources(
@@ -520,6 +670,7 @@ fn run_batch_with_theme_and_sources(
         selected_managers,
         overrides,
         manager_concurrency_override,
+        snapshot_log_dir,
     )
 }
 
@@ -537,6 +688,7 @@ fn run_batch_with_terminal_and_sources(
     selected_managers: &[String],
     overrides: &[String],
     manager_concurrency_override: Option<usize>,
+    snapshot_log_dir: Option<&Path>,
 ) -> Result<String, AppError> {
     if !selected_managers.is_empty() {
         config.apply_selected_managers_cli_override(selected_managers)?;
@@ -561,6 +713,7 @@ fn run_batch_with_terminal_and_sources(
         max_parallel_checks_per_manager,
         manager_concurrency,
         &manager_ids,
+        snapshot_log_dir,
     )
 }
 
@@ -1228,6 +1381,7 @@ fn run_batch_for_managers(
     max_parallel_checks_per_manager: usize,
     manager_concurrency: usize,
     manager_ids: &[ManagerId],
+    snapshot_log_dir: Option<&Path>,
 ) -> Result<String, AppError> {
     let _spinner = terminal.start_action_spinner(command.terminal_action());
     if command == BatchCommand::Apply {
@@ -1241,6 +1395,7 @@ fn run_batch_for_managers(
             max_parallel_checks_per_manager,
             manager_concurrency,
             manager_ids,
+            snapshot_log_dir,
         );
     }
 
@@ -1301,12 +1456,8 @@ struct ManagerBatchOutput {
 struct PreparedBatchApply {
     plan: UpdatePlan,
     manager_config: ManagerConfig,
+    selection: PlanSelection,
     execution_plan: ResolvedExecutionPlan,
-}
-
-enum ManagerApplyPreparation {
-    Skipped,
-    Ready(PreparedBatchApply),
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -1398,6 +1549,7 @@ fn run_batch_apply_for_managers(
     max_parallel_checks_per_manager: usize,
     manager_concurrency: usize,
     manager_ids: &[ManagerId],
+    snapshot_log_dir: Option<&Path>,
 ) -> Result<String, AppError> {
     let stop_requested = AtomicBool::new(false);
     let prepared = run_ordered_parallel_stoppable(
@@ -1421,12 +1573,25 @@ fn run_batch_apply_for_managers(
     )
     .map_err(|err| AppError::Execution(err.to_string()))?;
 
+    if let Some(log_dir) = snapshot_log_dir {
+        write_apply_snapshot_for_selections(
+            prepared.iter().filter_map(|(_, prepared_manager)| {
+                if let Ok(Some(prepared_manager)) = prepared_manager {
+                    Some((&prepared_manager.plan, &prepared_manager.selection))
+                } else {
+                    None
+                }
+            }),
+            log_dir,
+        )?;
+    }
+
     let mut table = OutcomeTable::default();
     let mut had_error = false;
     for (manager_id, prepared_manager) in prepared {
         match prepared_manager {
-            Ok(ManagerApplyPreparation::Skipped) => {}
-            Ok(ManagerApplyPreparation::Ready(prepared_manager)) => {
+            Ok(None) => {}
+            Ok(Some(prepared_manager)) => {
                 match execute_prepared_batch_apply(process, env, prepared_manager) {
                     Ok(manager_output) => {
                         had_error |= manager_output.failed;
@@ -1467,11 +1632,11 @@ fn prepare_manager_batch_apply(
     clock: Clock,
     manager_id: &ManagerId,
     max_parallel_checks_per_manager: usize,
-) -> Result<ManagerApplyPreparation, AppError> {
+) -> Result<Option<PreparedBatchApply>, AppError> {
     ensure_known_manager(manager_id.as_str()).map_err(map_manager_error)?;
     let manager_config = config.resolve_manager(manager_id.as_str())?;
     if !manager_mode_allows_run(manager_config.mode, true) {
-        return Ok(ManagerApplyPreparation::Skipped);
+        return Ok(None);
     }
 
     let manager = configured_manager(manager_config.clone()).map_err(map_manager_error)?;
@@ -1494,9 +1659,10 @@ fn prepare_manager_batch_apply(
     )
     .map_err(map_execution_selection_error)?;
 
-    Ok(ManagerApplyPreparation::Ready(PreparedBatchApply {
+    Ok(Some(PreparedBatchApply {
         plan,
         manager_config,
+        selection,
         execution_plan,
     }))
 }
@@ -1672,7 +1838,7 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
     let env = Env::real();
     let command = cli.command.unwrap_or(CliCommand::Plan);
     let interactive_apply = command == CliCommand::Apply && !cli.yolo;
-    init_command_logging(cli, &env, interactive_apply)?;
+    let log_dir = init_command_logging(cli, &env, interactive_apply)?;
     let process = ProcessRunner::new(MutationMode::from_env_and_debug_no_mutate(
         &env,
         cli.debug_no_mutate(),
@@ -1696,6 +1862,7 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
             cli.max_parallel_checks_per_manager,
             cli.manager_concurrency.map(NonZeroUsize::get),
             &command_log,
+            log_dir.as_deref(),
         );
     }
     let theme = OutputTheme::from_environment(ThemeOptions {
@@ -1724,10 +1891,19 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
         &cli.managers,
         &cli.overrides,
         cli.manager_concurrency.map(NonZeroUsize::get),
+        if command == CliCommand::Apply {
+            log_dir.as_deref()
+        } else {
+            None
+        },
     )
 }
 
-fn init_command_logging(cli: &Cli, env: &Env, interactive_apply: bool) -> Result<(), AppError> {
+fn init_command_logging(
+    cli: &Cli,
+    env: &Env,
+    interactive_apply: bool,
+) -> Result<Option<PathBuf>, AppError> {
     let options = LoggingOptions {
         debug_commands: cli.debug_commands,
         show_commands: cli.show_commands && !interactive_apply,
@@ -1738,18 +1914,25 @@ fn init_command_logging(cli: &Cli, env: &Env, interactive_apply: bool) -> Result
 
     let path = match init_logging(options, env) {
         Ok(path) => Some(path),
-        Err(err) if options.debug_commands => return Err(AppError::Execution(err.to_string())),
+        Err(err)
+            if options.debug_commands
+                || cli.command.unwrap_or(CliCommand::Plan) == CliCommand::Apply =>
+        {
+            return Err(AppError::Execution(err.to_string()));
+        }
         Err(_) => None,
     };
 
     if options.debug_commands
         && (cli.yolo || cli.command.unwrap_or(CliCommand::Plan) != CliCommand::Apply)
     {
-        let path = path.expect("debug logging initialization succeeded");
+        let path = path
+            .as_ref()
+            .expect("debug logging initialization succeeded");
         eprintln!("debug logs: {}", path.display());
     }
 
-    Ok(())
+    Ok(path)
 }
 
 fn command_prefix_color_enabled(cli: &Cli) -> bool {

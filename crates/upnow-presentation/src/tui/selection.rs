@@ -1584,9 +1584,13 @@ fn drain_planning_events(
             Ok(event) => screen.apply_planning_event(event),
             Err(TryRecvError::Empty) => return Ok(()),
             Err(TryRecvError::Disconnected) => {
-                screen.apply_planning_event(InteractiveSelectionPlanningEvent::PlanningFailed {
-                    detail: "planning stopped before reporting completion".to_owned(),
-                });
+                if !screen.planning_finished {
+                    screen.apply_planning_event(
+                        InteractiveSelectionPlanningEvent::PlanningFailed {
+                            detail: "planning stopped before reporting completion".to_owned(),
+                        },
+                    );
+                }
                 return Ok(());
             }
         }
