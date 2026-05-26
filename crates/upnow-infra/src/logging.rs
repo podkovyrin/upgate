@@ -5,6 +5,7 @@ use std::process::ExitStatus;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use chrono::Local;
 use owo_colors::OwoColorize;
 
 use crate::{Env, InfraError};
@@ -177,11 +178,11 @@ fn log_base_dir(env: &Env) -> Option<PathBuf> {
 }
 
 fn session_id() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-
-    format!("{}-{}", now.as_secs(), std::process::id())
+    format!(
+        "{}-pid{}",
+        Local::now().format("%Y-%m-%d_%H-%M-%S%.3f%z"),
+        std::process::id()
+    )
 }
 
 fn ts() -> String {

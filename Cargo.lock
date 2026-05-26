@@ -1976,6 +1976,7 @@ dependencies = [
 name = "upnow-infra"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "owo-colors",
  "rayon",
  "reqwest",
