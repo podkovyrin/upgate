@@ -348,7 +348,10 @@ fn snapshot_row<'a>(
     }
 }
 
-fn snapshot_action(item: &PlanItem, selected_update: Option<&SelectedUpdate>) -> &'static str {
+const fn snapshot_action(
+    item: &PlanItem,
+    selected_update: Option<&SelectedUpdate>,
+) -> &'static str {
     if selected_update.is_some() {
         return "update";
     }

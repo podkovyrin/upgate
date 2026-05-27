@@ -19,7 +19,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Paragraph, Row};
+use ratatui::widgets::{Cell, Paragraph, Row, Wrap};
 use unicode_width::UnicodeWidthStr;
 use upnow_domain::{
     ManagerId, PlanIssue, PlanItemId, SelectedItem, SelectedUpdate, UpdateSelectionPolicy,
@@ -95,6 +95,20 @@ const PICKER_MAIN_MOVE_KEY: KeyBinding<'static> = KeyBinding {
     key: "shift+up/down J/K",
     label: "row",
 };
+const CONFIRMATION_FOOTER_KEYS: &[KeyBinding<'static>] = &[
+    KeyBinding {
+        key: "enter C",
+        label: "apply",
+    },
+    KeyBinding {
+        key: "esc",
+        label: "back",
+    },
+    KeyBinding {
+        key: "q",
+        label: "quit",
+    },
+];
 const MAX_DRAINED_INPUT_EVENTS: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,6 +213,7 @@ pub struct InteractiveSelectionScreen {
     table_offset: usize,
     show_all: bool,
     target_picker: Option<TargetPickerState>,
+    confirmation_dialog: Option<ConfirmationDialogState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,6 +257,9 @@ struct TargetPickerState {
     cursor: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ConfirmationDialogState;
+
 #[derive(Debug, Clone)]
 struct SelectionRenderRow {
     selected: bool,
@@ -257,6 +275,18 @@ struct SelectionRenderRow {
 struct TargetPickerRenderRow {
     target: String,
     note_parts: Vec<CandidateNotePart>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfirmationManagerSummary {
+    manager: String,
+    selected_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfirmationSummary {
+    selected_total: usize,
+    managers: Vec<ConfirmationManagerSummary>,
 }
 
 impl InteractiveSelectionScreen {
@@ -294,6 +324,7 @@ impl InteractiveSelectionScreen {
             table_offset: 0,
             show_all: false,
             target_picker: None,
+            confirmation_dialog: None,
         };
         screen.clamp_cursor();
         screen
@@ -318,6 +349,7 @@ impl InteractiveSelectionScreen {
             table_offset: 0,
             show_all: false,
             target_picker: None,
+            confirmation_dialog: None,
         };
         screen.clamp_cursor();
         screen
@@ -422,6 +454,9 @@ impl InteractiveSelectionScreen {
     pub const fn target_picker_open(&self) -> bool {
         self.target_picker.is_some()
     }
+    const fn confirmation_dialog_open(&self) -> bool {
+        self.confirmation_dialog.is_some()
+    }
     pub fn target_picker_options(&self) -> Vec<TargetOption> {
         let Some(picker) = self.target_picker else {
             return Vec::new();
@@ -520,7 +555,7 @@ impl InteractiveSelectionScreen {
                 if let Some(detail) = self.planning_error_detail() {
                     return Err(SelectionStateError::PlanningFailed(detail));
                 }
-                return Ok(SelectionControl::Confirm);
+                self.confirmation_dialog = Some(ConfirmationDialogState);
             }
             SelectionInput::Confirm
             | SelectionInput::Ignore
@@ -545,6 +580,25 @@ impl InteractiveSelectionScreen {
                 selection_policy: manager.state.selection_policy().clone(),
             })
             .collect()
+    }
+    fn confirmation_summary(&self) -> ConfirmationSummary {
+        let managers = self
+            .managers
+            .iter()
+            .filter_map(|manager| {
+                let selected_count = manager.state.selected_items().len();
+                (selected_count > 0).then(|| ConfirmationManagerSummary {
+                    manager: manager.manager_id.as_str().to_owned(),
+                    selected_count,
+                })
+            })
+            .collect::<Vec<_>>();
+        let selected_total = managers.iter().map(|manager| manager.selected_count).sum();
+
+        ConfirmationSummary {
+            selected_total,
+            managers,
+        }
     }
 
     fn planning_error_detail(&self) -> Option<String> {
@@ -1248,7 +1302,7 @@ fn selection_scroll_delta(
         MouseEventKind::ScrollDown => 1,
         _ => return None,
     };
-    if screen.target_picker_open() {
+    if screen.target_picker_open() || screen.confirmation_dialog_open() {
         return None;
     }
     let app_frame = app_frame(area)?;
@@ -1306,12 +1360,41 @@ fn handle_selection_event(
     screen: &mut InteractiveSelectionScreen,
     area: Rect,
 ) -> Result<SelectionControl, SelectionStateError> {
+    if screen.confirmation_dialog_open() {
+        return Ok(handle_confirmation_dialog_event(event, screen));
+    }
+
     if let Event::Mouse(mouse) = event {
         return handle_selection_mouse(screen, *mouse, area);
     }
 
     let input = selection_input_from_event(event, screen.target_picker_open());
     screen.handle_input(input)
+}
+
+fn handle_confirmation_dialog_event(
+    event: &Event,
+    screen: &mut InteractiveSelectionScreen,
+) -> SelectionControl {
+    let Event::Key(key) = event else {
+        return SelectionControl::Continue;
+    };
+    if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
+        return SelectionControl::Continue;
+    }
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return SelectionControl::Cancel;
+    }
+
+    match key.code {
+        KeyCode::Char('q' | 'Q') => SelectionControl::Cancel,
+        KeyCode::Esc => {
+            screen.confirmation_dialog = None;
+            SelectionControl::Continue
+        }
+        KeyCode::Char('C') | KeyCode::Enter => SelectionControl::Confirm,
+        _ => SelectionControl::Continue,
+    }
 }
 
 fn handle_selection_mouse(
@@ -1686,6 +1769,9 @@ fn draw_selection_with_theme(
     if let Some(picker) = screen.target_picker {
         draw_target_picker(frame, screen, picker, app_frame.outer, theme);
     }
+    if screen.confirmation_dialog_open() {
+        draw_confirmation_dialog(frame, screen, app_frame.outer, theme);
+    }
 }
 
 fn draw_selection_body(
@@ -1963,6 +2049,10 @@ fn forced_note_cell(
 }
 
 fn footer_line(screen: &InteractiveSelectionScreen, theme: &TuiTheme) -> Line<'static> {
+    if screen.confirmation_dialog_open() {
+        return Line::raw("");
+    }
+
     if screen.target_picker.is_some() {
         return picker_footer_line(theme);
     }
@@ -2033,6 +2123,81 @@ fn draw_target_picker(
         Paragraph::new(key_footer(PICKER_FOOTER_KEYS, theme)),
         footer_area,
     );
+}
+
+fn draw_confirmation_dialog(
+    frame: &mut ratatui::Frame<'_>,
+    screen: &InteractiveSelectionScreen,
+    area: Rect,
+    theme: &TuiTheme,
+) {
+    let summary = screen.confirmation_summary();
+    let Some(inner) = render_modal_frame(
+        frame,
+        area,
+        confirmation_dialog_width(area),
+        confirmation_dialog_height(&summary),
+        Some(Line::from(Span::styled("Confirm Apply", theme.header))),
+        theme,
+    ) else {
+        return;
+    };
+
+    if inner.height < 4 || inner.width < 20 {
+        frame.render_widget(Paragraph::new("Terminal too small"), inner);
+        return;
+    }
+
+    let [body_area, footer_area] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
+    let body = confirmation_dialog_lines(&summary, theme);
+
+    frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }), body_area);
+    frame.render_widget(
+        Paragraph::new(key_footer(CONFIRMATION_FOOTER_KEYS, theme)),
+        footer_area,
+    );
+}
+
+fn confirmation_dialog_lines(
+    summary: &ConfirmationSummary,
+    theme: &TuiTheme,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(vec![
+        Span::styled("Selected updates: ", theme.header),
+        Span::raw(summary.selected_total.to_string()),
+    ])];
+
+    if summary.managers.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(
+            "No managers selected.",
+            theme.muted,
+        )));
+        return lines;
+    }
+
+    lines.push(Line::raw(""));
+    for manager in &summary.managers {
+        lines.push(Line::from(vec![
+            Span::styled(manager.manager.clone(), theme.header),
+            Span::raw(format!(": {}", manager.selected_count)),
+        ]));
+    }
+
+    lines
+}
+
+fn confirmation_dialog_height(summary: &ConfirmationSummary) -> u16 {
+    let manager_rows = summary.managers.len().max(1);
+    let body_rows = manager_rows.saturating_add(3);
+    u16::try_from(body_rows.saturating_add(3))
+        .unwrap_or(u16::MAX)
+        .clamp(7, 18)
+}
+
+fn confirmation_dialog_width(area: Rect) -> u16 {
+    area.width.saturating_sub(4).clamp(42, 72)
 }
 
 fn draw_target_picker_rows(
