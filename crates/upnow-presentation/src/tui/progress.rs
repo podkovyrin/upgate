@@ -74,6 +74,7 @@ pub struct InteractiveProgressScreen {
 enum ProgressPhase {
     Running,
     QuitConfirm,
+    Result,
     Done,
 }
 
@@ -95,7 +96,15 @@ impl InteractiveProgressScreen {
         matches!(self.phase, ProgressPhase::QuitConfirm)
     }
     pub const fn finished(&self) -> bool {
+        matches!(self.phase, ProgressPhase::Result | ProgressPhase::Done)
+    }
+
+    const fn should_exit(&self) -> bool {
         matches!(self.phase, ProgressPhase::Done)
+    }
+
+    const fn result_open(&self) -> bool {
+        matches!(self.phase, ProgressPhase::Result)
     }
 
     pub const fn tick(&mut self) {
@@ -112,7 +121,7 @@ impl InteractiveProgressScreen {
                 .saturating_add(self.state.command_log.len().saturating_sub(command_log_len));
         }
         if finished {
-            self.phase = ProgressPhase::Done;
+            self.phase = ProgressPhase::Result;
         }
     }
 
@@ -133,6 +142,9 @@ impl InteractiveProgressScreen {
                     stop_requested.store(true, Ordering::Relaxed);
                     self.apply_event(ExecutionProgressEvent::StopAfterCurrentRequested);
                 }
+            }
+            (ProgressPhase::Result, ProgressInput::Quit) => {
+                self.phase = ProgressPhase::Done;
             }
             _ => {}
         }
@@ -238,7 +250,7 @@ fn run_progress_loop(
     loop {
         drain_progress_events(rx, screen);
         terminal.draw(|frame| draw_progress(frame, screen))?;
-        if screen.finished() {
+        if screen.should_exit() {
             break;
         }
 
@@ -404,7 +416,22 @@ fn handle_progress_event(
         return;
     }
 
-    let input = progress_input_from_event(event, screen.quit_confirmation_open());
+    if screen.result_open()
+        && let Some(delta) = result_key_scroll_delta(event)
+    {
+        let Some(app_frame) = app_frame(area) else {
+            return;
+        };
+        let body = progress_body_areas(screen.show_commands, app_frame.body);
+        screen.scroll_table_by(delta, progress_table_visible_height(body.main));
+        return;
+    }
+
+    let input = progress_input_from_event_for_phase(
+        event,
+        screen.quit_confirmation_open(),
+        screen.result_open(),
+    );
     screen.handle_input(input, stop_requested);
 }
 
@@ -527,12 +554,28 @@ const fn rect_contains(area: Rect, column: u16, row: u16) -> bool {
 }
 
 pub fn progress_input_from_event(event: &Event, quit_confirmation_open: bool) -> ProgressInput {
+    progress_input_from_event_for_phase(event, quit_confirmation_open, false)
+}
+
+fn progress_input_from_event_for_phase(
+    event: &Event,
+    quit_confirmation_open: bool,
+    result_open: bool,
+) -> ProgressInput {
     let Event::Key(key) = event else {
         return ProgressInput::Ignore;
     };
     if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
         return ProgressInput::Ignore;
     }
+
+    if result_open {
+        return match key.code {
+            KeyCode::Char('q' | 'Q') => ProgressInput::Quit,
+            _ => ProgressInput::Ignore,
+        };
+    }
+
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return ProgressInput::Quit;
     }
@@ -548,6 +591,20 @@ pub fn progress_input_from_event(event: &Event, quit_confirmation_open: bool) ->
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => ProgressInput::Quit,
         _ => ProgressInput::Ignore,
+    }
+}
+
+fn result_key_scroll_delta(event: &Event) -> Option<isize> {
+    let Event::Key(key) = event else {
+        return None;
+    };
+    if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
+        return None;
+    }
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k' | 'K') => Some(-1),
+        KeyCode::Down | KeyCode::Char('j' | 'J') => Some(1),
+        _ => None,
     }
 }
 
@@ -639,9 +696,26 @@ fn draw_progress_table(
         .state
         .rows
         .iter()
-        .map(|row| progress_table_row(row, screen.spinner_tick, theme))
+        .map(|row| {
+            if screen.result_open() {
+                result_table_row(row, theme)
+            } else {
+                progress_table_row(row, screen.spinner_tick, theme)
+            }
+        })
         .collect::<Vec<_>>();
     rows.extend(screen.state.manager_failures.iter().map(|failure| {
+        if screen.result_open() {
+            return Row::new(vec![
+                Cell::new("").style(theme.error),
+                Cell::new(failure.manager_id.as_str().to_owned()).style(theme.error),
+                Cell::new("manager").style(theme.error),
+                Cell::new(""),
+                Cell::new(""),
+                Cell::new(""),
+            ])
+            .style(theme.error);
+        }
         Row::new(vec![
             Cell::new("[x]").style(theme.error),
             Cell::new(failure.manager_id.as_str().to_owned()).style(theme.error),
@@ -690,6 +764,29 @@ fn progress_table_row(
         Cell::new(status_note(&row.status)).style(style),
     ])
     .style(style)
+}
+
+fn result_table_row(row: &ExecutionProgressRow, theme: &TuiTheme) -> Row<'static> {
+    let style = progress_row_style(&row.status, theme);
+    Row::new(vec![
+        Cell::new("").style(style),
+        Cell::new(row.manager_id.as_str().to_owned()).style(style),
+        Cell::new(row.package_name.as_str().to_owned()).style(theme.emphasis(style)),
+        Cell::new(result_current_label(row)).style(style),
+        Cell::new("").style(style),
+        Cell::new("").style(style),
+    ])
+    .style(style)
+}
+
+fn result_current_label(row: &ExecutionProgressRow) -> String {
+    match row.status {
+        ExecutionProgressStatus::Succeeded { .. } => progress_target_label(&row.target),
+        ExecutionProgressStatus::Pending
+        | ExecutionProgressStatus::Running
+        | ExecutionProgressStatus::Failed { .. }
+        | ExecutionProgressStatus::Skipped { .. } => row.installed_version.as_str().to_owned(),
+    }
 }
 
 fn progress_target_label(target: &ResolvedExecutionTarget) -> String {
