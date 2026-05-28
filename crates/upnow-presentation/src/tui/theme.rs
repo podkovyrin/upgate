@@ -45,8 +45,8 @@ impl TuiTheme {
                     .fg(Color::Black)
                     .bg(Color::Gray)
                     .add_modifier(Modifier::BOLD),
-                note: Style::default().add_modifier(Modifier::ITALIC),
-                forced: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                note: Style::default().fg(Color::Gray),
+                forced: Style::default().fg(Color::Red),
                 pending: Style::default().fg(Color::Gray),
                 running: Style::default().fg(Color::Yellow),
                 success: Style::default().fg(Color::Green),
@@ -70,8 +70,8 @@ impl TuiTheme {
             selected,
             selected_row_highlight: selected,
             keycap: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
-            note: Style::default().add_modifier(Modifier::ITALIC),
-            forced: emphasized,
+            note: Style::default(),
+            forced: Style::default(),
             pending: Style::default(),
             running: emphasized,
             success: emphasized,
@@ -100,16 +100,12 @@ impl TuiTheme {
         style.add_modifier(Modifier::BOLD)
     }
 
-    pub(super) fn note_for(&self, style: Style) -> Style {
-        style.patch(self.note)
+    pub(super) const fn note_for(&self, _style: Style) -> Style {
+        self.note
     }
 
-    pub(super) fn forced_note_for(&self, selected: bool) -> Style {
-        if selected {
-            self.selected.patch(self.forced)
-        } else {
-            self.forced
-        }
+    pub(super) const fn forced_note_for(&self, _selected: bool) -> Style {
+        self.forced
     }
 
     pub(super) const fn version_changed_for(&self, selected: bool) -> Style {

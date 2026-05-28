@@ -6,6 +6,9 @@ use ratatui::widgets::{Row, Table, TableState};
 use crate::tui::components::scrollbar::render_vertical_scrollbar;
 use crate::tui::theme::TuiTheme;
 
+const COMPACT_TABLE_WIDTH: u16 = 96;
+const VERY_NARROW_TABLE_WIDTH: u16 = 72;
+
 pub struct TuiTable<const N: usize> {
     rows: Vec<Row<'static>>,
     columns: [Constraint; N],
@@ -91,7 +94,7 @@ pub fn render_selection_table(
     render_table(
         frame,
         area,
-        TuiTable::new(rows, selection_update_columns())
+        TuiTable::new(rows, selection_update_columns(area.width))
             .header(update_header_row(theme))
             .selected(selected)
             .offset(offset)
@@ -104,10 +107,32 @@ pub fn update_header_row(theme: &TuiTheme) -> Row<'static> {
     Row::new(vec!["", "Manager", "Name", "Current", "Target", "Note"]).style(theme.header)
 }
 
-const fn selection_update_columns() -> [Constraint; 6] {
+const fn selection_update_columns(width: u16) -> [Constraint; 6] {
+    if width < VERY_NARROW_TABLE_WIDTH {
+        return [
+            Constraint::Length(3),
+            Constraint::Max(7),
+            Constraint::Max(18),
+            Constraint::Length(0),
+            Constraint::Max(12),
+            Constraint::Fill(1),
+        ];
+    }
+
+    if width < COMPACT_TABLE_WIDTH {
+        return [
+            Constraint::Length(3),
+            Constraint::Max(7),
+            Constraint::Max(22),
+            Constraint::Max(14),
+            Constraint::Max(14),
+            Constraint::Fill(1),
+        ];
+    }
+
     [
-        Constraint::Length(4),
-        Constraint::Max(10),
+        Constraint::Length(3),
+        Constraint::Max(7),
         Constraint::Max(30),
         Constraint::Max(18),
         Constraint::Max(18),
@@ -115,20 +140,58 @@ const fn selection_update_columns() -> [Constraint; 6] {
     ]
 }
 
-pub const fn progress_update_columns() -> [Constraint; 6] {
+pub const fn progress_update_columns(width: u16) -> [Constraint; 6] {
+    if width < VERY_NARROW_TABLE_WIDTH {
+        return [
+            Constraint::Length(3),
+            Constraint::Max(7),
+            Constraint::Max(18),
+            Constraint::Length(0),
+            Constraint::Max(12),
+            Constraint::Fill(1),
+        ];
+    }
+
+    if width < COMPACT_TABLE_WIDTH {
+        return [
+            Constraint::Length(3),
+            Constraint::Max(7),
+            Constraint::Max(22),
+            Constraint::Max(14),
+            Constraint::Max(14),
+            Constraint::Fill(1),
+        ];
+    }
+
     [
-        Constraint::Length(4),
-        Constraint::Max(10),
-        Constraint::Min(12),
+        Constraint::Length(3),
+        Constraint::Max(7),
+        Constraint::Max(30),
         Constraint::Max(14),
         Constraint::Max(14),
         Constraint::Fill(1),
     ]
 }
 
-pub const fn version_picker_columns() -> [Constraint; 3] {
+pub const fn version_picker_columns(width: u16) -> [Constraint; 3] {
+    if width < VERY_NARROW_TABLE_WIDTH {
+        return [
+            Constraint::Length(3),
+            Constraint::Max(12),
+            Constraint::Fill(1),
+        ];
+    }
+
+    if width < COMPACT_TABLE_WIDTH {
+        return [
+            Constraint::Length(3),
+            Constraint::Max(14),
+            Constraint::Fill(1),
+        ];
+    }
+
     [
-        Constraint::Length(4),
+        Constraint::Length(3),
         Constraint::Max(24),
         Constraint::Fill(1),
     ]

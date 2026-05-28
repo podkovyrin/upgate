@@ -5,7 +5,7 @@ use upnow_domain::{PolicyBlockReason, PolicyWarning, SkipReason, VersionPolicy, 
 use crate::version_label;
 
 pub fn released(age: Duration) -> String {
-    format!("released: {}", human_age(age))
+    format!("{} ago", human_age(age))
 }
 
 pub fn too_fresh(age: Option<Duration>, required_age: Duration) -> String {

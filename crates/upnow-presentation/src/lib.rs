@@ -15,7 +15,7 @@ pub use batch::{
     scan_report_table, update_plan_table,
 };
 pub use outcome::{
-    OutcomeNote, OutcomeNoteTone, OutcomeRow, OutcomeStatusView, OutcomeSubjectView, OutcomeTable,
+    OutcomeNote, OutcomeRow, OutcomeStatusView, OutcomeSubjectView, OutcomeTable,
     OutcomeTargetView, OutcomeVersionEmphasis, OutcomeVersionsView, OutcomeVisibility,
     changed_version_segment_index, render_outcome_table, render_to_version, strip_ansi_codes,
     version_label,

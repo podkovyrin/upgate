@@ -122,7 +122,6 @@ pub enum OutcomeVersionEmphasis {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutcomeNote {
     pub text: String,
-    pub tone: OutcomeNoteTone,
     pub visibility: OutcomeVisibility,
 }
 
@@ -130,28 +129,24 @@ impl OutcomeNote {
     pub fn normal(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
-            tone: OutcomeNoteTone::Normal,
             visibility: OutcomeVisibility::Always,
         }
     }
     pub fn metadata(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
-            tone: OutcomeNoteTone::Metadata,
             visibility: OutcomeVisibility::Always,
         }
     }
     pub fn emphasized(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
-            tone: OutcomeNoteTone::Emphasized,
             visibility: OutcomeVisibility::Always,
         }
     }
     pub fn warning(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
-            tone: OutcomeNoteTone::Warning,
             visibility: OutcomeVisibility::Always,
         }
     }
@@ -159,14 +154,6 @@ impl OutcomeNote {
         self.visibility = visibility;
         self
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutcomeNoteTone {
-    Normal,
-    Metadata,
-    Emphasized,
-    Warning,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,12 +279,7 @@ fn render_note(note: &OutcomeNote, color: bool) -> String {
         return note.text.clone();
     }
 
-    match note.tone {
-        OutcomeNoteTone::Normal => note.text.italic().to_string(),
-        OutcomeNoteTone::Metadata => note.text.dimmed().to_string(),
-        OutcomeNoteTone::Emphasized => note.text.bold().to_string(),
-        OutcomeNoteTone::Warning => note.text.red().bold().to_string(),
-    }
+    note.text.dimmed().to_string()
 }
 
 fn version_cells(versions: &OutcomeVersionsView, theme: OutputTheme) -> (TableCell, TableCell) {

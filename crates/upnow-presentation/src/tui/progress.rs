@@ -742,7 +742,7 @@ fn draw_progress_table(
     render_table(
         frame,
         area,
-        TuiTable::new(rows, progress_update_columns())
+        TuiTable::new(rows, progress_update_columns(area.width))
             .header(update_header_row(theme))
             .offset(screen.table_offset),
         theme,

@@ -3,8 +3,8 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use crate::{
-    CandidateNotePart, CandidateNoteTone, SelectionRow, SelectionRowStatus, SelectionRowVisibility,
-    SelectionView, TargetOption,
+    CandidateNotePart, SelectionRow, SelectionRowStatus, SelectionRowVisibility, SelectionView,
+    TargetOption,
 };
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -73,6 +73,61 @@ const FOOTER_KEYS: &[KeyBinding<'static>] = &[
         label: "quit",
     },
 ];
+const FOOTER_INPUTS: &[Option<SelectionInput>] = &[
+    None,
+    Some(SelectionInput::ToggleCurrent),
+    Some(SelectionInput::SelectVisible),
+    Some(SelectionInput::SelectNoneVisible),
+    Some(SelectionInput::ToggleViewAll),
+    Some(SelectionInput::OpenTargetPicker),
+    Some(SelectionInput::Confirm),
+    Some(SelectionInput::Cancel),
+];
+const COMPACT_FOOTER_KEYS: &[KeyBinding<'static>] = &[
+    KeyBinding {
+        key: "v",
+        label: "view all",
+    },
+    KeyBinding {
+        key: "enter",
+        label: "details",
+    },
+    KeyBinding {
+        key: "C",
+        label: "confirm",
+    },
+    KeyBinding {
+        key: "q",
+        label: "quit",
+    },
+];
+const COMPACT_FOOTER_INPUTS: &[Option<SelectionInput>] = &[
+    Some(SelectionInput::ToggleViewAll),
+    Some(SelectionInput::OpenTargetPicker),
+    Some(SelectionInput::Confirm),
+    Some(SelectionInput::Cancel),
+];
+const MINIMAL_FOOTER_KEYS: &[KeyBinding<'static>] = &[
+    KeyBinding {
+        key: "enter",
+        label: "details",
+    },
+    KeyBinding {
+        key: "C",
+        label: "confirm",
+    },
+    KeyBinding {
+        key: "q",
+        label: "quit",
+    },
+];
+const MINIMAL_FOOTER_INPUTS: &[Option<SelectionInput>] = &[
+    Some(SelectionInput::OpenTargetPicker),
+    Some(SelectionInput::Confirm),
+    Some(SelectionInput::Cancel),
+];
+const COMPACT_FOOTER_WIDTH: u16 = 96;
+const MINIMAL_FOOTER_WIDTH: u16 = 52;
 const PICKER_FOOTER_KEYS: &[KeyBinding<'static>] = &[
     KeyBinding {
         key: "up/down j/k",
@@ -1586,17 +1641,11 @@ fn handle_selection_tab_click(
 }
 
 fn selection_footer_input(column: u16, area: Rect) -> Option<SelectionInput> {
-    let hit = key_footer_hit(FOOTER_KEYS, column - area.x)?;
-    match hit {
-        1 => Some(SelectionInput::ToggleCurrent),
-        2 => Some(SelectionInput::SelectVisible),
-        3 => Some(SelectionInput::SelectNoneVisible),
-        4 => Some(SelectionInput::ToggleViewAll),
-        5 => Some(SelectionInput::OpenTargetPicker),
-        6 => Some(SelectionInput::Confirm),
-        7 => Some(SelectionInput::Cancel),
-        _ => None,
-    }
+    let bindings = selection_footer_bindings(area.width);
+    selection_footer_inputs(area.width)
+        .get(key_footer_hit(bindings, column - area.x)?)
+        .copied()
+        .flatten()
 }
 
 const fn selection_checkbox_hit(area: Rect, column: u16) -> bool {
@@ -1764,7 +1813,10 @@ fn draw_selection_with_theme(
     draw_selection_body(frame, screen, app_frame.body, theme);
 
     render_separator(frame, app_frame.footer_separator, theme);
-    frame.render_widget(Paragraph::new(footer_line(screen, theme)), app_frame.footer);
+    frame.render_widget(
+        Paragraph::new(footer_line(screen, app_frame.footer.width, theme)),
+        app_frame.footer,
+    );
 
     if let Some(picker) = screen.target_picker {
         draw_target_picker(frame, screen, picker, app_frame.outer, theme);
@@ -2017,7 +2069,7 @@ fn selection_table_row(
     let note = if row.forced {
         forced_note_cell(&row.note_parts, style, highlighted, theme)
     } else {
-        Cell::new(note_line(&row.note_parts, theme.note_for(style), theme))
+        Cell::new(note_line(&row.note_parts, theme)).style(theme.note_for(style))
     };
 
     Row::new(vec![
@@ -2041,14 +2093,14 @@ fn forced_note_cell(
     let mut spans = vec![Span::styled("forced", forced_style)];
     let note = note_text(note_parts);
     if !note.is_empty() {
-        spans.push(Span::styled(", ", forced_style));
-        spans.push(Span::styled(note, forced_style));
+        spans.push(Span::styled(", ", theme.note_for(base_style)));
+        spans.push(Span::styled(note, theme.note_for(base_style)));
     }
 
     Cell::new(Line::from(spans)).style(theme.note_for(base_style))
 }
 
-fn footer_line(screen: &InteractiveSelectionScreen, theme: &TuiTheme) -> Line<'static> {
+fn footer_line(screen: &InteractiveSelectionScreen, width: u16, theme: &TuiTheme) -> Line<'static> {
     if screen.confirmation_dialog_open() {
         return Line::raw("");
     }
@@ -2057,7 +2109,27 @@ fn footer_line(screen: &InteractiveSelectionScreen, theme: &TuiTheme) -> Line<'s
         return picker_footer_line(theme);
     }
 
-    key_footer(FOOTER_KEYS, theme)
+    key_footer(selection_footer_bindings(width), theme)
+}
+
+const fn selection_footer_bindings(width: u16) -> &'static [KeyBinding<'static>] {
+    if width < MINIMAL_FOOTER_WIDTH {
+        MINIMAL_FOOTER_KEYS
+    } else if width < COMPACT_FOOTER_WIDTH {
+        COMPACT_FOOTER_KEYS
+    } else {
+        FOOTER_KEYS
+    }
+}
+
+const fn selection_footer_inputs(width: u16) -> &'static [Option<SelectionInput>] {
+    if width < MINIMAL_FOOTER_WIDTH {
+        MINIMAL_FOOTER_INPUTS
+    } else if width < COMPACT_FOOTER_WIDTH {
+        COMPACT_FOOTER_INPUTS
+    } else {
+        FOOTER_INPUTS
+    }
 }
 
 fn picker_footer_line(theme: &TuiTheme) -> Line<'static> {
@@ -2228,7 +2300,7 @@ fn draw_target_picker_rows(
     render_table(
         frame,
         area,
-        TuiTable::new(table_rows, version_picker_columns())
+        TuiTable::new(table_rows, version_picker_columns(area.width))
             .selected(selected)
             .row_highlight_style(theme.selected_row_highlight),
         theme,
@@ -2249,7 +2321,7 @@ fn target_picker_table_row(
     } else {
         version_diff_spans(current, &row.target, style, theme, highlighted)
     };
-    let note = note_line(&row.note_parts, theme.note_for(style), theme);
+    let note = note_line(&row.note_parts, theme);
 
     Row::new(vec![
         Cell::new(marker).style(style),
@@ -2296,18 +2368,16 @@ fn target_option_matches_selected(option: &TargetOption, target: &SelectedUpdate
     }
 }
 
-fn note_line(note_parts: &[CandidateNotePart], style: Style, theme: &TuiTheme) -> Line<'static> {
+fn note_line(note_parts: &[CandidateNotePart], theme: &TuiTheme) -> Line<'static> {
     let mut spans = Vec::new();
     for (idx, part) in note_parts.iter().enumerate() {
         if idx > 0 {
-            spans.push(Span::styled("; ", theme.muted));
+            spans.push(Span::styled("; ", theme.note_for(Style::default())));
         }
-        let part_style = match part.tone {
-            CandidateNoteTone::Normal => style,
-            CandidateNoteTone::Metadata => theme.muted,
-            CandidateNoteTone::Violation => style.patch(theme.forced),
-        };
-        spans.push(Span::styled(note_part_text(part), part_style));
+        spans.push(Span::styled(
+            note_part_text(part),
+            theme.note_for(Style::default()),
+        ));
     }
 
     Line::from(spans)
