@@ -300,6 +300,12 @@ enum SelectionTabRef {
     Manager(usize),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SelectionTabIdentity {
+    All,
+    Manager(ManagerId),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct VisibleRow {
     manager_idx: usize,
@@ -419,9 +425,13 @@ impl InteractiveSelectionScreen {
     }
 
     pub fn apply_planning_event(&mut self, event: InteractiveSelectionPlanningEvent) {
+        let active_tab = self.active_tab_identity();
         let open_picker_row = self
             .target_picker
             .map(|picker| self.row(picker.visible_row).plan_item_id.clone());
+        let focused_row = open_picker_row
+            .clone()
+            .or_else(|| self.current_visible_row_id());
         match event {
             InteractiveSelectionPlanningEvent::ManagerStarted { manager_id } => {
                 self.replace_manager_state(
@@ -491,6 +501,8 @@ impl InteractiveSelectionScreen {
                 self.planning_finished = true;
             }
         }
+        self.restore_active_tab(active_tab);
+        self.restore_cursor(focused_row);
         self.clamp_cursor();
         self.rebind_or_close_target_picker(open_picker_row);
     }
@@ -1078,6 +1090,11 @@ impl InteractiveSelectionScreen {
         self.visible_row_refs().get(self.cursor).copied()
     }
 
+    fn current_visible_row_id(&self) -> Option<PlanItemId> {
+        self.current_visible_row()
+            .map(|visible| self.row(visible).plan_item_id.clone())
+    }
+
     fn visible_row_for_plan_item(&self, plan_item_id: &PlanItemId) -> Option<VisibleRow> {
         self.visible_row_refs()
             .into_iter()
@@ -1124,6 +1141,51 @@ impl InteractiveSelectionScreen {
         match self.visible_tab_refs().get(self.active_tab).copied() {
             Some(SelectionTabRef::Manager(manager_idx)) => Some(manager_idx),
             Some(SelectionTabRef::All) | None => None,
+        }
+    }
+
+    fn active_tab_identity(&self) -> Option<SelectionTabIdentity> {
+        self.visible_tab_refs()
+            .get(self.active_tab)
+            .copied()
+            .map(|tab| match tab {
+                SelectionTabRef::All => SelectionTabIdentity::All,
+                SelectionTabRef::Manager(manager_idx) => {
+                    SelectionTabIdentity::Manager(self.managers[manager_idx].manager_id.clone())
+                }
+            })
+    }
+
+    fn restore_active_tab(&mut self, active_tab: Option<SelectionTabIdentity>) {
+        let Some(active_tab) = active_tab else {
+            return;
+        };
+        if let Some(tab_idx) =
+            self.visible_tab_refs()
+                .into_iter()
+                .position(|tab| match (&active_tab, tab) {
+                    (SelectionTabIdentity::All, SelectionTabRef::All) => true,
+                    (
+                        SelectionTabIdentity::Manager(manager_id),
+                        SelectionTabRef::Manager(manager_idx),
+                    ) => self.managers[manager_idx].manager_id == *manager_id,
+                    _ => false,
+                })
+        {
+            self.active_tab = tab_idx;
+        }
+    }
+
+    fn restore_cursor(&mut self, focused_row: Option<PlanItemId>) {
+        let Some(focused_row) = focused_row else {
+            return;
+        };
+        if let Some(row_idx) = self
+            .visible_row_refs()
+            .into_iter()
+            .position(|visible| self.row(visible).plan_item_id == focused_row)
+        {
+            self.cursor = row_idx;
         }
     }
 
