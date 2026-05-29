@@ -592,12 +592,12 @@ fn validate_policy_support(manager_id: &str, policy: VersionPolicy) -> Result<()
     let manager_id = ManagerId::new(manager_id.to_owned())
         .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
     let supported = supports_version_policy(manager_id.as_str(), policy)
-        .map_err(|_| ConfigError::UnknownManager(manager_id.as_str().to_owned()))?;
+        .map_err(|_| ConfigError::UnknownManager(manager_id.to_string()))?;
     if supported {
         Ok(())
     } else {
         Err(ConfigError::UnsupportedVersionPolicy {
-            manager_id: manager_id.as_str().to_owned(),
+            manager_id: manager_id.to_string(),
             policy,
         })
     }
@@ -682,7 +682,7 @@ fn selection_section_from_policy(
         except: selection_policy
             .except
             .into_iter()
-            .map(|package_name| package_name.as_str().to_owned())
+            .map(|package_name| package_name.to_string())
             .collect(),
     }
 }

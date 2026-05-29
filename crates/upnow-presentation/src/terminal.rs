@@ -1,3 +1,4 @@
+use std::fmt::{self, Display};
 use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressFinish, ProgressStyle};
@@ -27,14 +28,14 @@ pub enum MutationNotice {
     Real,
 }
 
-impl MutationNotice {
-    pub const fn render(self) -> &'static str {
-        match self {
+impl Display for MutationNotice {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
             Self::Skip => {
                 "note: apply runs in safe mode: mutating commands are skipped (safe mode)"
             }
             Self::Real => "warning: apply runs with real mutating commands are ENABLED",
-        }
+        })
     }
 }
 

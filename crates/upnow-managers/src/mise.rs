@@ -142,7 +142,7 @@ impl ManagerAdapter for MiseManager {
                 tools
                     .into_iter()
                     .map(|tool| installed_tool(&tool).map(ManagerScanInput::Installed))
-                    .collect::<Result<Vec<_>, _>>()
+                    .collect()
             })
             .map_err(|err| adapter_error(&err))
     }
@@ -259,10 +259,8 @@ pub fn parse_installed_json(raw: &str) -> Result<Vec<MiseInstalledTool>, MiseErr
         serde_json::from_str(raw).map_err(|err| MiseError::Json(err.to_string()))?;
     let mut tools = BTreeMap::new();
     for (tool, entries) in parsed {
-        for entry in entries {
-            if let Some(version) = entry.version {
-                tools.insert(tool.clone(), version);
-            }
+        if let Some(version) = entries.into_iter().rev().find_map(|entry| entry.version) {
+            tools.insert(tool, version);
         }
     }
     tools
@@ -642,7 +640,7 @@ fn npm_release_lookup(
 ) -> ReleaseLookupResult {
     let spec = version.map_or_else(
         || package.to_owned(),
-        |version| format!("{package}@{}", version.as_str()),
+        |version| format!("{package}@{version}"),
     );
     let output = match process.run(
         &CommandSpec::new("npm", ["view", &spec, "time", "--json"]),

@@ -27,8 +27,8 @@ use upnow_execution::progress::{
     ExecutionProgressEvent, ExecutionProgressState, ExecutionProgressSummary,
 };
 use upnow_execution::{
-    ExecutionReport, ExecutionSelectionError, ExecutionStatus, ResolvedExecutionPlan,
-    execute_commands, resolve_selection_for_execution,
+    ExecutionReport, ExecutionStatus, ResolvedExecutionPlan, execute_commands,
+    resolve_selection_for_execution,
 };
 use upnow_infra::{
     Clock, Env, HttpClient, HttpSettings, LoggingOptions, MutationMode, ProcessRunner,
@@ -189,15 +189,17 @@ impl From<CliCommand> for BatchCommand {
     }
 }
 
-impl BatchCommand {
-    const fn as_str(self) -> &'static str {
-        match self {
+impl Display for BatchCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
             Self::Scan => "scan",
             Self::Plan => "plan",
             Self::Apply => "apply",
-        }
+        })
     }
+}
 
+impl BatchCommand {
     const fn terminal_action(self) -> BatchTerminalAction {
         match self {
             Self::Scan => BatchTerminalAction::Scan,
@@ -392,7 +394,7 @@ fn snapshot_current_version(item: &PlanItem) -> &str {
 fn snapshot_target(item: &PlanItem, selected_update: Option<&SelectedUpdate>) -> Option<String> {
     if let Some(selected_update) = selected_update {
         return match selected_update {
-            SelectedUpdate::Exact { target_version } => Some(target_version.as_str().to_owned()),
+            SelectedUpdate::Exact { target_version } => Some(target_version.to_string()),
             SelectedUpdate::ManagerResolved => None,
             SelectedUpdate::Recommended | SelectedUpdate::ForcePlannedCandidate => {
                 snapshot_plan_target(item)
@@ -405,13 +407,13 @@ fn snapshot_target(item: &PlanItem, selected_update: Option<&SelectedUpdate>) ->
 
 fn snapshot_plan_target(item: &PlanItem) -> Option<String> {
     match item {
-        PlanItem::Update { candidate, .. } | PlanItem::Delayed { candidate, .. } => candidate
-            .target_version()
-            .map(|target| target.as_str().to_owned()),
+        PlanItem::Update { candidate, .. } | PlanItem::Delayed { candidate, .. } => {
+            candidate.target_version().map(ToString::to_string)
+        }
         PlanItem::Blocked { seed, .. } => seed
             .target_selection
             .target_version()
-            .map(|target| target.as_str().to_owned()),
+            .map(ToString::to_string),
         PlanItem::Current { .. } | PlanItem::Skipped { .. } | PlanItem::ResolverError { .. } => {
             None
         }
@@ -1130,7 +1132,7 @@ fn confirmed_from_drafts(
         let details = prepared
             .planning_failures
             .iter()
-            .map(|(manager_id, detail)| format!("{}: {detail}", manager_id.as_str()))
+            .map(|(manager_id, detail)| format!("{manager_id}: {detail}"))
             .collect::<Vec<_>>()
             .join("; ");
         return Err(AppError::Planning(details));
@@ -1284,7 +1286,7 @@ fn resolve_confirmed_execution_plans(
                 .capabilities(),
             manager.manager_config.version_policy,
         )
-        .map_err(map_execution_selection_error)?;
+        .map_err(|err| AppError::Manager(err.to_string()))?;
         resolved.push((manager.plan.manager_id.clone(), execution_plan));
     }
     Ok(resolved)
@@ -1406,7 +1408,7 @@ fn run_batch_for_managers(
     let manager_outputs = run_ordered_parallel_stoppable(
         manager_ids.to_vec(),
         manager_concurrency,
-        &format!("{} managers", command.as_str()),
+        &format!("{command} managers"),
         &stop_requested,
         |manager_id| {
             let result = run_manager_scan_or_plan_batch(
@@ -1428,6 +1430,7 @@ fn run_batch_for_managers(
 
     let mut table = OutcomeTable::default();
     let mut had_error = false;
+    let command_label = command.to_string();
     for (manager_id, manager_output) in manager_outputs {
         match manager_output {
             Ok(manager_output) => {
@@ -1438,7 +1441,7 @@ fn run_batch_for_managers(
             Err(err) => {
                 had_error = true;
                 table.rows.extend(
-                    manager_error_table(&manager_id, command.as_str(), &err.to_string()).rows,
+                    manager_error_table(&manager_id, &command_label, &err.to_string()).rows,
                 );
             }
         }
@@ -1660,7 +1663,7 @@ fn prepare_manager_batch_apply(
         manager.capabilities(),
         manager_config.version_policy,
     )
-    .map_err(map_execution_selection_error)?;
+    .map_err(|err| AppError::Manager(err.to_string()))?;
 
     Ok(Some(PreparedBatchApply {
         plan,
@@ -1841,7 +1844,7 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
     let env = Env::real();
     let command = cli.command.unwrap_or(CliCommand::Plan);
     let interactive_apply = command == CliCommand::Apply && !cli.yolo;
-    let log_dir = init_command_logging(cli, &env, interactive_apply)?;
+    let log_dir = init_command_logging(cli, &env, command, interactive_apply)?;
     let process = ProcessRunner::new(MutationMode::from_env_and_debug_no_mutate(
         &env,
         cli.debug_no_mutate(),
@@ -1905,6 +1908,7 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
 fn init_command_logging(
     cli: &Cli,
     env: &Env,
+    command: CliCommand,
     interactive_apply: bool,
 ) -> Result<Option<PathBuf>, AppError> {
     let options = LoggingOptions {
@@ -1917,18 +1921,13 @@ fn init_command_logging(
 
     let path = match init_logging(options, env) {
         Ok(path) => Some(path),
-        Err(err)
-            if options.debug_commands
-                || cli.command.unwrap_or(CliCommand::Plan) == CliCommand::Apply =>
-        {
+        Err(err) if options.debug_commands || command == CliCommand::Apply => {
             return Err(AppError::Execution(err.to_string()));
         }
         Err(_) => None,
     };
 
-    if options.debug_commands
-        && (cli.yolo || cli.command.unwrap_or(CliCommand::Plan) != CliCommand::Apply)
-    {
+    if options.debug_commands && (cli.yolo || command != CliCommand::Apply) {
         let path = path
             .as_ref()
             .expect("debug logging initialization succeeded");
@@ -1953,7 +1952,7 @@ fn maybe_emit_apply_mutation_mode_notice(
     terminal: BatchTerminal,
 ) -> Result<(), AppError> {
     if let Some(notice) = apply_mutation_mode_notice(command, process, env, terminal)? {
-        eprintln!("{}", notice.render());
+        eprintln!("{notice}");
     }
     Ok(())
 }
@@ -2099,11 +2098,6 @@ fn map_manager_error(err: ManagerAdapterError) -> AppError {
     } else {
         AppError::Manager(detail)
     }
-}
-
-#[expect(clippy::needless_pass_by_value)]
-fn map_execution_selection_error(err: ExecutionSelectionError) -> AppError {
-    AppError::Manager(err.to_string())
 }
 
 fn selected_manager_ids(selected_managers: &[String]) -> Result<Vec<ManagerId>, AppError> {

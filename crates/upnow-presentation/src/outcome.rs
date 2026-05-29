@@ -354,9 +354,9 @@ fn status_prefix(status: OutcomeStatusView, color: bool) -> String {
 
 fn render_manager(manager_id: &ManagerId, color: bool) -> String {
     if color {
-        format!("[{}]", manager_id.as_str().bold())
+        format!("[{}]", manager_id.to_string().bold())
     } else {
-        format!("[{}]", manager_id.as_str())
+        format!("[{manager_id}]")
     }
 }
 

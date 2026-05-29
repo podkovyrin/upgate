@@ -1,3 +1,5 @@
+use std::fmt::{self, Display};
+
 use crate::DomainError;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -18,6 +20,12 @@ impl VersionText {
     }
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl Display for VersionText {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 

@@ -28,21 +28,21 @@ impl PlanSelection {
     ) -> Result<Self, DomainError> {
         let mut seen = BTreeSet::new();
         for selected in &selected_items {
-            if plan.item(&selected.plan_item_id).is_none() {
+            if !plan.contains_item(&selected.plan_item_id) {
                 return Err(DomainError::UnknownPlanItemId(
-                    selected.plan_item_id.as_str().to_owned(),
+                    selected.plan_item_id.to_string(),
                 ));
             }
-            if !seen.insert(selected.plan_item_id.clone()) {
+            if !seen.insert(&selected.plan_item_id) {
                 return Err(DomainError::DuplicateSelectedPlanItemId(
-                    selected.plan_item_id.as_str().to_owned(),
+                    selected.plan_item_id.to_string(),
                 ));
             }
         }
         for package_name in &selection_policy.except {
             if !plan.contains_package(package_name) {
                 return Err(DomainError::UnknownSelectionPackage(
-                    package_name.as_str().to_owned(),
+                    package_name.to_string(),
                 ));
             }
         }

@@ -254,14 +254,8 @@ pub fn blocking_client(settings: &HttpSettings) -> Result<Client, InfraError> {
         })
 }
 pub fn env_base_url(env: &Env, var_name: &str, default: &str) -> String {
-    env.var(var_name)
-        .and_then(|value| {
-            let trimmed = value.trim().trim_end_matches('/').to_owned();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            }
-        })
+    env.non_empty_var(var_name)
+        .map(|value| value.trim_end_matches('/').to_owned())
+        .filter(|value| !value.is_empty())
         .unwrap_or_else(|| default.to_owned())
 }

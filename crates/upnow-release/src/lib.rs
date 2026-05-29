@@ -44,7 +44,7 @@ pub fn newest_semver_version(timeline: &ReleaseTimeline) -> Option<VersionText> 
         .iter()
         .filter_map(|entry| {
             let raw = entry.version.as_str().trim().trim_start_matches(['v', 'V']);
-            let parsed = Version::parse(raw).or_else(|_| {
+            let parsed = Version::parse(raw).or_else(|err| {
                 let parts = raw.split('.').collect::<Vec<_>>();
                 if parts.is_empty()
                     || parts.len() > 3
@@ -53,7 +53,7 @@ pub fn newest_semver_version(timeline: &ReleaseTimeline) -> Option<VersionText> 
                         .iter()
                         .all(|part| part.chars().all(|ch| ch.is_ascii_digit()))
                 {
-                    return Version::parse(raw);
+                    return Err(err);
                 }
                 let mut padded = parts;
                 while padded.len() < 3 {

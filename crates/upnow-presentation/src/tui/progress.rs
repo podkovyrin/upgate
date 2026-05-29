@@ -18,12 +18,9 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row};
-use upnow_execution::{
-    ResolvedExecutionTarget,
-    progress::{
-        ExecutionProgressEvent, ExecutionProgressRow, ExecutionProgressState,
-        ExecutionProgressStatus, ExecutionProgressSummary,
-    },
+use upnow_execution::progress::{
+    ExecutionProgressEvent, ExecutionProgressRow, ExecutionProgressState, ExecutionProgressStatus,
+    ExecutionProgressSummary,
 };
 
 use crate::tui::components::{
@@ -640,7 +637,7 @@ fn header_line(screen: &InteractiveProgressScreen, theme: &TuiTheme) -> Line<'st
         .rows
         .iter()
         .find(|row| matches!(row.status, ExecutionProgressStatus::Running))
-        .map(|row| row.manager_id.as_str().to_owned());
+        .map(|row| row.manager_id.to_string());
     let title = running_manager.map_or_else(
         || {
             if screen.finished() {
@@ -708,7 +705,7 @@ fn draw_progress_table(
         if screen.result_open() {
             return Row::new(vec![
                 Cell::new("").style(theme.error),
-                Cell::new(failure.manager_id.as_str().to_owned()).style(theme.error),
+                Cell::new(failure.manager_id.to_string()).style(theme.error),
                 Cell::new("manager").style(theme.error),
                 Cell::new(""),
                 Cell::new(""),
@@ -718,7 +715,7 @@ fn draw_progress_table(
         }
         Row::new(vec![
             Cell::new("[x]").style(theme.error),
-            Cell::new(failure.manager_id.as_str().to_owned()).style(theme.error),
+            Cell::new(failure.manager_id.to_string()).style(theme.error),
             Cell::new("manager").style(theme.error),
             Cell::new(""),
             Cell::new(""),
@@ -757,10 +754,10 @@ fn progress_table_row(
     let style = progress_row_style(&row.status, theme);
     Row::new(vec![
         Cell::new(status_label(&row.status, spinner_tick)).style(theme.emphasis(style)),
-        Cell::new(row.manager_id.as_str().to_owned()).style(style),
-        Cell::new(row.package_name.as_str().to_owned()).style(theme.emphasis(style)),
-        Cell::new(row.installed_version.as_str().to_owned()).style(style),
-        Cell::new(progress_target_label(&row.target)).style(style),
+        Cell::new(row.manager_id.to_string()).style(style),
+        Cell::new(row.package_name.to_string()).style(theme.emphasis(style)),
+        Cell::new(row.installed_version.to_string()).style(style),
+        Cell::new(row.target.to_string()).style(style),
         Cell::new(status_note(&row.status)).style(style),
     ])
     .style(style)
@@ -770,8 +767,8 @@ fn result_table_row(row: &ExecutionProgressRow, theme: &TuiTheme) -> Row<'static
     let style = progress_row_style(&row.status, theme);
     Row::new(vec![
         Cell::new("").style(style),
-        Cell::new(row.manager_id.as_str().to_owned()).style(style),
-        Cell::new(row.package_name.as_str().to_owned()).style(theme.emphasis(style)),
+        Cell::new(row.manager_id.to_string()).style(style),
+        Cell::new(row.package_name.to_string()).style(theme.emphasis(style)),
         Cell::new(result_current_label(row)).style(style),
         Cell::new("").style(style),
         Cell::new("").style(style),
@@ -781,18 +778,11 @@ fn result_table_row(row: &ExecutionProgressRow, theme: &TuiTheme) -> Row<'static
 
 fn result_current_label(row: &ExecutionProgressRow) -> String {
     match row.status {
-        ExecutionProgressStatus::Succeeded { .. } => progress_target_label(&row.target),
+        ExecutionProgressStatus::Succeeded { .. } => row.target.to_string(),
         ExecutionProgressStatus::Pending
         | ExecutionProgressStatus::Running
         | ExecutionProgressStatus::Failed { .. }
-        | ExecutionProgressStatus::Skipped { .. } => row.installed_version.as_str().to_owned(),
-    }
-}
-
-fn progress_target_label(target: &ResolvedExecutionTarget) -> String {
-    match target {
-        ResolvedExecutionTarget::Known(version) => version.as_str().to_owned(),
-        ResolvedExecutionTarget::ManagerResolved => "manager-resolved".to_owned(),
+        | ExecutionProgressStatus::Skipped { .. } => row.installed_version.to_string(),
     }
 }
 

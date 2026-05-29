@@ -395,7 +395,7 @@ fn exact_command_for_item(item: &ResolvedExecutionItem) -> Result<CommandSpec, Y
 }
 
 fn exact_command_parts(package_name: &PackageName, target_version: &VersionText) -> CommandSpec {
-    let spec = format!("{}@{}", package_name.as_str(), target_version.as_str());
+    let spec = format!("{package_name}@{target_version}");
     CommandSpec::new("yarn", ["global", "add", &spec]).mutating()
 }
 

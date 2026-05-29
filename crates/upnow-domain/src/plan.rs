@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, time::Duration};
+use std::{
+    collections::BTreeSet,
+    fmt::{self, Display},
+    time::Duration,
+};
 
 use crate::{
     DomainError, InstalledTool, ManagerId, PackageName, PolicyWarning, ReleaseLookupError,
@@ -24,6 +28,12 @@ impl PlanItemId {
     }
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl Display for PlanItemId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 
@@ -552,10 +562,8 @@ impl UpdatePlan {
     ) -> Result<Self, DomainError> {
         let mut seen = BTreeSet::new();
         for item in &items {
-            if !seen.insert(item.id().clone()) {
-                return Err(DomainError::DuplicatePlanItemId(
-                    item.id().as_str().to_owned(),
-                ));
+            if !seen.insert(item.id()) {
+                return Err(DomainError::DuplicatePlanItemId(item.id().to_string()));
             }
         }
 

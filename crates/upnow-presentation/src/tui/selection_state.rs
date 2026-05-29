@@ -83,7 +83,7 @@ impl InteractiveSelectionState {
         let row = self.row(plan_item_id)?;
         if row.status != SelectionRowStatus::Update {
             return Err(SelectionStateError::TargetUnavailable(
-                plan_item_id.as_str().to_owned(),
+                plan_item_id.to_string(),
             ));
         }
         let package_name = row.package_name.clone();
@@ -127,7 +127,7 @@ impl InteractiveSelectionState {
             .any(|option| matches!(option, TargetOption::ForcedCandidate { .. }))
         {
             return Err(SelectionStateError::TargetUnavailable(
-                plan_item_id.as_str().to_owned(),
+                plan_item_id.to_string(),
             ));
         }
         self.selected_targets
@@ -158,7 +158,7 @@ impl InteractiveSelectionState {
             )
         }) {
             return Err(SelectionStateError::TargetUnavailable(
-                plan_item_id.as_str().to_owned(),
+                plan_item_id.to_string(),
             ));
         }
         self.selected_targets.insert(
@@ -185,7 +185,7 @@ impl InteractiveSelectionState {
             .any(|option| matches!(option, TargetOption::ManagerResolved { .. }))
         {
             return Err(SelectionStateError::TargetUnavailable(
-                plan_item_id.as_str().to_owned(),
+                plan_item_id.to_string(),
             ));
         }
         self.selected_targets
@@ -203,7 +203,7 @@ impl InteractiveSelectionState {
         let row = self.row(plan_item_id)?;
         if row.status != SelectionRowStatus::Update {
             return Err(SelectionStateError::TargetUnavailable(
-                plan_item_id.as_str().to_owned(),
+                plan_item_id.to_string(),
             ));
         }
         let package_name = row.package_name.clone();
@@ -252,6 +252,6 @@ impl InteractiveSelectionState {
         self.rows
             .iter()
             .find(|row| row.plan_item_id == *plan_item_id)
-            .ok_or_else(|| SelectionStateError::UnknownPlanItem(plan_item_id.as_str().to_owned()))
+            .ok_or_else(|| SelectionStateError::UnknownPlanItem(plan_item_id.to_string()))
     }
 }

@@ -267,7 +267,7 @@ fn parse_search_latest_version(crate_name: &PackageName, raw: &str) -> Result<Ve
         if trimmed.is_empty() || trimmed.starts_with("...") || trimmed.starts_with("note:") {
             continue;
         }
-        let prefix = format!("{} = \"", crate_name.as_str());
+        let prefix = format!("{crate_name} = \"");
         if let Some(rest) = trimmed.strip_prefix(&prefix)
             && let Some((version, _)) = rest.split_once('"')
         {
@@ -345,7 +345,7 @@ pub fn update_inputs(
 pub fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> ReleaseLookupResult {
     let base_url =
         upnow_infra::env_base_url(env, "UPNOW_CARGO_CRATES_IO_BASE_URL", "https://crates.io");
-    let url = format!("{base_url}/api/v1/crates/{}", package.as_str());
+    let url = format!("{base_url}/api/v1/crates/{package}");
     match http.get_text(&url) {
         Ok(response) => match parse_crates_io_json(package, &response.body) {
             Ok(timeline) => ReleaseLookupResult::Known(timeline),

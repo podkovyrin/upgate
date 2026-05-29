@@ -2,7 +2,7 @@ use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
     DomainError, ManagerId, ManagerUpdateInput, PlanItem, PlanItemId, PlanSelection, SelectedItem,
-    UpdatePlan, UpdateSeed, UpdateSelectionPolicy, VersionPolicy,
+    ToolId, UpdatePlan, UpdateSeed, UpdateSelectionPolicy, VersionPolicy,
 };
 
 use crate::evaluate_seed;
@@ -45,7 +45,7 @@ pub fn update_plan_from_inputs(
     for input in inputs {
         match input {
             ManagerUpdateInput::Seed(seed) => {
-                let id = plan_item_id(&manager_id, seed.installed.tool_id.as_str())?;
+                let id = plan_item_id(&manager_id, &seed.installed.tool_id)?;
                 items.push(evaluate_seed(
                     id,
                     seed,
@@ -55,7 +55,7 @@ pub fn update_plan_from_inputs(
                 ));
             }
             ManagerUpdateInput::Skipped { installed, reason } => {
-                let id = plan_item_id(&manager_id, installed.tool_id.as_str())?;
+                let id = plan_item_id(&manager_id, &installed.tool_id)?;
                 items.push(PlanItem::Skipped {
                     id,
                     installed,
@@ -63,7 +63,7 @@ pub fn update_plan_from_inputs(
                 });
             }
             ManagerUpdateInput::ResolverError { installed, message } => {
-                let id = plan_item_id(&manager_id, installed.tool_id.as_str())?;
+                let id = plan_item_id(&manager_id, &installed.tool_id)?;
                 items.push(PlanItem::ResolverError {
                     id,
                     installed,
@@ -75,8 +75,8 @@ pub fn update_plan_from_inputs(
     UpdatePlan::new(manager_id, items)
 }
 
-fn plan_item_id(manager_id: &ManagerId, tool_id: &str) -> Result<PlanItemId, DomainError> {
-    PlanItemId::new(format!("{}:{tool_id}", manager_id.as_str()))
+fn plan_item_id(manager_id: &ManagerId, tool_id: &ToolId) -> Result<PlanItemId, DomainError> {
+    PlanItemId::new(format!("{manager_id}:{tool_id}"))
 }
 
 /// Selects default batch apply items according to the manager selection policy.

@@ -77,6 +77,15 @@ impl ResolvedExecutionTarget {
     }
 }
 
+impl Display for ResolvedExecutionTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Known(version) => write!(formatter, "{version}"),
+            Self::ManagerResolved => formatter.write_str("manager-resolved"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutionSelectionError {
     UnknownPlanItem(String),
@@ -154,7 +163,7 @@ pub fn resolve_selection_for_execution(
             intents.push(ExecutionCommandIntent::Exact(item));
         } else {
             return Err(ExecutionSelectionError::ExactTargetUnsupported(
-                item.plan_item_id.as_str().to_owned(),
+                item.plan_item_id.to_string(),
             ));
         }
     }
@@ -230,7 +239,7 @@ pub fn execute_commands(
 ) -> Result<ExecutionReport, InfraError> {
     let mut items = Vec::new();
     for command in commands {
-        let command_display = command.command.display();
+        let command_display = command.command.to_string();
         let status = match process.run(&command.command, &CommandCheck::Success) {
             Ok(output) => ExecutionStatus::Succeeded {
                 command: command_display,
@@ -263,7 +272,7 @@ fn selected_execution_items(
     let mut items = Vec::new();
     for selected in &selection.selected_items {
         let item = plan.item(&selected.plan_item_id).ok_or_else(|| {
-            ExecutionSelectionError::UnknownPlanItem(selected.plan_item_id.as_str().to_owned())
+            ExecutionSelectionError::UnknownPlanItem(selected.plan_item_id.to_string())
         })?;
         items.push(selected_execution_item(item, selected)?);
     }
@@ -298,7 +307,7 @@ fn resolve_recommended_selection(
         ));
     }
     Err(ExecutionSelectionError::ItemNotExecutable(
-        item.id().as_str().to_owned(),
+        item.id().to_string(),
     ))
 }
 
@@ -311,7 +320,7 @@ fn resolve_exact_selection(
         PlanItem::Update { candidate, .. } | PlanItem::Delayed { candidate, .. } => {
             if !candidate.execution_support.exact {
                 return Err(ExecutionSelectionError::ExactTargetUnsupported(
-                    item.id().as_str().to_owned(),
+                    item.id().to_string(),
                 ));
             }
             Ok(resolved_item(
@@ -330,7 +339,7 @@ fn resolve_exact_selection(
         } => {
             if !seed.execution_support.exact {
                 return Err(ExecutionSelectionError::ExactTargetUnsupported(
-                    item.id().as_str().to_owned(),
+                    item.id().to_string(),
                 ));
             }
             Ok(resolved_seed_item(
@@ -342,7 +351,7 @@ fn resolve_exact_selection(
             ))
         }
         _ => Err(ExecutionSelectionError::ItemNotExecutable(
-            item.id().as_str().to_owned(),
+            item.id().to_string(),
         )),
     }
 }
@@ -386,7 +395,7 @@ fn resolve_forced_selection(
             ..
         } => resolve_forced_seed(selected.plan_item_id.clone(), seed),
         _ => Err(ExecutionSelectionError::ItemNotExecutable(
-            item.id().as_str().to_owned(),
+            item.id().to_string(),
         )),
     }
 }
@@ -413,7 +422,7 @@ fn resolve_manager_resolved_selection(
             resolve_manager_resolved_seed(selected.plan_item_id.clone(), seed, false)
         }
         _ => Err(ExecutionSelectionError::ItemNotExecutable(
-            item.id().as_str().to_owned(),
+            item.id().to_string(),
         )),
     }
 }
@@ -462,7 +471,7 @@ fn known_candidate_target(
     match candidate.target() {
         PlannedTargetRef::Known(version) => Ok(ResolvedExecutionTarget::Known(version.clone())),
         PlannedTargetRef::ManagerResolved => Err(ExecutionSelectionError::KnownTargetRequired(
-            candidate.tool_id.as_str().to_owned(),
+            candidate.tool_id.to_string(),
         )),
     }
 }
@@ -473,7 +482,7 @@ fn known_seed_target(
     match seed.target_selection.target() {
         PlannedTargetRef::Known(version) => Ok(ResolvedExecutionTarget::Known(version.clone())),
         PlannedTargetRef::ManagerResolved => Err(ExecutionSelectionError::KnownTargetRequired(
-            seed.installed.tool_id.as_str().to_owned(),
+            seed.installed.tool_id.to_string(),
         )),
     }
 }
@@ -495,7 +504,7 @@ fn resolve_forced_candidate(
         ));
     }
     Err(ExecutionSelectionError::ExactTargetUnsupported(
-        plan_item_id.as_str().to_owned(),
+        plan_item_id.to_string(),
     ))
 }
 
@@ -516,7 +525,7 @@ fn resolve_forced_seed(
         ));
     }
     Err(ExecutionSelectionError::ExactTargetUnsupported(
-        plan_item_id.as_str().to_owned(),
+        plan_item_id.to_string(),
     ))
 }
 
@@ -530,7 +539,7 @@ fn resolve_manager_resolved_candidate(
         .supports_manager_resolved_target()
     {
         return Err(ExecutionSelectionError::ManagerResolvedUnsupported(
-            plan_item_id.as_str().to_owned(),
+            plan_item_id.to_string(),
         ));
     }
     Ok(resolved_item(
@@ -549,7 +558,7 @@ fn resolve_manager_resolved_seed(
 ) -> Result<ResolvedExecutionItem, ExecutionSelectionError> {
     if !seed.execution_support.supports_manager_resolved_target() {
         return Err(ExecutionSelectionError::ManagerResolvedUnsupported(
-            plan_item_id.as_str().to_owned(),
+            plan_item_id.to_string(),
         ));
     }
     Ok(resolved_seed_item(
@@ -612,19 +621,19 @@ fn should_use_resolver_native_global_update(
 }
 
 fn selected_matches_all_updates(plan: &UpdatePlan, selected: &[ResolvedExecutionItem]) -> bool {
-    let update_ids = plan
+    let update_count = plan
         .items
         .iter()
-        .filter_map(|item| match item {
-            PlanItem::Update { id, .. } => Some(id),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    update_ids.len() == selected.len()
-        && update_ids.iter().all(|id| {
+        .filter(|item| matches!(item, PlanItem::Update { .. }))
+        .count();
+    update_count == selected.len()
+        && plan.items.iter().all(|item| {
+            let PlanItem::Update { id, .. } = item else {
+                return true;
+            };
             selected
                 .iter()
-                .any(|selected_item| selected_item.plan_item_id == **id)
+                .any(|selected_item| selected_item.plan_item_id == *id)
         })
 }
 

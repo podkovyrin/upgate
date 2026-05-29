@@ -533,7 +533,7 @@ pub fn commands_for_execution_plan(
     Ok(commands)
 }
 fn exact_command(install_path: &str, target: &VersionText) -> CommandSpec {
-    let spec = format!("{install_path}@{}", target.as_str());
+    let spec = format!("{install_path}@{target}");
     CommandSpec::new("go", ["install", &spec]).mutating()
 }
 

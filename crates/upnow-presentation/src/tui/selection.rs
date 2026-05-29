@@ -577,7 +577,7 @@ impl InteractiveSelectionScreen {
         }
         for manager in &self.managers {
             if let ManagerPlanningStatus::Error { detail } = &manager.planning_status {
-                return Some(format!("{}: {detail}", manager.manager_id.as_str()));
+                return Some(format!("{}: {detail}", manager.manager_id));
             }
             if let Some(issue) = manager.issues.first() {
                 return Some(format!(
@@ -655,7 +655,7 @@ impl InteractiveSelectionScreen {
             .filter_map(|manager| {
                 let selected_count = manager.state.selected_items().len();
                 (selected_count > 0).then(|| ConfirmationManagerSummary {
-                    manager: manager.manager_id.as_str().to_owned(),
+                    manager: manager.manager_id.to_string(),
                     selected_count,
                 })
             })
@@ -677,7 +677,7 @@ impl InteractiveSelectionScreen {
             .iter()
             .filter_map(|manager| {
                 if let ManagerPlanningStatus::Error { detail } = &manager.planning_status {
-                    return Some(format!("{}: {detail}", manager.manager_id.as_str()));
+                    return Some(format!("{}: {detail}", manager.manager_id));
                 }
                 None
             })
@@ -2099,8 +2099,8 @@ fn selection_render_rows(screen: &InteractiveSelectionScreen) -> Vec<SelectionRe
 
             SelectionRenderRow {
                 selected,
-                manager: manager.manager_id.as_str().to_owned(),
-                name: row.package_name.as_str().to_owned(),
+                manager: manager.manager_id.to_string(),
+                name: row.package_name.to_string(),
                 current: version_label(row.installed_version.as_str()),
                 target,
                 note_parts: row.notes.clone(),

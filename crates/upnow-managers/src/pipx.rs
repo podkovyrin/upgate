@@ -242,7 +242,7 @@ pub fn update_inputs(
 /// Looks up `PyPI` release metadata.
 pub fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> ReleaseLookupResult {
     let base_url = upnow_infra::env_base_url(env, "UPNOW_PIPX_PYPI_BASE_URL", "https://pypi.org");
-    let url = format!("{base_url}/pypi/{}/json", package.as_str());
+    let url = format!("{base_url}/pypi/{package}/json");
     match http.get_text(&url) {
         Ok(response) => match parse_pypi_json(package, &response.body) {
             Ok(timeline) => ReleaseLookupResult::Known(timeline),
@@ -332,7 +332,7 @@ fn exact_command_for_item(item: &ResolvedExecutionItem) -> Result<CommandSpec, P
 }
 
 fn exact_command_parts(package_name: &PackageName, target_version: &VersionText) -> CommandSpec {
-    let spec = format!("{}=={}", package_name.as_str(), target_version.as_str());
+    let spec = format!("{package_name}=={target_version}");
     CommandSpec::new("pipx", ["upgrade", &spec]).mutating()
 }
 

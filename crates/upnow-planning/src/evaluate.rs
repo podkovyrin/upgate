@@ -295,15 +295,12 @@ fn evaluate_semver_seed(
             message: "failed to parse discovered target version".to_owned(),
         };
     };
-    let mut target_metadata_found = false;
-    for entry in &timeline.versions {
+    let target_metadata_found = timeline.versions.iter().any(|entry| {
         let Ok(parsed) = parse_semver(entry.version.as_str()) else {
-            continue;
+            return false;
         };
-        if parsed == parsed_discovered_target {
-            target_metadata_found = true;
-        }
-    }
+        parsed == parsed_discovered_target
+    });
     if !target_metadata_found {
         return PlanItem::Blocked {
             id,
@@ -391,14 +388,14 @@ fn evaluate_semver_seed(
 
     let mut diagnostics = diagnostics;
     diagnostics.selected_target = Some(policy_candidate.candidate_age());
-    let candidate = candidate_from_seed(
-        &seed,
-        policy_candidate.version,
-        policy_candidate.warnings,
-        diagnostics.clone(),
-    );
 
     let Some((_, age_candidate)) = newest_age_eligible else {
+        let candidate = candidate_from_seed(
+            &seed,
+            policy_candidate.version,
+            policy_candidate.warnings,
+            diagnostics,
+        );
         return PlanItem::Delayed {
             id,
             candidate,
@@ -547,14 +544,14 @@ fn evaluate_pep440_seed(
 
     let mut diagnostics = diagnostics;
     diagnostics.selected_target = Some(policy_candidate.candidate_age());
-    let candidate = candidate_from_seed(
-        &seed,
-        policy_candidate.version,
-        policy_candidate.warnings,
-        diagnostics.clone(),
-    );
 
     let Some((_, age_candidate)) = newest_age_eligible else {
+        let candidate = candidate_from_seed(
+            &seed,
+            policy_candidate.version,
+            policy_candidate.warnings,
+            diagnostics,
+        );
         return PlanItem::Delayed {
             id,
             candidate,
@@ -916,10 +913,8 @@ fn classify_pep440_release(raw: &str) -> ReleaseClass {
 }
 
 fn classify_semver_like_fallback(raw: &str) -> ReleaseClass {
-    let raw = raw
-        .trim()
-        .strip_prefix(['v', 'V'])
-        .unwrap_or_else(|| raw.trim());
+    let raw = raw.trim();
+    let raw = raw.strip_prefix(['v', 'V']).unwrap_or(raw);
     if raw.is_empty() {
         return ReleaseClass::Unknown;
     }
@@ -946,12 +941,12 @@ fn classify_manager_native_release(raw: &str) -> ReleaseClass {
     classify_brew_prerelease(version).unwrap_or(ReleaseClass::Final)
 }
 
-fn normalize_brew_version(raw: &str) -> String {
+fn normalize_brew_version(raw: &str) -> &str {
     let trimmed = raw.trim();
     let without_cask_build = trimmed
         .split_once(',')
         .map_or(trimmed, |(head, _)| head.trim());
-    strip_brew_revision_suffix(without_cask_build).to_owned()
+    strip_brew_revision_suffix(without_cask_build)
 }
 
 fn strip_brew_revision_suffix(raw: &str) -> &str {
@@ -1019,10 +1014,10 @@ fn classify_brew_token(version: &str, start: usize, end: usize) -> Option<Releas
     if matches!(label, "prerelease" | "pre" | "rc") {
         return Some(ReleaseClass::Rc);
     }
-    if matches!(label, "a") && has_short_brew_prerelease_context(version, start, token, marker) {
+    if label == "a" && has_short_brew_prerelease_context(version, start, token, marker) {
         return Some(ReleaseClass::Alpha);
     }
-    if matches!(label, "b") && has_short_brew_prerelease_context(version, start, token, marker) {
+    if label == "b" && has_short_brew_prerelease_context(version, start, token, marker) {
         return Some(ReleaseClass::Beta);
     }
     None

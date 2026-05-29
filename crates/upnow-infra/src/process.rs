@@ -72,13 +72,16 @@ impl CommandSpec {
         self.is_mutation = true;
         self
     }
-    pub fn display(&self) -> String {
+}
+
+impl fmt::Display for CommandSpec {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut display = self.program.to_string_lossy().into_owned();
         for arg in &self.args {
             display.push(' ');
             display.push_str(arg.to_string_lossy().as_ref());
         }
-        display
+        formatter.write_str(&display)
     }
 }
 
@@ -165,7 +168,7 @@ impl ProcessRunner {
         spec: &CommandSpec,
         check: &CommandCheck,
     ) -> Result<CommandOutput, InfraError> {
-        let display = spec.display();
+        let display = spec.to_string();
         if let Some(listener) = &self.command_start {
             listener(CommandStartEvent {
                 command_display: display.clone(),

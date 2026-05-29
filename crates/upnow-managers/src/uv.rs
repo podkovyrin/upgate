@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Display};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 
@@ -124,13 +124,12 @@ impl ManagerAdapter for UvManager {
         _env: &Env,
     ) -> Result<Vec<ManagerScanInput>, ManagerAdapterError> {
         installed_global(process)
-            .map(|tools| {
+            .and_then(|tools| {
                 tools
                     .into_iter()
                     .map(|tool| installed_tool(&tool).map(ManagerScanInput::Installed))
-                    .collect::<Result<Vec<_>, _>>()
+                    .collect()
             })
-            .and_then(|items| items)
             .map_err(|err| adapter_error(&err))
     }
 
@@ -318,7 +317,7 @@ enum RawUvResolvedTool {
 /// Looks up `PyPI` release metadata for a uv tool.
 pub fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> ReleaseLookupResult {
     let base_url = upnow_infra::env_base_url(env, "UPNOW_UV_PYPI_BASE_URL", "https://pypi.org");
-    let url = format!("{base_url}/pypi/{}/json", package.as_str());
+    let url = format!("{base_url}/pypi/{package}/json");
     match http.get_text(&url) {
         Ok(response) => match parse_pypi_json(package, &response.body) {
             Ok(timeline) => ReleaseLookupResult::Known(timeline),
@@ -593,7 +592,7 @@ fn resolve_target_with_exclude_newer(
     min_age_arg: &str,
 ) -> Result<VersionText, UvError> {
     let requirement = if Pep440Version::from_str(tool.current.as_str()).is_ok() {
-        format!("{}>={}", tool.name.as_str(), tool.current.as_str())
+        format!("{}>={}", tool.name, tool.current)
     } else {
         tool.name.as_str().to_owned()
     };
@@ -713,14 +712,7 @@ fn system_time_from_datetime(datetime: DateTime<chrono::FixedOffset>) -> SystemT
 }
 
 fn uv_tool_python_path(tool_dir: &str, tool_name: &str) -> String {
-    let unix = PathBuf::from(tool_dir)
-        .join(tool_name)
-        .join("bin")
-        .join("python");
-    if unix.exists() {
-        return unix.to_string_lossy().to_string();
-    }
-    Path::new(tool_dir)
+    PathBuf::from(tool_dir)
         .join(tool_name)
         .join("bin")
         .join("python")

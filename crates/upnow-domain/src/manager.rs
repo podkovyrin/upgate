@@ -1,3 +1,5 @@
+use std::fmt::{self, Display};
+
 use crate::{DomainError, VersionText};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -61,6 +63,12 @@ impl ManagerId {
     }
 }
 
+impl Display for ManagerId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ToolId(String);
 
@@ -79,6 +87,12 @@ impl ToolId {
     }
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl Display for ToolId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 
@@ -103,6 +117,12 @@ impl PackageName {
     }
 }
 
+impl Display for PackageName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ToolName(String);
 
@@ -121,6 +141,12 @@ impl ToolName {
     }
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl Display for ToolName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 
@@ -198,6 +224,12 @@ impl ManagerMetadataKey {
     }
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl Display for ManagerMetadataKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 

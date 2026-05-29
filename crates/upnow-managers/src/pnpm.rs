@@ -125,7 +125,7 @@ impl ManagerAdapter for PnpmManager {
     ) -> Result<Vec<ManagerScanInput>, ManagerAdapterError> {
         installed_global(process)
             .map(|tools| tools.into_iter().map(ManagerScanInput::Installed).collect())
-            .map_err(adapter_error)
+            .map_err(|err| adapter_error(&err))
     }
 
     fn release_lookup(
@@ -135,7 +135,7 @@ impl ManagerAdapter for PnpmManager {
         _env: &Env,
         subject: ReleaseLookupSubject<'_>,
     ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
-        lookup_release(process, subject.package_name()).map_err(adapter_error)
+        lookup_release(process, subject.package_name()).map_err(|err| adapter_error(&err))
     }
 
     fn update_inputs(
@@ -155,7 +155,7 @@ impl ManagerAdapter for PnpmManager {
             self.config.version_policy,
             max_parallel_checks_per_manager,
         )
-        .map_err(adapter_error)
+        .map_err(|err| adapter_error(&err))
     }
 
     fn commands_for_execution_plan(
@@ -164,7 +164,7 @@ impl ManagerAdapter for PnpmManager {
         _env: &Env,
         plan: &ResolvedExecutionPlan,
     ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
-        exact_commands_for_execution_plan(plan).map_err(adapter_error)
+        exact_commands_for_execution_plan(plan).map_err(|err| adapter_error(&err))
     }
 }
 
@@ -417,7 +417,7 @@ fn exact_command_for_item(item: &ResolvedExecutionItem) -> Result<CommandSpec, P
 }
 
 fn exact_command_parts(package_name: &PackageName, target_version: &VersionText) -> CommandSpec {
-    let spec = format!("{}@{}", package_name.as_str(), target_version.as_str());
+    let spec = format!("{package_name}@{target_version}");
     CommandSpec::new("pnpm", ["add", "-g", &spec]).mutating()
 }
 
@@ -517,8 +517,7 @@ fn system_time_from_datetime(datetime: DateTime<chrono::FixedOffset>) -> SystemT
     }
 }
 
-#[expect(clippy::needless_pass_by_value)]
-fn adapter_error(err: PnpmError) -> ManagerAdapterError {
+fn adapter_error(err: &PnpmError) -> ManagerAdapterError {
     let detail = err.to_string();
     let kind = match err {
         PnpmError::Interrupted(_) => ManagerAdapterErrorKind::Interrupted,

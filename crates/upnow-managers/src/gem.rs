@@ -394,7 +394,7 @@ pub fn lookup_release(
 ) -> ReleaseLookupResult {
     let base_url =
         upnow_infra::env_base_url(env, "UPNOW_GEM_RUBYGEMS_BASE_URL", "https://rubygems.org");
-    let url = format!("{base_url}/api/v1/versions/{}.json", package.as_str());
+    let url = format!("{base_url}/api/v1/versions/{package}.json");
     match http.get_text(&url) {
         Ok(response) => match parse_rubygems_json(package, &response.body, ruby_runtime) {
             Ok(timeline) => ReleaseLookupResult::Known(timeline),

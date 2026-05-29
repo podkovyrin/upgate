@@ -151,7 +151,7 @@ impl ManagerAdapter for NpmManager {
     ) -> Result<Vec<ManagerScanInput>, ManagerAdapterError> {
         installed_global(process)
             .map(|tools| tools.into_iter().map(ManagerScanInput::Installed).collect())
-            .map_err(adapter_error)
+            .map_err(|err| adapter_error(&err))
     }
 
     fn release_lookup(
@@ -161,7 +161,7 @@ impl ManagerAdapter for NpmManager {
         _env: &Env,
         subject: ReleaseLookupSubject<'_>,
     ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
-        lookup_release(process, subject.package_name()).map_err(adapter_error)
+        lookup_release(process, subject.package_name()).map_err(|err| adapter_error(&err))
     }
 
     fn update_inputs(
@@ -181,7 +181,7 @@ impl ManagerAdapter for NpmManager {
             self.config.version_policy,
             max_parallel_checks_per_manager,
         )
-        .map_err(adapter_error)
+        .map_err(|err| adapter_error(&err))
     }
 
     fn commands_for_execution_plan(
@@ -190,7 +190,8 @@ impl ManagerAdapter for NpmManager {
         _env: &Env,
         plan: &ResolvedExecutionPlan,
     ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
-        commands_for_execution_plan(plan, self.config.min_release_age).map_err(adapter_error)
+        commands_for_execution_plan(plan, self.config.min_release_age)
+            .map_err(|err| adapter_error(&err))
     }
 }
 
@@ -407,7 +408,7 @@ fn exact_command_parts(
     min_age_days: u64,
     bypass_min_release_age: bool,
 ) -> CommandSpec {
-    let spec = format!("{}@{}", package_name.as_str(), target_version.as_str());
+    let spec = format!("{package_name}@{target_version}");
     let mut args = vec!["install".to_owned(), "-g".to_owned(), spec];
     if !bypass_min_release_age {
         args.push("--min-release-age".to_owned());
@@ -564,8 +565,7 @@ fn system_time_from_datetime(datetime: DateTime<chrono::FixedOffset>) -> SystemT
     }
 }
 
-#[expect(clippy::needless_pass_by_value)]
-fn adapter_error(err: NpmError) -> ManagerAdapterError {
+fn adapter_error(err: &NpmError) -> ManagerAdapterError {
     let detail = err.to_string();
     let kind = match err {
         NpmError::Interrupted(_) => ManagerAdapterErrorKind::Interrupted,

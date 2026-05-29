@@ -970,7 +970,7 @@ fn brew_tool_id(kind: &BrewPackageKind, name: &PackageName) -> Result<ToolId, Br
         BrewPackageKind::Formula => "formula",
         BrewPackageKind::Cask => "cask",
     };
-    ToolId::new(format!("{prefix}:{}", name.as_str())).map_err(BrewError::from)
+    ToolId::new(format!("{prefix}:{name}")).map_err(BrewError::from)
 }
 
 const fn brew_package_key(name: PackageName, kind: BrewPackageKind) -> BrewPackageKey {
