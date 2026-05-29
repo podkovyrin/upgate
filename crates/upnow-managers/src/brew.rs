@@ -498,7 +498,8 @@ pub fn update_inputs(
                     )))
                 },
             );
-            let selected = ManagerSelectedTarget::new(package.target.clone(), target_age);
+            let execution_target_kind = execution_target_kind(&package.kind);
+            let selected = ManagerSelectedTarget::new(package.target, target_age);
             Ok(ManagerUpdateInput::Seed(
                 UpdateSeed::manager_selected(
                     installed,
@@ -506,7 +507,7 @@ pub fn update_inputs(
                     VersionScheme::ManagerNative,
                     ExecutionSupport::grouped_native_only(),
                 )
-                .with_execution_target_kind(execution_target_kind(&package.kind)),
+                .with_execution_target_kind(execution_target_kind),
             ))
         },
     )?
@@ -996,18 +997,18 @@ const fn execution_target_kind(kind: &BrewPackageKind) -> ExecutionTargetKind {
     }
 }
 
-fn push_brew_item(
-    item: &ResolvedExecutionItem,
-    formulae: &mut Vec<ResolvedExecutionItem>,
-    casks: &mut Vec<ResolvedExecutionItem>,
+fn push_brew_item<'item>(
+    item: &'item ResolvedExecutionItem,
+    formulae: &mut Vec<&'item ResolvedExecutionItem>,
+    casks: &mut Vec<&'item ResolvedExecutionItem>,
 ) -> Result<(), BrewError> {
     match item.execution_target_kind {
         ExecutionTargetKind::BrewFormula => {
-            formulae.push(item.clone());
+            formulae.push(item);
             Ok(())
         }
         ExecutionTargetKind::BrewCask => {
-            casks.push(item.clone());
+            casks.push(item);
             Ok(())
         }
         ExecutionTargetKind::Standard => Err(BrewError::UnsupportedCommandIntent(
@@ -1016,7 +1017,7 @@ fn push_brew_item(
     }
 }
 
-fn grouped_upgrade_command(kind_arg: &str, items: &[ResolvedExecutionItem]) -> ExecutionCommand {
+fn grouped_upgrade_command(kind_arg: &str, items: &[&ResolvedExecutionItem]) -> ExecutionCommand {
     let mut args = vec!["upgrade".to_owned(), kind_arg.to_owned()];
     args.extend(
         items
@@ -1024,7 +1025,10 @@ fn grouped_upgrade_command(kind_arg: &str, items: &[ResolvedExecutionItem]) -> E
             .map(|item| item.package_name.as_str().to_owned()),
     );
     ExecutionCommand {
-        items: items.iter().map(ExecutionCommandItem::from).collect(),
+        items: items
+            .iter()
+            .map(|item| ExecutionCommandItem::from(*item))
+            .collect(),
         command: CommandSpec::new("brew", args).mutating(),
     }
 }

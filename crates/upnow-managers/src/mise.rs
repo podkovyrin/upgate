@@ -424,22 +424,28 @@ pub fn update_inputs(
     run_ordered_parallel(plan_items, threads, MANAGER_ID, |item| {
         let installed = installed_tool_from_plan_item(&item)?;
         let target_age = lookup_target_age(process, http, env, &item.tool, &item.to_version);
-        let mut selected = ManagerSelectedTarget::new(item.to_version.clone(), target_age);
+        let version_scheme = version_scheme(&item.from_version, &item.to_version);
+        let advisory_release_lookup = if let Some(latest) = advisory_latest.latest.get(&item.tool)
+            && latest != &item.to_version
+        {
+            Some((
+                latest.clone(),
+                lookup_release_for_tool(process, http, env, &item.tool, Some(latest)),
+            ))
+        } else {
+            None
+        };
+        let mut selected = ManagerSelectedTarget::new(item.to_version, target_age);
         if let Some(failure) = advisory_latest.failure.as_ref() {
             selected = selected.with_advisory_lookup_failure(failure.clone());
         }
-        if let Some(latest) = advisory_latest.latest.get(&item.tool)
-            && latest != &item.to_version
-        {
-            selected = selected.with_advisory_release_lookup(
-                latest.clone(),
-                lookup_release_for_tool(process, http, env, &item.tool, Some(latest)),
-            );
+        if let Some((latest, lookup)) = advisory_release_lookup {
+            selected = selected.with_advisory_release_lookup(latest, lookup);
         }
         Ok(ManagerUpdateInput::Seed(UpdateSeed::manager_selected(
             installed,
             selected,
-            version_scheme(&item.from_version, &item.to_version),
+            version_scheme,
             ExecutionSupport::resolver_native(MinAgeConstraintSupport::Optional, true, true),
         )))
     })?

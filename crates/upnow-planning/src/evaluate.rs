@@ -6,7 +6,7 @@ use semver::Version as SemverVersion;
 use upnow_domain::{
     AdvisoryLatestFact, AdvisoryReleaseLookup, BlockReason, CandidateAgeFact, CandidateAgeSource,
     CandidateEvaluationFact, DelayReason, ManagerSelectedTarget, MissingMetadataKind,
-    PlanDiagnostics, PlanItem, PlanItemId, PlannedTargetRef, PolicyBlockReason, PolicyWarning,
+    PlanDiagnostics, PlanItem, PlanItemId, PlannedTarget, PolicyBlockReason, PolicyWarning,
     ReleaseEntry, ReleaseEvidenceSource, ReleaseLookupResult, ReleaseTimeline, TargetAgeEvidence,
     TargetAgeLookupResult, TargetSelection, UpdateCandidate, UpdateSeed, VersionPolicy,
     VersionReleaseEvidence, VersionScheme, VersionText,
@@ -169,7 +169,7 @@ fn evaluate_manager_selected_seed(
     diagnostics.advisory_latest =
         advisory_latest_diagnostics(advisory_release_lookup.as_ref(), now);
     diagnostics.advisory_lookup_failure = advisory_lookup_failure;
-    let PlannedTargetRef::Known(selected_target) = target.as_ref() else {
+    let PlannedTarget::Known(selected_target) = target else {
         return PlanItem::Blocked {
             id,
             seed,
@@ -178,7 +178,6 @@ fn evaluate_manager_selected_seed(
             diagnostics: diagnostics.with_missing_metadata(MissingMetadataKind::SelectedUpdate),
         };
     };
-    let selected_target = selected_target.clone();
     match selected_target_is_update(&seed, &selected_target) {
         Ok(false) => {
             return PlanItem::Current {
