@@ -2074,6 +2074,12 @@ fn selection_render_rows(screen: &InteractiveSelectionScreen) -> Vec<SelectionRe
             let manager = &screen.managers[visible.manager_idx];
             let row = screen.row(visible);
             let selected_target = manager.state.selected_target(&row.plan_item_id);
+            let selected_option =
+                selected_target.and_then(|target| selected_target_option(row, target));
+            let selected_exact_option = match selected_target {
+                Some(SelectedUpdate::Exact { .. }) => selected_option,
+                _ => None,
+            };
             let selected = selected_target.is_some();
             let target =
                 match selected_target {
@@ -2095,7 +2101,10 @@ fn selection_render_rows(screen: &InteractiveSelectionScreen) -> Vec<SelectionRe
                         |version| version_label(version.as_str()),
                     ),
                 };
-            let forced = matches!(selected_target, Some(SelectedUpdate::ForcePlannedCandidate));
+            let forced = matches!(selected_target, Some(SelectedUpdate::ForcePlannedCandidate))
+                || selected_option.is_some_and(TargetOption::has_violation);
+            let note_parts = selected_exact_option
+                .map_or_else(|| row.notes.clone(), |option| option.note_parts().to_vec());
 
             SelectionRenderRow {
                 selected,
@@ -2103,11 +2112,20 @@ fn selection_render_rows(screen: &InteractiveSelectionScreen) -> Vec<SelectionRe
                 name: row.package_name.to_string(),
                 current: version_label(row.installed_version.as_str()),
                 target,
-                note_parts: row.notes.clone(),
+                note_parts,
                 forced,
             }
         })
         .collect()
+}
+
+fn selected_target_option<'a>(
+    row: &'a SelectionRow,
+    selected_target: &SelectedUpdate,
+) -> Option<&'a TargetOption> {
+    row.target_options
+        .iter()
+        .find(|option| target_option_matches_selected(option, selected_target))
 }
 
 fn selection_table_row(

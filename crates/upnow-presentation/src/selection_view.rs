@@ -445,7 +445,7 @@ fn exact_target_options(candidate: &UpdateCandidate) -> Vec<TargetOption> {
         .iter()
         .map(|evaluated| TargetOption::AlternateExact {
             target_version: evaluated.version.clone(),
-            note_parts: candidate_evaluation_notes(evaluated),
+            note_parts: candidate_evaluation_notes(evaluated, candidate.diagnostics.required_age),
         })
         .collect()
 }
@@ -476,12 +476,25 @@ fn update_notes(candidate: &UpdateCandidate) -> Vec<CandidateNotePart> {
     notes
 }
 
-fn candidate_evaluation_notes(candidate: &CandidateEvaluationFact) -> Vec<CandidateNotePart> {
+fn candidate_evaluation_notes(
+    candidate: &CandidateEvaluationFact,
+    required_age: Duration,
+) -> Vec<CandidateNotePart> {
     let mut notes = Vec::new();
-    if let Some(age) = candidate.age {
-        notes.push(CandidateNotePart::metadata(CandidateNoteKind::Released {
-            age,
-        }));
+    match candidate.age {
+        Some(age) if candidate.age_allowed => {
+            notes.push(CandidateNotePart::metadata(CandidateNoteKind::Released {
+                age,
+            }));
+        }
+        Some(age) => {
+            notes.push(CandidateNotePart::violation(CandidateNoteKind::TooFresh {
+                version: None,
+                age: Some(age),
+                required_age,
+            }));
+        }
+        None => {}
     }
     if let Some(reason) = candidate.policy_block_reason.clone() {
         notes.push(CandidateNotePart::violation(
