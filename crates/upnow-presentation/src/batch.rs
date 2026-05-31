@@ -376,29 +376,18 @@ pub fn execution_report_table(report: &ExecutionReport, issues: &[PlanIssue]) ->
             }
         };
         match &item.status {
-            ExecutionStatus::Succeeded {
-                command,
-                skipped_mutation,
-            } => {
-                let mut row = OutcomeRow::item(
-                    OutcomeStatusView::Update,
-                    report.manager_id.clone(),
-                    item.package_name.clone(),
-                    versions,
-                )
-                .with_note(OutcomeNote::metadata(command));
-                if *skipped_mutation {
-                    row = row.with_note(OutcomeNote::metadata("mutation skipped"));
-                }
-                row
-            }
-            ExecutionStatus::Failed { command, detail } => OutcomeRow::item(
+            ExecutionStatus::Succeeded { .. } => OutcomeRow::item(
+                OutcomeStatusView::Update,
+                report.manager_id.clone(),
+                item.package_name.clone(),
+                versions,
+            ),
+            ExecutionStatus::Failed { detail, .. } => OutcomeRow::item(
                 OutcomeStatusView::Error,
                 report.manager_id.clone(),
                 item.package_name.clone(),
                 versions,
             )
-            .with_note(OutcomeNote::metadata(command))
             .with_note(OutcomeNote::normal(detail)),
         }
     }));
