@@ -18,4 +18,5 @@ cargo test --workspace
 - [Architecture contract](docs/architecture.md)
 - [Configuration](docs/config.md)
 - [Version policy](docs/version-policy.md)
+- [Security audit feature spec](docs/security-audit.md)
 - [Performance profiling](docs/perf.md)

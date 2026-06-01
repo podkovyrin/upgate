@@ -22,17 +22,21 @@ and `scan` lists installed tools.
   manager-specific command construction, policy support checks, and named
   workarounds.
 - `upnow-release`: release-date and target-age evidence sources.
+- `upnow-audit`: shared security-audit evidence source. It owns OSV API
+  requests, batching, response parsing, de-duplication, and process-local audit
+  lookup caching.
 - `upnow-execution`: selected plan items to execution commands/results.
 - `upnow-presentation`: batch output and TUI state/rendering.
 - `upnow-infra`: process, HTTP, clock, environment, logging, and parallelism.
 
 ## Data Flow
 
-Managers produce typed update facts. Planning evaluates those facts with release
-evidence, version policy, and release-age settings to produce an immutable
-`UpdatePlan`. Presentation renders plan outcomes but does not create them.
-Selection produces a typed `PlanSelection`. Execution resolves that selection to
-command intents, and managers turn those intents into concrete commands.
+Managers produce typed update facts and optional typed audit identities.
+Planning evaluates update facts with release evidence, version policy,
+release-age settings, and audit evidence to produce an immutable `UpdatePlan`.
+Presentation renders plan outcomes but does not create them. Selection produces
+a typed `PlanSelection`. Execution resolves that selection to command intents,
+and managers turn those intents into concrete commands.
 
 Managers may pass `min_release_age` into native resolver commands when that is
 part of the manager's resolver, such as `uv --exclude-newer` or `mise --before`.
@@ -40,17 +44,31 @@ Managers must not receive `now` or perform clock-aware age comparisons for
 planning. Clock-aware planning decisions belong in `upnow-planning`; scan age
 display belongs in CLI/presentation.
 
+Managers must not query vulnerability databases, parse vulnerability database
+responses, decide whether a vulnerability blocks an update, or format audit
+messages. Their audit responsibility is limited to emitting an explicit package
+identity when the manager can map an installed tool to an OSV package ecosystem
+without guessing.
+
+Audit lookup orchestration belongs outside manager adapters. `upnow-cli` owns
+the command-run audit service instance and passes audit evidence into planning.
+`upnow-planning` owns the audit gate decision. Unsupported audit identities are
+silent and must not change plan, apply, or scan behavior.
+
 ## Manager Targets
 
 There are two target-selection shapes:
 
 - Planner-selectable timelines: shared planning chooses the newest candidate
-  allowed by version policy and release age.
+  allowed by version policy, release age, and security audit.
 - Manager-selected targets: the manager has already selected a target, and
   shared planning only gates that target.
 
 Manager-selected targets are required for Brew, uv, and Mise. Planning must not
 replace a manager-selected target with an older or newer advisory version.
+Security audit must respect this: for manager-selected targets, audit may accept
+or block the selected target, but must not cause planning to choose an alternate
+version.
 
 ## Execution
 
@@ -79,8 +97,9 @@ execution. Cancellation returns without execution or config persistence.
 
 Config resolves manager mode, `min_release_age`, `version_policy`, update
 selection policy, Brew `no_update`, manager concurrency, and scan old-age
-threshold before planning. Resolved manager config is passed into concrete
-manager adapters at construction.
+threshold before planning. Security audit concurrency is resolved before any
+audit lookups. Resolved manager config is passed into concrete manager adapters
+at construction.
 
 Selection policy is persisted as:
 
@@ -106,6 +125,22 @@ For planner-selectable timelines, version policy participates in candidate
 selection. For manager-selected targets, version policy gates only the selected
 target. uv and Mise do not support version policy and reject configured policies.
 
+## Security Audit
+
+Security audit is an update gate for supported OSV package identities. For
+planner-selectable timelines, planning may choose the newest candidate that
+passes version policy, release age, and audit. For manager-selected targets,
+planning may only gate the manager-selected target.
+
+For supported audit identities, audit lookup is fail-closed during plan/apply:
+a vulnerable target or failed audit lookup blocks that target. For unsupported
+or unknown audit identities, audit is skipped silently and must not block.
+
+Verbose scan may annotate installed tools with vulnerability findings. Non-
+verbose scan remains a simple installed-tool listing.
+
+See [Security audit feature spec](security-audit.md).
+
 ## Testing
 
 Tests should protect stable behavior: CLI behavior, public API contracts, durable
@@ -130,6 +165,12 @@ user-visible contract.
 - Hidden uv, Mise, or Brew branches instead of typed manager-selected targets.
 - Shared ecosystem helper layers whose only current reason is reducing
   duplication.
+- Manager-local vulnerability lookup, OSV parsing, audit gating, or audit note
+  formatting.
+- Inferring audit package ecosystems from display names, free-form metadata, or
+  presentation strings.
+- Using manager metadata as planner audit input instead of typed audit
+  identities and typed audit evidence.
 - Duplicate manager-private execution command types.
 - Boolean forced-selection state instead of typed selected targets.
 - Materializing all installed package names to represent "skip all except one";
