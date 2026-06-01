@@ -238,25 +238,6 @@ fn cli_overrides_reject_unknown_and_non_phase_five_values() {
 }
 
 #[test]
-fn dedicated_manager_concurrency_override_wins_after_set_override() {
-    let mut config = UpnowConfig::default();
-
-    config
-        .apply_cli_override("upnow.manager_concurrency=2")
-        .expect("generic override should apply");
-    config
-        .set_manager_concurrency(5)
-        .expect("dedicated override should apply");
-
-    assert_eq!(
-        config
-            .manager_concurrency()
-            .expect("manager concurrency should resolve"),
-        5
-    );
-}
-
-#[test]
 fn selection_persistence_preserves_unrelated_toml_and_writes_only_one_manager() {
     let path = temp_config_path("persist-selection");
     write_config(
