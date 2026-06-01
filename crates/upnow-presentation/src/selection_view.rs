@@ -140,7 +140,10 @@ pub enum CandidateNoteKind {
         age: Option<Duration>,
         required_age: Duration,
     },
-    VersionPolicyBlocked(PolicyBlockReason),
+    VersionPolicyBlocked {
+        version: VersionText,
+        reason: PolicyBlockReason,
+    },
     PolicyWarning(PolicyWarning),
     MissingReleaseMetadata,
     ReleaseLookupFailed {
@@ -498,7 +501,10 @@ fn candidate_evaluation_notes(
     }
     if let Some(reason) = candidate.policy_block_reason.clone() {
         notes.push(CandidateNotePart::violation(
-            CandidateNoteKind::VersionPolicyBlocked(reason),
+            CandidateNoteKind::VersionPolicyBlocked {
+                version: candidate.version.clone(),
+                reason,
+            },
         ));
     }
     if let Some(warning) = candidate.policy_warning {
@@ -545,9 +551,7 @@ fn blocked_notes(
                 },
             )]
         }
-        BlockReason::VersionPolicy(reason) => vec![CandidateNotePart::violation(
-            CandidateNoteKind::VersionPolicyBlocked(reason.clone()),
-        )],
+        BlockReason::VersionPolicy(_) => Vec::new(),
     };
     notes.extend(policy_notes(diagnostics));
     notes.extend(advisory_warning_notes(diagnostics));
@@ -561,17 +565,17 @@ fn blocked_notes(
 }
 
 fn policy_notes(diagnostics: &PlanDiagnostics) -> Vec<CandidateNotePart> {
-    diagnostics
-        .candidates
-        .iter()
-        .filter_map(|candidate| {
-            candidate
-                .policy_block_reason
-                .clone()
-                .map(CandidateNoteKind::VersionPolicyBlocked)
-                .map(CandidateNotePart::violation)
-        })
-        .collect()
+    latest_policy_blocked_candidate(diagnostics).map_or_else(Vec::new, |candidate| {
+        vec![CandidateNotePart::violation(
+            CandidateNoteKind::VersionPolicyBlocked {
+                version: candidate.version.clone(),
+                reason: candidate
+                    .policy_block_reason
+                    .clone()
+                    .expect("blocked candidate should have reason"),
+            },
+        )]
+    })
 }
 
 fn advisory_warning_notes(diagnostics: &PlanDiagnostics) -> Vec<CandidateNotePart> {
@@ -624,6 +628,15 @@ fn advisory_latest_age_fact(advisory: &AdvisoryLatestFact) -> Option<&CandidateA
     }
 }
 
+fn latest_policy_blocked_candidate(
+    diagnostics: &PlanDiagnostics,
+) -> Option<&CandidateEvaluationFact> {
+    diagnostics
+        .candidates
+        .iter()
+        .find(|candidate| candidate.policy_block_reason.is_some())
+}
+
 pub(crate) fn note_part_text(part: &CandidateNotePart) -> String {
     match &part.kind {
         CandidateNoteKind::Released { age } => notes::released(*age),
@@ -633,9 +646,11 @@ pub(crate) fn note_part_text(part: &CandidateNotePart) -> String {
             required_age,
         } => version.as_ref().map_or_else(
             || notes::too_fresh(*age, *required_age),
-            |version| notes::latest_too_fresh(version, *age, Some(*required_age), true),
+            |version| notes::version_too_fresh(version, *age, Some(*required_age), false),
         ),
-        CandidateNoteKind::VersionPolicyBlocked(reason) => notes::version_policy_blocked(reason),
+        CandidateNoteKind::VersionPolicyBlocked { version, .. } => {
+            notes::version_blocked_by_policy(version)
+        }
         CandidateNoteKind::PolicyWarning(warning) => notes::policy_warning(*warning).to_owned(),
         CandidateNoteKind::MissingReleaseMetadata => "missing release metadata".to_owned(),
         CandidateNoteKind::ReleaseLookupFailed { error } => error.as_ref().map_or_else(

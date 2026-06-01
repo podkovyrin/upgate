@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use upnow_domain::{PolicyBlockReason, PolicyWarning, SkipReason, VersionPolicy, VersionText};
+use upnow_domain::{PolicyWarning, SkipReason, VersionPolicy, VersionText};
 
 use crate::version_label;
 
@@ -21,7 +21,7 @@ pub fn too_fresh(age: Option<Duration>, required_age: Duration) -> String {
     )
 }
 
-pub fn latest_too_fresh(
+pub fn version_too_fresh(
     version: &VersionText,
     age: Option<Duration>,
     required_age: Option<Duration>,
@@ -30,11 +30,11 @@ pub fn latest_too_fresh(
     let version = version_label(version.as_str());
     match (verbose, age, required_age) {
         (true, Some(age), Some(required_age)) => format!(
-            "latest {version} too fresh: {} < {}",
+            "{version} too fresh: {} < {}",
             human_age(age),
             human_age(required_age)
         ),
-        _ => format!("latest {version} too fresh"),
+        _ => format!("{version} too fresh"),
     }
 }
 
@@ -46,23 +46,16 @@ pub fn no_eligible_latest_too_fresh(
 ) -> String {
     format!(
         "no eligible release yet; {}",
-        latest_too_fresh(version, age, required_age, verbose)
+        version_too_fresh(version, age, required_age, verbose)
     )
 }
 
-pub fn version_policy_blocked(reason: &PolicyBlockReason) -> String {
-    match reason {
-        PolicyBlockReason::PreReleaseBlocked => "pre-release blocked by policy".to_owned(),
-        PolicyBlockReason::TrackRegression => "track regression blocked by policy".to_owned(),
-        PolicyBlockReason::UnknownStability => "unknown stability blocked by policy".to_owned(),
-    }
+pub fn version_blocked_by_policy(version: &VersionText) -> String {
+    format!("{} blocked by policy", version_label(version.as_str()))
 }
 
-pub fn latest_blocked_by_policy(version: &VersionText, policy: VersionPolicy) -> String {
-    format!(
-        "latest {} blocked by version policy: {policy}",
-        version_label(version.as_str())
-    )
+pub fn latest_blocked_by_policy(version: &VersionText, _policy: VersionPolicy) -> String {
+    version_blocked_by_policy(version)
 }
 
 pub const fn policy_warning(warning: PolicyWarning) -> &'static str {

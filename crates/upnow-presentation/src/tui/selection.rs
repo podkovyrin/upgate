@@ -23,6 +23,7 @@ use ratatui::widgets::{Cell, Paragraph, Row, Wrap};
 use unicode_width::UnicodeWidthStr;
 use upnow_domain::{
     ManagerId, PlanIssue, PlanItemId, SelectedItem, SelectedUpdate, UpdateSelectionPolicy,
+    VersionPolicy,
 };
 
 use crate::outcome::{manager_resolved_label, version_label};
@@ -171,6 +172,7 @@ pub struct InteractiveSelectionPlan {
     pub view: SelectionView,
     pub issues: Vec<PlanIssue>,
     pub selection_policy: UpdateSelectionPolicy,
+    pub version_policy: VersionPolicy,
 }
 
 impl InteractiveSelectionPlan {
@@ -178,11 +180,13 @@ impl InteractiveSelectionPlan {
         view: SelectionView,
         issues: Vec<PlanIssue>,
         selection_policy: UpdateSelectionPolicy,
+        version_policy: VersionPolicy,
     ) -> Self {
         Self {
             view,
             issues,
             selection_policy,
+            version_policy,
         }
     }
 }
@@ -242,6 +246,7 @@ pub enum InteractiveSelectionPlanningEvent {
         view: SelectionView,
         issues: Vec<PlanIssue>,
         selection_policy: UpdateSelectionPolicy,
+        version_policy: VersionPolicy,
     },
     ManagerError {
         manager_id: ManagerId,
@@ -274,6 +279,7 @@ pub struct InteractiveSelectionScreen {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ManagerSelectionState {
     manager_id: ManagerId,
+    version_policy: VersionPolicy,
     issues: Vec<PlanIssue>,
     planning_status: ManagerPlanningStatus,
     state: InteractiveSelectionState,
@@ -360,6 +366,7 @@ impl InteractiveSelectionScreen {
                     InteractiveSelectionState::new(plan.view, plan.selection_policy.clone());
                 ManagerSelectionState {
                     manager_id,
+                    version_policy: plan.version_policy,
                     issues: plan.issues,
                     planning_status: if state.rows().is_empty() {
                         ManagerPlanningStatus::Empty
@@ -436,6 +443,7 @@ impl InteractiveSelectionScreen {
             InteractiveSelectionPlanningEvent::ManagerStarted { manager_id } => {
                 self.replace_manager_state(
                     manager_id,
+                    VersionPolicy::None,
                     ManagerPlanningStatus::Planning,
                     Vec::new(),
                     UpdateSelectionPolicy::default(),
@@ -453,6 +461,7 @@ impl InteractiveSelectionScreen {
                 view,
                 issues,
                 selection_policy,
+                version_policy,
             } => {
                 let status = if view.rows.is_empty() {
                     ManagerPlanningStatus::Empty
@@ -461,6 +470,7 @@ impl InteractiveSelectionScreen {
                 };
                 self.replace_manager_state(
                     view.manager_id.clone(),
+                    version_policy,
                     status,
                     issues,
                     selection_policy,
@@ -475,8 +485,14 @@ impl InteractiveSelectionScreen {
                     .map_or_else(UpdateSelectionPolicy::default, |manager| {
                         manager.state.selection_policy().clone()
                     });
+                let version_policy = self
+                    .managers
+                    .iter()
+                    .find(|manager| manager.manager_id == manager_id)
+                    .map_or(VersionPolicy::None, |manager| manager.version_policy);
                 self.replace_manager_state(
                     manager_id,
+                    version_policy,
                     ManagerPlanningStatus::Error { detail },
                     Vec::new(),
                     policy,
@@ -688,6 +704,7 @@ impl InteractiveSelectionScreen {
     fn replace_manager_state(
         &mut self,
         manager_id: ManagerId,
+        version_policy: VersionPolicy,
         planning_status: ManagerPlanningStatus,
         issues: Vec<PlanIssue>,
         selection_policy: UpdateSelectionPolicy,
@@ -704,6 +721,7 @@ impl InteractiveSelectionScreen {
         let state = InteractiveSelectionState::new(view, selection_policy);
         let manager = ManagerSelectionState {
             manager_id,
+            version_policy,
             issues,
             planning_status,
             state,
@@ -1224,6 +1242,7 @@ fn empty_manager_state(
     };
     ManagerSelectionState {
         manager_id,
+        version_policy: VersionPolicy::None,
         issues: Vec::new(),
         planning_status,
         state: InteractiveSelectionState::new(view, UpdateSelectionPolicy::default()),
@@ -2236,12 +2255,21 @@ fn draw_target_picker(
         return;
     };
 
-    if inner.height < 5 || inner.width < 20 {
+    if inner.height < 6 || inner.width < 20 {
         frame.render_widget(Paragraph::new("Terminal too small"), inner);
         return;
     }
 
-    let [title_area, _, current_area, _, list_area, footer_area] = Layout::vertical([
+    let [
+        title_area,
+        _,
+        policy_area,
+        current_area,
+        _,
+        list_area,
+        footer_area,
+    ] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -2261,6 +2289,17 @@ fn draw_target_picker(
     ))
     .centered();
     frame.render_widget(Paragraph::new(title), title_area);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{} version policy: ", manager.manager_id.as_str()),
+                theme.header,
+            ),
+            Span::raw(version_policy_dialog_label(manager.version_policy)),
+        ])),
+        policy_area,
+    );
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -2426,11 +2465,19 @@ fn target_picker_rows(options: &[TargetOption]) -> Vec<TargetPickerRenderRow> {
 
 fn target_picker_height(option_count: usize) -> u16 {
     let body = u16::try_from(option_count.min(10)).unwrap_or(10);
-    body.saturating_add(8).clamp(9, 18)
+    body.saturating_add(9).clamp(10, 19)
 }
 
 fn target_picker_width(area: Rect) -> u16 {
     area.width.saturating_sub(4).clamp(62, 96)
+}
+
+const fn version_policy_dialog_label(policy: VersionPolicy) -> &'static str {
+    match policy {
+        VersionPolicy::None => "none",
+        VersionPolicy::Stable => "stable",
+        VersionPolicy::SameTrack => "same track",
+    }
 }
 
 fn target_option_matches_selected(option: &TargetOption, target: &SelectedUpdate) -> bool {

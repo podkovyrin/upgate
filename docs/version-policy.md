@@ -292,15 +292,15 @@ expose raw resolver internals in normal output.
 Examples:
 
 ```text
-+ Update [npm] foo v1.2.0 -> v1.2.5 (latest v1.3.0-beta.1 blocked by version policy: stable)
++ Update [npm] foo v1.2.0 -> v1.2.5 (v1.3.0-beta.1 blocked by policy)
 ```
 
 ```text
-= Current [pipx] bar v2.0.0rc1 (newer versions blocked by version policy: stable)
+= Current [pipx] bar v2.0.0rc1 (v2.1.0 blocked by policy)
 ```
 
 ```text
-~ Delayed [npm] baz v3.1.0 -> v3.1.1 (too fresh: 3d < 7d) (latest v4.0.0-beta.2 blocked by version policy: stable)
+~ Delayed [npm] baz v3.1.0 -> v3.1.1 (too fresh: 3d < 7d) (v4.0.0-beta.2 blocked by policy)
 ```
 
 Exact symbols may follow existing style.
@@ -326,7 +326,7 @@ Example:
 [npm] foo
   installed: 1.2.0 (final)
   policy: stable
-  latest overall: 2.0.0-beta.2 (blocked by version policy)
+  latest overall: 2.0.0-beta.2 (blocked by policy)
   latest eligible by policy: 1.3.0
   latest eligible by age: 1.2.5
   result: update
@@ -659,13 +659,13 @@ Use `version_policy = "stable"` when prereleases should be excluded entirely.
 
 # Recommended UX wording
 
-Use “version policy” consistently in docs and output.
+Use concise policy wording in normal output and TUI notes.
 
 Avoid exposing low-level terms like “prerelease classifier” in user-facing text unless verbose/debug mode is enabled.
 
 Preferred phrases:
 
-* `blocked by version policy`
+* `blocked by policy`
 * `only prereleases available; policy=stable`
 * `following prerelease track`
 * `policy=same-track`

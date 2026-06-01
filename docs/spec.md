@@ -124,13 +124,13 @@ normal/verbose boundaries are part of the spec.
 | Status | Reason / situation | Normal output | Verbose-only detail |
 | --- | --- | --- | --- |
 | `update` | Eligible newer version selected | Show manager, item, installed version, and selected target. Example: `+ Update [npm] foo v1.2.0 -> v1.2.5` | Candidate source, release age, selected policy, resolver decision |
-| `update` | Selected target is eligible, but latest known version is too fresh | Add concise note: `(latest v1.3.0 too fresh)` | Age evidence: `(latest v1.3.0 too fresh: 3d < 7d)` and candidate eligibility |
-| `update` | Selected target is eligible, but latest known version is blocked by version policy | Add concise note: `(latest v2.0.0 blocked by version policy: stable)` | Policy name, installed release class, latest policy-eligible version, blocked candidate classification |
+| `update` | Selected target is eligible, but latest known version is too fresh | Add concise note: `(v1.3.0 too fresh)` | Candidate release age as a separate note, plus candidate eligibility |
+| `update` | Selected target is eligible, but latest known version is blocked by version policy | Add concise note: `(v2.0.0 blocked by policy)` | Installed release class, latest policy-eligible version, blocked candidate classification |
 | `current` | Scan reports an installed version | In `scan`, show current item. Example: `= Current [npm] foo v1.2.0` | Release age, if available. Old releases may be highlighted according to `scan_old_age_threshold` |
 | `current` | No newer version exists in plan/apply | Hide in normal `plan` and `apply` output | May show as `= Current ... (no newer version found)` |
-| `current` | Newer versions exist but are blocked by version policy | Show because action was withheld by policy. Example: `= Current [pipx] bar v2.0.0rc1 (newer versions blocked by version policy: stable)` | Latest blocked version, policy warning, installed/candidate release classes |
+| `current` | Newer versions exist but are blocked by version policy | Show because action was withheld by policy. Example: `= Current [pipx] bar v2.0.0rc1 (v2.1.0 blocked by policy)` | Policy warning, installed/candidate release classes |
 | `delayed` | Candidate target exists but is too fresh | Show target and concise age gate: `~ Delayed [brew] jq v1.0.0 -> v1.1.0 (too fresh: 3d < 7d)` | Publish time, metadata source, configured minimum age source |
-| `delayed` | Newer versions exist, but no candidate is age-eligible | Show concise note: `~ Delayed [npm] foo v1.2.0 -> v1.3.0 (no eligible release yet; latest v1.3.0 too fresh)` | Age evidence: `latest v1.3.0 too fresh: 3d < 7d`; all candidate ages when diagnostics are available |
+| `delayed` | Newer versions exist, but no candidate is age-eligible | Show concise note: `~ Delayed [npm] foo v1.2.0 -> v1.3.0 (no eligible release yet; v1.3.0 too fresh)` | Candidate release ages when diagnostics are available |
 | `delayed` | Policy and age gates together leave no eligible release | Show `no eligible release yet`, plus relevant policy note when a latest version is blocked by policy | Which candidates failed policy vs age, latest policy-eligible version, latest age-eligible version |
 | `blocked` | Missing metadata prevents a safe decision | Show item and concise reason: `x Blocked [mise] foo v1.2.0 -> v1.3.0 (missing release metadata)` | Missing field/source, fallback attempts, command or URL diagnostics |
 | `skipped` | Excluded by user/config/interactive selection policy | Show item and target when known: `- Skipped [npm] foo v1.2.0 -> v1.3.0 (not selected)` | Selection source, if available |
@@ -149,12 +149,15 @@ user-facing reason groups:
 | Availability | missing command, unsupported platform |
 | User intent | not selected |
 | Version state | no newer version, eligible update, too fresh, no eligible release |
-| Policy | blocked by version policy, policy warning, unsupported policy |
+| Policy | blocked by policy, policy warning, unsupported policy |
 | Metadata | missing metadata, stale metadata, unparseable metadata |
 | Failure | command failed, network failed, resolver failed |
 
 Normal output should include reason groups that change what the user can expect.
-Verbose output should include the evidence used to reach that reason.
+Verbose output should include evidence that remains concise in-line. Release age
+may appear as a separate note, such as `11d ago`; threshold comparisons and
+policy names are reserved for detailed diagnostics rather than normal plan/TUI
+notes.
 
 ---
 

@@ -23,7 +23,7 @@ use serde::Serialize;
 use upnow_domain::{
     ManagerConfig, ManagerId, ManagerMode, ManagerScanEvidenceInput, ManagerScanInput, PlanItem,
     PlanSelection, ScanIssue, ScanItem, ScanReport, SelectedUpdate, UpdatePlan,
-    UpdateSelectionPolicy,
+    UpdateSelectionPolicy, VersionPolicy,
 };
 use upnow_execution::progress::{
     ExecutionProgressEvent, ExecutionProgressState, ExecutionProgressSummary,
@@ -747,7 +747,7 @@ pub fn build_interactive_apply_selection_plans_with_sources(
     clock: Clock,
     selected_managers: &[String],
     overrides: &[String],
-) -> Result<Vec<(UpdatePlan, UpdateSelectionPolicy)>, AppError> {
+) -> Result<Vec<(UpdatePlan, UpdateSelectionPolicy, VersionPolicy)>, AppError> {
     let prepared = prepare_interactive_apply_with_sources(
         config,
         process,
@@ -763,7 +763,8 @@ pub fn build_interactive_apply_selection_plans_with_sources(
         .into_iter()
         .map(|manager| {
             let selection = manager.manager_config.selection.clone();
-            (manager.plan, selection)
+            let version_policy = manager.manager_config.version_policy;
+            (manager.plan, selection, version_policy)
         })
         .collect())
 }
@@ -905,11 +906,12 @@ pub fn run_interactive_apply_selection_with_sources(
     )?;
     let selection_plans = plans
         .iter()
-        .map(|(plan, selection_policy)| {
+        .map(|(plan, selection_policy, version_policy)| {
             InteractiveSelectionPlan::new(
                 selection_view(plan, selection_policy),
                 plan.issues.clone(),
                 selection_policy.clone(),
+                *version_policy,
             )
         })
         .collect();
@@ -926,7 +928,7 @@ pub fn run_interactive_apply_selection_with_sources(
                 )));
             }
             let mut selections = Vec::new();
-            for ((plan, _), draft) in plans.iter().zip(drafts) {
+            for ((plan, _, _), draft) in plans.iter().zip(drafts) {
                 if plan.manager_id != draft.manager_id {
                     return Err(AppError::Planning(format!(
                         "interactive selection manager mismatch: expected {}, got {}",
@@ -1157,6 +1159,7 @@ fn prepare_one_interactive_manager_with_events(
                 view,
                 issues: plan.issues.clone(),
                 selection_policy,
+                version_policy: manager_config.version_policy,
             });
             Ok(InteractivePlanningWorkerResult::Ready {
                 manager: PreparedInteractiveManagerApply {

@@ -250,7 +250,7 @@ fn update_row(
     if let Some(note) = target_release_note(&candidate.diagnostics) {
         row = row.with_note(note);
     }
-    if let Some(note) = latest_too_fresh_note(&candidate.diagnostics, options.theme) {
+    if let Some(note) = latest_too_fresh_note(&candidate.diagnostics) {
         row = row.with_note(note);
     }
     row = append_advisory_warning_notes(row, &candidate.diagnostics);
@@ -268,7 +268,7 @@ fn delayed_row(
     if let Some(note) = target_release_note(&candidate.diagnostics) {
         row = row.with_note(note);
     }
-    row = row.with_note(delayed_note(reason, &candidate.diagnostics, options.theme));
+    row = row.with_note(delayed_note(reason, &candidate.diagnostics));
     row = append_advisory_warning_notes(row, &candidate.diagnostics);
     row = append_policy_notes(row, &candidate.diagnostics, options.version_policy);
     append_policy_warning_notes(row, &candidate.policy_warnings)
@@ -491,22 +491,18 @@ fn latest_policy_blocked_version(
         .map(|candidate| &candidate.version)
 }
 
-fn latest_too_fresh_note(diagnostics: &PlanDiagnostics, theme: OutputTheme) -> Option<OutcomeNote> {
+fn latest_too_fresh_note(diagnostics: &PlanDiagnostics) -> Option<OutcomeNote> {
     let latest = latest_too_fresh(diagnostics)?;
-    let note = notes::latest_too_fresh(
+    let note = notes::version_too_fresh(
         &latest.version,
         Some(latest.age),
         Some(diagnostics.required_age),
-        theme.verbose,
+        false,
     );
     Some(OutcomeNote::metadata(note))
 }
 
-fn delayed_note(
-    reason: &DelayReason,
-    diagnostics: &PlanDiagnostics,
-    theme: OutputTheme,
-) -> OutcomeNote {
+fn delayed_note(reason: &DelayReason, diagnostics: &PlanDiagnostics) -> OutcomeNote {
     match reason {
         DelayReason::ReleaseTooFresh => {
             if let Some(target) = diagnostics.selected_target.as_ref() {
@@ -520,7 +516,7 @@ fn delayed_note(
                     &latest.version,
                     Some(latest.age),
                     Some(diagnostics.required_age),
-                    theme.verbose,
+                    false,
                 ));
             }
             OutcomeNote::normal(format!(
