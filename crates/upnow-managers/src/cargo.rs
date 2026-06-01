@@ -141,6 +141,10 @@ impl CargoManager {
     }
 }
 impl ManagerAdapter for CargoManager {
+    fn required_executable() -> &'static str {
+        MANAGER_ID
+    }
+
     fn capabilities(&self) -> ManagerCapabilities {
         ManagerCapabilities::new()
     }

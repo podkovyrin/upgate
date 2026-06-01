@@ -141,6 +141,10 @@ impl ManagerAdapter for NpmManager {
         }
     }
 
+    fn required_executable() -> &'static str {
+        MANAGER_ID
+    }
+
     fn capabilities(&self) -> ManagerCapabilities {
         ManagerCapabilities::new().with_native_global_update(true)
     }

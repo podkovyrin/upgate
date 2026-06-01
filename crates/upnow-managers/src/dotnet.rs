@@ -158,6 +158,10 @@ impl ManagerAdapter for DotnetManager {
         ManagerConfigDefaults::off_after_days(7)
     }
 
+    fn required_executable() -> &'static str {
+        MANAGER_ID
+    }
+
     fn capabilities(&self) -> ManagerCapabilities {
         ManagerCapabilities::new()
     }

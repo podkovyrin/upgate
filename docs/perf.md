@@ -36,7 +36,7 @@ Use labels to make result folders easier to compare:
 
 ```bash
 scripts/profile.sh --label baseline --compare-parallel -- -S brew.no_update=true
-scripts/profile.sh --label stage1-npm-yarn-pnpm-bun --compare-parallel -- -S brew.no_update=true
+scripts/profile.sh --label stage1-npm-pnpm-bun --compare-parallel -- -S brew.no_update=true
 ```
 
 Artifacts are stored under:

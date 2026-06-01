@@ -149,7 +149,8 @@ Use **Option A**:
 1. Collect newer candidate versions
 2. Apply the version policy filter
 3. Apply the age gate (`min_release_age`)
-4. Choose the newest remaining eligible version
+4. Choose the remaining eligible version with the newest publish timestamp,
+   using parsed version order only as a tie-breaker
 
 This means version policy is a **filter on candidates**, not a secondary preference rule.
 
@@ -161,7 +162,8 @@ This preserves intuitive behavior:
 
 * prereleases blocked by policy are ignored before age logic runs
 * age gate applies only to policy-eligible versions
-* target selection remains deterministic
+* target selection remains deterministic while avoiding abandoned higher-version
+  prereleases when a more recently published eligible release exists
 
 ---
 
@@ -187,7 +189,8 @@ For each installed item:
      * too-new
 6. If at least one age-eligible candidate exists:
 
-   * choose the newest age-eligible candidate
+   * choose the age-eligible candidate with the newest publish timestamp
+   * if publish timestamps tie, choose the highest parsed version
    * item status = `update`
 7. Else if policy-eligible but only too-new candidates exist:
 
@@ -646,6 +649,12 @@ Implement policy filtering before age filtering.
 
 That is the required behavior for this spec.
 
+After policy and age filtering, target selection is publish-date first, not
+highest-version first. This keeps the delayed-upgrade model biased toward
+recently maintained releases. A higher-version prerelease that was published
+earlier may lose to a lower-version release that was published more recently.
+Use `version_policy = "stable"` when prereleases should be excluded entirely.
+
 ---
 
 # Recommended UX wording
@@ -676,7 +685,8 @@ Selection uses **Option A**:
 * gather newer versions
 * filter by version policy
 * then filter by age
-* choose the newest remaining candidate
+* choose the publish-date newest remaining candidate, using parsed version order
+  as the tie-breaker
 
 This keeps behavior predictable, works well with your existing delayed-upgrade model, and preserves backward compatibility when unset.
 

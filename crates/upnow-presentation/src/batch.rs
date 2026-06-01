@@ -1,9 +1,10 @@
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use upnow_domain::{
     AdvisoryLatestFact, BlockReason, CandidateAgeFact, DelayReason, InstalledTool, ManagerId,
-    ManagerRuleReason, PlanDiagnostics, PlanIssue, PlanItem, PolicyWarning, ScanIssue, ScanItem,
-    ScanReport, SkipReason, UnsupportedReason, UpdateCandidate, UpdatePlan, UpdateSeed,
+    ManagerRuleReason, PlanDiagnostics, PlanIssue, PlanItem, PlanSelection, PolicyWarning,
+    ScanIssue, ScanItem, ScanReport, SkipReason, UpdateCandidate, UpdatePlan, UpdateSeed,
     VersionPolicy,
 };
 use upnow_execution::{ExecutionReport, ExecutionStatus, ResolvedExecutionTarget};
@@ -50,6 +51,29 @@ pub fn render_execution_report(
 ) -> String {
     render_batch_table(&execution_report_table(report, issues), options.theme)
 }
+
+pub fn apply_execution_report_table(
+    report: &ExecutionReport,
+    plan: &UpdatePlan,
+    selection: &PlanSelection,
+) -> OutcomeTable {
+    let mut rows = plan
+        .issues
+        .iter()
+        .map(|issue| plan_issue_row(&report.manager_id, issue))
+        .collect::<Vec<_>>();
+    rows.extend(unselected_update_rows(plan, selection));
+
+    if report.items.is_empty() && rows.is_empty() {
+        rows.push(
+            OutcomeRow::manager(OutcomeStatusView::Current, report.manager_id.clone())
+                .with_note(OutcomeNote::metadata("no selected updates")),
+        );
+    }
+
+    rows.extend(execution_report_rows(report));
+    OutcomeTable::new(rows)
+}
 pub fn render_manager_error(
     manager_id: &ManagerId,
     command: &str,
@@ -91,9 +115,7 @@ fn scan_issue_row(manager_id: &ManagerId, issue: &ScanIssue) -> OutcomeRow {
         ScanIssue::DiscoveryFailed { .. }
         | ScanIssue::ReleaseLookupFailed { .. }
         | ScanIssue::MissingReleaseMetadata => OutcomeStatusView::Error,
-        ScanIssue::UnsupportedManagerVersion { .. } | ScanIssue::ExcludedByManagerRule(_) => {
-            OutcomeStatusView::Skipped
-        }
+        ScanIssue::ExcludedByManagerRule(_) => OutcomeStatusView::Skipped,
     };
     OutcomeRow::manager(status, manager_id.clone()).with_note(note_for_scan_issue(issue))
 }
@@ -141,9 +163,7 @@ const fn scan_issue_status(issue: &ScanIssue) -> OutcomeStatusView {
         ScanIssue::ReleaseLookupFailed { .. }
         | ScanIssue::DiscoveryFailed { .. }
         | ScanIssue::MissingReleaseMetadata => OutcomeStatusView::Error,
-        ScanIssue::UnsupportedManagerVersion { .. } | ScanIssue::ExcludedByManagerRule(_) => {
-            OutcomeStatusView::Skipped
-        }
+        ScanIssue::ExcludedByManagerRule(_) => OutcomeStatusView::Skipped,
     }
 }
 
@@ -152,9 +172,7 @@ fn note_for_scan_issue(issue: &ScanIssue) -> OutcomeNote {
         ScanIssue::DiscoveryFailed { .. } | ScanIssue::ReleaseLookupFailed { .. } => {
             OutcomeNote::normal(scan_issue_text(issue))
         }
-        ScanIssue::MissingReleaseMetadata
-        | ScanIssue::ExcludedByManagerRule(_)
-        | ScanIssue::UnsupportedManagerVersion { .. } => {
+        ScanIssue::MissingReleaseMetadata | ScanIssue::ExcludedByManagerRule(_) => {
             OutcomeNote::metadata(scan_issue_text(issue))
         }
     }
@@ -175,7 +193,6 @@ pub fn update_plan_table(plan: &UpdatePlan, options: BatchRenderOptions) -> Outc
 
 fn plan_issue_row(manager_id: &ManagerId, issue: &PlanIssue) -> OutcomeRow {
     let status = match issue {
-        PlanIssue::UnsupportedManagerVersion { .. } => OutcomeStatusView::Skipped,
         PlanIssue::DiscoveryFailed { .. } => OutcomeStatusView::Error,
     };
     OutcomeRow::manager(status, manager_id.clone())
@@ -283,7 +300,7 @@ fn blocked_row(
             },
         ),
         BlockReason::MissingReleaseMetadata => OutcomeRow::item(
-            OutcomeStatusView::Skipped,
+            OutcomeStatusView::Blocked,
             manager_id.clone(),
             seed.installed.package_name.clone(),
             versions,
@@ -366,33 +383,60 @@ pub fn execution_report_table(report: &ExecutionReport, issues: &[PlanIssue]) ->
         );
     }
 
-    rows.extend(report.items.iter().map(|item| {
-        let versions = match &item.target {
-            ResolvedExecutionTarget::Known(target_version) => {
-                OutcomeVersionsView::change(item.installed_version.clone(), target_version.clone())
-            }
-            ResolvedExecutionTarget::ManagerResolved => {
-                OutcomeVersionsView::manager_resolved(item.installed_version.clone())
-            }
-        };
-        match &item.status {
-            ExecutionStatus::Succeeded { .. } => OutcomeRow::item(
-                OutcomeStatusView::Update,
-                report.manager_id.clone(),
-                item.package_name.clone(),
-                versions,
-            ),
-            ExecutionStatus::Failed { detail, .. } => OutcomeRow::item(
-                OutcomeStatusView::Error,
-                report.manager_id.clone(),
-                item.package_name.clone(),
-                versions,
-            )
-            .with_note(OutcomeNote::normal(detail)),
-        }
-    }));
+    rows.extend(execution_report_rows(report));
 
     OutcomeTable::new(rows)
+}
+
+fn unselected_update_rows(plan: &UpdatePlan, selection: &PlanSelection) -> Vec<OutcomeRow> {
+    let selected_ids = selection
+        .selected_items
+        .iter()
+        .map(|item| item.plan_item_id.clone())
+        .collect::<BTreeSet<_>>();
+    plan.items
+        .iter()
+        .filter_map(|item| match item {
+            PlanItem::Update { id, candidate } if !selected_ids.contains(id) => Some(
+                candidate_row(OutcomeStatusView::Skipped, &plan.manager_id, candidate)
+                    .with_note(OutcomeNote::normal("not selected")),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
+fn execution_report_rows(report: &ExecutionReport) -> Vec<OutcomeRow> {
+    report
+        .items
+        .iter()
+        .map(|item| {
+            let versions = match &item.target {
+                ResolvedExecutionTarget::Known(target_version) => OutcomeVersionsView::change(
+                    item.installed_version.clone(),
+                    target_version.clone(),
+                ),
+                ResolvedExecutionTarget::ManagerResolved => {
+                    OutcomeVersionsView::manager_resolved(item.installed_version.clone())
+                }
+            };
+            match &item.status {
+                ExecutionStatus::Succeeded { .. } => OutcomeRow::item(
+                    OutcomeStatusView::Update,
+                    report.manager_id.clone(),
+                    item.package_name.clone(),
+                    versions,
+                ),
+                ExecutionStatus::Failed { detail, .. } => OutcomeRow::item(
+                    OutcomeStatusView::Error,
+                    report.manager_id.clone(),
+                    item.package_name.clone(),
+                    versions,
+                )
+                .with_note(OutcomeNote::normal(detail)),
+            }
+        })
+        .collect()
 }
 
 fn append_policy_notes(
@@ -543,14 +587,6 @@ fn scan_issue_text(issue: &ScanIssue) -> String {
             detail.clone()
         }
         ScanIssue::MissingReleaseMetadata => "missing release metadata".to_owned(),
-        ScanIssue::UnsupportedManagerVersion {
-            installed_version,
-            reason,
-        } => format!(
-            "unsupported manager version {} {}",
-            installed_version.as_str(),
-            unsupported_reason_text(reason)
-        ),
         ScanIssue::ExcludedByManagerRule(reason) => manager_rule_reason_text(reason),
     }
 }
@@ -558,22 +594,6 @@ fn scan_issue_text(issue: &ScanIssue) -> String {
 fn plan_issue_text(issue: &PlanIssue) -> String {
     match issue {
         PlanIssue::DiscoveryFailed { detail } => detail.clone(),
-        PlanIssue::UnsupportedManagerVersion {
-            installed_version,
-            reason,
-        } => format!(
-            "unsupported manager version {} {}",
-            installed_version.as_str(),
-            unsupported_reason_text(reason)
-        ),
-    }
-}
-
-const fn unsupported_reason_text(reason: &UnsupportedReason) -> &'static str {
-    match reason {
-        UnsupportedReason::YarnModernGlobalUnsupported => {
-            "global upgrades are not supported for Yarn 2+"
-        }
     }
 }
 

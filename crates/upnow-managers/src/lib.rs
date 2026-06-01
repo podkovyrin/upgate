@@ -14,4 +14,3 @@ pub mod pipx;
 pub(crate) mod platform_artifacts;
 pub mod pnpm;
 pub mod uv;
-pub mod yarn;

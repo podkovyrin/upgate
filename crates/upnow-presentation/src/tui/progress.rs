@@ -18,11 +18,13 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row};
+use upnow_execution::ResolvedExecutionTarget;
 use upnow_execution::progress::{
     ExecutionProgressEvent, ExecutionProgressRow, ExecutionProgressState, ExecutionProgressStatus,
     ExecutionProgressSummary,
 };
 
+use crate::outcome::{manager_resolved_label, version_label};
 use crate::tui::components::{
     KeyBinding, TuiTable, app_block, clamp_command_log_scroll, command_log_layout, key_footer,
     key_footer_hit, progress_update_columns, render_command_log, render_modal_frame,
@@ -757,7 +759,7 @@ fn progress_table_row(
         Cell::new(row.manager_id.to_string()).style(style),
         Cell::new(row.package_name.to_string()).style(theme.emphasis(style)),
         Cell::new(row.installed_version.to_string()).style(style),
-        Cell::new(row.target.to_string()).style(style),
+        Cell::new(target_label(&row.target)).style(style),
         Cell::new(status_note(&row.status)).style(style),
     ])
     .style(style)
@@ -778,11 +780,18 @@ fn result_table_row(row: &ExecutionProgressRow, theme: &TuiTheme) -> Row<'static
 
 fn result_current_label(row: &ExecutionProgressRow) -> String {
     match row.status {
-        ExecutionProgressStatus::Succeeded { .. } => row.target.to_string(),
+        ExecutionProgressStatus::Succeeded { .. } => target_label(&row.target),
         ExecutionProgressStatus::Pending
         | ExecutionProgressStatus::Running
         | ExecutionProgressStatus::Failed { .. }
         | ExecutionProgressStatus::Skipped { .. } => row.installed_version.to_string(),
+    }
+}
+
+fn target_label(target: &ResolvedExecutionTarget) -> String {
+    match target {
+        ResolvedExecutionTarget::Known(version) => version_label(version.as_str()),
+        ResolvedExecutionTarget::ManagerResolved => manager_resolved_label().to_owned(),
     }
 }
 

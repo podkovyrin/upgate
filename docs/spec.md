@@ -16,11 +16,11 @@ It supports three workflows:
 
 Built-in managers:
 
-- `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`, `gem`, `dotnet`
+- `brew`, `bun`, `cargo`, `npm`, `mise`, `pipx`, `pnpm`, `uv`, `go`, `gem`, `dotnet`
 
 Default execution modes:
 
-- **apply**: `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`
+- **apply**: `brew`, `bun`, `cargo`, `npm`, `mise`, `pipx`, `pnpm`, `uv`, `go`
 - **off**: `gem`, `dotnet`
 
 Users can change modes in config or with CLI overrides.
@@ -33,7 +33,11 @@ Users can change modes in config or with CLI overrides.
 - `apply` executes upgrades for selected managers/items.
 - `scan` is non-mutating and focuses on installed versions.
 - Managers can be selected with `--managers`; explicit CLI manager selection may opt managers into the requested command.
-- Missing tools or unsupported environments are reported as skipped instead of crashing the whole run.
+- Missing manager executables are treated as absent managers and omitted from
+  normal output. A machine without a specific manager installed should produce
+  no output for that manager.
+- Unsupported installed manager versions or environments are reported without
+  crashing the whole run.
 
 ---
 
@@ -48,6 +52,12 @@ At a high level:
 - if an eligible newer version exists → **update**
 - if only too-new versions exist → **delayed**
 - if already up to date → **current**
+
+When multiple eligible newer versions remain after policy and release-age
+filtering, planner-selectable managers choose the release with the newest
+publish timestamp. Parsed version order is used only as a tie-breaker. This
+keeps target selection biased toward recently maintained releases; use
+`version_policy = "stable"` to exclude prereleases entirely.
 
 ---
 
@@ -124,7 +134,7 @@ normal/verbose boundaries are part of the spec.
 | `delayed` | Policy and age gates together leave no eligible release | Show `no eligible release yet`, plus relevant policy note when a latest version is blocked by policy | Which candidates failed policy vs age, latest policy-eligible version, latest age-eligible version |
 | `blocked` | Missing metadata prevents a safe decision | Show item and concise reason: `x Blocked [mise] foo v1.2.0 -> v1.3.0 (missing release metadata)` | Missing field/source, fallback attempts, command or URL diagnostics |
 | `skipped` | Excluded by user/config/interactive selection policy | Show item and target when known: `- Skipped [npm] foo v1.2.0 -> v1.3.0 (not selected)` | Selection source, if available |
-| `skipped` | Manager command is missing | Show manager-level skip without placeholder versions: `- Skipped [cargo] (required command 'cargo' is not available)` | Probe command and PATH-related diagnostics, when available |
+| `skipped` | Manager is present but unsupported for this operation | Show manager-level skip without placeholder versions | Probe command and PATH-related diagnostics, when available |
 | `skipped` | Unsupported platform/environment | Show manager-level skip without placeholder versions: `- Skipped [brew] (unsupported on this platform)` | Platform details and manager support condition, when available |
 | `error` | Command, resolver, or metadata check failed unexpectedly | Show item or manager plus concise failure: `! Error [npm] foo v1.2.0 -> v1.3.0 (failed to query package metadata)` | Command, exit status, stderr summary, retry/fallback context |
 | `error` | Invalid or unsupported configuration | Show explicit configuration problem. Example: `! Error [gem] foo (version_policy "same-track" is not supported by this manager)` | Manager capability details and configured source, when available |

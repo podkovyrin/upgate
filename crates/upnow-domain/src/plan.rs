@@ -6,8 +6,8 @@ use std::{
 
 use crate::{
     DomainError, InstalledTool, ManagerId, PackageName, PolicyWarning, ReleaseLookupError,
-    ReleaseLookupResult, TargetAgeLookupResult, ToolId, UnsupportedReason, VersionReleaseEvidence,
-    VersionScheme, VersionText,
+    ReleaseLookupResult, TargetAgeLookupResult, ToolId, VersionReleaseEvidence, VersionScheme,
+    VersionText,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -713,13 +713,7 @@ pub enum AdvisoryLatestFact {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanIssue {
-    DiscoveryFailed {
-        detail: String,
-    },
-    UnsupportedManagerVersion {
-        installed_version: VersionText,
-        reason: UnsupportedReason,
-    },
+    DiscoveryFailed { detail: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -3,20 +3,13 @@ use std::time::Duration;
 
 use upnow_domain::{
     InstalledTool, ManagerId, ManagerMode, ManagerScanEvidenceInput, ManagerScanInput,
-    ManagerUpdateInput, PackageName, ReleaseEvidenceSource, ReleaseLookupResult, UnsupportedReason,
-    VersionPolicy, VersionText,
+    ManagerUpdateInput, PackageName, ReleaseEvidenceSource, ReleaseLookupResult, VersionPolicy,
 };
 use upnow_execution::{ExecutionCommand, ResolvedExecutionPlan};
 use upnow_infra::{Env, HttpClient, ProcessRunner, run_ordered_parallel};
 use upnow_release::release_evidence_for_version;
 
 pub use upnow_domain::ManagerCapabilities;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnsupportedManagerVersion {
-    pub installed_version: VersionText,
-    pub reason: UnsupportedReason,
-}
 
 #[derive(Debug, Clone, Copy)]
 pub enum ReleaseLookupSubject<'a> {
@@ -150,19 +143,11 @@ pub trait ManagerAdapter: Sync {
         Ok(())
     }
 
-    fn capabilities(&self) -> ManagerCapabilities;
+    fn required_executable() -> &'static str
+    where
+        Self: Sized;
 
-    /// Returns the installed manager version when it cannot support migrated behavior.
-    ///
-    /// # Errors
-    ///
-    /// Returns a manager adapter error when the version probe fails.
-    fn unsupported_manager_version(
-        &self,
-        _process: &ProcessRunner,
-    ) -> Result<Option<UnsupportedManagerVersion>, ManagerAdapterError> {
-        Ok(None)
-    }
+    fn capabilities(&self) -> ManagerCapabilities;
 
     /// Discovers installed tools for scan output.
     ///

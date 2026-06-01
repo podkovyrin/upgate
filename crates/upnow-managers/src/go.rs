@@ -139,6 +139,10 @@ impl GoManager {
     }
 }
 impl ManagerAdapter for GoManager {
+    fn required_executable() -> &'static str {
+        MANAGER_ID
+    }
+
     fn capabilities(&self) -> ManagerCapabilities {
         ManagerCapabilities::new()
     }

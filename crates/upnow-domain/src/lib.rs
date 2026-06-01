@@ -32,7 +32,6 @@ pub use release::{
 };
 pub use scan::{
     ManagerRuleReason, ManagerScanEvidenceInput, ManagerScanInput, ScanIssue, ScanItem, ScanReport,
-    UnsupportedReason,
 };
 pub use selection::{
     PlanSelection, SelectedItem, SelectedUpdate, UpdateSelectionMode, UpdateSelectionPolicy,

@@ -25,7 +25,7 @@ use upnow_domain::{
     ManagerId, PlanIssue, PlanItemId, SelectedItem, SelectedUpdate, UpdateSelectionPolicy,
 };
 
-use crate::outcome::version_label;
+use crate::outcome::{manager_resolved_label, version_label};
 use crate::selection_view::note_part_text;
 use crate::tui::components::{
     KeyBinding, TuiTable, app_block, clamp_command_log_scroll, command_log_layout, key_footer,
@@ -2086,14 +2086,14 @@ fn selection_render_rows(screen: &InteractiveSelectionScreen) -> Vec<SelectionRe
                     Some(SelectedUpdate::Exact { target_version }) => {
                         version_label(target_version.as_str())
                     }
-                    Some(SelectedUpdate::ManagerResolved) => "manager-resolved".to_owned(),
+                    Some(SelectedUpdate::ManagerResolved) => manager_resolved_label().to_owned(),
                     Some(SelectedUpdate::Recommended | SelectedUpdate::ForcePlannedCandidate)
                     | None => row.target_version.as_ref().map_or_else(
                         || {
                             if row.target_options.iter().any(|option| {
                                 matches!(option, TargetOption::ManagerResolved { .. })
                             }) {
-                                "manager-resolved".to_owned()
+                                manager_resolved_label().to_owned()
                             } else {
                                 "unavailable".to_owned()
                             }
@@ -2135,7 +2135,7 @@ fn selection_table_row(
 ) -> Row<'static> {
     let style = theme.row_for_selectable_state(highlighted, false);
     let marker = if row.selected { "[x]" } else { "[ ]" };
-    let target = if row.target == "unavailable" || row.target == "manager-resolved" {
+    let target = if row.target == "unavailable" || row.target == manager_resolved_label() {
         Line::from(Span::styled(row.target.clone(), style))
     } else {
         Line::from(version_diff_spans(
@@ -2396,7 +2396,7 @@ fn target_picker_table_row(
 ) -> Row<'static> {
     let style = theme.row_for_selectable_state(highlighted, false);
     let marker = if selected { "[x]" } else { "[ ]" };
-    let target = if row.target == "manager-resolved" {
+    let target = if row.target == manager_resolved_label() {
         vec![Span::styled(row.target.clone(), style)]
     } else {
         version_diff_spans(current, &row.target, style, theme, highlighted)
@@ -2416,7 +2416,7 @@ fn target_picker_rows(options: &[TargetOption]) -> Vec<TargetPickerRenderRow> {
         .iter()
         .map(|option| TargetPickerRenderRow {
             target: option.target_version().map_or_else(
-                || "manager-resolved".to_owned(),
+                || manager_resolved_label().to_owned(),
                 |version| version_label(version.as_str()),
             ),
             note_parts: option.note_parts().to_vec(),
@@ -2474,12 +2474,5 @@ fn note_text(note_parts: &[CandidateNotePart]) -> String {
 fn plan_issue_label(issue: &PlanIssue) -> String {
     match issue {
         PlanIssue::DiscoveryFailed { detail } => detail.clone(),
-        PlanIssue::UnsupportedManagerVersion {
-            installed_version,
-            reason,
-        } => format!(
-            "unsupported manager version {} {reason:?}",
-            installed_version.as_str()
-        ),
     }
 }

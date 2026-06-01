@@ -115,6 +115,10 @@ impl PnpmManager {
     }
 }
 impl ManagerAdapter for PnpmManager {
+    fn required_executable() -> &'static str {
+        MANAGER_ID
+    }
+
     fn capabilities(&self) -> ManagerCapabilities {
         ManagerCapabilities::new()
     }

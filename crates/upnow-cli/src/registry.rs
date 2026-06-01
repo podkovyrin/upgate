@@ -15,7 +15,6 @@ use upnow_managers::npm::NpmManager;
 use upnow_managers::pipx::PipxManager;
 use upnow_managers::pnpm::PnpmManager;
 use upnow_managers::uv::UvManager;
-use upnow_managers::yarn::YarnManager;
 
 macro_rules! with_known_managers {
     ($macro:ident) => {
@@ -23,7 +22,6 @@ macro_rules! with_known_managers {
             BrewManager,
             PnpmManager,
             NpmManager,
-            YarnManager,
             BunManager,
             CargoManager,
             PipxManager,
@@ -104,6 +102,25 @@ pub fn accepts_no_update(manager_id: &str) -> Result<bool, ManagerAdapterError> 
         };
     }
     with_known_managers!(no_update_support)
+}
+
+/// Returns the primary executable required for a manager to be present.
+///
+/// # Errors
+///
+/// Returns an error when `manager_id` is not a known migrated manager.
+pub fn required_executable(manager_id: &str) -> Result<&'static str, ManagerAdapterError> {
+    macro_rules! executable {
+        ($($manager:ty),+ $(,)?) => {
+            match manager_id {
+                $(id if id == <$manager>::id().as_str() => {
+                    Ok(<$manager as ManagerAdapter>::required_executable())
+                })+
+                other => Err(ManagerAdapterError::UnknownManager(other.to_owned())),
+            }
+        };
+    }
+    with_known_managers!(executable)
 }
 
 /// Checks manager-owned min-release-age rules.

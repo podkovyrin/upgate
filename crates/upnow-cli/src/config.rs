@@ -13,6 +13,7 @@ use upnow_domain::{
     VersionPolicy,
 };
 use upnow_managers::adapter::ManagerConfigRuleError;
+use upnow_managers::gem::GemManager;
 
 use crate::registry::{
     accepts_no_update, ensure_known_manager, manager_defaults, min_release_age_rule_error,
@@ -629,7 +630,16 @@ fn parse_optional_policy(
     manager_id: &str,
     raw: Option<&str>,
 ) -> Result<VersionPolicy, ConfigError> {
-    raw.map_or(Ok(VersionPolicy::None), |raw| parse_policy(manager_id, raw))
+    raw.map_or_else(
+        || {
+            if manager_id == GemManager::id().as_str() {
+                Ok(VersionPolicy::Stable)
+            } else {
+                Ok(VersionPolicy::None)
+            }
+        },
+        |raw| parse_policy(manager_id, raw),
+    )
 }
 
 fn parse_optional_selection_policy(

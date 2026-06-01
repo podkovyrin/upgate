@@ -129,6 +129,10 @@ impl ManagerAdapter for MiseManager {
         policy == VersionPolicy::None
     }
 
+    fn required_executable() -> &'static str {
+        MANAGER_ID
+    }
+
     fn capabilities(&self) -> ManagerCapabilities {
         ManagerCapabilities::new().with_resolver_native_global_update(true)
     }

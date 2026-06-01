@@ -19,7 +19,7 @@ use upnow_infra::{
     CommandCheck, CommandSpec, Env, HttpClient, InfraError, ProcessRunner, effective_parallelism,
     run_ordered_parallel,
 };
-use upnow_release::{newest_semver_version, release_evidence_for_version};
+use upnow_release::release_evidence_for_version;
 
 use crate::adapter::{
     ManagerAdapter, ManagerAdapterError, ManagerAdapterErrorKind, ManagerCapabilities,
@@ -131,7 +131,11 @@ impl ManagerAdapter for GemManager {
     }
 
     fn supports_version_policy(policy: VersionPolicy) -> bool {
-        matches!(policy, VersionPolicy::None | VersionPolicy::Stable)
+        matches!(policy, VersionPolicy::Stable)
+    }
+
+    fn required_executable() -> &'static str {
+        MANAGER_ID
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
@@ -484,9 +488,27 @@ pub fn commands_for_execution_plan(
 
 fn discovered_target_from_lookup(lookup: &ReleaseLookupResult) -> Option<VersionText> {
     match lookup {
-        ReleaseLookupResult::Known(timeline) => newest_semver_version(timeline),
+        ReleaseLookupResult::Known(timeline) => newest_stable_version(timeline),
         ReleaseLookupResult::MissingMetadata | ReleaseLookupResult::LookupFailed(_) => None,
     }
+}
+
+fn newest_stable_version(timeline: &ReleaseTimeline) -> Option<VersionText> {
+    timeline
+        .versions
+        .iter()
+        .filter_map(|entry| {
+            let version = parse_version_for_compare(entry.version.as_str())?;
+            version.pre.is_empty().then_some((entry, version))
+        })
+        .max_by(|(left_entry, left_version), (right_entry, right_version)| {
+            left_entry
+                .published_at
+                .as_system_time()
+                .cmp(right_entry.published_at.as_system_time())
+                .then_with(|| left_version.cmp(right_version))
+        })
+        .map(|(entry, _)| entry.version.clone())
 }
 
 fn ruby_runtime_version(process: &ProcessRunner) -> Result<Version, GemError> {

@@ -103,7 +103,7 @@ configs are rejected.
 
 Supported by:
 
-- `brew`, `bun`, `cargo`, `dotnet`, `go`, `npm`, `pipx`, `pnpm`, `yarn`
+- `brew`, `bun`, `cargo`, `dotnet`, `go`, `npm`, `pipx`, `pnpm`
 - `gem` supports `stable` only
 
 `gem` supports only `version_policy = "stable"`. This follows RubyGems'
@@ -144,7 +144,7 @@ Optional Homebrew-specific behavior toggle.
 
 ## Known built-in manager IDs
 
-- `brew`, `bun`, `cargo`, `npm`, `yarn`, `mise`, `pipx`, `pnpm`, `uv`, `go`, `gem`, `dotnet`
+- `brew`, `bun`, `cargo`, `npm`, `mise`, `pipx`, `pnpm`, `uv`, `go`, `gem`, `dotnet`
 
 ---
 

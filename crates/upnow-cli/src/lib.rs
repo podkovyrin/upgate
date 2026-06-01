@@ -16,11 +16,13 @@ use std::time::SystemTime;
 
 use clap::{Parser, Subcommand};
 use config::{ConfigError, UpnowConfig};
-use registry::{available_manager_ids, configured_manager, ensure_known_manager};
+use registry::{
+    available_manager_ids, configured_manager, ensure_known_manager, required_executable,
+};
 use serde::Serialize;
 use upnow_domain::{
-    ManagerConfig, ManagerId, ManagerMode, ManagerScanEvidenceInput, ManagerScanInput, PlanIssue,
-    PlanItem, PlanSelection, ScanIssue, ScanItem, ScanReport, SelectedUpdate, UpdatePlan,
+    ManagerConfig, ManagerId, ManagerMode, ManagerScanEvidenceInput, ManagerScanInput, PlanItem,
+    PlanSelection, ScanIssue, ScanItem, ScanReport, SelectedUpdate, UpdatePlan,
     UpdateSelectionPolicy,
 };
 use upnow_execution::progress::{
@@ -32,7 +34,8 @@ use upnow_execution::{
 };
 use upnow_infra::{
     Clock, Env, HttpClient, HttpSettings, LoggingOptions, MutationMode, ProcessRunner,
-    REQUIRE_MUTATION_MODE_ENV, init_logging, run_ordered_parallel, run_ordered_parallel_stoppable,
+    REQUIRE_MUTATION_MODE_ENV, command_exists_in_env, init_logging, run_ordered_parallel,
+    run_ordered_parallel_stoppable,
 };
 use upnow_managers::adapter::{ManagerAdapter, ManagerAdapterError};
 use upnow_planning::{PlanningSettings, default_batch_selection, update_plan_from_inputs};
@@ -42,7 +45,7 @@ use upnow_presentation::tui::{
     run_interactive_selection_with_planning_events,
 };
 use upnow_presentation::{
-    BatchRenderOptions, OutcomeTable, OutputTheme, ThemeOptions, execution_report_table,
+    BatchRenderOptions, OutcomeTable, OutputTheme, ThemeOptions, apply_execution_report_table,
     manager_error_table, render_batch_table, scan_report_table, selection_view,
     terminal::{BatchTerminal, BatchTerminalAction, MutationNotice},
     update_plan_table,
@@ -582,6 +585,10 @@ fn run_interactive_apply_with_sources_and_options(
 ) -> Result<String, AppError> {
     let (mut config, manager_configs) =
         prepare_interactive_manager_configs(config, selected_managers, overrides)?;
+    let manager_configs = available_manager_configs(manager_configs, env)?;
+    if manager_configs.is_empty() {
+        return Ok(String::new());
+    }
     if let Some(manager_concurrency) = manager_concurrency_override {
         config.set_manager_concurrency(manager_concurrency)?;
     }
@@ -705,6 +712,11 @@ fn run_batch_with_terminal_and_sources(
         config.set_manager_concurrency(manager_concurrency)?;
     }
     let manager_ids = selected_manager_ids(selected_managers)?;
+    if command == BatchCommand::Apply
+        && runnable_manager_ids(&config, env, &manager_ids)?.is_empty()
+    {
+        return Ok(String::new());
+    }
     let manager_concurrency = config.manager_concurrency()?;
     run_batch_for_managers(
         command,
@@ -769,6 +781,7 @@ fn prepare_interactive_apply_with_sources(
 ) -> Result<PreparedInteractiveApply, AppError> {
     let (config, manager_configs) =
         prepare_interactive_manager_configs(config, selected_managers, overrides)?;
+    let manager_configs = available_manager_configs(manager_configs, env)?;
     let manager_concurrency = config.manager_concurrency()?;
     let managers = run_ordered_parallel(
         manager_configs,
@@ -823,6 +836,46 @@ fn prepare_interactive_manager_configs(
         manager_configs.push(manager_config);
     }
     Ok((config, manager_configs))
+}
+
+fn available_manager_configs(
+    manager_configs: Vec<ManagerConfig>,
+    env: &Env,
+) -> Result<Vec<ManagerConfig>, AppError> {
+    manager_configs
+        .into_iter()
+        .filter_map(|manager_config| {
+            match manager_executable_is_available(&manager_config.manager_id, env) {
+                Ok(true) => Some(Ok(manager_config)),
+                Ok(false) => None,
+                Err(err) => Some(Err(err)),
+            }
+        })
+        .collect()
+}
+
+fn runnable_manager_ids(
+    config: &UpnowConfig,
+    env: &Env,
+    manager_ids: &[ManagerId],
+) -> Result<Vec<ManagerId>, AppError> {
+    manager_ids
+        .iter()
+        .filter_map(|manager_id| {
+            let manager_config = match config.resolve_manager(manager_id.as_str()) {
+                Ok(manager_config) => manager_config,
+                Err(err) => return Some(Err(AppError::from(err))),
+            };
+            if !manager_mode_allows_run(manager_config.mode, true) {
+                return None;
+            }
+            match manager_executable_is_available(manager_id, env) {
+                Ok(true) => Some(Ok(manager_id.clone())),
+                Ok(false) => None,
+                Err(err) => Some(Err(err)),
+            }
+        })
+        .collect()
 }
 
 /// Runs interactive apply selection and returns the confirmed typed selection.
@@ -1486,6 +1539,12 @@ fn run_manager_scan_or_plan_batch(
             failed: false,
         });
     }
+    if !manager_executable_is_available(manager_id, env)? {
+        return Ok(ManagerBatchOutput {
+            table: OutcomeTable::default(),
+            failed: false,
+        });
+    }
 
     match command {
         BatchCommand::Scan if theme.verbose => {
@@ -1644,6 +1703,9 @@ fn prepare_manager_batch_apply(
     if !manager_mode_allows_run(manager_config.mode, true) {
         return Ok(None);
     }
+    if !manager_executable_is_available(manager_id, env)? {
+        return Ok(None);
+    }
 
     let manager = configured_manager(manager_config.clone()).map_err(map_manager_error)?;
     let plan = build_manager_plan(
@@ -1691,7 +1753,7 @@ fn execute_prepared_batch_apply(
             }
         })?;
     Ok(ManagerBatchOutput {
-        table: execution_report_table(&report, &prepared.plan.issues),
+        table: apply_execution_report_table(&report, &prepared.plan, &prepared.selection),
         failed: execution_report_has_failures(&report),
     })
 }
@@ -1702,29 +1764,6 @@ fn build_scan_report(
     process: &ProcessRunner,
     env: &Env,
 ) -> Result<ScanReport, AppError> {
-    match manager.unsupported_manager_version(process) {
-        Ok(Some(unsupported)) => {
-            return Ok(ScanReport::new(
-                manager_id,
-                Vec::new(),
-                vec![ScanIssue::UnsupportedManagerVersion {
-                    installed_version: unsupported.installed_version,
-                    reason: unsupported.reason,
-                }],
-            ));
-        }
-        Ok(None) => {}
-        Err(err) if err.is_interruption() => return Err(map_manager_error(err)),
-        Err(err) => {
-            return Ok(ScanReport::new(
-                manager_id,
-                Vec::new(),
-                vec![ScanIssue::DiscoveryFailed {
-                    detail: err.to_string(),
-                }],
-            ));
-        }
-    }
     match manager.scan_inputs(process, env) {
         Ok(inputs) => Ok(ScanReport::new(
             manager_id,
@@ -1751,29 +1790,6 @@ fn build_verbose_scan_report(
     now: SystemTime,
     max_parallel_checks_per_manager: usize,
 ) -> Result<ScanReport, AppError> {
-    match manager.unsupported_manager_version(process) {
-        Ok(Some(unsupported)) => {
-            return Ok(ScanReport::new(
-                manager_id,
-                Vec::new(),
-                vec![ScanIssue::UnsupportedManagerVersion {
-                    installed_version: unsupported.installed_version,
-                    reason: unsupported.reason,
-                }],
-            ));
-        }
-        Ok(None) => {}
-        Err(err) if err.is_interruption() => return Err(map_manager_error(err)),
-        Err(err) => {
-            return Ok(ScanReport::new(
-                manager_id,
-                Vec::new(),
-                vec![ScanIssue::DiscoveryFailed {
-                    detail: err.to_string(),
-                }],
-            ));
-        }
-    }
     match manager.scan_inputs_with_release_evidence(
         process,
         http,
@@ -1855,6 +1871,11 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
         ));
     }
     if interactive_apply {
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return Err(AppError::InvalidArgs(
+                "interactive apply requires a TTY; use --yolo for non-interactive apply".to_owned(),
+            ));
+        }
         let command_log = InteractiveCommandLog::new(cli.show_commands);
         return run_interactive_apply_with_sources_and_options(
             config,
@@ -2034,31 +2055,6 @@ fn build_manager_plan(
     manager_config: &ManagerConfig,
     max_parallel_checks_per_manager: usize,
 ) -> Result<UpdatePlan, AppError> {
-    match manager.unsupported_manager_version(process) {
-        Ok(Some(unsupported)) => {
-            return UpdatePlan::with_issues(
-                manager_config.manager_id.clone(),
-                Vec::new(),
-                vec![PlanIssue::UnsupportedManagerVersion {
-                    installed_version: unsupported.installed_version,
-                    reason: unsupported.reason,
-                }],
-            )
-            .map_err(|err| AppError::Planning(err.to_string()));
-        }
-        Ok(None) => {}
-        Err(err) if err.is_interruption() => return Err(map_manager_error(err)),
-        Err(err) => {
-            return UpdatePlan::with_issues(
-                manager_config.manager_id.clone(),
-                Vec::new(),
-                vec![PlanIssue::DiscoveryFailed {
-                    detail: err.to_string(),
-                }],
-            )
-            .map_err(|err| AppError::Planning(err.to_string()));
-        }
-    }
     let now = clock.now();
     let inputs = manager
         .update_inputs(process, http, env, max_parallel_checks_per_manager)
@@ -2088,6 +2084,11 @@ const fn manager_mode_allows_run(mode: ManagerMode, is_apply: bool) -> bool {
         ManagerMode::Plan => !is_apply,
         ManagerMode::Apply => true,
     }
+}
+
+fn manager_executable_is_available(manager_id: &ManagerId, env: &Env) -> Result<bool, AppError> {
+    let executable = required_executable(manager_id.as_str()).map_err(map_manager_error)?;
+    Ok(command_exists_in_env(executable, env))
 }
 
 #[expect(clippy::needless_pass_by_value)]

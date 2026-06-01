@@ -66,6 +66,7 @@ pub enum OutcomeStatusView {
     Current,
     Update,
     Delayed,
+    Blocked,
     Skipped,
     Error,
 }
@@ -293,7 +294,7 @@ fn version_cells(versions: &OutcomeVersionsView, theme: OutputTheme) -> (TableCe
             let from = version_label(from.as_str());
             let to = match to {
                 OutcomeTargetView::Known(version) => version_label(version.as_str()),
-                OutcomeTargetView::ManagerResolved => "manager-resolved".to_owned(),
+                OutcomeTargetView::ManagerResolved => manager_resolved_label().to_owned(),
             };
             (
                 TableCell::new(render_from_version(
@@ -333,6 +334,13 @@ fn status_prefix(status: OutcomeStatusView, color: bool) -> String {
                 format!("{} {}", "~".yellow().bold(), "Delayed".yellow().bold())
             } else {
                 "~ Delayed".to_owned()
+            }
+        }
+        OutcomeStatusView::Blocked => {
+            if color {
+                format!("{} {}", "x".red().bold(), "Blocked".red().bold())
+            } else {
+                "x Blocked".to_owned()
             }
         }
         OutcomeStatusView::Skipped => {
@@ -406,6 +414,10 @@ fn first_changed_part_index(from_parts: &[&str], to_parts: &[&str]) -> Option<us
     }
 
     None
+}
+
+pub const fn manager_resolved_label() -> &'static str {
+    "selected by manager"
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
