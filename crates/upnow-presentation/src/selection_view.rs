@@ -1,8 +1,8 @@
 use upnow_domain::{
-    AdvisoryLatestFact, BlockReason, CandidateAgeFact, CandidateEvaluationFact, DelayReason,
-    ManagerId, MissingMetadataKind, PackageName, PlanDiagnostics, PlanItem, PlanItemId,
-    PolicyBlockReason, PolicyWarning, ReleaseLookupError, SkipReason, UpdateCandidate, UpdatePlan,
-    UpdateSeed, UpdateSelectionPolicy, VersionText,
+    AdvisoryLatestFact, BlockReason, CandidateAgeFact, CandidateAuditFact, CandidateEvaluationFact,
+    DelayReason, ManagerId, MissingMetadataKind, PackageName, PlanDiagnostics, PlanItem,
+    PlanItemId, PolicyBlockReason, PolicyWarning, ReleaseLookupError, SkipReason, UpdateCandidate,
+    UpdatePlan, UpdateSeed, UpdateSelectionPolicy, VersionText,
 };
 
 use std::time::Duration;
@@ -148,6 +148,12 @@ pub enum CandidateNoteKind {
     MissingReleaseMetadata,
     ReleaseLookupFailed {
         error: Option<ReleaseLookupError>,
+    },
+    AuditVulnerable {
+        findings: Vec<upnow_domain::AuditFinding>,
+    },
+    AuditLookupFailed {
+        detail: String,
     },
     AdvisoryLookupFailed {
         error: ReleaseLookupError,
@@ -330,7 +336,7 @@ fn blocked_target_options(
         return vec![TargetOption::ManagerResolved { note_parts: notes }];
     }
 
-    let Some(target_version) = seed.target_selection.target_version().cloned() else {
+    let Some(target_version) = blocked_target_version(seed, reason, diagnostics) else {
         return match reason {
             BlockReason::VersionPolicy(_) | BlockReason::MissingReleaseMetadata
                 if seed.execution_support.supports_manager_resolved_target() =>
@@ -341,8 +347,12 @@ fn blocked_target_options(
         };
     };
 
-    if !matches!(reason, BlockReason::VersionPolicy(_))
-        || !seed.execution_support.supports_age_bypass()
+    if !matches!(
+        reason,
+        BlockReason::VersionPolicy(_)
+            | BlockReason::AuditVulnerable
+            | BlockReason::AuditLookupFailed
+    ) || !seed.execution_support.supports_age_bypass()
     {
         return Vec::new();
     }
@@ -364,6 +374,21 @@ fn blocked_target_options(
         notes,
         TargetOptionKind::ForcedCandidate,
     )
+}
+
+fn blocked_target_version(
+    seed: &UpdateSeed,
+    reason: &BlockReason,
+    diagnostics: &PlanDiagnostics,
+) -> Option<VersionText> {
+    if matches!(
+        reason,
+        BlockReason::AuditVulnerable | BlockReason::AuditLookupFailed
+    ) && let Some(candidate) = diagnostics.audit_blocking_candidate.as_ref()
+    {
+        return Some(candidate.version.clone());
+    }
+    seed.target_selection.target_version().cloned()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -512,6 +537,9 @@ fn candidate_evaluation_notes(
             warning,
         )));
     }
+    if let Some(audit) = candidate.audit.as_ref() {
+        notes.extend(audit_notes(audit));
+    }
     notes
 }
 
@@ -551,6 +579,10 @@ fn blocked_notes(
                 },
             )]
         }
+        BlockReason::AuditVulnerable | BlockReason::AuditLookupFailed => diagnostics
+            .audit_blocking_target
+            .as_ref()
+            .map_or_else(Vec::new, audit_notes),
         BlockReason::VersionPolicy(_) => Vec::new(),
     };
     notes.extend(policy_notes(diagnostics));
@@ -562,6 +594,26 @@ fn blocked_notes(
             .map(|warning| CandidateNotePart::normal(CandidateNoteKind::PolicyWarning(warning))),
     );
     notes
+}
+
+fn audit_notes(audit: &CandidateAuditFact) -> Vec<CandidateNotePart> {
+    match audit {
+        CandidateAuditFact::Clean => Vec::new(),
+        CandidateAuditFact::Vulnerable { findings } => {
+            vec![CandidateNotePart::violation(
+                CandidateNoteKind::AuditVulnerable {
+                    findings: findings.clone(),
+                },
+            )]
+        }
+        CandidateAuditFact::LookupFailed { detail } => {
+            vec![CandidateNotePart::violation(
+                CandidateNoteKind::AuditLookupFailed {
+                    detail: detail.clone(),
+                },
+            )]
+        }
+    }
 }
 
 fn policy_notes(diagnostics: &PlanDiagnostics) -> Vec<CandidateNotePart> {
@@ -657,6 +709,8 @@ pub(crate) fn note_part_text(part: &CandidateNotePart) -> String {
             || "release lookup failed".to_owned(),
             |error| format!("release lookup failed: {}", error.detail),
         ),
+        CandidateNoteKind::AuditVulnerable { findings } => notes::vulnerability_note(findings),
+        CandidateNoteKind::AuditLookupFailed { .. } => "audit unavailable".to_owned(),
         CandidateNoteKind::AdvisoryLookupFailed { error } => {
             format!("advisory latest lookup failed: {}", error.detail)
         }

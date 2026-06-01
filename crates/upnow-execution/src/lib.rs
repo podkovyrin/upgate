@@ -333,7 +333,10 @@ fn resolve_exact_selection(
         }
         PlanItem::Blocked {
             seed,
-            reason: BlockReason::VersionPolicy(_),
+            reason:
+                BlockReason::VersionPolicy(_)
+                | BlockReason::AuditVulnerable
+                | BlockReason::AuditLookupFailed,
             diagnostics,
             ..
         } => {
@@ -375,25 +378,37 @@ fn resolve_forced_selection(
         }
         PlanItem::Blocked {
             seed,
-            reason: BlockReason::VersionPolicy(_),
+            reason:
+                reason @ (BlockReason::VersionPolicy(_)
+                | BlockReason::AuditVulnerable
+                | BlockReason::AuditLookupFailed),
             diagnostics,
             ..
-        } if seed.execution_support.exact => Ok(resolved_seed_item(
-            selected.plan_item_id.clone(),
-            seed,
-            known_seed_target(seed)?,
-            true,
-            seed.target_selection
-                .target_version()
-                .is_some_and(|target_version| {
+        } if seed.execution_support.exact => {
+            let target = known_blocked_target(seed, reason, diagnostics)?;
+            let bypass_min_release_age = match &target {
+                ResolvedExecutionTarget::Known(target_version) => {
                     target_bypasses_min_release_age(diagnostics, target_version)
-                }),
-        )),
+                }
+                ResolvedExecutionTarget::ManagerResolved => false,
+            };
+            Ok(resolved_seed_item(
+                selected.plan_item_id.clone(),
+                seed,
+                target,
+                true,
+                bypass_min_release_age,
+            ))
+        }
         PlanItem::Blocked {
             seed,
-            reason: BlockReason::VersionPolicy(_),
+            reason:
+                reason @ (BlockReason::VersionPolicy(_)
+                | BlockReason::AuditVulnerable
+                | BlockReason::AuditLookupFailed),
+            diagnostics,
             ..
-        } => resolve_forced_seed(selected.plan_item_id.clone(), seed),
+        } => resolve_forced_seed(selected.plan_item_id.clone(), seed, reason, diagnostics),
         _ => Err(ExecutionSelectionError::ItemNotExecutable(
             item.id().to_string(),
         )),
@@ -410,7 +425,10 @@ fn resolve_manager_resolved_selection(
         }
         PlanItem::Blocked {
             seed,
-            reason: BlockReason::VersionPolicy(_),
+            reason:
+                BlockReason::VersionPolicy(_)
+                | BlockReason::AuditVulnerable
+                | BlockReason::AuditLookupFailed,
             ..
         } => resolve_manager_resolved_seed(selected.plan_item_id.clone(), seed, false),
         PlanItem::Blocked {
@@ -487,6 +505,21 @@ fn known_seed_target(
     }
 }
 
+fn known_blocked_target(
+    seed: &UpdateSeed,
+    reason: &BlockReason,
+    diagnostics: &PlanDiagnostics,
+) -> Result<ResolvedExecutionTarget, ExecutionSelectionError> {
+    if matches!(
+        reason,
+        BlockReason::AuditVulnerable | BlockReason::AuditLookupFailed
+    ) && let Some(candidate) = diagnostics.audit_blocking_candidate.as_ref()
+    {
+        return Ok(ResolvedExecutionTarget::Known(candidate.version.clone()));
+    }
+    known_seed_target(seed)
+}
+
 fn resolve_forced_candidate(
     plan_item_id: PlanItemId,
     candidate: &UpdateCandidate,
@@ -511,18 +544,15 @@ fn resolve_forced_candidate(
 fn resolve_forced_seed(
     plan_item_id: PlanItemId,
     seed: &UpdateSeed,
+    reason: &BlockReason,
+    diagnostics: &PlanDiagnostics,
 ) -> Result<ResolvedExecutionItem, ExecutionSelectionError> {
     let support = seed.execution_support;
     if support.resolver_native_selected.selected
         && support.resolver_native_selected.min_age_constraint == MinAgeConstraintSupport::Optional
     {
-        return Ok(resolved_seed_item(
-            plan_item_id,
-            seed,
-            known_seed_target(seed)?,
-            false,
-            true,
-        ));
+        let target = known_blocked_target(seed, reason, diagnostics)?;
+        return Ok(resolved_seed_item(plan_item_id, seed, target, false, true));
     }
     Err(ExecutionSelectionError::ExactTargetUnsupported(
         plan_item_id.to_string(),

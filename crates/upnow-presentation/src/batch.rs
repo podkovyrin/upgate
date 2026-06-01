@@ -4,8 +4,8 @@ use std::time::Duration;
 use upnow_domain::{
     AdvisoryLatestFact, BlockReason, CandidateAgeFact, DelayReason, InstalledTool, ManagerId,
     ManagerRuleReason, PlanDiagnostics, PlanIssue, PlanItem, PlanSelection, PolicyWarning,
-    ScanIssue, ScanItem, ScanReport, SkipReason, UpdateCandidate, UpdatePlan, UpdateSeed,
-    VersionPolicy,
+    ScanAuditFact, ScanIssue, ScanItem, ScanReport, SkipReason, UpdateCandidate, UpdatePlan,
+    UpdateSeed, VersionPolicy,
 };
 use upnow_execution::{ExecutionReport, ExecutionStatus, ResolvedExecutionTarget};
 
@@ -134,6 +134,21 @@ fn scan_item_row(
             current_scan_row(manager_id, tool).with_note(
                 release_age_note(*age, is_old).with_visibility(OutcomeVisibility::VerboseOnly),
             )
+        }
+        ScanItem::InstalledWithAudit { tool, age, audit } => {
+            let is_old = (*age)
+                .zip(options.old_age_threshold)
+                .is_some_and(|(age, threshold)| age >= threshold);
+            let mut row = current_scan_row(manager_id, tool);
+            if let Some(age) = age {
+                row = row.with_note(
+                    release_age_note(*age, is_old).with_visibility(OutcomeVisibility::VerboseOnly),
+                );
+            }
+            if let Some(note) = notes::scan_audit(audit) {
+                row = row.with_note(audit_note(audit, note));
+            }
+            row
         }
         ScanItem::Skipped { tool, reason } => OutcomeRow::item(
             scan_issue_status(reason),
@@ -282,11 +297,11 @@ fn blocked_row(
     diagnostics: &PlanDiagnostics,
     options: BatchRenderOptions,
 ) -> OutcomeRow {
-    let versions = seed.target_selection.target_version().map_or_else(
+    let versions = blocked_target_version(seed, reason, diagnostics).map_or_else(
         || OutcomeVersionsView::manager_resolved(seed.installed.installed_version.clone()),
         |target_version| OutcomeVersionsView::Change {
             from: seed.installed.installed_version.clone(),
-            to: crate::OutcomeTargetView::Known(target_version.clone()),
+            to: crate::OutcomeTargetView::Known(target_version),
             emphasis: OutcomeVersionEmphasis::Current,
         },
     );
@@ -313,6 +328,20 @@ fn blocked_row(
             versions,
         )
         .with_note(OutcomeNote::normal(lookup_failure_text(diagnostics))),
+        BlockReason::AuditVulnerable | BlockReason::AuditLookupFailed => {
+            let note = diagnostics
+                .audit_blocking_target
+                .as_ref()
+                .and_then(notes::audit_candidate)
+                .unwrap_or_else(|| "audit unavailable".to_owned());
+            OutcomeRow::item(
+                OutcomeStatusView::Blocked,
+                manager_id.clone(),
+                seed.installed.package_name.clone(),
+                versions,
+            )
+            .with_note(OutcomeNote::warning(note))
+        }
     };
     if matches!(reason, BlockReason::VersionPolicy(_)) {
         row = append_policy_notes(row, diagnostics, options.version_policy);
@@ -479,6 +508,30 @@ fn append_advisory_warning_notes(mut row: OutcomeRow, diagnostics: &PlanDiagnost
         )));
     }
     row
+}
+
+fn blocked_target_version(
+    seed: &UpdateSeed,
+    reason: &BlockReason,
+    diagnostics: &PlanDiagnostics,
+) -> Option<upnow_domain::VersionText> {
+    if matches!(
+        reason,
+        BlockReason::AuditVulnerable | BlockReason::AuditLookupFailed
+    ) && let Some(candidate) = diagnostics.audit_blocking_candidate.as_ref()
+    {
+        return Some(candidate.version.clone());
+    }
+    seed.target_selection.target_version().cloned()
+}
+
+fn audit_note(audit: &ScanAuditFact, text: String) -> OutcomeNote {
+    match audit {
+        ScanAuditFact::Clean => OutcomeNote::metadata(text),
+        ScanAuditFact::Vulnerable { .. } | ScanAuditFact::LookupFailed { .. } => {
+            OutcomeNote::warning(text)
+        }
+    }
 }
 
 fn latest_policy_blocked_version(

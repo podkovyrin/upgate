@@ -8,11 +8,11 @@ use pep440_rs::Version as Pep440Version;
 use semver::Version as SemverVersion;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionSupport, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
-    ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput, MinAgeConstraintSupport,
-    PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
-    ReleaseTimestamp, TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed,
-    VersionPolicy, VersionScheme, VersionText,
+    AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
+    ManagerId, ManagerMetadata, ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput,
+    MinAgeConstraintSupport, OsvEcosystem, PackageName, ReleaseEntry, ReleaseLookupError,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
+    TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionPlan,
@@ -945,25 +945,51 @@ fn strip_v_prefix(value: &str) -> &str {
 }
 
 fn installed_tool(tool: &MiseInstalledTool) -> Result<InstalledTool, MiseError> {
-    Ok(InstalledTool::new(
+    let installed = InstalledTool::new(
         MiseManager::id(),
         ToolId::new(tool.tool.as_str().to_owned())?,
         tool.tool.clone(),
         ToolName::new(tool.tool.as_str().to_owned())?,
         tool.version.clone(),
         ManagerMetadata::empty(),
-    ))
+    );
+    Ok(match audit_subject_for_mise_tool(&tool.tool)? {
+        Some(subject) => installed.with_audit_subject(subject),
+        None => installed,
+    })
 }
 
 fn installed_tool_from_plan_item(item: &MisePlanItem) -> Result<InstalledTool, MiseError> {
-    Ok(InstalledTool::new(
+    let installed = InstalledTool::new(
         MiseManager::id(),
         ToolId::new(item.tool.as_str().to_owned())?,
         item.tool.clone(),
         ToolName::new(item.tool.as_str().to_owned())?,
         item.from_version.clone(),
         ManagerMetadata::empty(),
-    ))
+    );
+    Ok(match audit_subject_for_mise_tool(&item.tool)? {
+        Some(subject) => installed.with_audit_subject(subject),
+        None => installed,
+    })
+}
+
+fn audit_subject_for_mise_tool(tool: &PackageName) -> Result<Option<AuditSubject>, MiseError> {
+    let Some((backend, package)) = tool.as_str().split_once(':') else {
+        return Ok(None);
+    };
+    let ecosystem = match backend {
+        "npm" => OsvEcosystem::Npm,
+        "pipx" | "uvx" => OsvEcosystem::Pypi,
+        "cargo" => OsvEcosystem::CratesIo,
+        "go" => OsvEcosystem::Go,
+        "gem" => OsvEcosystem::RubyGems,
+        _ => return Ok(None),
+    };
+    Ok(Some(AuditSubject::new(
+        ecosystem,
+        AuditPackageName::new(package.to_owned())?,
+    )))
 }
 
 fn duration_arg(duration: Duration) -> String {

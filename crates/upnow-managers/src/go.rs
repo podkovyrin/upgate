@@ -9,11 +9,11 @@ use chrono::DateTime;
 use semver::Version;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionSupport, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
-    ManagerRuleReason, ManagerScanEvidenceInput, ManagerScanInput, ManagerUpdateInput, PackageName,
-    ReleaseEntry, ReleaseEvidenceSource, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
-    ReleaseTimestamp, ScanIssue, SkipReason, ToolId, ToolName, UpdateSeed, VersionScheme,
-    VersionText,
+    AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
+    ManagerId, ManagerMetadata, ManagerRuleReason, ManagerScanEvidenceInput, ManagerScanInput,
+    ManagerUpdateInput, OsvEcosystem, PackageName, ReleaseEntry, ReleaseEvidenceSource,
+    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ScanIssue,
+    SkipReason, ToolId, ToolName, UpdateSeed, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -602,6 +602,10 @@ fn installed_tool(tool: &GoManagedTool) -> InstalledTool {
         tool.current_version.clone(),
         ManagerMetadata::empty(),
     )
+    .with_audit_subject(AuditSubject::new(
+        OsvEcosystem::Go,
+        AuditPackageName::new(tool.module_path.clone()).expect("managed Go module path is valid"),
+    ))
 }
 
 fn placeholder_installed_tool(name: &PackageName) -> Result<InstalledTool, GoError> {

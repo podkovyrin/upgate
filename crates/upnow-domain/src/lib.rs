@@ -1,6 +1,7 @@
 //! Domain model crate for the `upnow` rebuild.
 #![allow(clippy::must_use_candidate, clippy::return_self_not_must_use)]
 
+pub mod audit;
 pub mod config;
 pub mod error;
 pub mod manager;
@@ -11,6 +12,10 @@ pub mod scan;
 pub mod selection;
 pub mod version;
 
+pub use audit::{
+    AuditFinding, AuditLookupResult, AuditPackageName, AuditQuery, AuditSubject,
+    CandidateAuditFact, OsvEcosystem, ScanAuditFact,
+};
 pub use config::{ManagerConfig, ManagerMode};
 pub use error::DomainError;
 pub use manager::{

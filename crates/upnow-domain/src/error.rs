@@ -9,6 +9,7 @@ pub enum DomainError {
     EmptyVersionText,
     EmptyPlanItemId,
     EmptyMetadataKey,
+    EmptyAuditPackageName,
     InvalidVersionPolicy(String),
     DuplicatePlanItemId(String),
     DuplicateSelectedPlanItemId(String),
@@ -26,6 +27,9 @@ impl Display for DomainError {
             Self::EmptyVersionText => formatter.write_str("version text cannot be empty"),
             Self::EmptyPlanItemId => formatter.write_str("plan item id cannot be empty"),
             Self::EmptyMetadataKey => formatter.write_str("metadata key cannot be empty"),
+            Self::EmptyAuditPackageName => {
+                formatter.write_str("audit package name cannot be empty")
+            }
             Self::InvalidVersionPolicy(value) => {
                 write!(formatter, "invalid version policy `{value}`")
             }

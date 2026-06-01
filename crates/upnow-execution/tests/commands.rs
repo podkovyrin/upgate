@@ -1,13 +1,13 @@
 use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
-    BlockReason, CandidateEvaluationFact, ExecutionSupport, ExecutionTargetKind, InstalledTool,
-    ManagerCapabilities, ManagerId, ManagerMetadata, ManagerSelectedTarget,
-    MinAgeConstraintSupport, MissingMetadataKind, PackageName, PlanDiagnostics, PlanItem,
-    PlanItemId, PlanSelection, PolicyBlockReason, ReleaseEntry, ReleaseLookupResult,
-    ReleaseTimeline, ReleaseTimestamp, SelectedItem, TargetAgeLookupResult, ToolId, ToolName,
-    UpdateCandidate, UpdatePlan, UpdateSeed, UpdateSelectionPolicy, VersionPolicy, VersionScheme,
-    VersionText,
+    BlockReason, CandidateAuditFact, CandidateEvaluationFact, ExecutionSupport,
+    ExecutionTargetKind, InstalledTool, ManagerCapabilities, ManagerId, ManagerMetadata,
+    ManagerSelectedTarget, MinAgeConstraintSupport, MissingMetadataKind, PackageName,
+    PlanDiagnostics, PlanItem, PlanItemId, PlanSelection, PolicyBlockReason, ReleaseEntry,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, SelectedItem, TargetAgeLookupResult,
+    ToolId, ToolName, UpdateCandidate, UpdatePlan, UpdateSeed, UpdateSelectionPolicy,
+    VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommandIntent, ResolvedExecutionTarget, resolve_selection_for_execution,
@@ -263,6 +263,37 @@ fn forced_policy_blocked_item_resolves_exact_intent() {
 }
 
 #[test]
+fn forced_audit_blocked_item_uses_audit_blocking_candidate_target() {
+    let plan = plan(vec![blocked_audit_item(
+        "pnpm:alpha-blocked",
+        "alpha-blocked",
+        ExecutionSupport::exact_only(),
+    )]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![SelectedItem::force_planned_candidate(
+            PlanItemId::new("pnpm:alpha-blocked").expect("valid id"),
+        )],
+        UpdateSelectionPolicy::default(),
+    )
+    .expect("valid selection");
+
+    let resolved = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        ManagerCapabilities::new(),
+        VersionPolicy::Stable,
+    )
+    .expect("selection should resolve");
+
+    assert!(matches!(
+        resolved.intents.as_slice(),
+        [ExecutionCommandIntent::Exact(item)]
+            if item.known_target_version().expect("known target").as_str() == "2.0.0" && item.exact_target_required
+    ));
+}
+
+#[test]
 fn forced_delayed_resolver_native_item_bypasses_age_limit() {
     let plan = plan(vec![delayed_item(
         "mise:node",
@@ -442,6 +473,7 @@ fn update_item_with_diagnostics(
                 age_allowed: false,
                 policy_block_reason: None,
                 policy_warning: None,
+                audit: None,
             }],
             ..PlanDiagnostics::default()
         }),
@@ -480,6 +512,7 @@ fn delayed_item(id: &str, package: &str, eligibility: ExecutionSupport) -> PlanI
                 age_allowed: false,
                 policy_block_reason: None,
                 policy_warning: None,
+                audit: None,
             }],
             ..PlanDiagnostics::default()
         }),
@@ -536,7 +569,41 @@ fn blocked_policy_item(id: &str, package: &str, eligibility: ExecutionSupport) -
                 age_allowed: true,
                 policy_block_reason: Some(PolicyBlockReason::PreReleaseBlocked),
                 policy_warning: None,
+                audit: None,
             }],
+            ..PlanDiagnostics::default()
+        },
+    }
+}
+
+fn blocked_audit_item(id: &str, package: &str, eligibility: ExecutionSupport) -> PlanItem {
+    let audit_blocking_candidate = CandidateEvaluationFact {
+        version: VersionText::new("2.0.0").expect("valid version"),
+        age: Some(Duration::from_secs(30 * 24 * 60 * 60)),
+        policy_allowed: true,
+        age_allowed: true,
+        policy_block_reason: None,
+        policy_warning: None,
+        audit: Some(CandidateAuditFact::LookupFailed {
+            detail: "OSV unavailable".to_owned(),
+        }),
+    };
+    PlanItem::Blocked {
+        id: PlanItemId::new(id).expect("valid id"),
+        seed: UpdateSeed::new(
+            installed_tool(package),
+            VersionText::new("3.0.0").expect("valid version"),
+            VersionScheme::SemVer,
+            release_lookup("3.0.0"),
+            eligibility,
+        ),
+        reason: BlockReason::AuditLookupFailed,
+        policy_warnings: Vec::new(),
+        diagnostics: PlanDiagnostics {
+            required_age: Duration::from_secs(7 * 24 * 60 * 60),
+            candidates: vec![audit_blocking_candidate.clone()],
+            audit_blocking_target: audit_blocking_candidate.audit.clone(),
+            audit_blocking_candidate: Some(audit_blocking_candidate),
             ..PlanDiagnostics::default()
         },
     }

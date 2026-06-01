@@ -1,6 +1,6 @@
 use std::fmt::{self, Display};
 
-use crate::{DomainError, VersionText};
+use crate::{AuditSubject, DomainError, VersionText};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 /// Manager-level shortcuts that are safe only when the selected plan matches
@@ -157,6 +157,7 @@ pub struct InstalledTool {
     pub package_name: PackageName,
     pub tool_name: ToolName,
     pub installed_version: VersionText,
+    pub audit_subject: Option<AuditSubject>,
     pub metadata: ManagerMetadata,
 }
 
@@ -175,8 +176,13 @@ impl InstalledTool {
             package_name,
             tool_name,
             installed_version,
+            audit_subject: None,
             metadata,
         }
+    }
+    pub fn with_audit_subject(mut self, audit_subject: AuditSubject) -> Self {
+        self.audit_subject = Some(audit_subject);
+        self
     }
 }
 

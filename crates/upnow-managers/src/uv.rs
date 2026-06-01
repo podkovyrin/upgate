@@ -8,11 +8,11 @@ use chrono::DateTime;
 use pep440_rs::Version as Pep440Version;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionSupport, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
-    ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput, MinAgeConstraintSupport,
-    PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
-    ReleaseTimestamp, TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed,
-    VersionPolicy, VersionScheme, VersionText,
+    AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
+    ManagerId, ManagerMetadata, ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput,
+    MinAgeConstraintSupport, OsvEcosystem, PackageName, ReleaseEntry, ReleaseLookupError,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
+    TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionPlan,
@@ -632,7 +632,11 @@ fn installed_tool(tool: &UvTool) -> Result<InstalledTool, UvError> {
         ToolName::new(tool.name.as_str().to_owned())?,
         tool.current.clone(),
         ManagerMetadata::empty(),
-    ))
+    )
+    .with_audit_subject(AuditSubject::new(
+        OsvEcosystem::Pypi,
+        AuditPackageName::new(tool.name.as_str().to_owned())?,
+    )))
 }
 
 #[derive(Debug, Deserialize)]

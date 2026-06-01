@@ -5,10 +5,10 @@ use std::time::{Duration, SystemTime};
 use chrono::DateTime;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionSupport, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
-    ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ResolverNativeSupport, ToolId,
-    ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
+    ManagerId, ManagerMetadata, ManagerScanInput, ManagerUpdateInput, OsvEcosystem, PackageName,
+    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
+    ResolverNativeSupport, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -470,7 +470,11 @@ fn installed_tool(package: NpmInstalledPackage) -> Result<InstalledTool, NpmErro
         ToolName::new(package.name.as_str().to_owned())?,
         package.version,
         ManagerMetadata::empty(),
-    ))
+    )
+    .with_audit_subject(AuditSubject::new(
+        OsvEcosystem::Npm,
+        AuditPackageName::new(package.name.as_str().to_owned())?,
+    )))
 }
 
 fn installed_tool_from_outdated(package: NpmOutdatedPackage) -> Result<InstalledTool, NpmError> {
@@ -481,7 +485,11 @@ fn installed_tool_from_outdated(package: NpmOutdatedPackage) -> Result<Installed
         ToolName::new(package.name.as_str().to_owned())?,
         package.current,
         ManagerMetadata::empty(),
-    ))
+    )
+    .with_audit_subject(AuditSubject::new(
+        OsvEcosystem::Npm,
+        AuditPackageName::new(package.name.as_str().to_owned())?,
+    )))
 }
 
 fn update_input(tool: InstalledTool, lookup: ReleaseLookupResult) -> ManagerUpdateInput {

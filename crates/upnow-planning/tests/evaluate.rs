@@ -1,12 +1,15 @@
+use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
-    BlockReason, ExecutionSupport, InstalledTool, ManagerId, ManagerMetadata,
-    ManagerSelectedTarget, PackageName, PlanItem, PlanItemId, ReleaseEntry, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
-    TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    AuditFinding, AuditLookupResult, AuditPackageName, AuditQuery, AuditSubject, BlockReason,
+    CandidateAuditFact, ExecutionSupport, InstalledTool, ManagerId, ManagerMetadata,
+    ManagerSelectedTarget, ManagerUpdateInput, OsvEcosystem, PackageName, PlanItem, PlanItemId,
+    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
+    TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy,
+    VersionScheme, VersionText,
 };
-use upnow_planning::evaluate_seed;
+use upnow_planning::{derive_audit_queries, evaluate_seed, evaluate_seed_with_audit};
 
 const NOW_SECS: u64 = 1_800_000_000;
 
@@ -31,6 +34,31 @@ fn installed_tool(package: &str, installed_version: &str) -> InstalledTool {
         version(installed_version),
         ManagerMetadata::empty(),
     )
+}
+
+fn installed_tool_with_audit(package: &str, installed_version: &str) -> InstalledTool {
+    installed_tool(package, installed_version).with_audit_subject(audit_subject(package))
+}
+
+fn audit_subject(package: &str) -> AuditSubject {
+    AuditSubject::new(
+        OsvEcosystem::Npm,
+        AuditPackageName::new(package).expect("valid audit package name"),
+    )
+}
+
+fn audit_query(package: &str, version: &str) -> AuditQuery {
+    AuditQuery::new(audit_subject(package), self::version(version))
+}
+
+fn finding(id: &str) -> AuditFinding {
+    AuditFinding {
+        id: id.to_owned(),
+        aliases: Vec::new(),
+        summary: None,
+        severity: None,
+        references: Vec::new(),
+    }
 }
 
 fn manager_selected_seed(
@@ -282,4 +310,201 @@ fn planner_age_gate_selects_publish_date_newest_eligible_target() {
             .as_str(),
         "3.9.0"
     );
+}
+
+#[test]
+fn audit_queries_include_all_picker_candidates_for_planner_selectable_timelines() {
+    let seed = UpdateSeed::new(
+        installed_tool_with_audit("alpha", "1.0.0"),
+        version("3.0.0-alpha.1"),
+        VersionScheme::SemVer,
+        ReleaseLookupResult::Known(ReleaseTimeline::new(vec![
+            ReleaseEntry::new(
+                version("1.1.0"),
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 500)),
+            ),
+            ReleaseEntry::new(
+                version("2.0.0"),
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 10)),
+            ),
+            ReleaseEntry::new(
+                version("3.0.0-alpha.1"),
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 500)),
+            ),
+        ])),
+        ExecutionSupport::exact_only(),
+    );
+
+    let queries = derive_audit_queries(&[ManagerUpdateInput::Seed(seed)]);
+
+    assert_eq!(
+        queries,
+        vec![
+            audit_query("alpha", "1.1.0"),
+            audit_query("alpha", "2.0.0"),
+            audit_query("alpha", "3.0.0-alpha.1"),
+        ]
+    );
+}
+
+#[test]
+fn planner_attaches_audit_facts_to_policy_and_age_blocked_picker_candidates() {
+    let seed = UpdateSeed::new(
+        installed_tool_with_audit("alpha", "1.0.0"),
+        version("3.0.0-alpha.1"),
+        VersionScheme::SemVer,
+        ReleaseLookupResult::Known(ReleaseTimeline::new(vec![
+            ReleaseEntry::new(
+                version("1.1.0"),
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 500)),
+            ),
+            ReleaseEntry::new(
+                version("2.0.0"),
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 10)),
+            ),
+            ReleaseEntry::new(
+                version("3.0.0-alpha.1"),
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 500)),
+            ),
+        ])),
+        ExecutionSupport::exact_only(),
+    );
+    let audit_results = BTreeMap::from([
+        (audit_query("alpha", "1.1.0"), AuditLookupResult::Clean),
+        (
+            audit_query("alpha", "2.0.0"),
+            AuditLookupResult::LookupFailed {
+                detail: "OSV unavailable".to_owned(),
+            },
+        ),
+        (
+            audit_query("alpha", "3.0.0-alpha.1"),
+            AuditLookupResult::Vulnerable {
+                findings: vec![finding("GHSA-alpha")],
+            },
+        ),
+    ]);
+
+    let PlanItem::Update { candidate, .. } = evaluate_seed_with_audit(
+        item_id("item"),
+        seed,
+        VersionPolicy::Stable,
+        SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
+        Duration::from_secs(100),
+        &audit_results,
+    ) else {
+        panic!("expected clean older update")
+    };
+
+    assert_eq!(
+        candidate.target_version().expect("known target").as_str(),
+        "1.1.0"
+    );
+    let too_fresh = candidate
+        .diagnostics
+        .candidates
+        .iter()
+        .find(|candidate| candidate.version.as_str() == "2.0.0")
+        .expect("too-fresh candidate");
+    assert!(matches!(
+        too_fresh.audit,
+        Some(CandidateAuditFact::LookupFailed { .. })
+    ));
+    let policy_blocked = candidate
+        .diagnostics
+        .candidates
+        .iter()
+        .find(|candidate| candidate.version.as_str() == "3.0.0-alpha.1")
+        .expect("policy-blocked candidate");
+    assert!(matches!(
+        policy_blocked.audit,
+        Some(CandidateAuditFact::Vulnerable { .. })
+    ));
+}
+
+#[test]
+fn audit_block_records_the_specific_blocked_candidate_version() {
+    let seed = UpdateSeed::new(
+        installed_tool_with_audit("alpha", "1.0.0"),
+        version("3.0.0"),
+        VersionScheme::SemVer,
+        ReleaseLookupResult::Known(ReleaseTimeline::new(vec![
+            ReleaseEntry::new(
+                version("2.0.0"),
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 500)),
+            ),
+            ReleaseEntry::new(
+                version("3.0.0"),
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 10)),
+            ),
+        ])),
+        ExecutionSupport::exact_only(),
+    );
+    let audit_results = BTreeMap::from([
+        (
+            audit_query("alpha", "2.0.0"),
+            AuditLookupResult::Vulnerable {
+                findings: vec![finding("GHSA-alpha")],
+            },
+        ),
+        (audit_query("alpha", "3.0.0"), AuditLookupResult::Clean),
+    ]);
+
+    let PlanItem::Blocked { diagnostics, .. } = evaluate_seed_with_audit(
+        item_id("item"),
+        seed,
+        VersionPolicy::None,
+        SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
+        Duration::from_secs(100),
+        &audit_results,
+    ) else {
+        panic!("expected audit block")
+    };
+
+    assert_eq!(
+        diagnostics
+            .audit_blocking_candidate
+            .expect("audit blocking candidate")
+            .version
+            .as_str(),
+        "2.0.0"
+    );
+}
+
+#[test]
+fn manager_selected_policy_blocked_target_keeps_audit_fact_for_picker() {
+    let seed = manager_selected_seed(
+        "alpha",
+        "1.0.0",
+        "2.0.0-alpha.1",
+        TargetAgeLookupResult::Known(TargetAgeEvidence::PublishedAt(ReleaseTimestamp::new(
+            SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 500),
+        ))),
+    );
+    let seed = UpdateSeed {
+        installed: seed.installed.with_audit_subject(audit_subject("alpha")),
+        ..seed
+    };
+    let audit_results = BTreeMap::from([(
+        audit_query("alpha", "2.0.0-alpha.1"),
+        AuditLookupResult::Vulnerable {
+            findings: vec![finding("GHSA-alpha")],
+        },
+    )]);
+
+    let PlanItem::Blocked { diagnostics, .. } = evaluate_seed_with_audit(
+        item_id("item"),
+        seed,
+        VersionPolicy::Stable,
+        SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
+        Duration::ZERO,
+        &audit_results,
+    ) else {
+        panic!("expected policy block")
+    };
+
+    assert!(matches!(
+        diagnostics.candidates[0].audit,
+        Some(CandidateAuditFact::Vulnerable { .. })
+    ));
 }

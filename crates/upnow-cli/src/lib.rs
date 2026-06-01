@@ -20,10 +20,11 @@ use registry::{
     available_manager_ids, configured_manager, ensure_known_manager, required_executable,
 };
 use serde::Serialize;
+use upnow_audit::AuditService;
 use upnow_domain::{
-    ManagerConfig, ManagerId, ManagerMode, ManagerScanEvidenceInput, ManagerScanInput, PlanItem,
-    PlanSelection, ScanIssue, ScanItem, ScanReport, SelectedUpdate, UpdatePlan,
-    UpdateSelectionPolicy, VersionPolicy,
+    AuditLookupResult, AuditQuery, ManagerConfig, ManagerId, ManagerMode, ManagerScanEvidenceInput,
+    ManagerScanInput, PlanItem, PlanSelection, ScanAuditFact, ScanIssue, ScanItem, ScanReport,
+    SelectedUpdate, UpdatePlan, UpdateSelectionPolicy, VersionPolicy,
 };
 use upnow_execution::progress::{
     ExecutionProgressEvent, ExecutionProgressState, ExecutionProgressSummary,
@@ -38,7 +39,9 @@ use upnow_infra::{
     run_ordered_parallel_stoppable,
 };
 use upnow_managers::adapter::{ManagerAdapter, ManagerAdapterError};
-use upnow_planning::{PlanningSettings, default_batch_selection, update_plan_from_inputs};
+use upnow_planning::{
+    PlanningSettings, default_batch_selection, derive_audit_queries, finalize_plan_from_inputs,
+};
 use upnow_presentation::tui::{
     InteractiveManagerSelectionDraft, InteractiveSelectionOutcome, InteractiveSelectionPlan,
     InteractiveSelectionPlanningEvent, run_interactive_progress, run_interactive_selection,
@@ -593,11 +596,13 @@ fn run_interactive_apply_with_sources_and_options(
         config.set_manager_concurrency(manager_concurrency)?;
     }
     let manager_concurrency = config.manager_concurrency()?;
+    let audit_service = AuditService::new(http.clone(), env, config.audit_concurrency()?);
     match run_live_confirmed_selection(
         config,
         manager_configs,
         process,
         http,
+        &audit_service,
         env,
         clock,
         max_parallel_checks_per_manager,
@@ -718,11 +723,13 @@ fn run_batch_with_terminal_and_sources(
         return Ok(String::new());
     }
     let manager_concurrency = config.manager_concurrency()?;
+    let audit_service = AuditService::new(http.clone(), env, config.audit_concurrency()?);
     run_batch_for_managers(
         command,
         &config,
         process,
         http,
+        &audit_service,
         env,
         clock,
         theme,
@@ -784,6 +791,7 @@ fn prepare_interactive_apply_with_sources(
         prepare_interactive_manager_configs(config, selected_managers, overrides)?;
     let manager_configs = available_manager_configs(manager_configs, env)?;
     let manager_concurrency = config.manager_concurrency()?;
+    let audit_service = AuditService::new(http.clone(), env, config.audit_concurrency()?);
     let managers = run_ordered_parallel(
         manager_configs,
         manager_concurrency,
@@ -794,6 +802,7 @@ fn prepare_interactive_apply_with_sources(
                 manager.as_ref(),
                 process,
                 http,
+                &audit_service,
                 env,
                 clock,
                 &manager_config,
@@ -952,6 +961,7 @@ fn run_live_confirmed_selection(
     manager_configs: Vec<ManagerConfig>,
     process: &ProcessRunner,
     http: &HttpClient,
+    audit_service: &AuditService,
     env: &Env,
     clock: Clock,
     max_parallel_checks_per_manager: usize,
@@ -968,6 +978,7 @@ fn run_live_confirmed_selection(
     let worker_stop = Arc::clone(&stop_requested);
     let process = command_log.process_for_selection(process, event_tx.clone());
     let http = http.clone();
+    let audit_service = audit_service.clone();
     let env = env.clone();
     let worker = thread::spawn(move || {
         let prepared = prepare_interactive_apply_with_events(
@@ -975,6 +986,7 @@ fn run_live_confirmed_selection(
             manager_configs,
             &process,
             &http,
+            &audit_service,
             &env,
             clock,
             max_parallel_checks_per_manager,
@@ -1031,6 +1043,7 @@ fn prepare_interactive_apply_with_events(
     manager_configs: Vec<ManagerConfig>,
     process: &ProcessRunner,
     http: &HttpClient,
+    audit_service: &AuditService,
     env: &Env,
     clock: Clock,
     max_parallel_checks_per_manager: usize,
@@ -1042,6 +1055,7 @@ fn prepare_interactive_apply_with_events(
         manager_configs,
         process,
         http,
+        audit_service,
         env,
         clock,
         max_parallel_checks_per_manager,
@@ -1086,6 +1100,7 @@ fn run_interactive_planning_workers(
     manager_configs: Vec<ManagerConfig>,
     process: &ProcessRunner,
     http: &HttpClient,
+    audit_service: &AuditService,
     env: &Env,
     clock: Clock,
     max_parallel_checks_per_manager: usize,
@@ -1103,6 +1118,7 @@ fn run_interactive_planning_workers(
                 manager_config,
                 process,
                 http,
+                audit_service,
                 env,
                 clock,
                 max_parallel_checks_per_manager,
@@ -1116,10 +1132,12 @@ fn run_interactive_planning_workers(
     .collect::<Result<Vec<_>, AppError>>()
 }
 
+#[expect(clippy::too_many_arguments)]
 fn prepare_one_interactive_manager_with_events(
     manager_config: ManagerConfig,
     process: &ProcessRunner,
     http: &HttpClient,
+    audit_service: &AuditService,
     env: &Env,
     clock: Clock,
     max_parallel_checks_per_manager: usize,
@@ -1147,6 +1165,7 @@ fn prepare_one_interactive_manager_with_events(
         manager.as_ref(),
         process,
         http,
+        audit_service,
         env,
         clock,
         &manager_config,
@@ -1435,6 +1454,7 @@ fn run_batch_for_managers(
     config: &UpnowConfig,
     process: &ProcessRunner,
     http: &HttpClient,
+    audit_service: &AuditService,
     env: &Env,
     clock: Clock,
     theme: OutputTheme,
@@ -1450,6 +1470,7 @@ fn run_batch_for_managers(
             config,
             process,
             http,
+            audit_service,
             env,
             clock,
             theme,
@@ -1472,6 +1493,7 @@ fn run_batch_for_managers(
                 config,
                 process,
                 http,
+                audit_service,
                 env,
                 clock,
                 theme,
@@ -1528,6 +1550,7 @@ fn run_manager_scan_or_plan_batch(
     config: &UpnowConfig,
     process: &ProcessRunner,
     http: &HttpClient,
+    audit_service: &AuditService,
     env: &Env,
     clock: Clock,
     theme: OutputTheme,
@@ -1561,6 +1584,7 @@ fn run_manager_scan_or_plan_batch(
                         manager.as_ref(),
                         process,
                         http,
+                        audit_service,
                         env,
                         clock.now(),
                         max_parallel_checks_per_manager,
@@ -1586,6 +1610,7 @@ fn run_manager_scan_or_plan_batch(
                 manager.as_ref(),
                 process,
                 http,
+                audit_service,
                 env,
                 clock,
                 &manager_config,
@@ -1611,6 +1636,7 @@ fn run_batch_apply_for_managers(
     config: &UpnowConfig,
     process: &ProcessRunner,
     http: &HttpClient,
+    audit_service: &AuditService,
     env: &Env,
     clock: Clock,
     theme: OutputTheme,
@@ -1630,6 +1656,7 @@ fn run_batch_apply_for_managers(
                 config,
                 process,
                 http,
+                audit_service,
                 env,
                 clock,
                 &manager_id,
@@ -1692,10 +1719,12 @@ fn run_batch_apply_for_managers(
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 fn prepare_manager_batch_apply(
     config: &UpnowConfig,
     process: &ProcessRunner,
     http: &HttpClient,
+    audit_service: &AuditService,
     env: &Env,
     clock: Clock,
     manager_id: &ManagerId,
@@ -1715,6 +1744,7 @@ fn prepare_manager_batch_apply(
         manager.as_ref(),
         process,
         http,
+        audit_service,
         env,
         clock,
         &manager_config,
@@ -1784,11 +1814,13 @@ fn build_scan_report(
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 fn build_verbose_scan_report(
     manager_id: ManagerId,
     manager: &dyn ManagerAdapter,
     process: &ProcessRunner,
     http: &HttpClient,
+    audit_service: &AuditService,
     env: &Env,
     now: SystemTime,
     max_parallel_checks_per_manager: usize,
@@ -1799,14 +1831,21 @@ fn build_verbose_scan_report(
         env,
         max_parallel_checks_per_manager,
     ) {
-        Ok(inputs) => Ok(ScanReport::new(
-            manager_id,
-            inputs
-                .into_iter()
-                .map(|input| scan_item_from_evidence_input(input, now))
-                .collect(),
-            Vec::new(),
-        )),
+        Ok(inputs) => {
+            let audit_results = audit_service
+                .query(scan_audit_queries(&inputs))
+                .map_err(|err| AppError::Planning(err.to_string()))?;
+            Ok(ScanReport::new(
+                manager_id,
+                inputs
+                    .into_iter()
+                    .map(|input| {
+                        scan_item_from_evidence_input_with_audit(input, now, &audit_results)
+                    })
+                    .collect(),
+                Vec::new(),
+            ))
+        }
         Err(err) if err.is_interruption() => Err(map_manager_error(err)),
         Err(err) => Ok(ScanReport::new(
             manager_id,
@@ -1818,24 +1857,62 @@ fn build_verbose_scan_report(
     }
 }
 
-fn scan_item_from_evidence_input(input: ManagerScanEvidenceInput, now: SystemTime) -> ScanItem {
+fn scan_item_from_evidence_input_with_audit(
+    input: ManagerScanEvidenceInput,
+    now: SystemTime,
+    audit_results: &std::collections::BTreeMap<AuditQuery, AuditLookupResult>,
+) -> ScanItem {
     match input {
         ManagerScanEvidenceInput::Installed {
             tool,
             release_evidence: Some(evidence),
-        } => ScanItem::InstalledWithReleaseAge {
-            tool,
-            age: release_age_for_evidence(&evidence, now),
-        },
+        } => {
+            let age = release_age_for_evidence(&evidence, now);
+            scan_item_with_audit(tool, Some(age), audit_results)
+        }
         ManagerScanEvidenceInput::Installed {
             tool,
             release_evidence: None,
-        } => ScanItem::Installed(tool),
+        } => scan_item_with_audit(tool, None, audit_results),
         ManagerScanEvidenceInput::Skipped { installed, reason } => ScanItem::Skipped {
             tool: installed,
             reason,
         },
     }
+}
+
+fn scan_audit_queries(inputs: &[ManagerScanEvidenceInput]) -> Vec<AuditQuery> {
+    inputs
+        .iter()
+        .filter_map(|input| match input {
+            ManagerScanEvidenceInput::Installed { tool, .. } => tool
+                .audit_subject
+                .as_ref()
+                .map(|subject| AuditQuery::new(subject.clone(), tool.installed_version.clone())),
+            ManagerScanEvidenceInput::Skipped { .. } => None,
+        })
+        .collect()
+}
+
+fn scan_item_with_audit(
+    tool: upnow_domain::InstalledTool,
+    age: Option<std::time::Duration>,
+    audit_results: &std::collections::BTreeMap<AuditQuery, AuditLookupResult>,
+) -> ScanItem {
+    let Some(subject) = tool.audit_subject.as_ref() else {
+        return match age {
+            Some(age) => ScanItem::InstalledWithReleaseAge { tool, age },
+            None => ScanItem::Installed(tool),
+        };
+    };
+    let query = AuditQuery::new(subject.clone(), tool.installed_version.clone());
+    let audit = audit_results.get(&query).map_or_else(
+        || ScanAuditFact::LookupFailed {
+            detail: "audit lookup result missing".to_owned(),
+        },
+        ScanAuditFact::from,
+    );
+    ScanItem::InstalledWithAudit { tool, age, audit }
 }
 
 fn scan_item_from_input(input: ManagerScanInput) -> ScanItem {
@@ -2049,10 +2126,12 @@ const fn real_mode_hint() -> &'static str {
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 fn build_manager_plan(
     manager: &dyn ManagerAdapter,
     process: &ProcessRunner,
     http: &HttpClient,
+    audit_service: &AuditService,
     env: &Env,
     clock: Clock,
     manager_config: &ManagerConfig,
@@ -2062,14 +2141,19 @@ fn build_manager_plan(
     let inputs = manager
         .update_inputs(process, http, env, max_parallel_checks_per_manager)
         .map_err(map_manager_error)?;
-    update_plan_from_inputs(
+    let settings = PlanningSettings {
+        policy: manager_config.version_policy,
+        now,
+        min_release_age: manager_config.min_release_age,
+    };
+    let audit_results = audit_service
+        .query(derive_audit_queries(&inputs))
+        .map_err(|err| AppError::Planning(err.to_string()))?;
+    finalize_plan_from_inputs(
         manager_config.manager_id.clone(),
         inputs,
-        PlanningSettings {
-            policy: manager_config.version_policy,
-            now,
-            min_release_age: manager_config.min_release_age,
-        },
+        settings,
+        &audit_results,
     )
     .map_err(|err| AppError::Planning(err.to_string()))
 }

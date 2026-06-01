@@ -31,6 +31,7 @@ Example:
 [upnow]
 scan_old_age_threshold = "365d"
 manager_concurrency = 4
+audit_concurrency = 8
 
 [brew]
 mode = "apply"
@@ -66,6 +67,13 @@ Metadata lookups inside each manager are controlled separately by
 `--max-parallel-checks-per-manager`. Total metadata pressure can therefore be
 up to `manager_concurrency * max_parallel_checks_per_manager` for commands that
 perform metadata checks across multiple managers.
+
+### `[upnow].audit_concurrency`
+
+- Default: `8`
+- Valid values: integers from `1` through `16`
+- Controls concurrent OSV security-audit batch requests for one command run.
+- Independent from `manager_concurrency`.
 
 ---
 

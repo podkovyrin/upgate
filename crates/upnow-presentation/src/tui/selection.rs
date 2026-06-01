@@ -3,8 +3,8 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use crate::{
-    CandidateNotePart, SelectionRow, SelectionRowStatus, SelectionRowVisibility, SelectionView,
-    TargetOption,
+    CandidateNoteKind, CandidateNotePart, SelectionRow, SelectionRowStatus, SelectionRowVisibility,
+    SelectionView, TargetOption,
 };
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -2267,6 +2267,7 @@ fn draw_target_picker(
         current_area,
         _,
         list_area,
+        detail_area,
         footer_area,
     ] = Layout::vertical([
         Constraint::Length(1),
@@ -2275,6 +2276,7 @@ fn draw_target_picker(
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Fill(1),
+        Constraint::Length(4),
         Constraint::Length(1),
     ])
     .areas(inner);
@@ -2310,6 +2312,7 @@ fn draw_target_picker(
     );
 
     draw_target_picker_rows(frame, screen, picker, list_area, theme);
+    draw_target_picker_details(frame, row, picker.cursor, detail_area, theme);
     frame.render_widget(
         Paragraph::new(key_footer(PICKER_FOOTER_KEYS, theme)),
         footer_area,
@@ -2426,6 +2429,62 @@ fn draw_target_picker_rows(
     );
 }
 
+fn draw_target_picker_details(
+    frame: &mut ratatui::Frame<'_>,
+    row: &SelectionRow,
+    cursor: usize,
+    area: Rect,
+    theme: &TuiTheme,
+) {
+    let Some(option) = row.target_options.get(cursor) else {
+        return;
+    };
+    let lines = target_picker_detail_lines(option, theme);
+    if lines.is_empty() {
+        return;
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+}
+
+fn target_picker_detail_lines(option: &TargetOption, theme: &TuiTheme) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for part in option.note_parts() {
+        match &part.kind {
+            CandidateNoteKind::AuditVulnerable { findings } => {
+                for finding in findings.iter().take(2) {
+                    let mut ids = vec![finding.id.clone()];
+                    ids.extend(finding.aliases.iter().take(2).cloned());
+                    lines.push(Line::from(vec![
+                        Span::styled("Advisory: ", theme.header),
+                        Span::raw(ids.join(", ")),
+                    ]));
+                    if let Some(summary) = finding.summary.as_ref() {
+                        lines.push(Line::from(vec![
+                            Span::styled("Summary: ", theme.header),
+                            Span::raw(summary.clone()),
+                        ]));
+                    }
+                    if let Some(reference) = finding.references.first() {
+                        lines.push(Line::from(vec![
+                            Span::styled("Reference: ", theme.header),
+                            Span::raw(reference.clone()),
+                        ]));
+                    }
+                }
+            }
+            CandidateNoteKind::AuditLookupFailed { detail } => {
+                lines.push(Line::from(vec![
+                    Span::styled("Audit: ", theme.header),
+                    Span::raw(detail.clone()),
+                ]));
+            }
+            _ => {}
+        }
+    }
+    lines.truncate(4);
+    lines
+}
+
 fn target_picker_table_row(
     current: &str,
     row: &TargetPickerRenderRow,
@@ -2465,7 +2524,7 @@ fn target_picker_rows(options: &[TargetOption]) -> Vec<TargetPickerRenderRow> {
 
 fn target_picker_height(option_count: usize) -> u16 {
     let body = u16::try_from(option_count.min(10)).unwrap_or(10);
-    body.saturating_add(9).clamp(10, 19)
+    body.saturating_add(13).clamp(14, 23)
 }
 
 fn target_picker_width(area: Rect) -> u16 {

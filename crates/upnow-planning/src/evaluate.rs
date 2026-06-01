@@ -1,15 +1,17 @@
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 
 use pep440_rs::{PrereleaseKind as Pep440PrereleaseKind, Version as Pep440Version};
 use semver::Version as SemverVersion;
 use upnow_domain::{
-    AdvisoryLatestFact, AdvisoryReleaseLookup, BlockReason, CandidateAgeFact, CandidateAgeSource,
-    CandidateEvaluationFact, DelayReason, ManagerSelectedTarget, MissingMetadataKind,
-    PlanDiagnostics, PlanItem, PlanItemId, PlannedTarget, PolicyBlockReason, PolicyWarning,
-    ReleaseEntry, ReleaseEvidenceSource, ReleaseLookupResult, ReleaseTimeline, TargetAgeEvidence,
-    TargetAgeLookupResult, TargetSelection, UpdateCandidate, UpdateSeed, VersionPolicy,
-    VersionReleaseEvidence, VersionScheme, VersionText,
+    AdvisoryLatestFact, AdvisoryReleaseLookup, AuditLookupResult, AuditQuery, AuditSubject,
+    BlockReason, CandidateAgeFact, CandidateAgeSource, CandidateAuditFact, CandidateEvaluationFact,
+    DelayReason, ManagerSelectedTarget, MissingMetadataKind, PlanDiagnostics, PlanItem, PlanItemId,
+    PlannedTarget, PolicyBlockReason, PolicyWarning, ReleaseEntry, ReleaseEvidenceSource,
+    ReleaseLookupResult, ReleaseTimeline, TargetAgeEvidence, TargetAgeLookupResult,
+    TargetSelection, UpdateCandidate, UpdateSeed, VersionPolicy, VersionReleaseEvidence,
+    VersionScheme, VersionText,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +80,19 @@ pub fn evaluate_seed(
     now: SystemTime,
     min_release_age: Duration,
 ) -> PlanItem {
+    evaluate_seed_with_audit(id, seed, policy, now, min_release_age, &BTreeMap::new())
+}
+
+/// Evaluate one manager-discovered update seed into a typed plan item using
+/// previously looked-up audit evidence.
+pub fn evaluate_seed_with_audit(
+    id: PlanItemId,
+    seed: UpdateSeed,
+    policy: VersionPolicy,
+    now: SystemTime,
+    min_release_age: Duration,
+    audit_results: &BTreeMap<AuditQuery, AuditLookupResult>,
+) -> PlanItem {
     match seed.target_selection.clone() {
         TargetSelection::PlannerSelectable {
             discovered_target,
@@ -90,13 +105,139 @@ pub fn evaluate_seed(
             policy,
             now,
             min_release_age,
+            audit_results,
         ),
+        TargetSelection::ManagerSelected(target) => evaluate_manager_selected_seed(
+            id,
+            seed,
+            target,
+            policy,
+            now,
+            min_release_age,
+            audit_results,
+        ),
+    }
+}
+
+pub fn audit_queries_for_seed(seed: &UpdateSeed) -> Vec<AuditQuery> {
+    match &seed.target_selection {
+        TargetSelection::PlannerSelectable {
+            discovered_target,
+            release_lookup,
+        } => audit_queries_for_planner_selectable_seed(seed, discovered_target, release_lookup),
         TargetSelection::ManagerSelected(target) => {
-            evaluate_manager_selected_seed(id, seed, target, policy, now, min_release_age)
+            audit_queries_for_manager_selected_seed(seed, target)
         }
     }
 }
 
+fn audit_queries_for_planner_selectable_seed(
+    seed: &UpdateSeed,
+    discovered_target: &VersionText,
+    release_lookup: &ReleaseLookupResult,
+) -> Vec<AuditQuery> {
+    let Some(subject) = seed.installed.audit_subject.as_ref() else {
+        return Vec::new();
+    };
+    let ReleaseLookupResult::Known(timeline) = release_lookup else {
+        return Vec::new();
+    };
+
+    match seed.version_scheme {
+        VersionScheme::SemVer => {
+            audit_queries_for_semver_timeline(seed, subject, discovered_target, timeline)
+        }
+        VersionScheme::Pep440 => {
+            audit_queries_for_pep440_timeline(seed, subject, discovered_target, timeline)
+        }
+        VersionScheme::ManagerNative => Vec::new(),
+    }
+}
+
+fn audit_queries_for_manager_selected_seed(
+    seed: &UpdateSeed,
+    target: &ManagerSelectedTarget,
+) -> Vec<AuditQuery> {
+    let Some(subject) = seed.installed.audit_subject.as_ref() else {
+        return Vec::new();
+    };
+    let Some(selected_target) = target.target_version() else {
+        return Vec::new();
+    };
+    if !selected_target_is_update(seed, selected_target).unwrap_or(false) {
+        return Vec::new();
+    }
+
+    vec![AuditQuery::new(subject.clone(), selected_target.clone())]
+}
+
+fn audit_queries_for_semver_timeline(
+    seed: &UpdateSeed,
+    subject: &AuditSubject,
+    discovered_target: &VersionText,
+    timeline: &ReleaseTimeline,
+) -> Vec<AuditQuery> {
+    let Ok(installed_version) = parse_semver(seed.installed.installed_version.as_str()) else {
+        return Vec::new();
+    };
+    let Ok(parsed_discovered_target) = parse_semver(discovered_target.as_str()) else {
+        return Vec::new();
+    };
+    if !timeline.versions.iter().any(|entry| {
+        parse_semver(entry.version.as_str())
+            .map(|parsed| parsed == parsed_discovered_target)
+            .unwrap_or(false)
+    }) {
+        return Vec::new();
+    }
+
+    timeline
+        .versions
+        .iter()
+        .filter_map(|entry| {
+            let parsed = parse_semver(entry.version.as_str()).ok()?;
+            if parsed <= installed_version {
+                return None;
+            }
+            Some(AuditQuery::new(subject.clone(), entry.version.clone()))
+        })
+        .collect()
+}
+
+fn audit_queries_for_pep440_timeline(
+    seed: &UpdateSeed,
+    subject: &AuditSubject,
+    discovered_target: &VersionText,
+    timeline: &ReleaseTimeline,
+) -> Vec<AuditQuery> {
+    let Ok(installed_version) = parse_pep440(seed.installed.installed_version.as_str()) else {
+        return Vec::new();
+    };
+    let Ok(parsed_discovered_target) = parse_pep440(discovered_target.as_str()) else {
+        return Vec::new();
+    };
+    if !timeline.versions.iter().any(|entry| {
+        parse_pep440(entry.version.as_str())
+            .map(|parsed| parsed == parsed_discovered_target)
+            .unwrap_or(false)
+    }) {
+        return Vec::new();
+    }
+
+    timeline
+        .versions
+        .iter()
+        .filter_map(|entry| {
+            let parsed = parse_pep440(entry.version.as_str()).ok()?;
+            if parsed <= installed_version {
+                return None;
+            }
+            Some(AuditQuery::new(subject.clone(), entry.version.clone()))
+        })
+        .collect()
+}
+
+#[expect(clippy::too_many_arguments)]
 fn evaluate_planner_selectable_seed(
     id: PlanItemId,
     seed: UpdateSeed,
@@ -105,6 +246,7 @@ fn evaluate_planner_selectable_seed(
     policy: VersionPolicy,
     now: SystemTime,
     min_release_age: Duration,
+    audit_results: &BTreeMap<AuditQuery, AuditLookupResult>,
 ) -> PlanItem {
     match release_lookup {
         ReleaseLookupResult::MissingMetadata => PlanItem::Blocked {
@@ -131,6 +273,7 @@ fn evaluate_planner_selectable_seed(
                 policy,
                 now,
                 min_release_age,
+                audit_results,
             ),
             VersionScheme::Pep440 => evaluate_pep440_seed(
                 id,
@@ -140,6 +283,7 @@ fn evaluate_planner_selectable_seed(
                 policy,
                 now,
                 min_release_age,
+                audit_results,
             ),
             VersionScheme::ManagerNative => PlanItem::ResolverError {
                 id,
@@ -158,6 +302,7 @@ fn evaluate_manager_selected_seed(
     policy: VersionPolicy,
     now: SystemTime,
     min_release_age: Duration,
+    audit_results: &BTreeMap<AuditQuery, AuditLookupResult>,
 ) -> PlanItem {
     let ManagerSelectedTarget {
         target,
@@ -201,17 +346,23 @@ fn evaluate_manager_selected_seed(
     );
     let target_class = classify_release(seed.version_scheme, selected_target.as_str());
     let policy_decision = evaluate_policy(policy, installed_class, target_class);
-    diagnostics.candidates.push(CandidateEvaluationFact {
+    let candidate_fact = CandidateEvaluationFact {
         version: selected_target.clone(),
         age: target_age_duration(&target_age, now),
         policy_allowed: policy_decision.allowed(),
         age_allowed: target_age_is_old_enough(&target_age, now, min_release_age),
         policy_block_reason: policy_decision.block_reason(),
         policy_warning: policy_decision.warning(),
-    });
+        audit: audit_fact_for(
+            seed.installed.audit_subject.as_ref(),
+            &selected_target,
+            audit_results,
+        ),
+    };
     let policy_warning = match policy_decision {
         PolicyDecision::Allowed { warning } => warning,
         PolicyDecision::Blocked { reason, warning } => {
+            diagnostics.candidates.push(candidate_fact);
             return PlanItem::Blocked {
                 id,
                 seed,
@@ -252,16 +403,37 @@ fn evaluate_manager_selected_seed(
         }
     };
 
-    let candidate = candidate_from_seed(
-        &seed,
-        selected_target,
-        policy_warning.into_iter().collect(),
-        diagnostics,
-    );
-
     if is_evidence_old_enough(&target_age, now, min_release_age) {
+        if let Some(audit) = candidate_fact.audit.clone()
+            && !audit_allows_target(&audit)
+        {
+            diagnostics.audit_blocking_target = Some(audit.clone());
+            diagnostics.audit_blocking_candidate = Some(candidate_fact.clone());
+            diagnostics.candidates.push(candidate_fact);
+            return PlanItem::Blocked {
+                id,
+                seed,
+                reason: audit_block_reason(&audit),
+                policy_warnings: policy_warning.into_iter().collect(),
+                diagnostics,
+            };
+        }
+        diagnostics.candidates.push(candidate_fact);
+        let candidate = candidate_from_seed(
+            &seed,
+            selected_target,
+            policy_warning.into_iter().collect(),
+            diagnostics,
+        );
         PlanItem::Update { id, candidate }
     } else {
+        diagnostics.candidates.push(candidate_fact);
+        let candidate = candidate_from_seed(
+            &seed,
+            selected_target,
+            policy_warning.into_iter().collect(),
+            diagnostics,
+        );
         PlanItem::Delayed {
             id,
             candidate,
@@ -270,6 +442,7 @@ fn evaluate_manager_selected_seed(
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 #[expect(clippy::too_many_lines)]
 fn evaluate_semver_seed(
     id: PlanItemId,
@@ -279,6 +452,7 @@ fn evaluate_semver_seed(
     policy: VersionPolicy,
     now: SystemTime,
     min_release_age: Duration,
+    audit_results: &BTreeMap<AuditQuery, AuditLookupResult>,
 ) -> PlanItem {
     let Ok(installed_version) = parse_semver(seed.installed.installed_version.as_str()) else {
         return PlanItem::ResolverError {
@@ -314,6 +488,7 @@ fn evaluate_semver_seed(
     let mut newest_overall = None::<(SemverVersion, CandidateFact)>;
     let mut newest_policy_eligible = None::<(SemverVersion, CandidateFact)>;
     let mut newest_age_eligible = None::<(SemverVersion, CandidateFact)>;
+    let mut newest_audit_eligible = None::<(SemverVersion, CandidateFact)>;
     let mut candidate_facts = Vec::<(SemverVersion, CandidateFact)>::new();
     let installed_class = classify_semver_release(seed.installed.installed_version.as_str());
 
@@ -328,7 +503,12 @@ fn evaluate_semver_seed(
         let candidate_class = classify_semver_release(entry.version.as_str());
         let policy_decision = evaluate_policy(policy, installed_class, candidate_class);
         let policy_allowed = policy_decision.allowed();
-        let fact = CandidateFact::new(entry, now, min_release_age, &policy_decision);
+        let mut fact = CandidateFact::new(entry, now, min_release_age, &policy_decision);
+        fact.audit = audit_fact_for(
+            seed.installed.audit_subject.as_ref(),
+            &entry.version,
+            audit_results,
+        );
         candidate_facts.push((parsed.clone(), fact.clone()));
         if newest_overall
             .as_ref()
@@ -349,7 +529,15 @@ fn evaluate_semver_seed(
                     .as_ref()
                     .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
             {
-                newest_age_eligible = Some((parsed, fact));
+                newest_age_eligible = Some((parsed.clone(), fact.clone()));
+            }
+            if fact.age_allowed
+                && audit_allows_optional_target(fact.audit.as_ref())
+                && newest_audit_eligible
+                    .as_ref()
+                    .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
+            {
+                newest_audit_eligible = Some((parsed, fact));
             }
         }
     }
@@ -388,7 +576,7 @@ fn evaluate_semver_seed(
     let mut diagnostics = diagnostics;
     diagnostics.selected_target = Some(policy_candidate.candidate_age());
 
-    let Some((_, age_candidate)) = newest_age_eligible else {
+    let Some(_) = newest_age_eligible.as_ref() else {
         let candidate = candidate_from_seed(
             &seed,
             policy_candidate.version,
@@ -402,10 +590,31 @@ fn evaluate_semver_seed(
         };
     };
 
-    let selected_target = age_candidate.candidate_age();
+    let Some((_, audit_candidate)) = newest_audit_eligible else {
+        let audit = newest_age_eligible
+            .as_ref()
+            .and_then(|(_, fact)| fact.audit.clone())
+            .unwrap_or_else(|| CandidateAuditFact::LookupFailed {
+                detail: "audit lookup result missing".to_owned(),
+            });
+        let mut diagnostics = diagnostics;
+        diagnostics.audit_blocking_target = Some(audit.clone());
+        diagnostics.audit_blocking_candidate = newest_age_eligible
+            .as_ref()
+            .map(|(_, fact)| fact.candidate_evaluation());
+        return PlanItem::Blocked {
+            id,
+            seed,
+            reason: audit_block_reason(&audit),
+            policy_warnings: Vec::new(),
+            diagnostics,
+        };
+    };
+
+    let selected_target = audit_candidate.candidate_age();
     PlanItem::Update {
         id,
-        candidate: candidate_from_seed(&seed, age_candidate.version, age_candidate.warnings, {
+        candidate: candidate_from_seed(&seed, audit_candidate.version, audit_candidate.warnings, {
             let mut diagnostics = diagnostics;
             diagnostics.selected_target = Some(selected_target);
             diagnostics
@@ -413,6 +622,7 @@ fn evaluate_semver_seed(
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 #[expect(clippy::too_many_lines)]
 fn evaluate_pep440_seed(
     id: PlanItemId,
@@ -422,6 +632,7 @@ fn evaluate_pep440_seed(
     policy: VersionPolicy,
     now: SystemTime,
     min_release_age: Duration,
+    audit_results: &BTreeMap<AuditQuery, AuditLookupResult>,
 ) -> PlanItem {
     let Ok(installed_version) = parse_pep440(seed.installed.installed_version.as_str()) else {
         return PlanItem::ResolverError {
@@ -465,6 +676,7 @@ fn evaluate_pep440_seed(
     let mut newest_overall = None::<(Pep440Version, CandidateFact)>;
     let mut newest_policy_eligible = None::<(Pep440Version, CandidateFact)>;
     let mut newest_age_eligible = None::<(Pep440Version, CandidateFact)>;
+    let mut newest_audit_eligible = None::<(Pep440Version, CandidateFact)>;
     let mut candidate_facts = Vec::<(Pep440Version, CandidateFact)>::new();
     let installed_class = classify_pep440_release(seed.installed.installed_version.as_str());
 
@@ -484,7 +696,12 @@ fn evaluate_pep440_seed(
         let candidate_class = classify_pep440_release(entry.version.as_str());
         let policy_decision = evaluate_policy(policy, installed_class, candidate_class);
         let policy_allowed = policy_decision.allowed();
-        let fact = CandidateFact::new(entry, now, min_release_age, &policy_decision);
+        let mut fact = CandidateFact::new(entry, now, min_release_age, &policy_decision);
+        fact.audit = audit_fact_for(
+            seed.installed.audit_subject.as_ref(),
+            &entry.version,
+            audit_results,
+        );
         candidate_facts.push((parsed.clone(), fact.clone()));
         if newest_overall
             .as_ref()
@@ -505,7 +722,15 @@ fn evaluate_pep440_seed(
                     .as_ref()
                     .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
             {
-                newest_age_eligible = Some((parsed, fact));
+                newest_age_eligible = Some((parsed.clone(), fact.clone()));
+            }
+            if fact.age_allowed
+                && audit_allows_optional_target(fact.audit.as_ref())
+                && newest_audit_eligible
+                    .as_ref()
+                    .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
+            {
+                newest_audit_eligible = Some((parsed, fact));
             }
         }
     }
@@ -544,7 +769,7 @@ fn evaluate_pep440_seed(
     let mut diagnostics = diagnostics;
     diagnostics.selected_target = Some(policy_candidate.candidate_age());
 
-    let Some((_, age_candidate)) = newest_age_eligible else {
+    let Some(_) = newest_age_eligible.as_ref() else {
         let candidate = candidate_from_seed(
             &seed,
             policy_candidate.version,
@@ -558,10 +783,31 @@ fn evaluate_pep440_seed(
         };
     };
 
-    let selected_target = age_candidate.candidate_age();
+    let Some((_, audit_candidate)) = newest_audit_eligible else {
+        let audit = newest_age_eligible
+            .as_ref()
+            .and_then(|(_, fact)| fact.audit.clone())
+            .unwrap_or_else(|| CandidateAuditFact::LookupFailed {
+                detail: "audit lookup result missing".to_owned(),
+            });
+        let mut diagnostics = diagnostics;
+        diagnostics.audit_blocking_target = Some(audit.clone());
+        diagnostics.audit_blocking_candidate = newest_age_eligible
+            .as_ref()
+            .map(|(_, fact)| fact.candidate_evaluation());
+        return PlanItem::Blocked {
+            id,
+            seed,
+            reason: audit_block_reason(&audit),
+            policy_warnings: Vec::new(),
+            diagnostics,
+        };
+    };
+
+    let selected_target = audit_candidate.candidate_age();
     PlanItem::Update {
         id,
-        candidate: candidate_from_seed(&seed, age_candidate.version, age_candidate.warnings, {
+        candidate: candidate_from_seed(&seed, audit_candidate.version, audit_candidate.warnings, {
             let mut diagnostics = diagnostics;
             diagnostics.selected_target = Some(selected_target);
             diagnostics
@@ -586,6 +832,43 @@ fn candidate_from_seed(
     .with_execution_target_kind(seed.execution_target_kind)
     .with_policy_warnings(policy_warnings)
     .with_diagnostics(diagnostics)
+}
+
+fn audit_fact_for(
+    subject: Option<&AuditSubject>,
+    version: &VersionText,
+    audit_results: &BTreeMap<AuditQuery, AuditLookupResult>,
+) -> Option<CandidateAuditFact> {
+    let subject = subject?;
+    let query = AuditQuery::new(subject.clone(), version.clone());
+    Some(audit_results.get(&query).map_or_else(
+        || CandidateAuditFact::LookupFailed {
+            detail: "audit lookup result missing".to_owned(),
+        },
+        CandidateAuditFact::from,
+    ))
+}
+
+const fn audit_allows_optional_target(audit: Option<&CandidateAuditFact>) -> bool {
+    match audit {
+        None | Some(CandidateAuditFact::Clean) => true,
+        Some(CandidateAuditFact::Vulnerable { .. } | CandidateAuditFact::LookupFailed { .. }) => {
+            false
+        }
+    }
+}
+
+const fn audit_allows_target(audit: &CandidateAuditFact) -> bool {
+    matches!(audit, CandidateAuditFact::Clean)
+}
+
+const fn audit_block_reason(audit: &CandidateAuditFact) -> BlockReason {
+    match audit {
+        CandidateAuditFact::Vulnerable { .. } => BlockReason::AuditVulnerable,
+        CandidateAuditFact::Clean | CandidateAuditFact::LookupFailed { .. } => {
+            BlockReason::AuditLookupFailed
+        }
+    }
 }
 
 const fn evaluate_policy(
@@ -783,6 +1066,8 @@ where
         lookup_failure: None,
         advisory_latest: None,
         advisory_lookup_failure: None,
+        audit_blocking_target: None,
+        audit_blocking_candidate: None,
     }
 }
 
@@ -810,6 +1095,7 @@ struct CandidateFact {
     policy_allowed: bool,
     policy_block_reason: Option<PolicyBlockReason>,
     warnings: Vec<PolicyWarning>,
+    audit: Option<CandidateAuditFact>,
 }
 
 impl CandidateFact {
@@ -828,6 +1114,7 @@ impl CandidateFact {
             policy_allowed: policy_decision.allowed(),
             policy_block_reason: policy_decision.block_reason(),
             warnings: policy_decision.warning().into_iter().collect(),
+            audit: None,
         }
     }
 
@@ -852,6 +1139,7 @@ impl CandidateFact {
             age_allowed: self.age_allowed,
             policy_block_reason: self.policy_block_reason.clone(),
             policy_warning: self.warnings.first().copied(),
+            audit: self.audit.clone(),
         }
     }
 }

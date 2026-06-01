@@ -1,11 +1,13 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
-    DomainError, ManagerId, ManagerUpdateInput, PlanItem, PlanItemId, PlanSelection, SelectedItem,
-    ToolId, UpdatePlan, UpdateSeed, UpdateSelectionPolicy, VersionPolicy,
+    AuditLookupResult, AuditQuery, DomainError, ManagerId, ManagerUpdateInput, PlanItem,
+    PlanItemId, PlanSelection, SelectedItem, ToolId, UpdatePlan, UpdateSeed, UpdateSelectionPolicy,
+    VersionPolicy,
 };
 
-use crate::evaluate_seed;
+use crate::{audit_queries_for_seed, evaluate_seed_with_audit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlanningSettings {
@@ -41,17 +43,45 @@ pub fn update_plan_from_inputs(
     inputs: Vec<ManagerUpdateInput>,
     settings: PlanningSettings,
 ) -> Result<UpdatePlan, DomainError> {
+    finalize_plan_from_inputs(manager_id, inputs, settings, &BTreeMap::new())
+}
+
+pub fn derive_audit_queries(inputs: &[ManagerUpdateInput]) -> Vec<AuditQuery> {
+    inputs
+        .iter()
+        .filter_map(|input| match input {
+            ManagerUpdateInput::Seed(seed) => Some(audit_queries_for_seed(seed)),
+            ManagerUpdateInput::Skipped { .. } | ManagerUpdateInput::ResolverError { .. } => None,
+        })
+        .flatten()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// Builds a plan from manager inputs and previously looked-up audit evidence.
+///
+/// # Errors
+///
+/// Returns an error when generated plan item ids are invalid or duplicated.
+pub fn finalize_plan_from_inputs(
+    manager_id: ManagerId,
+    inputs: Vec<ManagerUpdateInput>,
+    settings: PlanningSettings,
+    audit_results: &BTreeMap<AuditQuery, AuditLookupResult>,
+) -> Result<UpdatePlan, DomainError> {
     let mut items = Vec::new();
     for input in inputs {
         match input {
             ManagerUpdateInput::Seed(seed) => {
                 let id = plan_item_id(&manager_id, &seed.installed.tool_id)?;
-                items.push(evaluate_seed(
+                items.push(evaluate_seed_with_audit(
                     id,
                     seed,
                     settings.policy,
                     settings.now,
                     settings.min_release_age,
+                    audit_results,
                 ));
             }
             ManagerUpdateInput::Skipped { installed, reason } => {

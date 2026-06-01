@@ -23,6 +23,8 @@ use crate::registry::{
 const CONFIG_RELATIVE_PATH: &str = "upnow/config.toml";
 const DEFAULT_SCAN_OLD_AGE_THRESHOLD: &str = "365d";
 const DEFAULT_MANAGER_CONCURRENCY: usize = 4;
+const DEFAULT_AUDIT_CONCURRENCY: usize = 8;
+const MAX_AUDIT_CONCURRENCY: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
@@ -66,6 +68,9 @@ pub enum ConfigError {
     },
     InvalidSelectionException(String),
     InvalidManagerConcurrency {
+        value: usize,
+    },
+    InvalidAuditConcurrency {
         value: usize,
     },
     ConfigPathUnavailable,
@@ -149,6 +154,12 @@ impl Display for ConfigError {
                     "invalid [upnow].manager_concurrency `{value}`, expected a value greater than 0"
                 )
             }
+            Self::InvalidAuditConcurrency { value } => {
+                write!(
+                    formatter,
+                    "invalid [upnow].audit_concurrency `{value}`, expected a value from 1 to 16"
+                )
+            }
             Self::ConfigPathUnavailable => {
                 formatter.write_str("cannot determine config path from environment")
             }
@@ -174,6 +185,7 @@ pub struct UpnowConfig {
 struct GlobalSectionConfig {
     scan_old_age_threshold: Option<String>,
     manager_concurrency: Option<usize>,
+    audit_concurrency: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -255,6 +267,20 @@ impl UpnowConfig {
             .manager_concurrency
             .unwrap_or(DEFAULT_MANAGER_CONCURRENCY);
         validate_manager_concurrency(value)?;
+        Ok(value)
+    }
+
+    /// Resolves the app-level audit request concurrency budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the configured value is outside `1..=16`.
+    pub fn audit_concurrency(&self) -> Result<usize, ConfigError> {
+        let value = self
+            .upnow
+            .audit_concurrency
+            .unwrap_or(DEFAULT_AUDIT_CONCURRENCY);
+        validate_audit_concurrency(value)?;
         Ok(value)
     }
 
@@ -357,6 +383,14 @@ impl UpnowConfig {
                         .parse::<usize>()
                         .map_err(|_| ConfigError::InvalidOverride(raw.to_owned()))?;
                     self.set_manager_concurrency(parsed)
+                }
+                "audit_concurrency" => {
+                    let parsed = value
+                        .parse::<usize>()
+                        .map_err(|_| ConfigError::InvalidOverride(raw.to_owned()))?;
+                    validate_audit_concurrency(parsed)?;
+                    self.upnow.audit_concurrency = Some(parsed);
+                    Ok(())
                 }
                 other => Err(ConfigError::UnknownKey {
                     section: section.to_owned(),
@@ -574,6 +608,14 @@ const fn validate_manager_concurrency(value: usize) -> Result<(), ConfigError> {
         Err(ConfigError::InvalidManagerConcurrency { value })
     } else {
         Ok(())
+    }
+}
+
+fn validate_audit_concurrency(value: usize) -> Result<(), ConfigError> {
+    if (1..=MAX_AUDIT_CONCURRENCY).contains(&value) {
+        Ok(())
+    } else {
+        Err(ConfigError::InvalidAuditConcurrency { value })
     }
 }
 

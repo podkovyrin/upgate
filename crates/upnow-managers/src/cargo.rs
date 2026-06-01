@@ -8,10 +8,10 @@ use chrono::DateTime;
 use semver::Version;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionSupport, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
-    ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
-    VersionScheme, VersionText,
+    AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
+    ManagerId, ManagerMetadata, ManagerScanInput, ManagerUpdateInput, OsvEcosystem, PackageName,
+    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
+    ToolId, ToolName, UpdateSeed, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -552,7 +552,11 @@ fn installed_tool(package: InstalledCrate) -> Result<InstalledTool, CargoError> 
         ToolName::new(package.name.as_str().to_owned())?,
         package.version,
         ManagerMetadata::empty(),
-    ))
+    )
+    .with_audit_subject(AuditSubject::new(
+        OsvEcosystem::CratesIo,
+        AuditPackageName::new(package.name.as_str().to_owned())?,
+    )))
 }
 
 #[derive(Debug, Deserialize)]

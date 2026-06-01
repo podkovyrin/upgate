@@ -133,6 +133,60 @@ impl HttpClient {
             Self::Fake(fake) => fake.get_bytes(url),
         }
     }
+
+    /// Sends a POST request with a JSON body and returns text response body.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a header is invalid, the HTTP request fails, the
+    /// response body cannot be read, or a fake client has no response for the URL.
+    pub fn post_json_text(
+        &self,
+        url: &str,
+        body: &str,
+        headers: impl IntoIterator<Item = HttpHeader>,
+    ) -> Result<HttpResponse, InfraError> {
+        match self {
+            Self::Real(client) => {
+                let mut request = client
+                    .post(url)
+                    .header("content-type", "application/json")
+                    .body(body.to_owned());
+                for header in headers {
+                    let name = HeaderName::from_bytes(header.name.as_bytes()).map_err(|err| {
+                        InfraError::HttpRequest {
+                            url: url.to_owned(),
+                            detail: err.to_string(),
+                        }
+                    })?;
+                    let value = HeaderValue::from_str(&header.value).map_err(|err| {
+                        InfraError::HttpRequest {
+                            url: url.to_owned(),
+                            detail: err.to_string(),
+                        }
+                    })?;
+                    request = request.header(name, value);
+                }
+                let response = request.send().map_err(|err| InfraError::HttpRequest {
+                    url: url.to_owned(),
+                    detail: err.to_string(),
+                })?;
+                let status = response.status().as_u16();
+                if !response.status().is_success() {
+                    return Err(InfraError::HttpStatus {
+                        url: url.to_owned(),
+                        status,
+                    });
+                }
+                let body = response.text().map_err(|err| InfraError::HttpBody {
+                    url: url.to_owned(),
+                    detail: err.to_string(),
+                })?;
+                Ok(HttpResponse { status, body })
+            }
+            Self::Fake(fake) => fake.post_text(url, body),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,6 +263,36 @@ impl FakeHttpClient {
                 status: response.status,
             })
         }
+    }
+
+    fn post_text(&self, url: &str, body: &str) -> Result<HttpResponse, InfraError> {
+        let response = self
+            .responses
+            .get(&format!("POST {url}\n{body}"))
+            .or_else(|| self.responses.get(&format!("POST {url}")))
+            .or_else(|| self.responses.get(url))
+            .cloned()
+            .ok_or_else(|| InfraError::HttpRequest {
+                url: url.to_owned(),
+                detail: "fake HTTP response was not registered".to_owned(),
+            })?;
+
+        if !(200..=299).contains(&response.status) {
+            return Err(InfraError::HttpStatus {
+                url: url.to_owned(),
+                status: response.status,
+            });
+        }
+
+        let body = String::from_utf8(response.body).map_err(|err| InfraError::HttpBody {
+            url: url.to_owned(),
+            detail: err.to_string(),
+        })?;
+
+        Ok(HttpResponse {
+            status: response.status,
+            body,
+        })
     }
 }
 

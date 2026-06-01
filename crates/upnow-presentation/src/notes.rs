@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use upnow_domain::{PolicyWarning, SkipReason, VersionPolicy, VersionText};
+use upnow_domain::{
+    AuditFinding, CandidateAuditFact, PolicyWarning, ScanAuditFact, SkipReason, VersionPolicy,
+    VersionText,
+};
 
 use crate::version_label;
 
@@ -68,6 +71,37 @@ pub const fn policy_warning(warning: PolicyWarning) -> &'static str {
 
 pub fn version_policy_warning(warning: PolicyWarning) -> String {
     format!("version policy warning: {}", policy_warning(warning))
+}
+
+pub fn audit_candidate(audit: &CandidateAuditFact) -> Option<String> {
+    match audit {
+        CandidateAuditFact::Clean => None,
+        CandidateAuditFact::Vulnerable { findings } => Some(vulnerability_note(findings)),
+        CandidateAuditFact::LookupFailed { .. } => Some("audit unavailable".to_owned()),
+    }
+}
+
+pub fn scan_audit(audit: &ScanAuditFact) -> Option<String> {
+    match audit {
+        ScanAuditFact::Clean => None,
+        ScanAuditFact::Vulnerable { findings } => Some(vulnerability_note(findings)),
+        ScanAuditFact::LookupFailed { .. } => Some("audit unavailable".to_owned()),
+    }
+}
+
+pub fn vulnerability_note(findings: &[AuditFinding]) -> String {
+    let ids = findings
+        .iter()
+        .flat_map(|finding| {
+            std::iter::once(finding.id.as_str()).chain(finding.aliases.iter().map(String::as_str))
+        })
+        .take(3)
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        "vulnerable".to_owned()
+    } else {
+        format!("vulnerable: {}", ids.join(", "))
+    }
 }
 
 pub fn skip_reason(reason: &SkipReason) -> String {

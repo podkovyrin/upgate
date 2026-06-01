@@ -7,7 +7,7 @@ use std::{
 use crate::{
     DomainError, InstalledTool, ManagerId, PackageName, PolicyWarning, ReleaseLookupError,
     ReleaseLookupResult, TargetAgeLookupResult, ToolId, VersionReleaseEvidence, VersionScheme,
-    VersionText,
+    VersionText, audit::CandidateAuditFact,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -487,6 +487,7 @@ impl ExecutionSupport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(clippy::large_enum_variant)]
 pub enum PlanItem {
     Update {
         id: PlanItemId,
@@ -610,6 +611,8 @@ pub enum BlockReason {
     MissingReleaseMetadata,
     ReleaseLookupFailed,
     VersionPolicy(PolicyBlockReason),
+    AuditVulnerable,
+    AuditLookupFailed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -628,6 +631,8 @@ pub struct PlanDiagnostics {
     pub lookup_failure: Option<ReleaseLookupError>,
     pub advisory_latest: Option<AdvisoryLatestFact>,
     pub advisory_lookup_failure: Option<ReleaseLookupError>,
+    pub audit_blocking_target: Option<CandidateAuditFact>,
+    pub audit_blocking_candidate: Option<CandidateEvaluationFact>,
 }
 
 impl PlanDiagnostics {
@@ -687,6 +692,7 @@ pub struct CandidateEvaluationFact {
     pub age_allowed: bool,
     pub policy_block_reason: Option<PolicyBlockReason>,
     pub policy_warning: Option<PolicyWarning>,
+    pub audit: Option<CandidateAuditFact>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

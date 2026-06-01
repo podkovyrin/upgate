@@ -6,10 +6,11 @@ use chrono::DateTime;
 use semver::Version;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionSupport, InstalledTool, ManagerConfig, ManagerId, ManagerMetadata,
-    ManagerScanEvidenceInput, ManagerScanInput, ManagerUpdateInput, PackageName, ReleaseEntry,
-    ReleaseEvidenceSource, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
-    ReleaseTimestamp, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
+    ManagerId, ManagerMetadata, ManagerScanEvidenceInput, ManagerScanInput, ManagerUpdateInput,
+    OsvEcosystem, PackageName, ReleaseEntry, ReleaseEvidenceSource, ReleaseLookupError,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
+    VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -649,7 +650,11 @@ fn installed_tool(package: GemInstalledPackage) -> Result<InstalledTool, GemErro
         ToolName::new(package.name.as_str().to_owned())?,
         package.version,
         ManagerMetadata::empty(),
-    ))
+    )
+    .with_audit_subject(AuditSubject::new(
+        OsvEcosystem::RubyGems,
+        AuditPackageName::new(package.name.as_str().to_owned())?,
+    )))
 }
 
 fn installed_tool_from_outdated(package: GemOutdatedPackage) -> Result<InstalledTool, GemError> {
@@ -660,7 +665,11 @@ fn installed_tool_from_outdated(package: GemOutdatedPackage) -> Result<Installed
         ToolName::new(package.name.as_str().to_owned())?,
         package.current,
         ManagerMetadata::empty(),
-    ))
+    )
+    .with_audit_subject(AuditSubject::new(
+        OsvEcosystem::RubyGems,
+        AuditPackageName::new(package.name.as_str().to_owned())?,
+    )))
 }
 
 const fn update_input(
