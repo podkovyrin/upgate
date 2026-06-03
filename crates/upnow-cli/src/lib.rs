@@ -1527,8 +1527,24 @@ fn run_batch_for_managers(
     if had_error {
         Err(AppError::Manager(output))
     } else {
-        Ok(output)
+        Ok(with_success_suggestion(output, command))
     }
+}
+
+fn with_success_suggestion(mut output: String, command: BatchCommand) -> String {
+    let suggestion = match command {
+        BatchCommand::Scan => {
+            "To preview available updates, run:\nupnow plan\n\nTo choose updates interactively, run:\nupnow apply\n"
+        }
+        BatchCommand::Plan => "To choose and apply updates interactively, run:\nupnow apply\n",
+        BatchCommand::Apply => return output,
+    };
+
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output.push_str(suggestion);
+    output
 }
 
 struct ManagerBatchOutput {
