@@ -72,28 +72,6 @@ esac
 }
 
 #[test]
-fn binary_apply_validates_required_mutation_mode_before_running() {
-    let sandbox = Sandbox::new("apply-mutation-require");
-    sandbox.write_executable(
-        "npm",
-        r#"#!/bin/sh
-echo "npm should not run" >&2
-exit 42
-"#,
-    );
-
-    let output = sandbox.run_with_env(
-        ["--manager", "npm", "--yolo", "apply"],
-        [("UPNOW_REQUIRE_MUTATION_MODE", "skip")],
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert_eq!(output.status.code(), Some(1));
-    assert!(stderr.contains("UPNOW_REQUIRE_MUTATION_MODE=skip"));
-    assert!(!stderr.contains("npm should not run"));
-}
-
-#[test]
 fn binary_apply_notice_gate_does_not_pollute_stdout_when_piped() {
     let sandbox = Sandbox::new("apply-notice-stdout");
     sandbox.write_executable(
@@ -114,13 +92,7 @@ esac
 "#,
     );
 
-    let output = sandbox.run_with_env(
-        ["--manager", "npm", "--no-approval", "apply"],
-        [
-            ("UPNOW_REQUIRE_MUTATION_MODE", "skip"),
-            ("UPNOW_SKIP_MUTATING_COMMANDS", "1"),
-        ],
-    );
+    let output = sandbox.run(["--manager", "npm", "--dry-run", "--no-approval", "apply"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(output.status.success());
@@ -141,8 +113,8 @@ fn binary_yolo_is_apply_only() {
 }
 
 #[test]
-fn binary_plan_print_commands_alias_prints_commands_to_stderr() {
-    let sandbox = Sandbox::new("print-commands");
+fn binary_plan_trace_commands_prints_commands_to_stderr() {
+    let sandbox = Sandbox::new("trace-commands");
     sandbox.write_executable(
         "npm",
         r#"#!/bin/sh
@@ -161,7 +133,7 @@ esac
 "#,
     );
 
-    let output = sandbox.run(["--manager", "npm", "--print-commands", "plan"]);
+    let output = sandbox.run(["--manager", "npm", "--trace-commands", "plan"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(output.status.success());
@@ -169,10 +141,9 @@ esac
     assert!(stderr.contains("$ npm view alpha-ready time --json"));
 }
 
-#[cfg(debug_assertions)]
 #[test]
-fn binary_apply_debug_no_mutate_skips_mutating_command() {
-    let sandbox = Sandbox::new("debug-no-mutate");
+fn binary_apply_dry_run_skips_mutating_command() {
+    let sandbox = Sandbox::new("dry-run");
     let mutation_marker = sandbox.root.join("mutation-ran");
     sandbox.write_executable(
         "npm",
@@ -198,7 +169,7 @@ esac
         ),
     );
 
-    let output = sandbox.run(["--manager", "npm", "--debug-no-mutate", "--yolo", "apply"]);
+    let output = sandbox.run(["--manager", "npm", "--dry-run", "--yolo", "apply"]);
 
     assert!(output.status.success());
     assert!(!mutation_marker.exists());

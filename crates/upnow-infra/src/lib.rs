@@ -20,9 +20,8 @@ pub use logging::{LoggingOptions, init_logging};
 pub use parallel::{effective_parallelism, run_ordered_parallel, run_ordered_parallel_stoppable};
 pub use process::{
     CommandCheck, CommandFailure, CommandOutput, CommandSpec, CommandStartEvent, FakeProcess,
-    MUTATION_ENABLE_NOTICE, MUTATION_SKIP_NOTICE, MutationMode, ProcessRunner,
-    REQUIRE_MUTATION_MODE_ENV, SKIP_MUTATING_COMMANDS_ENV, command_exists, command_exists_in_env,
-    status_allowed,
+    MUTATION_ENABLE_NOTICE, MUTATION_SKIP_NOTICE, MutationMode, ProcessRunner, command_exists,
+    command_exists_in_env, status_allowed,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -12,9 +12,9 @@ use crate::{Env, InfraError};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LoggingOptions {
-    pub debug_commands: bool,
-    pub show_commands: bool,
-    pub show_command_colors: bool,
+    pub log_commands: bool,
+    pub trace_commands: bool,
+    pub trace_command_colors: bool,
 }
 
 struct Logger {
@@ -61,8 +61,8 @@ pub fn init_logging(options: LoggingOptions, env: &Env) -> Result<PathBuf, Infra
         &log_path,
         "INFO",
         &format!(
-            "logging initialized (debug_commands={}, show_commands={}, show_command_colors={})",
-            options.debug_commands, options.show_commands, options.show_command_colors
+            "logging initialized (log_commands={}, trace_commands={}, trace_command_colors={})",
+            options.log_commands, options.trace_commands, options.trace_command_colors
         ),
     )
     .map_err(|err| InfraError::Logging {
@@ -81,7 +81,7 @@ pub fn init_logging(options: LoggingOptions, env: &Env) -> Result<PathBuf, Infra
 
 pub fn on_command_start(command_display: &str, is_mutation: bool) {
     let options = OPTIONS.get().copied().unwrap_or_default();
-    if options.show_commands {
+    if options.trace_commands {
         print_command_start(command_display, options, is_mutation);
     }
 
@@ -95,7 +95,7 @@ pub fn on_command_start(command_display: &str, is_mutation: bool) {
             "INFO",
             &format!("mutation command start: {command_display}"),
         );
-    } else if logger.options.debug_commands {
+    } else if logger.options.log_commands {
         let _ = write_line(
             logger,
             "DEBUG",
@@ -105,7 +105,7 @@ pub fn on_command_start(command_display: &str, is_mutation: bool) {
 }
 
 fn print_command_start(command_display: &str, options: LoggingOptions, is_mutation: bool) {
-    if !options.show_command_colors {
+    if !options.trace_command_colors {
         eprintln!("$ {command_display}");
     } else if is_mutation {
         eprintln!("{} {command_display}", "$".red());
@@ -140,7 +140,7 @@ pub fn on_command_finish(
         return;
     };
 
-    let should_dump_streams = logger.options.debug_commands || is_mutation || !status_allowed;
+    let should_dump_streams = logger.options.log_commands || is_mutation || !status_allowed;
     let level = if !status_allowed {
         "ERROR"
     } else if is_mutation {

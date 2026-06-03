@@ -9,8 +9,6 @@ use serde::de::DeserializeOwned;
 
 use crate::{Env, InfraError, logging};
 
-pub const SKIP_MUTATING_COMMANDS_ENV: &str = "UPNOW_SKIP_MUTATING_COMMANDS";
-pub const REQUIRE_MUTATION_MODE_ENV: &str = "UPNOW_REQUIRE_MUTATION_MODE";
 pub const MUTATION_SKIP_NOTICE: &str = "mutating commands are skipped (safe mode)";
 pub const MUTATION_ENABLE_NOTICE: &str = "real mutating commands are ENABLED";
 
@@ -28,20 +26,8 @@ pub enum MutationMode {
 }
 
 impl MutationMode {
-    pub fn from_env(env: &Env) -> Self {
-        if env.truthy(SKIP_MUTATING_COMMANDS_ENV) {
-            Self::Skip
-        } else {
-            Self::Real
-        }
-    }
-
-    pub fn from_env_and_debug_no_mutate(env: &Env, debug_no_mutate: bool) -> Self {
-        if debug_no_mutate || env.truthy(SKIP_MUTATING_COMMANDS_ENV) {
-            Self::Skip
-        } else {
-            Self::Real
-        }
+    pub const fn from_dry_run(dry_run: bool) -> Self {
+        if dry_run { Self::Skip } else { Self::Real }
     }
 }
 
@@ -133,9 +119,6 @@ impl ProcessRunner {
             kind: ProcessRunnerKind::Real { mutation_mode },
             command_start: None,
         }
-    }
-    pub fn from_env(env: &Env) -> Self {
-        Self::new(MutationMode::from_env(env))
     }
     pub fn fake(responses: impl IntoIterator<Item = Result<CommandOutput, InfraError>>) -> Self {
         Self {

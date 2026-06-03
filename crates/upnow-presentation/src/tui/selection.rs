@@ -263,7 +263,7 @@ pub struct InteractiveSelectionScreen {
     managers: Vec<ManagerSelectionState>,
     command_log: Vec<String>,
     command_log_scroll_from_bottom: usize,
-    show_commands: bool,
+    trace_commands: bool,
     planning_finished: bool,
     planning_failure: Option<String>,
     spinner_tick: usize,
@@ -382,7 +382,7 @@ impl InteractiveSelectionScreen {
             managers,
             command_log: Vec::new(),
             command_log_scroll_from_bottom: 0,
-            show_commands: false,
+            trace_commands: false,
             planning_finished: true,
             planning_failure: None,
             spinner_tick: 0,
@@ -407,7 +407,7 @@ impl InteractiveSelectionScreen {
             managers,
             command_log: Vec::new(),
             command_log_scroll_from_bottom: 0,
-            show_commands: false,
+            trace_commands: false,
             planning_finished: false,
             planning_failure: None,
             spinner_tick: 0,
@@ -422,8 +422,8 @@ impl InteractiveSelectionScreen {
         screen.clamp_cursor();
         screen
     }
-    pub const fn show_commands(mut self, show_commands: bool) -> Self {
-        self.show_commands = show_commands;
+    pub const fn trace_commands(mut self, trace_commands: bool) -> Self {
+        self.trace_commands = trace_commands;
         self
     }
 
@@ -1283,10 +1283,10 @@ pub fn run_interactive_selection(
 pub fn run_interactive_selection_with_planning_events(
     manager_ids: Vec<ManagerId>,
     planning_events: Receiver<InteractiveSelectionPlanningEvent>,
-    show_commands: bool,
+    trace_commands: bool,
 ) -> io::Result<InteractiveSelectionOutcome> {
     run_interactive_selection_screen(
-        InteractiveSelectionScreen::from_manager_ids(manager_ids).show_commands(show_commands),
+        InteractiveSelectionScreen::from_manager_ids(manager_ids).trace_commands(trace_commands),
         Some(&planning_events),
     )
 }
@@ -1442,7 +1442,7 @@ fn selection_scroll_delta(
         return None;
     }
     let app_frame = app_frame(area)?;
-    let selection_body = selection_body_areas(screen.show_commands, app_frame.body);
+    let selection_body = selection_body_areas(screen.trace_commands, app_frame.body);
     if let Some(log_area) = selection_body.log
         && rect_contains(log_area, mouse.column, mouse.row)
     {
@@ -1458,7 +1458,7 @@ fn flush_selection_scrolls(
     scrolls: &mut SelectionScrollDeltas,
 ) {
     if let Some(app_frame) = app_frame(area) {
-        let selection_body = selection_body_areas(screen.show_commands, app_frame.body);
+        let selection_body = selection_body_areas(screen.trace_commands, app_frame.body);
         if scrolls.main != 0 {
             screen.scroll_table_by(
                 scrolls.main,
@@ -1546,7 +1546,7 @@ fn handle_selection_mouse(
         return handle_target_picker_mouse(screen, mouse, app_frame.outer);
     }
 
-    let selection_body = selection_body_areas(screen.show_commands, app_frame.body);
+    let selection_body = selection_body_areas(screen.trace_commands, app_frame.body);
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             if rect_contains(app_frame.header, mouse.column, mouse.row) {
@@ -1655,8 +1655,8 @@ struct SelectionBodyAreas {
     log: Option<Rect>,
 }
 
-fn selection_body_areas(show_commands: bool, area: Rect) -> SelectionBodyAreas {
-    command_log_layout(show_commands, area).map_or(
+fn selection_body_areas(trace_commands: bool, area: Rect) -> SelectionBodyAreas {
+    command_log_layout(trace_commands, area).map_or(
         SelectionBodyAreas {
             main: area,
             log: None,
@@ -1913,7 +1913,7 @@ fn draw_selection_body(
     area: Rect,
     theme: &TuiTheme,
 ) {
-    let Some(layout) = command_log_layout(screen.show_commands, area) else {
+    let Some(layout) = command_log_layout(screen.trace_commands, area) else {
         draw_selection_main(frame, screen, area, theme);
         return;
     };

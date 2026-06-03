@@ -64,7 +64,7 @@ pub struct InteractiveProgressScreen {
     state: ExecutionProgressState,
     phase: ProgressPhase,
     spinner_tick: usize,
-    show_commands: bool,
+    trace_commands: bool,
     command_log_scroll_from_bottom: usize,
     table_offset: usize,
 }
@@ -78,12 +78,12 @@ enum ProgressPhase {
 }
 
 impl InteractiveProgressScreen {
-    pub const fn new(state: ExecutionProgressState, show_commands: bool) -> Self {
+    pub const fn new(state: ExecutionProgressState, trace_commands: bool) -> Self {
         Self {
             state,
             phase: ProgressPhase::Running,
             spinner_tick: 0,
-            show_commands,
+            trace_commands,
             command_log_scroll_from_bottom: 0,
             table_offset: 0,
         }
@@ -211,7 +211,7 @@ pub fn run_interactive_progress(
     state: ExecutionProgressState,
     rx: &Receiver<ExecutionProgressEvent>,
     stop_requested: Arc<AtomicBool>,
-    show_commands: bool,
+    trace_commands: bool,
 ) -> io::Result<ExecutionProgressSummary> {
     let mut stdout = io::stdout();
     enable_raw_mode()?;
@@ -229,7 +229,7 @@ pub fn run_interactive_progress(
             return Err(err);
         }
     };
-    let mut screen = InteractiveProgressScreen::new(state, show_commands);
+    let mut screen = InteractiveProgressScreen::new(state, trace_commands);
 
     let result = run_progress_loop(&mut terminal, &mut screen, rx, &stop_requested);
 
@@ -358,7 +358,7 @@ fn progress_scroll_delta(
         return None;
     }
     let app_frame = app_frame(area)?;
-    let body = progress_body_areas(screen.show_commands, app_frame.body);
+    let body = progress_body_areas(screen.trace_commands, app_frame.body);
     if let Some(log_area) = body.log
         && rect_contains(log_area, mouse.column, mouse.row)
     {
@@ -374,7 +374,7 @@ fn flush_progress_scrolls(
     scrolls: &mut ProgressScrollDeltas,
 ) {
     if let Some(app_frame) = app_frame(area) {
-        let body = progress_body_areas(screen.show_commands, app_frame.body);
+        let body = progress_body_areas(screen.trace_commands, app_frame.body);
         if scrolls.table != 0 {
             screen.scroll_table_by(scrolls.table, progress_table_visible_height(body.main));
         }
@@ -421,7 +421,7 @@ fn handle_progress_event(
         let Some(app_frame) = app_frame(area) else {
             return;
         };
-        let body = progress_body_areas(screen.show_commands, app_frame.body);
+        let body = progress_body_areas(screen.trace_commands, app_frame.body);
         screen.scroll_table_by(delta, progress_table_visible_height(body.main));
         return;
     }
@@ -507,8 +507,8 @@ struct ProgressBodyAreas {
     log: Option<Rect>,
 }
 
-fn progress_body_areas(show_commands: bool, area: Rect) -> ProgressBodyAreas {
-    command_log_layout(show_commands, area).map_or(
+fn progress_body_areas(trace_commands: bool, area: Rect) -> ProgressBodyAreas {
+    command_log_layout(trace_commands, area).map_or(
         ProgressBodyAreas {
             main: area,
             log: None,
@@ -662,7 +662,7 @@ fn draw_progress_body(
     area: Rect,
     theme: &TuiTheme,
 ) {
-    let Some(layout) = command_log_layout(screen.show_commands, area) else {
+    let Some(layout) = command_log_layout(screen.trace_commands, area) else {
         draw_progress_table(frame, screen, area, theme);
         return;
     };

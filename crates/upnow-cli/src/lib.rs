@@ -35,8 +35,7 @@ use upnow_execution::{
 };
 use upnow_infra::{
     Clock, Env, HttpClient, HttpSettings, LoggingOptions, MutationMode, ProcessRunner,
-    REQUIRE_MUTATION_MODE_ENV, command_exists_in_env, init_logging, run_ordered_parallel,
-    run_ordered_parallel_stoppable,
+    command_exists_in_env, init_logging, run_ordered_parallel, run_ordered_parallel_stoppable,
 };
 use upnow_managers::adapter::{ManagerAdapter, ManagerAdapterError};
 use upnow_planning::{
@@ -137,11 +136,15 @@ pub enum BatchCommand {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "upnow")]
+#[command(
+    name = "upnow",
+    about = "Keep globally installed developer tools up to date."
+)]
 #[expect(clippy::struct_excessive_bools)]
 struct Cli {
     #[command(subcommand)]
     command: Option<CliCommand>,
+    /// Run only the selected managers, separated by commas.
     #[arg(
         long = "managers",
         alias = "manager",
@@ -149,39 +152,49 @@ struct Cli {
         global = true
     )]
     managers: Vec<String>,
+    /// Override config for this run, such as npm.mode=plan.
     #[arg(long = "set", short = 'S', global = true)]
     overrides: Vec<String>,
+    /// Show more detail about decisions and skipped work.
     #[arg(long, global = true)]
     verbose: bool,
-    /// Maximum concurrent metadata checks per manager.
+    /// Limit concurrent metadata checks within each manager.
     #[arg(long, default_value_t = DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER, global = true)]
     max_parallel_checks_per_manager: usize,
-    /// Maximum managers to scan or plan concurrently.
+    /// Limit how many managers run at the same time.
     #[arg(long, global = true)]
     manager_concurrency: Option<NonZeroUsize>,
+    /// Disable colored output.
     #[arg(long, global = true)]
     no_color: bool,
+    /// Use plain output without terminal styling.
     #[arg(long, global = true)]
     plain: bool,
-    /// Persist full command debug logs (stdout/stderr + timing) under the legacy log location.
+    /// Save command output and timing details to a log file.
     #[arg(long, global = true)]
-    debug_commands: bool,
-    /// Print each command to stderr before execution.
-    #[arg(long, visible_alias = "print-commands", global = true)]
-    show_commands: bool,
-    /// Apply without the interactive selection UI.
-    #[arg(long, visible_aliases = ["yes", "no-approval"], global = true)]
+    log_commands: bool,
+    /// Print each external command before it runs.
+    #[arg(
+        long,
+        visible_aliases = ["print-commands"],
+        global = true
+    )]
+    trace_commands: bool,
+    /// Apply selected updates without opening the interactive picker.
+    #[arg(long, visible_aliases = ["dangerously-skip-confirmation", "no-approval"], global = true)]
     yolo: bool,
-    /// Debug-only: force non-mutating behavior for mutating commands.
-    #[cfg(debug_assertions)]
+    /// Preview apply without running install or upgrade commands.
     #[arg(long, global = true)]
-    debug_no_mutate: bool,
+    dry_run: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
 enum CliCommand {
+    /// List installed tools and versions.
     Scan,
+    /// Show available updates without applying them.
     Plan,
+    /// Update selected tools.
     Apply,
 }
 
@@ -211,20 +224,6 @@ impl BatchCommand {
             Self::Scan => BatchTerminalAction::Scan,
             Self::Plan => BatchTerminalAction::Plan,
             Self::Apply => BatchTerminalAction::Apply,
-        }
-    }
-}
-
-impl Cli {
-    const fn debug_no_mutate(&self) -> bool {
-        #[cfg(debug_assertions)]
-        {
-            self.debug_no_mutate
-        }
-
-        #[cfg(not(debug_assertions))]
-        {
-            false
         }
     }
 }
@@ -1941,10 +1940,7 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
     let command = cli.command.unwrap_or(CliCommand::Plan);
     let interactive_apply = command == CliCommand::Apply && !cli.yolo;
     let log_dir = init_command_logging(cli, &env, command, interactive_apply)?;
-    let process = ProcessRunner::new(MutationMode::from_env_and_debug_no_mutate(
-        &env,
-        cli.debug_no_mutate(),
-    ));
+    let process = ProcessRunner::new(MutationMode::from_dry_run(cli.dry_run));
     if cli.yolo && command != CliCommand::Apply {
         return Err(AppError::InvalidArgs(
             "--yolo is only supported with apply".to_owned(),
@@ -1956,7 +1952,7 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
                 "interactive apply requires a TTY; use --yolo for non-interactive apply".to_owned(),
             ));
         }
-        let command_log = InteractiveCommandLog::new(cli.show_commands);
+        let command_log = InteractiveCommandLog::new(cli.trace_commands);
         return run_interactive_apply_with_sources_and_options(
             config,
             &process,
@@ -1978,8 +1974,8 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
         verbose: cli.verbose,
     });
     let terminal = BatchTerminal::from_environment(theme);
-    maybe_emit_apply_mutation_mode_notice(command.into(), &process, &env, terminal)?;
-    let terminal = if cli.show_commands {
+    maybe_emit_apply_mutation_mode_notice(command.into(), &process, terminal, cli.dry_run);
+    let terminal = if cli.trace_commands {
         terminal.suppress_spinner()
     } else {
         terminal
@@ -2013,26 +2009,26 @@ fn init_command_logging(
     interactive_apply: bool,
 ) -> Result<Option<PathBuf>, AppError> {
     let options = LoggingOptions {
-        debug_commands: cli.debug_commands,
-        show_commands: cli.show_commands && !interactive_apply,
-        show_command_colors: cli.show_commands
+        log_commands: cli.log_commands,
+        trace_commands: cli.trace_commands && !interactive_apply,
+        trace_command_colors: cli.trace_commands
             && !interactive_apply
             && command_prefix_color_enabled(cli),
     };
 
     let path = match init_logging(options, env) {
         Ok(path) => Some(path),
-        Err(err) if options.debug_commands || command == CliCommand::Apply => {
+        Err(err) if options.log_commands || command == CliCommand::Apply => {
             return Err(AppError::Execution(err.to_string()));
         }
         Err(_) => None,
     };
 
-    if options.debug_commands && (cli.yolo || command != CliCommand::Apply) {
+    if options.log_commands && (cli.yolo || command != CliCommand::Apply) {
         let path = path
             .as_ref()
-            .expect("debug logging initialization succeeded");
-        eprintln!("debug logs: {}", path.display());
+            .expect("command logging initialization succeeded");
+        eprintln!("command logs: {}", path.display());
     }
 
     Ok(path)
@@ -2049,81 +2045,38 @@ fn command_prefix_color_enabled(cli: &Cli) -> bool {
 fn maybe_emit_apply_mutation_mode_notice(
     command: BatchCommand,
     process: &ProcessRunner,
-    env: &Env,
     terminal: BatchTerminal,
-) -> Result<(), AppError> {
-    if let Some(notice) = apply_mutation_mode_notice(command, process, env, terminal)? {
+    dry_run: bool,
+) {
+    if let Some(notice) = apply_mutation_mode_notice(command, process, terminal, dry_run) {
         eprintln!("{notice}");
     }
-    Ok(())
 }
 
 fn apply_mutation_mode_notice(
     command: BatchCommand,
     process: &ProcessRunner,
-    env: &Env,
     terminal: BatchTerminal,
-) -> Result<Option<MutationNotice>, AppError> {
+    dry_run: bool,
+) -> Option<MutationNotice> {
     if command != BatchCommand::Apply {
-        return Ok(None);
+        return None;
     }
 
-    let Some(mutation_mode) = process.mutation_mode() else {
-        return Ok(None);
-    };
+    let mutation_mode = process.mutation_mode()?;
 
-    validate_required_mutation_mode(env, mutation_mode)?;
-
-    if !mutation_mode_notice_enabled(env) || !terminal.notice_enabled() {
-        return Ok(None);
+    if !mutation_mode_notice_enabled(dry_run) || !terminal.notice_enabled() {
+        return None;
     }
 
-    Ok(Some(match mutation_mode {
+    Some(match mutation_mode {
         MutationMode::Skip => MutationNotice::Skip,
         MutationMode::Real => MutationNotice::Real,
-    }))
+    })
 }
 
-fn mutation_mode_notice_enabled(env: &Env) -> bool {
-    cfg!(debug_assertions) || env.non_empty_var(REQUIRE_MUTATION_MODE_ENV).is_some()
-}
-
-fn validate_required_mutation_mode(env: &Env, mutation_mode: MutationMode) -> Result<(), AppError> {
-    let Some(raw) = env.non_empty_var(REQUIRE_MUTATION_MODE_ENV) else {
-        return Ok(());
-    };
-
-    match raw.to_ascii_lowercase().as_str() {
-        "skip" if mutation_mode == MutationMode::Skip => Ok(()),
-        "real" if mutation_mode == MutationMode::Real => Ok(()),
-        "skip" => Err(AppError::InvalidArgs(format!(
-            "{REQUIRE_MUTATION_MODE_ENV}=skip requires effective skip mode ({})",
-            skip_mode_hint()
-        ))),
-        "real" => Err(AppError::InvalidArgs(format!(
-            "{REQUIRE_MUTATION_MODE_ENV}=real requires effective real mode ({})",
-            real_mode_hint()
-        ))),
-        _ => Err(AppError::InvalidArgs(format!(
-            "{REQUIRE_MUTATION_MODE_ENV} must be one of: skip, real (got '{raw}')"
-        ))),
-    }
-}
-
-const fn skip_mode_hint() -> &'static str {
-    if cfg!(debug_assertions) {
-        "set UPNOW_SKIP_MUTATING_COMMANDS=1 or --debug-no-mutate in debug builds"
-    } else {
-        "set UPNOW_SKIP_MUTATING_COMMANDS=1"
-    }
-}
-
-const fn real_mode_hint() -> &'static str {
-    if cfg!(debug_assertions) {
-        "set UPNOW_SKIP_MUTATING_COMMANDS=0 and disable --debug-no-mutate"
-    } else {
-        "set UPNOW_SKIP_MUTATING_COMMANDS=0"
-    }
+const fn mutation_mode_notice_enabled(dry_run: bool) -> bool {
+    dry_run || cfg!(debug_assertions)
 }
 
 #[expect(clippy::too_many_arguments)]

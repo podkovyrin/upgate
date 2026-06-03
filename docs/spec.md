@@ -164,5 +164,6 @@ notes.
 ## Logging and diagnostics
 
 - Mutating operations are logged.
-- `--debug-commands` enables detailed command-level diagnostics.
-- `--show-commands` prints commands before execution.
+- `--log-commands` enables detailed command-level diagnostics.
+- `--trace-commands` prints commands before execution; `--show-commands` is an alias.
+- `--dry-run` skips mutating commands while still planning what would run.
