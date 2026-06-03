@@ -585,6 +585,14 @@ fn resolve_forced_seed(
         let target = known_blocked_target(seed, reason, diagnostics)?;
         return Ok(resolved_seed_item(plan_item_id, seed, target, false, true));
     }
+    if matches!(
+        reason,
+        BlockReason::AuditVulnerable | BlockReason::AuditLookupFailed
+    ) && support.native_selected
+    {
+        let target = known_blocked_target(seed, reason, diagnostics)?;
+        return Ok(resolved_seed_item(plan_item_id, seed, target, false, false));
+    }
     Err(ExecutionSelectionError::ExactTargetUnsupported(
         plan_item_id.to_string(),
     ))

@@ -352,7 +352,7 @@ fn blocked_target_options(
         BlockReason::VersionPolicy(_)
             | BlockReason::AuditVulnerable
             | BlockReason::AuditLookupFailed
-    ) || !seed.execution_support.supports_age_bypass()
+    ) || !blocked_target_can_be_forced(seed, reason)
     {
         return Vec::new();
     }
@@ -374,6 +374,14 @@ fn blocked_target_options(
         notes,
         TargetOptionKind::ForcedCandidate,
     )
+}
+
+fn blocked_target_can_be_forced(seed: &UpdateSeed, reason: &BlockReason) -> bool {
+    seed.execution_support.supports_age_bypass()
+        || (matches!(
+            reason,
+            BlockReason::AuditVulnerable | BlockReason::AuditLookupFailed
+        ) && seed.execution_support.supports_native_target())
 }
 
 fn blocked_target_version(
