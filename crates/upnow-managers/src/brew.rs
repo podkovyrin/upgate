@@ -5,12 +5,12 @@ use std::time::{Duration, SystemTime};
 use chrono::DateTime;
 use serde::Deserialize;
 use upnow_domain::{
-    DomainError, ExecutionSupport, ExecutionTargetKind, InstalledTool, ManagerConfig, ManagerId,
-    ManagerMetadata, ManagerScanEvidenceInput, ManagerScanInput, ManagerSelectedTarget,
-    ManagerUpdateInput, PackageName, ReleaseEntry, ReleaseEvidenceSource, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, SkipReason, TargetAgeEvidence,
-    TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionReleaseEvidence, VersionScheme,
-    VersionText,
+    AuditPackageName, AuditSubject, DomainError, ExecutionSupport, ExecutionTargetKind,
+    InstalledTool, ManagerConfig, ManagerId, ManagerMetadata, ManagerScanEvidenceInput,
+    ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput, OsvEcosystem, PackageName,
+    ReleaseEntry, ReleaseEvidenceSource, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
+    ReleaseTimestamp, SkipReason, TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName,
+    UpdateSeed, VersionReleaseEvidence, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -94,6 +94,7 @@ pub struct BrewInstalledPackage {
     pub name: PackageName,
     pub version: VersionText,
     pub kind: BrewPackageKind,
+    pub repo_url: Option<String>,
     pub tap: Option<String>,
     pub source_path: Option<String>,
 }
@@ -105,10 +106,12 @@ pub struct BrewOutdatedPackage {
     pub target: VersionText,
     pub kind: BrewPackageKind,
     pub pinned: bool,
+    pub repo_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BrewPackageMetadata {
+    repo_url: Option<String>,
     tap: Option<String>,
     source_path: Option<String>,
 }
@@ -142,6 +145,8 @@ struct OutdatedFormula {
     current_version: String,
     #[serde(default)]
     pinned: bool,
+    repo_url: Option<String>,
+    urls: Option<BrewUrls>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,6 +155,8 @@ struct OutdatedCask {
     #[serde(default)]
     installed_versions: Vec<String>,
     current_version: String,
+    repo_url: Option<String>,
+    urls: Option<BrewUrls>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,6 +170,8 @@ struct InfoRoot {
 #[derive(Debug, Deserialize)]
 struct FormulaInfo {
     full_name: String,
+    repo_url: Option<String>,
+    urls: Option<BrewUrls>,
     tap: Option<String>,
     ruby_source_path: Option<String>,
     #[serde(default)]
@@ -181,9 +190,21 @@ struct FormulaInstalledInfo {
 #[derive(Debug, Deserialize)]
 struct CaskInfo {
     token: String,
+    repo_url: Option<String>,
+    urls: Option<BrewUrls>,
     tap: Option<String>,
     ruby_source_path: Option<String>,
     installed: Option<CaskInstalledVersions>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BrewUrls {
+    head: Option<BrewHeadUrl>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BrewHeadUrl {
+    url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -348,6 +369,7 @@ pub fn parse_outdated_json(raw: &str) -> Result<Vec<BrewOutdatedPackage>, BrewEr
             target: VersionText::new(formula.current_version)?,
             kind: BrewPackageKind::Formula,
             pinned: formula.pinned,
+            repo_url: brew_repo_url(formula.repo_url, formula.urls),
         });
     }
     for cask in parsed.casks {
@@ -357,6 +379,7 @@ pub fn parse_outdated_json(raw: &str) -> Result<Vec<BrewOutdatedPackage>, BrewEr
             target: VersionText::new(cask.current_version)?,
             kind: BrewPackageKind::Cask,
             pinned: false,
+            repo_url: brew_repo_url(cask.repo_url, cask.urls),
         });
     }
     Ok(packages)
@@ -388,6 +411,7 @@ pub fn parse_installed_info_json(raw: &str) -> Result<Vec<BrewInstalledPackage>,
             name: PackageName::new(formula.full_name)?,
             version: VersionText::new(version)?,
             kind: BrewPackageKind::Formula,
+            repo_url: brew_repo_url(formula.repo_url, formula.urls),
             tap: formula.tap,
             source_path: formula.ruby_source_path,
         });
@@ -402,6 +426,7 @@ pub fn parse_installed_info_json(raw: &str) -> Result<Vec<BrewInstalledPackage>,
             name: PackageName::new(cask.token)?,
             version: VersionText::new(version)?,
             kind: BrewPackageKind::Cask,
+            repo_url: brew_repo_url(cask.repo_url, cask.urls),
             tap: cask.tap,
             source_path: cask.ruby_source_path,
         });
@@ -427,6 +452,7 @@ fn parse_package_info_json(
                 BrewPackageKind::Formula,
             ),
             BrewPackageMetadata {
+                repo_url: brew_repo_url(formula.repo_url, formula.urls),
                 tap: formula.tap,
                 source_path: formula.ruby_source_path,
             },
@@ -436,6 +462,7 @@ fn parse_package_info_json(
         packages.insert(
             brew_package_key(PackageName::new(cask.token)?, BrewPackageKind::Cask),
             BrewPackageMetadata {
+                repo_url: brew_repo_url(cask.repo_url, cask.urls),
                 tap: cask.tap,
                 source_path: cask.ruby_source_path,
             },
@@ -487,7 +514,7 @@ pub fn update_inputs(
                 package.name.clone(),
                 package.kind.clone(),
             ));
-            let installed = installed_tool_for_outdated(&package)?;
+            let installed = installed_tool_for_outdated(&package, metadata)?;
             if package.pinned {
                 return Ok(ManagerUpdateInput::Skipped {
                     installed,
@@ -604,6 +631,7 @@ fn scan_inputs_with_release_evidence(
             Ok(BrewVerboseScanJob {
                 tool: installed_tool(&package)?,
                 metadata: BrewPackageMetadata {
+                    repo_url: package.repo_url,
                     tap: package.tap,
                     source_path: package.source_path,
                 },
@@ -949,25 +977,58 @@ fn first_version(versions: Vec<String>) -> String {
 }
 
 fn installed_tool(package: &BrewInstalledPackage) -> Result<InstalledTool, BrewError> {
-    Ok(InstalledTool::new(
+    let tool = InstalledTool::new(
         BrewManager::id(),
         brew_tool_id(&package.kind, &package.name)?,
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
         package.version.clone(),
         ManagerMetadata::empty(),
-    ))
+    );
+    if let Some(subject) = brew_audit_subject(package.repo_url.as_deref()) {
+        Ok(tool.with_audit_subject(subject))
+    } else {
+        Ok(tool)
+    }
 }
 
-fn installed_tool_for_outdated(package: &BrewOutdatedPackage) -> Result<InstalledTool, BrewError> {
-    Ok(InstalledTool::new(
+fn installed_tool_for_outdated(
+    package: &BrewOutdatedPackage,
+    metadata: Option<&BrewPackageMetadata>,
+) -> Result<InstalledTool, BrewError> {
+    let tool = InstalledTool::new(
         BrewManager::id(),
         brew_tool_id(&package.kind, &package.name)?,
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
         package.installed.clone(),
         ManagerMetadata::empty(),
-    ))
+    );
+    let repo_url = package
+        .repo_url
+        .as_deref()
+        .or_else(|| metadata.and_then(|metadata| metadata.repo_url.as_deref()));
+    if let Some(subject) = brew_audit_subject(repo_url) {
+        Ok(tool.with_audit_subject(subject))
+    } else {
+        Ok(tool)
+    }
+}
+
+fn brew_audit_subject(repo_url: Option<&str>) -> Option<AuditSubject> {
+    let repo_url = repo_url?.trim();
+    if repo_url.is_empty() {
+        return None;
+    }
+    AuditPackageName::new(repo_url.to_owned())
+        .ok()
+        .map(|name| AuditSubject::new(OsvEcosystem::Git, name))
+}
+
+fn brew_repo_url(repo_url: Option<String>, urls: Option<BrewUrls>) -> Option<String> {
+    repo_url
+        .filter(|url| !url.trim().is_empty())
+        .or_else(|| urls.and_then(|urls| urls.head).and_then(|head| head.url))
 }
 
 fn brew_tool_id(kind: &BrewPackageKind, name: &PackageName) -> Result<ToolId, BrewError> {

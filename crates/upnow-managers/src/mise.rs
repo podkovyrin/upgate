@@ -9,10 +9,11 @@ use semver::Version as SemverVersion;
 use serde::Deserialize;
 use upnow_domain::{
     AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
-    ManagerId, ManagerMetadata, ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput,
-    MinAgeConstraintSupport, OsvEcosystem, PackageName, ReleaseEntry, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
-    TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    ManagerId, ManagerMetadata, ManagerScanEvidenceInput, ManagerScanInput, ManagerSelectedTarget,
+    ManagerUpdateInput, MinAgeConstraintSupport, OsvEcosystem, PackageName, ReleaseEntry,
+    ReleaseEvidenceSource, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
+    ReleaseTimestamp, TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed,
+    VersionPolicy, VersionReleaseEvidence, VersionScheme, VersionText,
 };
 use upnow_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionPlan,
@@ -148,6 +149,17 @@ impl ManagerAdapter for MiseManager {
                     .map(|tool| installed_tool(&tool).map(ManagerScanInput::Installed))
                     .collect()
             })
+            .map_err(|err| adapter_error(&err))
+    }
+
+    fn scan_inputs_with_release_evidence(
+        &self,
+        process: &ProcessRunner,
+        http: &HttpClient,
+        env: &Env,
+        max_parallel_checks_per_manager: usize,
+    ) -> Result<Vec<ManagerScanEvidenceInput>, ManagerAdapterError> {
+        scan_inputs_with_release_evidence(process, http, env, max_parallel_checks_per_manager)
             .map_err(|err| adapter_error(&err))
     }
 
@@ -426,7 +438,7 @@ pub fn update_inputs(
         MISE_AGE_MAX_PARALLEL_CHECKS,
     );
     run_ordered_parallel(plan_items, threads, MANAGER_ID, |item| {
-        let installed = installed_tool_from_plan_item(&item)?;
+        let installed = installed_tool_from_plan_item(process, &item)?;
         let target_age = lookup_target_age(process, http, env, &item.tool, &item.to_version);
         let version_scheme = version_scheme(&item.from_version, &item.to_version);
         let advisory_release_lookup = if let Some(latest) = advisory_latest.latest.get(&item.tool)
@@ -453,6 +465,33 @@ pub fn update_inputs(
             ExecutionSupport::resolver_native(MinAgeConstraintSupport::Optional, true, true),
         )))
     })?
+    .into_iter()
+    .collect()
+}
+
+fn scan_inputs_with_release_evidence(
+    process: &ProcessRunner,
+    http: &HttpClient,
+    env: &Env,
+    max_parallel_checks_per_manager: usize,
+) -> Result<Vec<ManagerScanEvidenceInput>, MiseError> {
+    let tools = installed_tools(process)?;
+    run_ordered_parallel(
+        tools,
+        max_parallel_checks_per_manager.max(1),
+        "mise verbose scan",
+        |tool| {
+            let installed = installed_tool_with_registry_audit(process, &tool)?;
+            let release_lookup = lookup_release_for_tool(
+                process,
+                http,
+                env,
+                &installed.package_name,
+                Some(&installed.installed_version),
+            );
+            Ok(scan_input_for_release_lookup(installed, release_lookup))
+        },
+    )?
     .into_iter()
     .collect()
 }
@@ -640,6 +679,30 @@ fn lookup_release_for_tool(
             ReleaseLookupResult::MissingMetadata
         }
         Err(err) => ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(err.to_string())),
+    }
+}
+
+fn scan_input_for_release_lookup(
+    tool: InstalledTool,
+    lookup: ReleaseLookupResult,
+) -> ManagerScanEvidenceInput {
+    match lookup {
+        ReleaseLookupResult::Known(timeline) => ManagerScanEvidenceInput::Installed {
+            release_evidence: matching_entry(&timeline, &tool.installed_version).map(|entry| {
+                VersionReleaseEvidence::new(
+                    tool.installed_version.clone(),
+                    entry.published_at.clone(),
+                    ReleaseEvidenceSource::ReleaseTimeline,
+                )
+            }),
+            tool,
+        },
+        ReleaseLookupResult::MissingMetadata | ReleaseLookupResult::LookupFailed(_) => {
+            ManagerScanEvidenceInput::Installed {
+                tool,
+                release_evidence: None,
+            }
+        }
     }
 }
 
@@ -959,7 +1022,30 @@ fn installed_tool(tool: &MiseInstalledTool) -> Result<InstalledTool, MiseError> 
     })
 }
 
-fn installed_tool_from_plan_item(item: &MisePlanItem) -> Result<InstalledTool, MiseError> {
+fn installed_tool_with_registry_audit(
+    process: &ProcessRunner,
+    tool: &MiseInstalledTool,
+) -> Result<InstalledTool, MiseError> {
+    let installed = InstalledTool::new(
+        MiseManager::id(),
+        ToolId::new(tool.tool.as_str().to_owned())?,
+        tool.tool.clone(),
+        ToolName::new(tool.tool.as_str().to_owned())?,
+        tool.version.clone(),
+        ManagerMetadata::empty(),
+    );
+    Ok(
+        match audit_subject_for_mise_tool_with_registry(process, &tool.tool)? {
+            Some(subject) => installed.with_audit_subject(subject),
+            None => installed,
+        },
+    )
+}
+
+fn installed_tool_from_plan_item(
+    process: &ProcessRunner,
+    item: &MisePlanItem,
+) -> Result<InstalledTool, MiseError> {
     let installed = InstalledTool::new(
         MiseManager::id(),
         ToolId::new(item.tool.as_str().to_owned())?,
@@ -968,16 +1054,21 @@ fn installed_tool_from_plan_item(item: &MisePlanItem) -> Result<InstalledTool, M
         item.from_version.clone(),
         ManagerMetadata::empty(),
     );
-    Ok(match audit_subject_for_mise_tool(&item.tool)? {
-        Some(subject) => installed.with_audit_subject(subject),
-        None => installed,
-    })
+    Ok(
+        match audit_subject_for_mise_tool_with_registry(process, &item.tool)? {
+            Some(subject) => installed.with_audit_subject(subject),
+            None => installed,
+        },
+    )
 }
 
 fn audit_subject_for_mise_tool(tool: &PackageName) -> Result<Option<AuditSubject>, MiseError> {
     let Some((backend, package)) = tool.as_str().split_once(':') else {
         return Ok(None);
     };
+    if backend == "github" {
+        return github_audit_subject_for_backend(tool.as_str());
+    }
     let ecosystem = match backend {
         "npm" => OsvEcosystem::Npm,
         "pipx" | "uvx" => OsvEcosystem::Pypi,
@@ -989,6 +1080,47 @@ fn audit_subject_for_mise_tool(tool: &PackageName) -> Result<Option<AuditSubject
     Ok(Some(AuditSubject::new(
         ecosystem,
         AuditPackageName::new(package.to_owned())?,
+    )))
+}
+
+fn audit_subject_for_mise_tool_with_registry(
+    process: &ProcessRunner,
+    tool: &PackageName,
+) -> Result<Option<AuditSubject>, MiseError> {
+    if let Some(subject) = audit_subject_for_mise_tool(tool)? {
+        return Ok(Some(subject));
+    }
+    let backends = match registry_backends(process, tool.as_str()) {
+        Ok(backends) => backends,
+        Err(err) if err.is_interruption() => return Err(err),
+        Err(_) => return Ok(None),
+    };
+    if backends.len() != 1 {
+        return Ok(None);
+    }
+    github_audit_subject_for_backend(&backends[0])
+}
+
+fn github_audit_subject_for_backend(backend: &str) -> Result<Option<AuditSubject>, MiseError> {
+    let backend = strip_backend_options(backend.trim());
+    let Some(repo) = backend.strip_prefix("github:") else {
+        return Ok(None);
+    };
+    github_audit_subject(repo)
+}
+
+fn github_audit_subject(repo: &str) -> Result<Option<AuditSubject>, MiseError> {
+    let repo = repo.trim();
+    let Some((owner, name)) = repo.split_once('/') else {
+        return Ok(None);
+    };
+    let name = name.trim_end_matches(".git");
+    if owner.is_empty() || name.is_empty() || name.contains('/') {
+        return Ok(None);
+    }
+    Ok(Some(AuditSubject::new(
+        OsvEcosystem::Git,
+        AuditPackageName::new(format!("https://github.com/{owner}/{name}.git"))?,
     )))
 }
 

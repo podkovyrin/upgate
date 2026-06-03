@@ -10,6 +10,7 @@ pub enum OsvEcosystem {
     RubyGems,
     Go,
     NuGet,
+    Git,
 }
 
 impl OsvEcosystem {
@@ -21,6 +22,7 @@ impl OsvEcosystem {
             Self::RubyGems => "RubyGems",
             Self::Go => "Go",
             Self::NuGet => "NuGet",
+            Self::Git => "GIT",
         }
     }
 }

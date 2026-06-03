@@ -128,19 +128,23 @@ Expected MVP mappings:
 - `gem`: `RubyGems`
 - `go`: `Go`
 - `dotnet`: `NuGet`
+- `brew`: `GIT` when Homebrew package JSON provides a non-empty `repo_url`
+  or `urls.head.url`; the OSV package name is that repository URL
 - `mise`: only when registry backend data gives an unambiguous supported OSV
   ecosystem/package, such as `npm:`, `pipx:`, `uvx:`, `cargo:`, `go:`, or
-  `gem:`
+  `gem:`. A single `github:owner/repo` backend maps to `GIT` package
+  `https://github.com/owner/repo.git`
 
 Expected unsupported or partial mappings:
 
-- `brew`: unsupported by default. Homebrew formula/cask names are distributions
-  of tools, not reliable OSV package identities.
-- `mise` backends such as `github`, `ubi`, `aqua`, `asdf`, or ambiguous backend
-  lists are unsupported unless a precise OSV ecosystem/package is available.
+- `brew`: unsupported when Homebrew package JSON does not provide `repo_url`
+  or `urls.head.url`. Formula/cask names and stable source archive URLs are
+  distributions of tools, not reliable OSV package identities.
+- `mise` backends such as `ubi`, `aqua`, `asdf`, or ambiguous backend lists are
+  unsupported unless a precise OSV ecosystem/package is available.
 
-Do not infer ecosystems from display names, homepages, repository URLs, source
-URLs, cask tokens, or free-form manager metadata.
+Do not infer ecosystems from display names, homepages, source URLs, cask tokens,
+or free-form manager metadata.
 
 ## Behavior
 
@@ -464,7 +468,10 @@ call counts unrelated to product behavior, or current module boundaries.
 ### Phase 3: Manager Audit Subjects
 
 - Add audit subject emission for managers with explicit ecosystem mappings.
-- Keep Brew unsupported by default.
+- Add Brew `GIT` audit subjects only when Homebrew package JSON provides
+  `repo_url` or `urls.head.url`.
+- Add Mise `GIT` audit subjects only for explicit or single registry
+  `github:owner/repo` backends.
 - Keep ambiguous Mise backends unsupported.
 - Do not add OSV calls or audit decisions to managers.
 
