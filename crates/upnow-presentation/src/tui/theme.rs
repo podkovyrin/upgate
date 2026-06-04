@@ -10,6 +10,7 @@ pub(super) struct TuiTheme {
     pub selected: Style,
     pub selected_row_highlight: Style,
     pub keycap: Style,
+    pub primary_keycap: Style,
     pub note: Style,
     pub forced: Style,
     pub pending: Style,
@@ -45,6 +46,10 @@ impl TuiTheme {
                     .fg(Color::Black)
                     .bg(Color::Gray)
                     .add_modifier(Modifier::BOLD),
+                primary_keycap: Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Blue)
+                    .add_modifier(Modifier::BOLD),
                 note: Style::default().fg(Color::Gray),
                 forced: Style::default().fg(Color::Red),
                 pending: Style::default().fg(Color::Gray),
@@ -70,6 +75,7 @@ impl TuiTheme {
             selected,
             selected_row_highlight: selected,
             keycap: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            primary_keycap: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
             note: Style::default(),
             forced: Style::default(),
             pending: Style::default(),

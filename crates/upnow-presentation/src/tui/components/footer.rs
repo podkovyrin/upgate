@@ -14,8 +14,16 @@ pub fn key_footer(bindings: &[KeyBinding<'_>], theme: &TuiTheme) -> Line<'static
         if idx > 0 {
             spans.push(Span::raw(" "));
         }
-        spans.push(Span::styled(format!(" {} ", binding.key), theme.keycap));
-        spans.push(Span::raw(format!(" {}", binding.label)));
+        if binding.key == "C" && binding.label == "confirm" {
+            spans.push(Span::styled("| ", theme.separator));
+            spans.push(Span::styled(
+                format!(" {} {} ", binding.key, binding.label),
+                theme.primary_keycap,
+            ));
+        } else {
+            spans.push(Span::styled(format!(" {} ", binding.key), theme.keycap));
+            spans.push(Span::raw(format!(" {}", binding.label)));
+        }
     }
     Line::from(spans)
 }
