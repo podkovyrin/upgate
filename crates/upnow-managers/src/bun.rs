@@ -150,13 +150,12 @@ impl ManagerAdapter for BunManager {
         env: &Env,
         _max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerScanEvidenceInput>, ManagerAdapterError> {
-        let bun = bun_executable(process);
         let installed =
-            installed_global_with_bun(process, &bun).map_err(|err| adapter_error(&err))?;
+            installed_global_with_bun(process, MANAGER_ID).map_err(|err| adapter_error(&err))?;
         installed
             .into_iter()
             .map(|tool| {
-                match lookup_release_with_bun(process, env, &bun, &tool.package_name)
+                match lookup_release_with_bun(process, env, MANAGER_ID, &tool.package_name)
                     .map_err(|err| adapter_error(&err))?
                 {
                     ReleaseLookupResult::Known(timeline) => {
@@ -187,8 +186,7 @@ impl ManagerAdapter for BunManager {
         env: &Env,
         subject: ReleaseLookupSubject<'_>,
     ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
-        let bun = bun_executable(process);
-        lookup_release_with_bun(process, env, &bun, subject.package_name())
+        lookup_release_with_bun(process, env, MANAGER_ID, subject.package_name())
             .map_err(|err| adapter_error(&err))
     }
 
@@ -210,11 +208,11 @@ impl ManagerAdapter for BunManager {
 
     fn commands_for_execution_plan(
         &self,
-        process: &ProcessRunner,
+        _: &ProcessRunner,
         _env: &Env,
         plan: &ResolvedExecutionPlan,
     ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
-        commands_for_execution_plan(process, plan, self.config.min_release_age)
+        commands_for_execution_plan(plan, self.config.min_release_age)
             .map_err(|err| adapter_error(&err))
     }
 }
@@ -266,8 +264,7 @@ fn is_missing_global_manifest(text: &str) -> bool {
 ///
 /// Returns an error when the command fails unexpectedly or output cannot be parsed.
 pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, BunError> {
-    let bun = bun_executable(process);
-    installed_global_with_bun(process, &bun)
+    installed_global_with_bun(process, MANAGER_ID)
 }
 
 fn installed_global_with_bun(
@@ -314,11 +311,10 @@ pub fn update_inputs(
     env: &Env,
     max_parallel_checks_per_manager: usize,
 ) -> Result<Vec<ManagerUpdateInput>, BunError> {
-    let bun = bun_executable(process);
-    let tools = installed_global_with_bun(process, &bun)?;
+    let tools = installed_global_with_bun(process, MANAGER_ID)?;
     let threads = effective_parallelism(max_parallel_checks_per_manager, BUN_MAX_PARALLEL_CHECKS);
     run_ordered_parallel(tools, threads, MANAGER_ID, |tool| {
-        let lookup = lookup_release_with_bun(process, env, &bun, &tool.package_name)?;
+        let lookup = lookup_release_with_bun(process, env, MANAGER_ID, &tool.package_name)?;
         Ok(update_input(tool, lookup))
     })?
     .into_iter()
@@ -406,11 +402,9 @@ fn bun_global_cwd_from_values(bun_install: Option<&str>, home: Option<&str>) -> 
 ///
 /// Returns an error when the resolved execution mode is not supported by Bun.
 pub fn commands_for_execution_plan(
-    process: &ProcessRunner,
     plan: &ResolvedExecutionPlan,
     min_release_age: Duration,
 ) -> Result<Vec<ExecutionCommand>, BunError> {
-    let bun = bun_executable(process);
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
@@ -432,7 +426,7 @@ pub fn commands_for_execution_plan(
             ExecutionCommandIntent::NativeGlobal(items) => {
                 commands.push(ExecutionCommand {
                     items: items.iter().map(ExecutionCommandItem::from).collect(),
-                    command: global_update_command(&bun, min_release_age),
+                    command: global_update_command(MANAGER_ID, min_release_age),
                 });
             }
             ExecutionCommandIntent::Exact(item) => {
@@ -442,7 +436,7 @@ pub fn commands_for_execution_plan(
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
                     command: exact_command_with_program(
-                        &bun,
+                        MANAGER_ID,
                         &item.package_name,
                         target_version,
                         min_release_age,
@@ -454,7 +448,7 @@ pub fn commands_for_execution_plan(
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
                     command: selected_native_update_command(
-                        &bun,
+                        MANAGER_ID,
                         &item.package_name,
                         min_release_age,
                         item.bypass_min_release_age,
@@ -512,29 +506,6 @@ fn selected_native_update_command(
         args.push(min_age_secs);
     }
     CommandSpec::new(bun, args).mutating()
-}
-
-fn bun_executable(process: &ProcessRunner) -> String {
-    if let Ok(path) = std::env::var("UPNOW_BUN_BIN")
-        && let Some(trimmed) = trim_non_empty(&path)
-    {
-        return trimmed.to_owned();
-    }
-    process
-        .run(
-            &CommandSpec::new("mise", ["which", "bun"]),
-            &CommandCheck::Success,
-        )
-        .map_or_else(
-            |_| MANAGER_ID.to_owned(),
-            |output| {
-                output
-                    .stdout()
-                    .ok()
-                    .and_then(trim_non_empty)
-                    .map_or_else(|| MANAGER_ID.to_owned(), ToOwned::to_owned)
-            },
-        )
 }
 
 fn trim_non_empty(value: &str) -> Option<&str> {
