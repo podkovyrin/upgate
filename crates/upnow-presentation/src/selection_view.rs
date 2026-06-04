@@ -222,10 +222,10 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
                 installed_version: candidate.installed_version.clone(),
                 target_version: candidate.target_version().cloned(),
                 status: SelectionRowStatus::Delayed,
-                default_visibility: if target_options.is_empty() {
-                    SelectionRowVisibility::HiddenUntilViewAll
-                } else {
+                default_visibility: if candidate.target_version().is_some() {
                     SelectionRowVisibility::Visible
+                } else {
+                    SelectionRowVisibility::HiddenUntilViewAll
                 },
                 notes,
                 initially_selected: false,
@@ -241,13 +241,18 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
         } => {
             let notes = blocked_notes(reason, policy_warnings, diagnostics);
             let target_options = blocked_target_options(seed, reason, notes.clone(), diagnostics);
+            let target_version = blocked_target_version(seed, reason, diagnostics);
             SelectionRow {
                 plan_item_id: id.clone(),
                 package_name: seed.installed.package_name.clone(),
                 installed_version: seed.installed.installed_version.clone(),
-                target_version: seed.target_selection.target_version().cloned(),
+                target_version: target_version.clone(),
                 status: SelectionRowStatus::Blocked,
-                default_visibility: SelectionRowVisibility::HiddenUntilViewAll,
+                default_visibility: if target_version.is_some() {
+                    SelectionRowVisibility::Visible
+                } else {
+                    SelectionRowVisibility::HiddenUntilViewAll
+                },
                 notes,
                 initially_selected: false,
                 target_options,
