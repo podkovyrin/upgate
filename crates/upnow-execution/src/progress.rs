@@ -188,9 +188,12 @@ impl ExecutionProgressState {
                 self.finished = true;
                 if self.stop_after_current {
                     for row in &mut self.rows {
-                        if row.status == ExecutionProgressStatus::Pending {
+                        if matches!(
+                            row.status,
+                            ExecutionProgressStatus::Pending | ExecutionProgressStatus::Running
+                        ) {
                             row.status = ExecutionProgressStatus::Skipped {
-                                detail: "stopped after current manager".to_owned(),
+                                detail: "stopped after current command".to_owned(),
                             };
                         }
                     }
@@ -254,5 +257,83 @@ fn row_from_item(manager_id: ManagerId, item: ResolvedExecutionItem) -> Executio
         installed_version: item.installed_version,
         target: item.target,
         status: ExecutionProgressStatus::Pending,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ExecutionItemResult, ResolvedExecutionTarget};
+
+    #[test]
+    fn graceful_stop_finalization_skips_unresolved_running_and_pending_rows() {
+        let manager_id = ManagerId::new("pnpm").expect("valid manager");
+        let first_id = PlanItemId::new("pnpm:first").expect("valid id");
+        let second_id = PlanItemId::new("pnpm:second").expect("valid id");
+        let third_id = PlanItemId::new("npm:third").expect("valid id");
+        let mut state = ExecutionProgressState {
+            rows: vec![
+                row(manager_id.clone(), first_id.clone(), "first"),
+                row(manager_id.clone(), second_id.clone(), "second"),
+                row(
+                    ManagerId::new("npm").expect("valid manager"),
+                    third_id,
+                    "third",
+                ),
+            ],
+            manager_failures: Vec::new(),
+            command_log: Vec::new(),
+            finished: false,
+            stop_after_current: false,
+        };
+
+        state.apply_event(ExecutionProgressEvent::manager_started(manager_id.clone()));
+        state.apply_event(ExecutionProgressEvent::manager_finished(ExecutionReport {
+            manager_id,
+            items: vec![ExecutionItemResult {
+                plan_item_id: first_id,
+                package_name: PackageName::new("first").expect("valid package"),
+                installed_version: VersionText::new("1.0.0").expect("valid version"),
+                target: ResolvedExecutionTarget::Known(
+                    VersionText::new("1.2.0").expect("valid version"),
+                ),
+                status: ExecutionStatus::Succeeded {
+                    command: "first upgrade".to_owned(),
+                    skipped_mutation: false,
+                },
+            }],
+        }));
+        state.apply_event(ExecutionProgressEvent::StopAfterCurrentRequested);
+        state.apply_event(ExecutionProgressEvent::Finished);
+
+        assert!(matches!(
+            state.rows[0].status,
+            ExecutionProgressStatus::Succeeded { .. }
+        ));
+        assert_eq!(
+            state.rows[1].status,
+            ExecutionProgressStatus::Skipped {
+                detail: "stopped after current command".to_owned()
+            }
+        );
+        assert_eq!(
+            state.rows[2].status,
+            ExecutionProgressStatus::Skipped {
+                detail: "stopped after current command".to_owned()
+            }
+        );
+    }
+
+    fn row(manager_id: ManagerId, plan_item_id: PlanItemId, package: &str) -> ExecutionProgressRow {
+        ExecutionProgressRow {
+            manager_id,
+            plan_item_id,
+            package_name: PackageName::new(package).expect("valid package"),
+            installed_version: VersionText::new("1.0.0").expect("valid version"),
+            target: ResolvedExecutionTarget::Known(
+                VersionText::new("1.2.0").expect("valid version"),
+            ),
+            status: ExecutionProgressStatus::Pending,
+        }
     }
 }

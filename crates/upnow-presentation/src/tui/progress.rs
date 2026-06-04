@@ -56,7 +56,14 @@ pub enum ProgressInput {
     Quit,
     ConfirmQuitAfterCurrent,
     CancelQuit,
+    Interrupt,
     Ignore,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteractiveProgressOutcome {
+    Finished(ExecutionProgressSummary),
+    Interrupted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +82,7 @@ enum ProgressPhase {
     QuitConfirm,
     Result,
     Done,
+    Interrupted,
 }
 
 impl InteractiveProgressScreen {
@@ -99,7 +107,11 @@ impl InteractiveProgressScreen {
     }
 
     const fn should_exit(&self) -> bool {
-        matches!(self.phase, ProgressPhase::Done)
+        matches!(self.phase, ProgressPhase::Done | ProgressPhase::Interrupted)
+    }
+
+    const fn interrupted(&self) -> bool {
+        matches!(self.phase, ProgressPhase::Interrupted)
     }
 
     const fn result_open(&self) -> bool {
@@ -144,6 +156,9 @@ impl InteractiveProgressScreen {
             }
             (ProgressPhase::Result, ProgressInput::Quit) => {
                 self.phase = ProgressPhase::Done;
+            }
+            (_, ProgressInput::Interrupt) => {
+                self.phase = ProgressPhase::Interrupted;
             }
             _ => {}
         }
@@ -212,7 +227,7 @@ pub fn run_interactive_progress(
     rx: &Receiver<ExecutionProgressEvent>,
     stop_requested: Arc<AtomicBool>,
     trace_commands: bool,
-) -> io::Result<ExecutionProgressSummary> {
+) -> io::Result<InteractiveProgressOutcome> {
     let mut stdout = io::stdout();
     enable_raw_mode()?;
     if let Err(err) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
@@ -235,7 +250,8 @@ pub fn run_interactive_progress(
 
     let cleanup = cleanup_terminal(&mut terminal);
     match (result, cleanup) {
-        (Ok(()), Ok(())) => Ok(screen.state.summary()),
+        (Ok(()), Ok(())) if screen.interrupted() => Ok(InteractiveProgressOutcome::Interrupted),
+        (Ok(()), Ok(())) => Ok(InteractiveProgressOutcome::Finished(screen.state.summary())),
         (Err(err), Ok(()) | Err(_)) | (Ok(()), Err(err)) => Err(err),
     }
 }
@@ -576,7 +592,7 @@ fn progress_input_from_event_for_phase(
     }
 
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return ProgressInput::Quit;
+        return ProgressInput::Interrupt;
     }
 
     if quit_confirmation_open {

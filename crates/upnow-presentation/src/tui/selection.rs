@@ -202,6 +202,7 @@ pub struct InteractiveManagerSelectionDraft {
 pub enum InteractiveSelectionOutcome {
     Confirmed(Vec<InteractiveManagerSelectionDraft>),
     Cancelled,
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,6 +225,7 @@ pub enum SelectionInput {
     RecommendedTarget,
     Confirm,
     Cancel,
+    Interrupt,
     Ignore,
 }
 
@@ -232,6 +234,7 @@ pub enum SelectionControl {
     Continue,
     Confirm,
     Cancel,
+    Interrupt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -650,6 +653,7 @@ impl InteractiveSelectionScreen {
             | SelectionInput::PickerCancel
             | SelectionInput::RecommendedTarget => {}
             SelectionInput::Cancel => return Ok(SelectionControl::Cancel),
+            SelectionInput::Interrupt => return Ok(SelectionControl::Interrupt),
         }
 
         Ok(SelectionControl::Continue)
@@ -740,6 +744,7 @@ impl InteractiveSelectionScreen {
         match input {
             SelectionInput::PickerCancel => self.target_picker = None,
             SelectionInput::Cancel => return Ok(SelectionControl::Cancel),
+            SelectionInput::Interrupt => return Ok(SelectionControl::Interrupt),
             SelectionInput::PickerUp => self.move_picker_up(),
             SelectionInput::PickerDown => self.move_picker_down(),
             SelectionInput::PickerPreviousRow => self.move_picker_to_row(-1),
@@ -1361,6 +1366,7 @@ fn run_selection_loop(
                 ));
             }
             SelectionControl::Cancel => return Ok(InteractiveSelectionOutcome::Cancelled),
+            SelectionControl::Interrupt => return Ok(InteractiveSelectionOutcome::Interrupted),
         }
     }
 }
@@ -1519,7 +1525,7 @@ fn handle_confirmation_dialog_event(
         return SelectionControl::Continue;
     }
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return SelectionControl::Cancel;
+        return SelectionControl::Interrupt;
     }
 
     match key.code {
@@ -1818,7 +1824,7 @@ fn selection_input_from_event(event: &Event, target_picker_open: bool) -> Select
         return SelectionInput::Ignore;
     }
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return SelectionInput::Cancel;
+        return SelectionInput::Interrupt;
     }
 
     let input = match key.code {

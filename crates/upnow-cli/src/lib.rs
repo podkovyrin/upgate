@@ -31,7 +31,7 @@ use upnow_execution::progress::{
 };
 use upnow_execution::{
     ExecutionReport, ExecutionStatus, ResolvedExecutionPlan, execute_commands,
-    resolve_selection_for_execution,
+    execute_commands_stoppable, resolve_selection_for_execution,
 };
 use upnow_infra::{
     Clock, Env, HttpClient, HttpSettings, LoggingOptions, MutationMode, ProcessRunner,
@@ -42,9 +42,9 @@ use upnow_planning::{
     PlanningSettings, default_batch_selection, derive_audit_queries, finalize_plan_from_inputs,
 };
 use upnow_presentation::tui::{
-    InteractiveManagerSelectionDraft, InteractiveSelectionOutcome, InteractiveSelectionPlan,
-    InteractiveSelectionPlanningEvent, run_interactive_progress, run_interactive_selection,
-    run_interactive_selection_with_planning_events,
+    InteractiveManagerSelectionDraft, InteractiveProgressOutcome, InteractiveSelectionOutcome,
+    InteractiveSelectionPlan, InteractiveSelectionPlanningEvent, run_interactive_progress,
+    run_interactive_selection, run_interactive_selection_with_planning_events,
 };
 use upnow_presentation::{
     BatchRenderOptions, OutcomeTable, OutputTheme, ThemeOptions, apply_execution_report_table,
@@ -56,6 +56,7 @@ use upnow_release::release_age_for_evidence;
 
 const DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER: usize = 6;
 const APPLY_SNAPSHOT_FILE: &str = "snapshot.json";
+const INTERACTIVE_SELECTION_CANCELLED_OUTPUT: &str = "interactive selection cancelled\n";
 
 #[derive(Clone)]
 struct InteractiveCommandLog {
@@ -620,7 +621,7 @@ fn run_interactive_apply_with_sources_and_options(
             execute_confirmed_interactive_apply_live(config, process, env, confirmed, command_log)?;
             Ok(String::new())
         }
-        None => Ok("interactive selection cancelled\n".to_owned()),
+        None => Ok(INTERACTIVE_SELECTION_CANCELLED_OUTPUT.to_owned()),
     }
 }
 
@@ -927,6 +928,9 @@ pub fn run_interactive_apply_selection_with_sources(
         .map_err(|err| AppError::Planning(err.to_string()))?
     {
         InteractiveSelectionOutcome::Cancelled => Ok(None),
+        InteractiveSelectionOutcome::Interrupted => Err(AppError::Interrupted(
+            "interactive selection interrupted".to_owned(),
+        )),
         InteractiveSelectionOutcome::Confirmed(drafts) => {
             if drafts.len() != plans.len() {
                 return Err(AppError::Planning(format!(
@@ -1019,10 +1023,13 @@ fn run_live_confirmed_selection(
     match outcome {
         InteractiveSelectionOutcome::Cancelled => {
             stop_requested.store(true, Ordering::Relaxed);
-            worker.join().map_err(|_| {
-                AppError::Planning("interactive planning worker panicked".to_owned())
-            })?;
             Ok(None)
+        }
+        InteractiveSelectionOutcome::Interrupted => {
+            stop_requested.store(true, Ordering::Relaxed);
+            Err(AppError::Interrupted(
+                "interactive selection interrupted".to_owned(),
+            ))
         }
         InteractiveSelectionOutcome::Confirmed(drafts) => {
             let prepared = prepared_rx
@@ -1309,7 +1316,10 @@ fn execute_confirmed_interactive_apply_live(
     let (tx, rx) = mpsc::channel();
     let stop_requested = Arc::new(AtomicBool::new(false));
     let worker_stop = Arc::clone(&stop_requested);
-    let worker_process = command_log.process_for_progress(process, tx.clone());
+    let hard_interrupt_requested = Arc::new(AtomicBool::new(false));
+    let worker_process = command_log
+        .process_for_progress(process, tx.clone())
+        .with_interrupt_flag(Arc::clone(&hard_interrupt_requested));
 
     thread::scope(|scope| {
         let worker = scope.spawn(move || {
@@ -1335,9 +1345,23 @@ fn execute_confirmed_interactive_apply_live(
             result
         });
 
-        let tui_result =
-            run_interactive_progress(initial_progress, &rx, stop_requested, command_log.enabled())
-                .map_err(|err| AppError::Planning(err.to_string()));
+        let tui_result = run_interactive_progress(
+            initial_progress,
+            &rx,
+            Arc::clone(&stop_requested),
+            command_log.enabled(),
+        )
+        .map_err(|err| AppError::Planning(err.to_string()))
+        .and_then(|outcome| match outcome {
+            InteractiveProgressOutcome::Finished(summary) => Ok(summary),
+            InteractiveProgressOutcome::Interrupted => {
+                hard_interrupt_requested.store(true, Ordering::Relaxed);
+                stop_requested.store(true, Ordering::Relaxed);
+                Err(AppError::Interrupted(
+                    "interactive apply interrupted".to_owned(),
+                ))
+            }
+        });
         let worker_result = worker
             .join()
             .map_err(|_| AppError::Execution("interactive apply worker panicked".to_owned()))?;
@@ -1427,15 +1451,23 @@ fn execute_confirmed_interactive_apply_resolved(
                     continue;
                 }
             };
-        let report = execute_commands(manager.plan.manager_id.clone(), commands, process).map_err(
-            |err| {
-                if err.is_interruption() {
-                    AppError::Interrupted(err.to_string())
-                } else {
-                    AppError::Execution(err.to_string())
-                }
-            },
-        )?;
+        let report = if let Some(stop_requested) = stop_requested {
+            execute_commands_stoppable(
+                manager.plan.manager_id.clone(),
+                commands,
+                process,
+                stop_requested,
+            )
+        } else {
+            execute_commands(manager.plan.manager_id.clone(), commands, process)
+        }
+        .map_err(|err| {
+            if err.is_interruption() {
+                AppError::Interrupted(err.to_string())
+            } else {
+                AppError::Execution(err.to_string())
+            }
+        })?;
         emit(ExecutionProgressEvent::manager_finished(report))?;
 
         if stop_requested.is_some_and(|stop| stop.load(Ordering::Relaxed)) {
@@ -1969,7 +2001,7 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
             ));
         }
         let command_log = InteractiveCommandLog::new(cli.trace_commands);
-        return run_interactive_apply_with_sources_and_options(
+        let output = run_interactive_apply_with_sources_and_options(
             config,
             &process,
             &HttpClient::real(&HttpSettings::default_client_settings())
@@ -1982,7 +2014,11 @@ fn run_cli(cli: &Cli) -> Result<String, AppError> {
             cli.manager_concurrency.map(NonZeroUsize::get),
             &command_log,
             log_dir.as_deref(),
-        );
+        )?;
+        if output == INTERACTIVE_SELECTION_CANCELLED_OUTPUT {
+            std::process::exit(0);
+        }
+        return Ok(output);
     }
     let theme = OutputTheme::from_environment(ThemeOptions {
         plain: cli.plain,

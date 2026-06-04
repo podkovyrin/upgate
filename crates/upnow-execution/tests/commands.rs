@@ -1,3 +1,5 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use upnow_domain::{
@@ -10,8 +12,10 @@ use upnow_domain::{
     VersionPolicy, VersionScheme, VersionText,
 };
 use upnow_execution::{
-    ExecutionCommandIntent, ResolvedExecutionTarget, resolve_selection_for_execution,
+    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionTarget,
+    execute_commands_stoppable, resolve_selection_for_execution,
 };
+use upnow_infra::{CommandOutput, CommandSpec, ProcessRunner};
 
 #[test]
 fn resolves_native_global_intent_for_complete_native_only_selection() {
@@ -388,6 +392,39 @@ fn manager_resolved_with_native_selected_support_resolves_native_selected() {
 }
 
 #[test]
+fn stoppable_executor_stops_before_second_concrete_command() {
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    let commands_started = Arc::new(AtomicUsize::new(0));
+    let process = ProcessRunner::fake([
+        Ok(CommandOutput::from_parts(success_exit_status(), "", "")),
+        Ok(CommandOutput::from_parts(success_exit_status(), "", "")),
+    ])
+    .with_command_start_listener({
+        let stop_requested = Arc::clone(&stop_requested);
+        let commands_started = Arc::clone(&commands_started);
+        move |_| {
+            commands_started.fetch_add(1, Ordering::Relaxed);
+            stop_requested.store(true, Ordering::Relaxed);
+        }
+    });
+
+    let report = execute_commands_stoppable(
+        ManagerId::new("pnpm").expect("valid manager"),
+        vec![
+            execution_command("pnpm:first", "first"),
+            execution_command("pnpm:second", "second"),
+        ],
+        &process,
+        &stop_requested,
+    )
+    .expect("first command should complete");
+
+    assert_eq!(commands_started.load(Ordering::Relaxed), 1);
+    assert_eq!(report.items.len(), 1);
+    assert_eq!(report.items[0].package_name.as_str(), "first");
+}
+
+#[test]
 fn manager_resolved_missing_selected_metadata_resolves_resolver_native() {
     let plan = plan(vec![blocked_missing_selected_update_metadata_item(
         "uv:ruff",
@@ -652,4 +689,32 @@ fn release_lookup(version: &str) -> ReleaseLookupResult {
 
 fn plan(items: Vec<PlanItem>) -> UpdatePlan {
     UpdatePlan::new(ManagerId::new("pnpm").expect("valid manager"), items).expect("valid plan")
+}
+
+fn execution_command(id: &str, package: &str) -> ExecutionCommand {
+    ExecutionCommand {
+        items: vec![ExecutionCommandItem {
+            plan_item_id: PlanItemId::new(id).expect("valid plan item id"),
+            package_name: PackageName::new(package).expect("valid package name"),
+            installed_version: VersionText::new("1.0.0").expect("valid installed version"),
+            target: ResolvedExecutionTarget::Known(
+                VersionText::new("1.2.0").expect("valid target version"),
+            ),
+        }],
+        command: CommandSpec::new(package, ["upgrade"]).mutating(),
+    }
+}
+
+#[cfg(unix)]
+fn success_exit_status() -> std::process::ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+
+    std::process::ExitStatus::from_raw(0)
+}
+
+#[cfg(windows)]
+fn success_exit_status() -> std::process::ExitStatus {
+    use std::os::windows::process::ExitStatusExt;
+
+    std::process::ExitStatus::from_raw(0)
 }

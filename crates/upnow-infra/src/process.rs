@@ -1,9 +1,12 @@
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::process::{Command, ExitStatus, Output};
+use std::io::{self, Read};
+use std::process::{Command, ExitStatus};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
 
@@ -75,6 +78,7 @@ impl fmt::Display for CommandSpec {
 pub struct ProcessRunner {
     kind: ProcessRunnerKind,
     command_start: Option<CommandStartListener>,
+    interrupt_requested: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Clone)]
@@ -89,6 +93,7 @@ impl fmt::Debug for ProcessRunner {
             .debug_struct("ProcessRunner")
             .field("kind", &self.kind)
             .field("command_start", &self.command_start.is_some())
+            .field("interrupt_requested", &self.interrupt_requested.is_some())
             .finish()
     }
 }
@@ -118,12 +123,14 @@ impl ProcessRunner {
         Self {
             kind: ProcessRunnerKind::Real { mutation_mode },
             command_start: None,
+            interrupt_requested: None,
         }
     }
     pub fn fake(responses: impl IntoIterator<Item = Result<CommandOutput, InfraError>>) -> Self {
         Self {
             kind: ProcessRunnerKind::Fake(FakeProcess::new(responses)),
             command_start: None,
+            interrupt_requested: None,
         }
     }
     pub fn with_command_start_listener(
@@ -131,6 +138,15 @@ impl ProcessRunner {
         listener: impl Fn(CommandStartEvent) + Send + Sync + 'static,
     ) -> Self {
         self.command_start = Some(Arc::new(listener));
+        self
+    }
+    /// Returns a runner that interrupts running real commands when the flag is set.
+    ///
+    /// On Unix, interruptible commands are started in their own process group and
+    /// the owned process group is signaled. On non-Unix platforms, interruption is
+    /// limited to the direct child process.
+    pub fn with_interrupt_flag(mut self, interrupt_requested: Arc<AtomicBool>) -> Self {
+        self.interrupt_requested = Some(interrupt_requested);
         self
     }
     pub const fn mutation_mode(&self) -> Option<MutationMode> {
@@ -159,9 +175,13 @@ impl ProcessRunner {
             });
         }
         match &self.kind {
-            ProcessRunnerKind::Real { mutation_mode } => {
-                run_real(*mutation_mode, spec, check, display)
-            }
+            ProcessRunnerKind::Real { mutation_mode } => run_real(
+                *mutation_mode,
+                spec,
+                check,
+                display,
+                self.interrupt_requested.as_deref(),
+            ),
             ProcessRunnerKind::Fake(fake) => fake.run(spec, check, display),
         }
     }
@@ -229,25 +249,23 @@ fn run_real(
     spec: &CommandSpec,
     check: &CommandCheck,
     display: String,
+    interrupt_requested: Option<&AtomicBool>,
 ) -> Result<CommandOutput, InfraError> {
     logging::on_command_start(&display, spec.is_mutation);
     let started_at = Instant::now();
     let output = if spec.is_mutation && mutation_mode == MutationMode::Skip {
         CommandOutput::from_skipped_mutation(success_exit_status(), display.clone())
     } else {
-        let mut command = Command::new(&spec.program);
-        command.args(&spec.args);
-        CommandOutput::from_process_output(
-            command.output().map_err(|err| {
-                logging::on_command_spawn_error(&display, spec.is_mutation, &err);
-                InfraError::ProcessSpawn {
-                    command: display.clone(),
-                    detail: err.to_string(),
-                }
-            })?,
-            false,
-            display.clone(),
-        )
+        run_real_command(spec, &display, interrupt_requested).map_err(|err| {
+            if matches!(err, InfraError::ProcessSpawn { .. }) {
+                logging::on_command_spawn_error(
+                    &display,
+                    spec.is_mutation,
+                    &io::Error::other(err.to_string()),
+                );
+            }
+            err
+        })?
     };
 
     let status_allowed = status_allowed(output.status, check);
@@ -270,6 +288,133 @@ fn run_real(
             output.stderr_string_lossy().into_owned(),
         )))
     }
+}
+
+fn run_real_command(
+    spec: &CommandSpec,
+    display: &str,
+    interrupt_requested: Option<&AtomicBool>,
+) -> Result<CommandOutput, InfraError> {
+    if interrupt_requested.is_some_and(|interrupt| interrupt.load(Ordering::Relaxed)) {
+        return Err(interrupted_command_error(display.to_owned()));
+    }
+
+    let mut command = Command::new(&spec.program);
+    command.args(&spec.args);
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    #[cfg(unix)]
+    if interrupt_requested.is_some() {
+        use std::os::unix::process::CommandExt;
+
+        command.process_group(0);
+    }
+
+    let mut child = command.spawn().map_err(|err| InfraError::ProcessSpawn {
+        command: display.to_owned(),
+        detail: err.to_string(),
+    })?;
+    let stdout = read_child_stream(child.stdout.take(), display, "stdout");
+    let stderr = read_child_stream(child.stderr.take(), display, "stderr");
+
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|err| InfraError::ProcessSpawn {
+            command: display.to_owned(),
+            detail: format!("failed to wait for process: {err}"),
+        })? {
+            break status;
+        }
+        if interrupt_requested.is_some_and(|interrupt| interrupt.load(Ordering::Relaxed)) {
+            interrupt_child(&mut child, display)?;
+            break child.wait().map_err(|err| InfraError::ProcessSpawn {
+                command: display.to_owned(),
+                detail: format!("failed to wait for interrupted process: {err}"),
+            })?;
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+
+    Ok(CommandOutput::from_parts_with_display(
+        status,
+        join_reader(stdout, display, "stdout")?,
+        join_reader(stderr, display, "stderr")?,
+        false,
+        display.to_owned(),
+    ))
+}
+
+fn read_child_stream(
+    stream: Option<impl Read + Send + 'static>,
+    display: &str,
+    stream_name: &'static str,
+) -> thread::JoinHandle<Result<Vec<u8>, InfraError>> {
+    let display = display.to_owned();
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let Some(mut stream) = stream else {
+            return Ok(bytes);
+        };
+        stream
+            .read_to_end(&mut bytes)
+            .map_err(|err| InfraError::OutputUtf8 {
+                command: display,
+                stream: stream_name,
+                detail: err.to_string(),
+            })?;
+        Ok(bytes)
+    })
+}
+
+fn join_reader(
+    reader: thread::JoinHandle<Result<Vec<u8>, InfraError>>,
+    display: &str,
+    stream: &'static str,
+) -> Result<Vec<u8>, InfraError> {
+    reader.join().map_err(|_| InfraError::ProcessSpawn {
+        command: display.to_owned(),
+        detail: format!("{stream} reader thread panicked"),
+    })?
+}
+
+#[cfg(unix)]
+#[expect(
+    unsafe_code,
+    reason = "Unix hard interrupt requires signaling an owned process group"
+)]
+fn interrupt_child(child: &mut std::process::Child, display: &str) -> Result<(), InfraError> {
+    let pid = i32::try_from(child.id()).map_err(|err| InfraError::ProcessSpawn {
+        command: display.to_owned(),
+        detail: format!("child pid was not representable: {err}"),
+    })?;
+    let process_group = -pid;
+    // SAFETY: `kill` is called with a process-group id derived from the child
+    // process id returned by `std::process::Child`. No pointers are passed.
+    let result = unsafe { libc::kill(process_group, libc::SIGTERM) };
+    if result == 0 {
+        return Ok(());
+    }
+    child.kill().map_err(|err| InfraError::ProcessSpawn {
+        command: display.to_owned(),
+        detail: format!("failed to interrupt process: {err}"),
+    })
+}
+
+#[cfg(not(unix))]
+fn interrupt_child(child: &mut std::process::Child, display: &str) -> Result<(), InfraError> {
+    child.kill().map_err(|err| InfraError::ProcessSpawn {
+        command: display.to_owned(),
+        detail: format!(
+            "failed to interrupt process: {err}; descendant cleanup is only implemented on Unix"
+        ),
+    })
+}
+
+fn interrupted_command_error(command: String) -> InfraError {
+    InfraError::CommandFailed(CommandFailure::new(
+        command,
+        interrupted_exit_status(),
+        "interrupted".to_owned(),
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -350,15 +495,17 @@ impl CommandOutput {
     pub fn stderr_string_lossy(&self) -> std::borrow::Cow<'_, str> {
         String::from_utf8_lossy(&self.stderr)
     }
-    fn from_process_output(
-        output: Output,
+    const fn from_parts_with_display(
+        status: ExitStatus,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
         skipped_mutation: bool,
         command_display: String,
     ) -> Self {
         Self {
-            status: output.status,
-            stdout: output.stdout,
-            stderr: output.stderr,
+            status,
+            stdout,
+            stderr,
             skipped_mutation,
             command_display,
         }
@@ -489,4 +636,137 @@ fn success_exit_status() -> ExitStatus {
     use std::os::windows::process::ExitStatusExt;
 
     ExitStatus::from_raw(0)
+}
+
+#[cfg(unix)]
+fn interrupted_exit_status() -> ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+
+    ExitStatus::from_raw(libc::SIGTERM)
+}
+
+#[cfg(windows)]
+fn interrupted_exit_status() -> ExitStatus {
+    use std::os::windows::process::ExitStatusExt;
+
+    ExitStatus::from_raw(1)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn interrupted_exit_status() -> ExitStatus {
+    success_exit_status()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn interruptible_process_runner_interrupts_running_command() {
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let process = ProcessRunner::new(MutationMode::Real).with_interrupt_flag(interrupt.clone());
+        let interrupter = thread::spawn({
+            let interrupt = interrupt.clone();
+            move || {
+                thread::sleep(Duration::from_millis(100));
+                interrupt.store(true, Ordering::Relaxed);
+            }
+        });
+
+        let started_at = Instant::now();
+        let err = process
+            .run(
+                &CommandSpec::new("/bin/sh", ["-c", "sleep 30"]),
+                &CommandCheck::Success,
+            )
+            .expect_err("command should be interrupted");
+        interrupter.join().expect("interrupter should finish");
+
+        assert!(err.is_interruption());
+        assert!(started_at.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn interruptible_process_runner_interrupts_descendant_process() {
+        let pid_file = std::env::temp_dir().join(format!(
+            "upnow-descendant-{}-{}.pid",
+            std::process::id(),
+            unique_nanos()
+        ));
+        let script = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let process = ProcessRunner::new(MutationMode::Real).with_interrupt_flag(interrupt.clone());
+        let interrupter = thread::spawn({
+            let interrupt = interrupt.clone();
+            let pid_file = pid_file.clone();
+            move || {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while !pid_file.exists() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                interrupt.store(true, Ordering::Relaxed);
+            }
+        });
+
+        let err = process
+            .run(
+                &CommandSpec::new("/bin/sh", [OsString::from("-c"), OsString::from(script)]),
+                &CommandCheck::Success,
+            )
+            .expect_err("command should be interrupted");
+        interrupter.join().expect("interrupter should finish");
+        let descendant_pid = fs::read_to_string(&pid_file)
+            .expect("descendant pid should be recorded")
+            .trim()
+            .parse::<i32>()
+            .expect("descendant pid should be numeric");
+
+        let descendant_exited =
+            wait_until(Duration::from_secs(2), || !process_exists(descendant_pid));
+        if !descendant_exited {
+            kill_pid(descendant_pid);
+        }
+        let _ = fs::remove_file(pid_file);
+
+        assert!(err.is_interruption());
+        assert!(descendant_exited);
+    }
+
+    fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if condition() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        condition()
+    }
+
+    #[expect(
+        unsafe_code,
+        reason = "test verifies descendant process cleanup by pid"
+    )]
+    fn process_exists(pid: i32) -> bool {
+        // SAFETY: `kill(pid, 0)` performs existence/error checking for the
+        // numeric pid. No pointers are passed and no signal is delivered.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[expect(unsafe_code, reason = "best-effort test cleanup by pid")]
+    fn kill_pid(pid: i32) {
+        // SAFETY: Best-effort test cleanup for a numeric pid captured from the
+        // child shell. No pointers are passed.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
+
+    fn unique_nanos() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos()
+    }
 }

@@ -4,6 +4,7 @@
 pub mod progress;
 
 use std::fmt::{self, Display};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use upnow_domain::{
     BlockReason, ExecutionSupport, ExecutionTargetKind, ManagerCapabilities, ManagerId,
@@ -237,8 +238,38 @@ pub fn execute_commands(
     commands: Vec<ExecutionCommand>,
     process: &ProcessRunner,
 ) -> Result<ExecutionReport, InfraError> {
+    execute_commands_with_stop(manager_id, commands, process, None)
+}
+
+/// Executes concrete commands until all commands finish or a stop is requested.
+///
+/// If `stop_requested` is set before a command starts, execution stops and the
+/// report contains only results from commands that already completed.
+///
+/// # Errors
+///
+/// Returns an infrastructure error when command execution is interrupted.
+pub fn execute_commands_stoppable(
+    manager_id: ManagerId,
+    commands: Vec<ExecutionCommand>,
+    process: &ProcessRunner,
+    stop_requested: &AtomicBool,
+) -> Result<ExecutionReport, InfraError> {
+    execute_commands_with_stop(manager_id, commands, process, Some(stop_requested))
+}
+
+fn execute_commands_with_stop(
+    manager_id: ManagerId,
+    commands: Vec<ExecutionCommand>,
+    process: &ProcessRunner,
+    stop_requested: Option<&AtomicBool>,
+) -> Result<ExecutionReport, InfraError> {
     let mut items = Vec::new();
     for command in commands {
+        if stop_requested.is_some_and(|stop| stop.load(Ordering::Relaxed)) {
+            break;
+        }
+
         let command_display = command.command.to_string();
         let status = match process.run(&command.command, &CommandCheck::Success) {
             Ok(output) => ExecutionStatus::Succeeded {

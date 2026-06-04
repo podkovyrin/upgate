@@ -6,7 +6,7 @@ pub mod selection_state;
 mod text;
 mod theme;
 
-pub use progress::run_interactive_progress;
+pub use progress::{InteractiveProgressOutcome, run_interactive_progress};
 pub use selection::{
     InteractiveManagerSelectionDraft, InteractiveSelectionOutcome, InteractiveSelectionPlan,
     InteractiveSelectionPlanningEvent, InteractiveSelectionScreen, SelectionControl,
