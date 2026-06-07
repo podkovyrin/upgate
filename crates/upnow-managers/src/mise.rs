@@ -112,6 +112,13 @@ pub struct MisePlanItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct MiseDryRunItem {
+    tool: PackageName,
+    from_version: Option<VersionText>,
+    to_version: VersionText,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MiseManager {
     config: ManagerConfig,
 }
@@ -220,6 +227,8 @@ impl ManagerAdapter for MiseManager {
 #[derive(Debug, Deserialize)]
 struct MiseLsEntry {
     version: Option<String>,
+    #[serde(default)]
+    active: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -275,7 +284,13 @@ pub fn parse_installed_json(raw: &str) -> Result<Vec<MiseInstalledTool>, MiseErr
         serde_json::from_str(raw).map_err(|err| MiseError::Json(err.to_string()))?;
     let mut tools = BTreeMap::new();
     for (tool, entries) in parsed {
-        if let Some(version) = entries.into_iter().rev().find_map(|entry| entry.version) {
+        let active_version = entries
+            .iter()
+            .find(|entry| entry.active)
+            .and_then(|entry| entry.version.clone());
+        if let Some(version) =
+            active_version.or_else(|| entries.into_iter().rev().find_map(|entry| entry.version))
+        {
             tools.insert(tool, version);
         }
     }
@@ -295,8 +310,12 @@ pub fn parse_installed_json(raw: &str) -> Result<Vec<MiseInstalledTool>, MiseErr
 /// # Errors
 ///
 /// Returns an error when recognized dry-run action lines are malformed or
-/// uninstall/install pairs do not match.
-pub fn parse_upgrade_dry_run(raw: &str) -> Result<Vec<MisePlanItem>, MiseError> {
+/// install lines are not preceded by a matching uninstall.
+fn parse_upgrade_dry_run(raw: &str) -> Result<Vec<MisePlanItem>, MiseError> {
+    complete_dry_run_items_without_installed_lookup(parse_upgrade_dry_run_targets(raw)?)
+}
+
+fn parse_upgrade_dry_run_targets(raw: &str) -> Result<Vec<MiseDryRunItem>, MiseError> {
     let mut old_versions = BTreeMap::<String, String>::new();
     let mut items = Vec::new();
 
@@ -318,14 +337,13 @@ pub fn parse_upgrade_dry_run(raw: &str) -> Result<Vec<MisePlanItem>, MiseError> 
             let (tool, version) = split_tool_and_version(rest).ok_or_else(|| {
                 MiseError::InvalidDryRun(format!("invalid mise dry-run install line: {trimmed}"))
             })?;
-            let from_version = old_versions.remove(tool).ok_or_else(|| {
-                MiseError::InvalidDryRun(format!(
-                    "mise dry-run install for {tool} was not preceded by matching uninstall"
-                ))
-            })?;
-            items.push(MisePlanItem {
+            let from_version = old_versions
+                .remove(tool)
+                .map(VersionText::new)
+                .transpose()?;
+            items.push(MiseDryRunItem {
                 tool: PackageName::new(tool.to_owned())?,
-                from_version: VersionText::new(from_version)?,
+                from_version,
                 to_version: VersionText::new(version.to_owned())?,
             });
         }
@@ -338,6 +356,27 @@ pub fn parse_upgrade_dry_run(raw: &str) -> Result<Vec<MisePlanItem>, MiseError> 
     }
 
     Ok(items)
+}
+
+fn complete_dry_run_items_without_installed_lookup(
+    items: Vec<MiseDryRunItem>,
+) -> Result<Vec<MisePlanItem>, MiseError> {
+    items
+        .into_iter()
+        .map(|item| {
+            let from_version = item.from_version.ok_or_else(|| {
+                MiseError::InvalidDryRun(format!(
+                    "mise dry-run install for {} was not preceded by matching uninstall",
+                    item.tool
+                ))
+            })?;
+            Ok(MisePlanItem {
+                tool: item.tool,
+                from_version,
+                to_version: item.to_version,
+            })
+        })
+        .collect()
 }
 
 /// Parses `mise outdated --json` into advisory latest versions.
@@ -574,7 +613,42 @@ fn upgrade_dry_run(process: &ProcessRunner, before: &str) -> Result<Vec<MisePlan
         &CommandSpec::new("mise", ["upgrade", "--dry-run", "--before", before]),
         &CommandCheck::Success,
     )?;
-    parse_upgrade_dry_run(output.stdout()?)
+    let items = parse_upgrade_dry_run_targets(output.stdout()?)?;
+    if items.iter().any(|item| item.from_version.is_none()) {
+        complete_dry_run_items(items, installed_tools(process)?)
+    } else {
+        complete_dry_run_items_without_installed_lookup(items)
+    }
+}
+
+fn complete_dry_run_items(
+    items: Vec<MiseDryRunItem>,
+    installed: Vec<MiseInstalledTool>,
+) -> Result<Vec<MisePlanItem>, MiseError> {
+    let installed_versions = installed
+        .into_iter()
+        .map(|tool| (tool.tool, tool.version))
+        .collect::<BTreeMap<_, _>>();
+
+    items
+        .into_iter()
+        .map(|item| {
+            let from_version = match item.from_version {
+                Some(version) => version,
+                None => installed_versions.get(&item.tool).cloned().ok_or_else(|| {
+                    MiseError::InvalidDryRun(format!(
+                        "mise dry-run install for {} did not match an installed tool",
+                        item.tool
+                    ))
+                })?,
+            };
+            Ok(MisePlanItem {
+                tool: item.tool,
+                from_version,
+                to_version: item.to_version,
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -1153,5 +1227,82 @@ fn adapter_error(err: &MiseError) -> ManagerAdapterError {
         manager_id: MANAGER_ID.to_owned(),
         kind,
         detail: err.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_upgrade_dry_run_keeps_uninstall_install_pair_versions() {
+        let items =
+            parse_upgrade_dry_run("Would uninstall node@24.14.1\nWould install node@24.16.0\n")
+                .expect("paired dry-run output should parse");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].tool.as_str(), "node");
+        assert_eq!(items[0].from_version.as_str(), "24.14.1");
+        assert_eq!(items[0].to_version.as_str(), "24.16.0");
+    }
+
+    #[test]
+    fn complete_install_only_dry_run_from_installed_tools() {
+        let items = parse_upgrade_dry_run_targets(
+            "Would install node@24.16.0\nWould install npm:@anthropic-ai/claude-code@2.1.158\n",
+        )
+        .expect("install-only dry-run output should parse");
+        let completed = complete_dry_run_items(
+            items,
+            vec![
+                MiseInstalledTool {
+                    tool: PackageName::new("node").expect("valid package"),
+                    version: VersionText::new("24.14.1").expect("valid version"),
+                },
+                MiseInstalledTool {
+                    tool: PackageName::new("npm:@anthropic-ai/claude-code").expect("valid package"),
+                    version: VersionText::new("2.1.156").expect("valid version"),
+                },
+            ],
+        )
+        .expect("install-only targets should complete from installed tools");
+
+        assert_eq!(completed.len(), 2);
+        assert_eq!(completed[0].tool.as_str(), "node");
+        assert_eq!(completed[0].from_version.as_str(), "24.14.1");
+        assert_eq!(completed[0].to_version.as_str(), "24.16.0");
+        assert_eq!(completed[1].tool.as_str(), "npm:@anthropic-ai/claude-code");
+        assert_eq!(completed[1].from_version.as_str(), "2.1.156");
+        assert_eq!(completed[1].to_version.as_str(), "2.1.158");
+    }
+
+    #[test]
+    fn parse_installed_json_prefers_active_version() {
+        let tools = parse_installed_json(
+            r#"{
+                "node": [
+                    {"version": "20.19.4", "installed": true, "active": false},
+                    {"version": "24.14.1", "installed": true, "active": true},
+                    {"version": "22.22.3", "installed": true, "active": false}
+                ]
+            }"#,
+        )
+        .expect("installed JSON should parse");
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool.as_str(), "node");
+        assert_eq!(tools[0].version.as_str(), "24.14.1");
+    }
+
+    #[test]
+    fn malformed_recognized_dry_run_line_still_fails() {
+        let err = parse_upgrade_dry_run("Would install node\n")
+            .expect_err("malformed install line should fail");
+
+        assert!(matches!(err, MiseError::InvalidDryRun(_)));
+        assert!(
+            err.to_string()
+                .contains("invalid mise dry-run install line")
+        );
     }
 }
