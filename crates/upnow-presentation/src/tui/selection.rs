@@ -272,7 +272,7 @@ pub struct InteractiveSelectionScreen {
     spinner_tick: usize,
     active_tab: usize,
     tab_offset: usize,
-    cursor: usize,
+    cursor: Option<usize>,
     table_offset: usize,
     show_all: bool,
     target_picker: Option<TargetPickerState>,
@@ -391,7 +391,7 @@ impl InteractiveSelectionScreen {
             spinner_tick: 0,
             active_tab: 0,
             tab_offset: 0,
-            cursor: 0,
+            cursor: None,
             table_offset: 0,
             show_all: false,
             target_picker: None,
@@ -416,7 +416,7 @@ impl InteractiveSelectionScreen {
             spinner_tick: 0,
             active_tab: 0,
             tab_offset: 0,
-            cursor: 0,
+            cursor: None,
             table_offset: 0,
             show_all: false,
             target_picker: None,
@@ -528,7 +528,7 @@ impl InteractiveSelectionScreen {
     pub const fn active_tab(&self) -> usize {
         self.active_tab
     }
-    pub const fn cursor(&self) -> usize {
+    pub const fn cursor(&self) -> Option<usize> {
         self.cursor
     }
     pub const fn show_all(&self) -> bool {
@@ -761,11 +761,11 @@ impl InteractiveSelectionScreen {
         if row_count == 0 {
             return;
         }
-        self.cursor = if self.cursor == 0 {
-            row_count - 1
-        } else {
-            self.cursor - 1
-        };
+        self.cursor = Some(match self.cursor {
+            None => 0,
+            Some(0) => row_count - 1,
+            Some(cursor) => cursor - 1,
+        });
     }
 
     fn move_cursor_down(&mut self) {
@@ -773,16 +773,22 @@ impl InteractiveSelectionScreen {
         if row_count == 0 {
             return;
         }
-        self.cursor = if self.cursor + 1 >= row_count {
-            0
-        } else {
-            self.cursor + 1
-        };
+        self.cursor = Some(match self.cursor {
+            None => 0,
+            Some(cursor) if cursor + 1 >= row_count => 0,
+            Some(cursor) => cursor + 1,
+        });
     }
 
     fn scroll_table_by(&mut self, delta: isize, visible_height: usize) {
         let max_offset = self.table_max_offset(visible_height);
         if delta == 0 {
+            return;
+        }
+        if self.cursor.is_none() {
+            if !self.visible_row_refs().is_empty() {
+                self.cursor = Some(0);
+            }
             return;
         }
 
@@ -801,7 +807,9 @@ impl InteractiveSelectionScreen {
         if tab_count > 0 {
             self.active_tab = (self.active_tab + 1) % tab_count;
         }
-        self.cursor = 0;
+        if self.cursor.is_some() {
+            self.cursor = Some(0);
+        }
         self.table_offset = 0;
         self.clamp_cursor();
     }
@@ -811,7 +819,9 @@ impl InteractiveSelectionScreen {
         if tab_idx < tab_count {
             self.active_tab = tab_idx;
         }
-        self.cursor = 0;
+        if self.cursor.is_some() {
+            self.cursor = Some(0);
+        }
         self.table_offset = 0;
         self.clamp_cursor();
     }
@@ -825,7 +835,9 @@ impl InteractiveSelectionScreen {
                 self.active_tab - 1
             };
         }
-        self.cursor = 0;
+        if self.cursor.is_some() {
+            self.cursor = Some(0);
+        }
         self.table_offset = 0;
         self.clamp_cursor();
     }
@@ -969,7 +981,7 @@ impl InteractiveSelectionScreen {
             };
             let next_row = visible_rows[next_idx];
             if self.target_option_count(next_row) > 0 {
-                self.cursor = next_idx;
+                self.cursor = Some(next_idx);
                 self.target_picker = Some(TargetPickerState {
                     visible_row: next_row,
                     cursor: self.target_picker_initial_cursor(next_row),
@@ -1054,9 +1066,11 @@ impl InteractiveSelectionScreen {
         self.clamp_active_tab();
         let row_count = self.visible_row_refs().len();
         if row_count == 0 {
-            self.cursor = 0;
-        } else if self.cursor >= row_count {
-            self.cursor = row_count - 1;
+            self.cursor = None;
+        } else if let Some(cursor) = self.cursor
+            && cursor >= row_count
+        {
+            self.cursor = Some(row_count - 1);
         }
     }
 
@@ -1070,10 +1084,13 @@ impl InteractiveSelectionScreen {
             return;
         }
         self.clamp_table_offset(visible_height);
-        if self.cursor < self.table_offset {
-            self.table_offset = self.cursor;
-        } else if self.cursor >= self.table_offset.saturating_add(visible_height) {
-            self.table_offset = self.cursor + 1 - visible_height;
+        let Some(cursor) = self.cursor else {
+            return;
+        };
+        if cursor < self.table_offset {
+            self.table_offset = cursor;
+        } else if cursor >= self.table_offset.saturating_add(visible_height) {
+            self.table_offset = cursor + 1 - visible_height;
         }
     }
 
@@ -1083,19 +1100,23 @@ impl InteractiveSelectionScreen {
 
     fn clamp_cursor_to_table_view(&mut self, visible_height: usize) {
         if visible_height == 0 {
-            self.cursor = 0;
+            self.cursor = None;
             return;
         }
         self.clamp_cursor();
-        if self.cursor < self.table_offset {
-            self.cursor = self.table_offset;
+        let Some(cursor) = self.cursor else {
+            return;
+        };
+        if cursor < self.table_offset {
+            self.cursor = Some(self.table_offset);
         } else {
             let last_visible = self
                 .table_offset
                 .saturating_add(visible_height)
                 .saturating_sub(1);
-            if self.cursor > last_visible {
-                self.cursor = last_visible.min(self.visible_row_refs().len().saturating_sub(1));
+            if cursor > last_visible {
+                self.cursor =
+                    Some(last_visible.min(self.visible_row_refs().len().saturating_sub(1)));
             }
         }
     }
@@ -1110,7 +1131,7 @@ impl InteractiveSelectionScreen {
     }
 
     fn current_visible_row(&self) -> Option<VisibleRow> {
-        self.visible_row_refs().get(self.cursor).copied()
+        self.visible_row_refs().get(self.cursor?).copied()
     }
 
     fn current_visible_row_id(&self) -> Option<PlanItemId> {
@@ -1208,7 +1229,7 @@ impl InteractiveSelectionScreen {
             .into_iter()
             .position(|visible| self.row(visible).plan_item_id == focused_row)
         {
-            self.cursor = row_idx;
+            self.cursor = Some(row_idx);
         }
     }
 
@@ -1565,7 +1586,7 @@ fn handle_selection_mouse(
                 && let Some(row_idx) =
                     selection_row_index_at(screen, selection_body.main, mouse.row)
             {
-                screen.cursor = row_idx;
+                screen.cursor = Some(row_idx);
                 if selection_checkbox_hit(selection_body.main, mouse.column) {
                     return screen.handle_input(SelectionInput::ToggleCurrent);
                 }
@@ -2060,10 +2081,10 @@ fn draw_list_content(
     let table_rows = render_rows
         .iter()
         .enumerate()
-        .map(|(idx, row)| selection_table_row(row, idx == screen.cursor, theme))
+        .map(|(idx, row)| selection_table_row(row, screen.cursor == Some(idx), theme))
         .collect::<Vec<_>>();
 
-    let selected = (screen.cursor < render_rows.len()).then_some(screen.cursor);
+    let selected = screen.cursor.filter(|cursor| *cursor < render_rows.len());
     render_selection_table(
         frame,
         area,
@@ -2586,5 +2607,149 @@ fn note_text(note_parts: &[CandidateNotePart]) -> String {
 fn plan_issue_label(issue: &PlanIssue) -> String {
     match issue {
         PlanIssue::DiscoveryFailed { detail } => detail.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use upnow_domain::{PackageName, VersionText};
+
+    fn manager_id(value: &'static str) -> ManagerId {
+        ManagerId::new(value).expect("valid manager id")
+    }
+
+    fn version(value: &str) -> VersionText {
+        VersionText::new(value).expect("valid version")
+    }
+
+    fn row(manager: &str, package: &str) -> SelectionRow {
+        SelectionRow {
+            plan_item_id: PlanItemId::new(format!("{manager}:{package}"))
+                .expect("valid plan item id"),
+            package_name: PackageName::new(package).expect("valid package name"),
+            installed_version: version("1.0.0"),
+            target_version: Some(version("2.0.0")),
+            status: SelectionRowStatus::Update,
+            default_visibility: SelectionRowVisibility::Visible,
+            notes: Vec::new(),
+            initially_selected: true,
+            target_options: vec![TargetOption::Recommended {
+                target_version: version("2.0.0"),
+                note_parts: Vec::new(),
+            }],
+        }
+    }
+
+    fn plan(manager: &'static str, packages: &[&str]) -> InteractiveSelectionPlan {
+        InteractiveSelectionPlan::new(
+            SelectionView {
+                manager_id: manager_id(manager),
+                rows: packages
+                    .iter()
+                    .map(|package| row(manager, package))
+                    .collect(),
+            },
+            Vec::new(),
+            UpdateSelectionPolicy::include_all(),
+            VersionPolicy::None,
+        )
+    }
+
+    fn ready_event(manager: &'static str, packages: &[&str]) -> InteractiveSelectionPlanningEvent {
+        InteractiveSelectionPlanningEvent::ManagerReady {
+            view: SelectionView {
+                manager_id: manager_id(manager),
+                rows: packages
+                    .iter()
+                    .map(|package| row(manager, package))
+                    .collect(),
+            },
+            issues: Vec::new(),
+            selection_policy: UpdateSelectionPolicy::include_all(),
+            version_policy: VersionPolicy::None,
+        }
+    }
+
+    #[test]
+    fn planning_rows_do_not_create_an_implicit_cursor() {
+        let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![manager_id("npm")]);
+
+        screen.apply_planning_event(ready_event("npm", &["alpha"]));
+        assert_eq!(screen.cursor(), None);
+
+        screen.apply_planning_event(ready_event("npm", &["beta", "alpha"]));
+        assert_eq!(screen.cursor(), None);
+    }
+
+    #[test]
+    fn first_keyboard_navigation_starts_at_row_zero() {
+        let mut screen = InteractiveSelectionScreen::new(vec![plan("npm", &["alpha", "beta"])]);
+
+        screen
+            .handle_input(SelectionInput::Down)
+            .expect("navigation should succeed");
+        assert_eq!(screen.cursor(), Some(0));
+
+        screen
+            .handle_input(SelectionInput::Down)
+            .expect("navigation should succeed");
+        assert_eq!(screen.cursor(), Some(1));
+
+        let mut screen = InteractiveSelectionScreen::new(vec![plan("npm", &["alpha", "beta"])]);
+        screen
+            .handle_input(SelectionInput::Up)
+            .expect("navigation should succeed");
+        assert_eq!(screen.cursor(), Some(0));
+    }
+
+    #[test]
+    fn tab_switch_does_not_select_row_until_navigation_starts() {
+        let mut screen = InteractiveSelectionScreen::new(vec![
+            plan("npm", &["alpha"]),
+            plan("cargo", &["beta"]),
+        ]);
+
+        screen
+            .handle_input(SelectionInput::NextTab)
+            .expect("tab switch should succeed");
+        assert_eq!(screen.cursor(), None);
+
+        screen.select_tab(2);
+        assert_eq!(screen.cursor(), None);
+    }
+
+    #[test]
+    fn tab_switch_preserves_existing_reset_behavior_after_navigation_starts() {
+        let mut screen = InteractiveSelectionScreen::new(vec![
+            plan("npm", &["alpha", "beta"]),
+            plan("cargo", &["gamma"]),
+        ]);
+
+        screen
+            .handle_input(SelectionInput::Down)
+            .expect("navigation should succeed");
+        screen
+            .handle_input(SelectionInput::Down)
+            .expect("navigation should succeed");
+        assert_eq!(screen.cursor(), Some(1));
+
+        screen
+            .handle_input(SelectionInput::NextTab)
+            .expect("tab switch should succeed");
+        assert_eq!(screen.cursor(), Some(0));
+    }
+
+    #[test]
+    fn first_mouse_scroll_selects_row_zero_before_scrolling() {
+        let mut screen = InteractiveSelectionScreen::new(vec![plan(
+            "npm",
+            &["alpha", "beta", "gamma", "delta"],
+        )]);
+
+        screen.scroll_table_by(1, 2);
+
+        assert_eq!(screen.cursor(), Some(0));
+        assert_eq!(screen.table_offset, 0);
     }
 }
