@@ -381,7 +381,7 @@ fn blocked_target_options(
     )
 }
 
-fn blocked_target_can_be_forced(seed: &UpdateSeed, reason: &BlockReason) -> bool {
+const fn blocked_target_can_be_forced(seed: &UpdateSeed, reason: &BlockReason) -> bool {
     seed.execution_support.supports_age_bypass()
         || (matches!(
             reason,

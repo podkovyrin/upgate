@@ -87,6 +87,25 @@ fn default_batch_selection_include_mode_excludes_exceptions() {
     );
 }
 
+#[test]
+fn default_batch_selection_include_mode_ignores_stale_exceptions() {
+    let plan = plan();
+    let policy = UpdateSelectionPolicy {
+        mode: UpdateSelectionMode::Include,
+        except: std::iter::once(PackageName::new("stale-pkg").expect("valid package name"))
+            .collect(),
+    };
+    let selection = default_batch_selection(&plan, &policy).expect("selection should be valid");
+
+    let selected_ids = selection
+        .selected_items
+        .iter()
+        .map(|item| item.plan_item_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(selected_ids, vec!["pnpm:alpha-ready", "pnpm:exception-pkg"]);
+    assert_eq!(selection.selection_policy, policy);
+}
+
 fn seed(tool_id: &str, package_name: &PackageName) -> UpdateSeed {
     UpdateSeed::new(
         InstalledTool::new(
@@ -126,4 +145,18 @@ fn default_batch_selection_skip_mode_includes_only_exceptions() {
         selection.selected_items[0].selected_update,
         SelectedUpdate::Recommended
     );
+}
+
+#[test]
+fn default_batch_selection_skip_mode_ignores_stale_exceptions() {
+    let plan = plan();
+    let policy = UpdateSelectionPolicy {
+        mode: UpdateSelectionMode::Skip,
+        except: std::iter::once(PackageName::new("stale-pkg").expect("valid package name"))
+            .collect(),
+    };
+    let selection = default_batch_selection(&plan, &policy).expect("selection should be valid");
+
+    assert!(selection.selected_items.is_empty());
+    assert_eq!(selection.selection_policy, policy);
 }

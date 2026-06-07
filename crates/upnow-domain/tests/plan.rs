@@ -39,7 +39,7 @@ fn update_plan_rejects_duplicate_item_ids() {
 }
 
 #[test]
-fn plan_selection_rejects_policy_exception_outside_plan() {
+fn plan_selection_preserves_policy_exception_outside_plan() {
     let plan = UpdatePlan::new(
         upnow_domain::ManagerId::new("pnpm").expect("valid manager id"),
         vec![PlanItem::Update {
@@ -53,15 +53,18 @@ fn plan_selection_rejects_policy_exception_outside_plan() {
         except: std::iter::once(PackageName::new("beta").expect("valid package name")).collect(),
     };
 
+    let selection = PlanSelection::new(
+        &plan,
+        vec![SelectedItem::recommended(
+            PlanItemId::new("pnpm:alpha").expect("valid plan item id"),
+        )],
+        policy,
+    )
+    .expect("selection policy exceptions may outlive the current plan");
+
     assert_eq!(
-        PlanSelection::new(
-            &plan,
-            vec![SelectedItem::recommended(
-                PlanItemId::new("pnpm:alpha").expect("valid plan item id")
-            )],
-            policy,
-        ),
-        Err(DomainError::UnknownSelectionPackage("beta".to_owned()))
+        selection.selection_policy.except,
+        std::iter::once(PackageName::new("beta").expect("valid package name")).collect()
     );
 }
 
