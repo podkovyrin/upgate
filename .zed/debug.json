@@ -1,0 +1,41 @@
+[
+  {
+    "label": "Debug upnow plan",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "build": {
+      "command": "cargo",
+      "args": ["build", "-p", "upnow-cli", "--bin", "upnow"]
+    },
+    "program": "$ZED_WORKTREE_ROOT/target/debug/upnow",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "args": ["plan"],
+    "sourceLanguages": ["rust"]
+  },
+  {
+    "label": "Debug upnow scan",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "build": {
+      "command": "cargo",
+      "args": ["build", "-p", "upnow-cli", "--bin", "upnow"]
+    },
+    "program": "$ZED_WORKTREE_ROOT/target/debug/upnow",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "args": ["scan"],
+    "sourceLanguages": ["rust"]
+  },
+  {
+    "label": "Debug upnow apply dry-run",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "build": {
+      "command": "cargo",
+      "args": ["build", "-p", "upnow-cli", "--bin", "upnow"]
+    },
+    "program": "$ZED_WORKTREE_ROOT/target/debug/upnow",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "args": ["apply", "--yolo", "--dry-run"],
+    "sourceLanguages": ["rust"]
+  }
+]
