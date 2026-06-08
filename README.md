@@ -29,8 +29,5 @@ upgate plan -S npm.min_release_age=14d -S brew.no_update=true
 
 ## Documentation
 
-- [High-level spec](docs/spec.md)
 - [Architecture contract](docs/architecture.md)
-- [Version policy](docs/version-policy.md)
-- [Security audit feature spec](docs/security-audit.md)
 - [Performance profiling](docs/perf.md)

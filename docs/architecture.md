@@ -1,107 +1,142 @@
-# upgate Architecture
+# upgate v1 Architecture
 
-This is the current implementation contract after the workspace rebuild. Historical
-phase notes were removed; this document records the decisions that should still
-guide future changes.
+This is the durable product and architecture contract for v1. Code is the source
+of truth when this document and implementation disagree.
 
-## Goal
+## Product Model
 
-`upgate` is built around `apply`. Batch `apply` and interactive `apply` share the
-same planning and execution core. `plan` exposes the planning half of `apply`,
-and `scan` lists installed tools.
+`upgate` keeps globally installed developer tools up to date across package
+managers while avoiding very new releases until they pass a configured
+`min_release_age`.
+
+The supported workflows are:
+
+- `scan`: list installed tools. `scan --verbose` may include release-age and
+  audit notes.
+- `plan`: show what would update without mutating the system.
+- `apply`: apply selected updates. Interactive apply is the default; `--yolo`
+  runs the batch default selection non-interactively.
+
+Built-in managers are `brew`, `bun`, `cargo`, `npm`, `mise`, `pipx`, `pnpm`,
+`uv`, `go`, `gem`, and `dotnet`.
+
+Default manager modes are:
+
+- `apply`: `brew`, `bun`, `cargo`, `npm`, `mise`, `pipx`, `pnpm`, `uv`, `go`
+- `off`: `gem`, `dotnet`
+
+Missing manager executables are treated as absent and omitted from normal
+output.
 
 ## Layers
 
-- `upgate-cli`: CLI parsing, orchestration, exit codes, manager construction, and
-  config persistence timing.
-- `upgate-domain`: typed identities, versions, policies, scan records, plan
-  outcomes, selections, and errors.
-- `upgate-planning`: candidate evaluation, version policy, release-age gates, and
-  default batch selection.
-- `upgate-managers`: concrete manager adapters. Managers own parsing, requests,
-  manager-specific command construction, policy support checks, and named
-  workarounds.
-- `upgate-release`: release-date and target-age evidence sources.
-- `upgate-audit`: shared security-audit evidence source. It owns OSV API
-  requests, batching, response parsing, de-duplication, and process-local audit
-  lookup caching.
-- `upgate-execution`: selected plan items to execution commands/results.
-- `upgate-presentation`: batch output and TUI state/rendering.
-- `upgate-infra`: process, HTTP, clock, environment, logging, and parallelism.
+- `upgate-cli`: CLI parsing, config loading, orchestration, manager
+  construction, audit service lifetime, selection persistence, and exit codes.
+- `upgate-domain`: typed identities, versions, config, scan records, plan
+  records, selections, audit facts, and errors.
+- `upgate-planning`: version-policy evaluation, release-age evaluation, audit
+  gating, candidate selection, and default batch selection.
+- `upgate-managers`: concrete package-manager adapters. Managers own discovery,
+  parsing, external command construction, release metadata lookup, audit subject
+  emission, and manager-specific support checks.
+- `upgate-release`: release-date and target-age evidence helpers.
+- `upgate-audit`: OSV querybatch client, request batching, de-duplication,
+  process-local caching, and audit request concurrency.
+- `upgate-execution`: conversion from typed selections to execution commands
+  and execution reports.
+- `upgate-presentation`: batch output and interactive TUI state/rendering.
+- `upgate-infra`: process execution, HTTP, clock, environment, logging, and
+  parallelism.
 
 ## Data Flow
 
-Managers produce typed update facts and optional typed audit identities.
-Planning evaluates update facts with release evidence, version policy,
-release-age settings, and audit evidence to produce an immutable `UpdatePlan`.
-Presentation renders plan outcomes but does not create them. Selection produces
-a typed `PlanSelection`. Execution resolves that selection to command intents,
-and managers turn those intents into concrete commands.
+Managers produce typed scan/update facts. Update facts are either:
 
-Managers may pass `min_release_age` into native resolver commands when that is
-part of the manager's resolver, such as `uv --exclude-newer` or `mise --before`.
-Managers must not receive `now` or perform clock-aware age comparisons for
-planning. Clock-aware planning decisions belong in `upgate-planning`; scan age
-display belongs in CLI/presentation.
+- planner-selectable timelines, where shared planning chooses from release
+  metadata; or
+- manager-selected targets, where the manager resolver already chose a target
+  and planning may only accept, delay, or block it.
 
-Managers must not query vulnerability databases, parse vulnerability database
-responses, decide whether a vulnerability blocks an update, or format audit
-messages. Their audit responsibility is limited to emitting an explicit package
-identity when the manager can map an installed tool to an OSV package ecosystem
-without guessing.
+Planning evaluates update facts with version policy, release age, and audit
+evidence to produce an immutable `UpdatePlan`. Presentation renders plans but
+does not create decisions. Selection produces a typed `PlanSelection`.
+Execution resolves that selection into command intents, and managers turn those
+intents into concrete commands.
 
-Audit lookup orchestration belongs outside manager adapters. `upgate-cli` owns
-the command-run audit service instance and passes audit evidence into planning.
-`upgate-planning` owns the audit gate decision. Unsupported audit identities are
-silent and must not change plan, apply, or scan behavior.
+Managers may pass `min_release_age` to native resolvers when the resolver owns
+target selection, such as uv or Mise. Managers must not perform clock-aware
+shared planning decisions. Those decisions belong in `upgate-planning`.
 
-## Manager Targets
+## Candidate Selection
 
-There are two target-selection shapes:
+For planner-selectable timelines, planning chooses the newest candidate by
+publish timestamp after gates pass. Parsed version order is only a tie-breaker.
+The gate order is:
 
-- Planner-selectable timelines: shared planning chooses the newest candidate
-  allowed by version policy, release age, and security audit.
-- Manager-selected targets: the manager has already selected a target, and
-  shared planning only gates that target.
+1. installed-version comparison
+2. version policy
+3. release age
+4. security audit, when the tool has a supported audit subject
 
-Manager-selected targets are required for Brew, uv, and Mise. Planning must not
-replace a manager-selected target with an older or newer advisory version.
-Security audit must respect this: for manager-selected targets, audit may accept
-or block the selected target, but must not cause planning to choose an alternate
-version.
+If a newer candidate fails audit, planning may fall back to an older candidate
+that already passed version policy and release age. If no candidate can safely
+pass the gates, the item is blocked or delayed according to the failed gate.
 
-## Execution
+For manager-selected targets, planning must not replace the manager-selected
+target with another version. Brew, uv, and Mise depend on this shape.
 
-Execution planning models command shape explicitly. Some selections execute exact
-targets. Some execute native selected updates. Some execute grouped native
-commands, such as Brew formula/cask groups. Some execute resolver-native commands,
-such as uv and Mise, where apply re-runs the native resolver with the same age
-constraint rather than installing the displayed target exactly.
+## Version Policy
 
-The command shape belongs in typed execution data. It must not be hidden in
-manager metadata, display notes, or private manager command types.
+`version_policy` is per manager and accepts:
 
-## Interactive Apply
+- `none`: no prerelease filtering
+- `stable`: only final releases are eligible
+- `same-track`: candidates must be at least as stable as the installed version
 
-Interactive selection starts from manager ids so users can see planning activity.
-Ready managers enter the TUI as view models derived from `UpdatePlan`. The TUI
-owns presentation state only: tabs, cursor, visible rows, selected ids, modal
-state, and live planning activity/error state.
+Unset policy resolves to `none`, except Gem resolves to `stable`.
+`version_policy = "any"` is invalid.
 
-The TUI must not mutate `UpdatePlan`, parse display notes, run manager commands,
-or persist config. Confirmed selections return typed `PlanSelection` values.
-Interactive selection-policy persistence happens after confirmation and before
-execution. Cancellation returns without execution or config persistence.
+Supported policy matrix:
+
+- `brew`, `bun`, `cargo`, `dotnet`, `go`, `npm`, `pipx`, `pnpm`: all policy
+  values
+- `gem`: `stable` only
+- `mise`, `uv`: `none` only
+
+Release classes are ordered as `dev`, `alpha`, `beta`, `rc`, `final`.
+Unknown prereleases are never treated as final. When `same-track` cannot
+classify the installed stability track safely, it falls back to stable behavior
+with a warning.
+
+## Security Audit
+
+Security audit uses OSV.dev. Managers emit an audit subject only when they can
+map a tool to an OSV ecosystem/package identity without guessing. Unsupported
+tools have no audit subject and are not audited.
+
+Supported OSV ecosystems in the domain are `npm`, `crates.io`, `PyPI`,
+`RubyGems`, `Go`, `NuGet`, and `GIT`.
+
+Plan/apply audit behavior for supported subjects is fail-closed:
+
+- clean target: eligible
+- vulnerable target: blocked unless the user explicitly chooses a forced target
+  in an interactive flow that exposes one
+- audit lookup failure: blocked unless explicitly forced the same way
+
+Unsupported audit subjects do not block and produce no audit note.
+
+`scan --verbose` audits installed versions with supported subjects and may show
+vulnerability or audit-unavailable notes. Non-verbose scan does not query audit.
+Execution never queries OSV or re-evaluates audit.
 
 ## Config
 
-Config resolves manager mode, `min_release_age`, `version_policy`, update
-selection policy, Brew `no_update`, manager concurrency, and scan old-age
-threshold before planning. Security audit concurrency is resolved before any
-audit lookups. Resolved manager config is passed into concrete manager adapters
-at construction.
+Config is resolved before managers run. It controls global scan/audit/concurrency
+settings, manager mode, `min_release_age`, `version_policy`, Brew `no_update`,
+and interactive selection policy.
 
-Selection policy is persisted as:
+Selection policy is manager-local:
 
 ```toml
 [npm.selection]
@@ -109,46 +144,28 @@ mode = "include" # or "skip"
 except = ["typescript"]
 ```
 
-`except` always means the opposite of `mode`. Omitted `[manager.selection]`
-resolves to `mode = "include", except = []`, and that default is omitted when
-persisted.
+`except` always means the opposite of `mode`. Omitted selection resolves to
+`mode = "include", except = []` and is omitted when persisted.
 
-## Version Policy
+Npm `min_release_age` must be a whole number of days because npm's native
+`--min-release-age` accepts days.
 
-There is one no-policy mode, plus `stable` and `same-track`.
+## Output
 
-- No policy: no prerelease filtering.
-- `stable`: only final releases are eligible.
-- `same-track`: candidates must be at least as stable as the installed version.
-
-For planner-selectable timelines, version policy participates in candidate
-selection. For manager-selected targets, version policy gates only the selected
-target. uv and Mise do not support version policy and reject configured policies.
-
-## Security Audit
-
-Security audit is an update gate for supported OSV package identities. For
-planner-selectable timelines, planning may choose the newest candidate that
-passes version policy, release age, and audit. For manager-selected targets,
-planning may only gate the manager-selected target.
-
-For supported audit identities, audit lookup is fail-closed during plan/apply:
-a vulnerable target or failed audit lookup blocks that target. For unsupported
-or unknown audit identities, audit is skipped silently and must not block.
-
-Verbose scan may annotate installed tools with vulnerability findings. Non-
-verbose scan remains a simple installed-tool listing.
-
-See [Security audit feature spec](security-audit.md).
+Output is a product decision view, not resolver internals. User-visible item
+states are `current`, `update`, `delayed`, `blocked`, `skipped`, and `error`.
+Normal output should explain what will happen and why an update is withheld.
+Verbose output may add release evidence, policy details, audit details, and
+command diagnostics.
 
 ## Testing
 
-Tests should protect stable behavior: CLI behavior, public API contracts, durable
-domain invariants, manager behavior that is part of the product contract,
-version-policy behavior, real-world parsing, config behavior, important error
-handling, and expensive integration paths.
+For agents, the detailed test policy in `AGENTS.md` takes precedence. In short,
+tests should protect stable behavior: CLI behavior, public API contracts, domain
+invariants, manager behavior that is part of the product contract, version
+policy, real-world parsing, config behavior, important error handling, and risky
+integration behavior.
 
 Do not add tests for private helpers, getters/setters, mock-call counts,
-implementation order, current module boundaries, internal view-model shape,
-temporary architecture scaffolding, or snapshots/goldens without a clear
-user-visible contract.
+implementation order, current module boundaries, internal view-model shape, or
+coverage preservation.

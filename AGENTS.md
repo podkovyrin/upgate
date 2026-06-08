@@ -1,19 +1,20 @@
 # Agent Instructions
 
-This project values architectural clarity over forward motion. Treat the implementation plan and architecture notes as a contract, not background reading.
+This project values architectural clarity over forward motion. Treat the
+architecture notes as a contract, not background reading.
 
 ## Working Style
 
-- Read the relevant architecture/spec docs before editing.
+- Read the relevant architecture docs before editing.
 - Before code changes, state the intended change boundary and files likely to be touched.
-- Implement one phase at a time. Do not pull future phases into the current change.
+- Keep changes scoped to the current request. Do not pull future work into the current change.
 - If the requested change conflicts with the architecture, stop and explain the conflict.
 - If a clean implementation seems to require a new architectural layer, stop and propose options before editing.
 
 ## Design Constraints
 
 - Prefer direct, explicit code over new abstraction.
-- Do not introduce traits, wrappers, generic helpers, registries, or parallel flows unless they are required by the current phase.
+- Do not introduce traits, wrappers, generic helpers, registries, or parallel flows unless they are required by the current change.
 - A new abstraction must have a clear reason now, not just anticipated future use.
 - Prefer deleting accidental complexity over adapting more code to it.
 - Do not preserve internal compatibility with a bad design decision.
@@ -59,14 +60,14 @@ If a test needs a paragraph of justification, it should not exist.
 
 ## Handoff
 
-When starting a new context or phase, preserve:
+When starting a new context or substantial follow-up, preserve:
 
 - Current goal
-- Implemented phases
+- Completed work
 - Key architecture decisions
 - Rejected approaches
 - Relevant files
 - Current risks
-- Next phase
+- Next step
 
 Rejected approaches are important. Do not rediscover or reintroduce them without explaining what changed.
