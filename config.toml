@@ -1,0 +1,77 @@
+# config example
+# Copy to $XDG_CONFIG_HOME/upgate/config.toml or ~/.config/upgate/config.toml and edit values as needed.
+
+[upgate]
+# Marks older releases in verbose scan output.
+scan_old_age_threshold = "365d"
+# Limits how many managers may scan or plan at the same time.
+manager_concurrency = 4
+# Limits concurrent OSV security-audit batch requests. Valid range: 1 through 16.
+audit_concurrency = 8
+
+[brew]
+mode = "apply"
+# supported format specifiers:
+# "s" - seconds, "m" - minutes, "h" - hours, "d" - days
+min_release_age = "12h"
+version_policy = "none"
+no_update = false
+
+# [brew.selection]
+# mode = "include"
+# except = ["aom"]
+
+[bun]
+mode = "apply"
+min_release_age = "7d"
+version_policy = "none"
+
+[cargo]
+mode = "apply"
+min_release_age = "7d"
+version_policy = "none"
+
+[dotnet]
+mode = "off"
+min_release_age = "7d"
+version_policy = "none"
+
+[gem]
+mode = "off"
+min_release_age = "7d"
+version_policy = "stable"
+
+[go]
+mode = "apply"
+min_release_age = "7d"
+version_policy = "none"
+
+[mise]
+mode = "apply"
+min_release_age = "7d"
+version_policy = "none"
+
+[npm]
+mode = "apply"
+# npm min_release_age must use whole-day values because npm's --min-release-age takes days.
+min_release_age = "7d"
+version_policy = "none"
+
+# [npm.selection]
+# mode = "skip"
+# except = ["typescript"]
+
+[pipx]
+mode = "apply"
+min_release_age = "7d"
+version_policy = "none"
+
+[pnpm]
+mode = "apply"
+min_release_age = "7d"
+version_policy = "none"
+
+[uv]
+mode = "apply"
+min_release_age = "7d"
+version_policy = "none"
