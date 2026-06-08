@@ -1,4 +1,4 @@
-# upnow Architecture
+# upgate Architecture
 
 This is the current implementation contract after the workspace rebuild. Historical
 phase notes were removed; this document records the decisions that should still
@@ -6,28 +6,28 @@ guide future changes.
 
 ## Goal
 
-`upnow` is built around `apply`. Batch `apply` and interactive `apply` share the
+`upgate` is built around `apply`. Batch `apply` and interactive `apply` share the
 same planning and execution core. `plan` exposes the planning half of `apply`,
 and `scan` lists installed tools.
 
 ## Layers
 
-- `upnow-cli`: CLI parsing, orchestration, exit codes, manager construction, and
+- `upgate-cli`: CLI parsing, orchestration, exit codes, manager construction, and
   config persistence timing.
-- `upnow-domain`: typed identities, versions, policies, scan records, plan
+- `upgate-domain`: typed identities, versions, policies, scan records, plan
   outcomes, selections, and errors.
-- `upnow-planning`: candidate evaluation, version policy, release-age gates, and
+- `upgate-planning`: candidate evaluation, version policy, release-age gates, and
   default batch selection.
-- `upnow-managers`: concrete manager adapters. Managers own parsing, requests,
+- `upgate-managers`: concrete manager adapters. Managers own parsing, requests,
   manager-specific command construction, policy support checks, and named
   workarounds.
-- `upnow-release`: release-date and target-age evidence sources.
-- `upnow-audit`: shared security-audit evidence source. It owns OSV API
+- `upgate-release`: release-date and target-age evidence sources.
+- `upgate-audit`: shared security-audit evidence source. It owns OSV API
   requests, batching, response parsing, de-duplication, and process-local audit
   lookup caching.
-- `upnow-execution`: selected plan items to execution commands/results.
-- `upnow-presentation`: batch output and TUI state/rendering.
-- `upnow-infra`: process, HTTP, clock, environment, logging, and parallelism.
+- `upgate-execution`: selected plan items to execution commands/results.
+- `upgate-presentation`: batch output and TUI state/rendering.
+- `upgate-infra`: process, HTTP, clock, environment, logging, and parallelism.
 
 ## Data Flow
 
@@ -41,7 +41,7 @@ and managers turn those intents into concrete commands.
 Managers may pass `min_release_age` into native resolver commands when that is
 part of the manager's resolver, such as `uv --exclude-newer` or `mise --before`.
 Managers must not receive `now` or perform clock-aware age comparisons for
-planning. Clock-aware planning decisions belong in `upnow-planning`; scan age
+planning. Clock-aware planning decisions belong in `upgate-planning`; scan age
 display belongs in CLI/presentation.
 
 Managers must not query vulnerability databases, parse vulnerability database
@@ -50,9 +50,9 @@ messages. Their audit responsibility is limited to emitting an explicit package
 identity when the manager can map an installed tool to an OSV package ecosystem
 without guessing.
 
-Audit lookup orchestration belongs outside manager adapters. `upnow-cli` owns
+Audit lookup orchestration belongs outside manager adapters. `upgate-cli` owns
 the command-run audit service instance and passes audit evidence into planning.
-`upnow-planning` owns the audit gate decision. Unsupported audit identities are
+`upgate-planning` owns the audit gate decision. Unsupported audit identities are
 silent and must not change plan, apply, or scan behavior.
 
 ## Manager Targets
@@ -152,26 +152,3 @@ Do not add tests for private helpers, getters/setters, mock-call counts,
 implementation order, current module boundaries, internal view-model shape,
 temporary architecture scaffolding, or snapshots/goldens without a clear
 user-visible contract.
-
-## Rejected Approaches
-
-- Restoring the old `/src` implementation or old manager framework.
-- Preserving old wiring with typed wrappers.
-- Generic workflow engines for manager behavior.
-- Stringly typed plans or display-note parsing.
-- Making the TUI authoritative for domain decisions.
-- Passing `now` into manager discovery for age planning.
-- Trimming release timelines inside manager code to steer planning.
-- Hidden uv, Mise, or Brew branches instead of typed manager-selected targets.
-- Shared ecosystem helper layers whose only current reason is reducing
-  duplication.
-- Manager-local vulnerability lookup, OSV parsing, audit gating, or audit note
-  formatting.
-- Inferring audit package ecosystems from display names, free-form metadata, or
-  presentation strings.
-- Using manager metadata as planner audit input instead of typed audit
-  identities and typed audit evidence.
-- Duplicate manager-private execution command types.
-- Boolean forced-selection state instead of typed selected targets.
-- Materializing all installed package names to represent "skip all except one";
-  use `mode = "skip"` with exceptions.

@@ -2,7 +2,7 @@
 
 ### Purpose
 
-Add an optional **version policy gate** to `upnow` that controls whether prerelease versions are eligible as upgrade targets.
+Add an optional **version policy gate** to `upgate` that controls whether prerelease versions are eligible as upgrade targets.
 
 This gate is **independent** of `min_release_age` and is evaluated during candidate selection.
 
@@ -78,7 +78,7 @@ version_policy = "same-track"
 
 ## Release classes
 
-`upnow` defines a normalized release stability ladder:
+`upgate` defines a normalized release stability ladder:
 
 1. `dev`
 2. `alpha`
@@ -428,7 +428,7 @@ not guarantee reporting prerelease-only newer versions as blocked.
 Some managers cannot safely combine this gate with their native target-selection model.
 
 `mise` is unsupported for version policy. It owns target selection through `mise upgrade --before`,
-so `upnow` must not replace that with its own exact-version resolver. Any configured
+so `upgate` must not replace that with its own exact-version resolver. Any configured
 `[mise].version_policy` value is rejected.
 
 `uv` is unsupported for version policy. It keeps its legacy behavior by delegating target

@@ -1,16 +1,16 @@
 [workspace]
 resolver = "3"
-default-members = ["crates/upnow-cli"]
+default-members = ["crates/upgate-cli"]
 members = [
-    "crates/upnow-cli",
-    "crates/upnow-domain",
-    "crates/upnow-execution",
-    "crates/upnow-infra",
-    "crates/upnow-audit",
-    "crates/upnow-release",
-    "crates/upnow-planning",
-    "crates/upnow-managers",
-    "crates/upnow-presentation",
+    "crates/upgate-cli",
+    "crates/upgate-domain",
+    "crates/upgate-execution",
+    "crates/upgate-infra",
+    "crates/upgate-audit",
+    "crates/upgate-release",
+    "crates/upgate-planning",
+    "crates/upgate-managers",
+    "crates/upgate-presentation",
 ]
 
 [workspace.package]

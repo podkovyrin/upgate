@@ -1,0 +1,13 @@
+[package]
+name = "upgate-execution"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+upgate-domain = { path = "../upgate-domain" }
+upgate-infra = { path = "../upgate-infra" }

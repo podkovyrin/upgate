@@ -1,8 +1,8 @@
-# upnow Specification (High Level)
+# upgate Specification (High Level)
 
 ## Purpose
 
-`upnow` helps users keep globally installed developer tools up to date across multiple package managers, while avoiding very new releases until they have "aged" past a configured threshold.
+`upgate` helps users keep globally installed developer tools up to date across multiple package managers, while avoiding very new releases until they have "aged" past a configured threshold.
 
 It supports three workflows:
 
@@ -45,7 +45,7 @@ Users can change modes in config or with CLI overrides.
 
 Each manager has a `min_release_age` setting.
 
-`upnow` prefers upgrade targets that are old enough to satisfy that threshold. This helps reduce risk from freshly published releases.
+`upgate` prefers upgrade targets that are old enough to satisfy that threshold. This helps reduce risk from freshly published releases.
 
 At a high level:
 
@@ -63,7 +63,7 @@ keeps target selection biased toward recently maintained releases; use
 
 ## Interactive apply
 
-`upnow apply` opens the interactive selection UI and allows users to choose
+`upgate apply` opens the interactive selection UI and allows users to choose
 which upgrades to apply.
 
 - All upgradable items are selected by default.
@@ -72,7 +72,7 @@ which upgrades to apply.
 
 Interactive mode requires a TTY.
 
-`upnow apply --yolo` skips the interactive UI and applies the default selected
+`upgate apply --yolo` skips the interactive UI and applies the default selected
 updates non-interactively. `--yes` and `--no-approval` are accepted aliases for
 the same behavior.
 

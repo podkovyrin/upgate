@@ -5,7 +5,7 @@ feature. It extends the architecture in `docs/architecture.md`.
 
 ## Goal
 
-`upnow` should use OSV.dev to report and gate known vulnerabilities for globally
+`upgate` should use OSV.dev to report and gate known vulnerabilities for globally
 installed developer tools.
 
 The MVP uses OSV because it aggregates the advisory sources needed for the
@@ -32,16 +32,16 @@ Security audit affects:
 
 Add a shared audit layer:
 
-- `upnow-domain`: typed audit identities, queries, results, finding summaries,
+- `upgate-domain`: typed audit identities, queries, results, finding summaries,
   and plan/scan audit facts.
-- `upnow-audit`: OSV client, batch splitting, de-duplication, process-local
+- `upgate-audit`: OSV client, batch splitting, de-duplication, process-local
   cache, response parsing, and audit service concurrency.
-- `upnow-planning`: derives update-target audit queries and applies audit as a
+- `upgate-planning`: derives update-target audit queries and applies audit as a
   gate.
-- `upnow-cli`: owns one audit service instance per command run and orchestrates
+- `upgate-cli`: owns one audit service instance per command run and orchestrates
   manager discovery, audit lookup, and planning.
-- `upnow-managers`: emit optional typed audit identities for installed tools.
-- `upnow-presentation`: render short audit notes and TUI audit details from
+- `upgate-managers`: emit optional typed audit identities for installed tools.
+- `upgate-presentation`: render short audit notes and TUI audit details from
   typed plan/scan facts.
 
 Managers must not call OSV, parse OSV responses, decide vulnerability severity,
@@ -285,11 +285,11 @@ The base URL must be overridable for tests, following existing manager metadata
 lookup patterns. Suggested environment variable:
 
 ```text
-UPNOW_OSV_BASE_URL
+upgate_OSV_BASE_URL
 ```
 
 The current HTTP infrastructure only supports GET. Implementation must add a
-small POST JSON/text capability to `upnow-infra::HttpClient` and fake HTTP
+small POST JSON/text capability to `upgate-infra::HttpClient` and fake HTTP
 support for tests.
 
 ### Batching
@@ -313,7 +313,7 @@ The audit service has its own global concurrency cap.
 Suggested MVP config:
 
 ```toml
-[upnow]
+[upgate]
 audit_concurrency = 8
 ```
 
@@ -355,7 +355,7 @@ planning.finalize_plan(inputs, settings, audit_results)
 
 Do not let CLI duplicate policy, age, or candidate selection logic. If audit
 query derivation needs to know which versions survive policy and age, expose
-that from `upnow-planning`.
+that from `upgate-planning`.
 
 For scan verbose:
 
@@ -453,15 +453,15 @@ call counts unrelated to product behavior, or current module boundaries.
 
 ### Phase 1: Domain and Architecture Plumbing
 
-- Add typed audit identities/results to `upnow-domain`.
+- Add typed audit identities/results to `upgate-domain`.
 - Attach optional audit subject to installed tool/update facts.
 - Add audit diagnostics to plan candidate facts.
-- Update config model for `[upnow].audit_concurrency`.
+- Update config model for `[upgate].audit_concurrency`.
 
 ### Phase 2: OSV Service
 
-- Add POST support to `upnow-infra::HttpClient`.
-- Add `upnow-audit` with OSV querybatch request/response models.
+- Add POST support to `upgate-infra::HttpClient`.
+- Add `upgate-audit` with OSV querybatch request/response models.
 - Implement de-duplication, process-local cache, chunking, and concurrency.
 - Add fake HTTP coverage for OSV parsing and lookup behavior.
 
@@ -492,7 +492,7 @@ call counts unrelated to product behavior, or current module boundaries.
 
 ## Resolved Decisions
 
-- use best fitting names for audit domain types and the `upnow-audit` crate.
+- use best fitting names for audit domain types and the `upgate-audit` crate.
 - `audit_concurrency` does not need a CLI override in the MVP.
 - scan verbose should show supported-subject lookup failures as short notes
 - user in TUI can explicit override applying audit-blocked targets.

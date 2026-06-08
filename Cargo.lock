@@ -1943,17 +1943,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
-name = "upnow-audit"
+name = "upgate-audit"
 version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "upnow-domain",
- "upnow-infra",
+ "upgate-domain",
+ "upgate-infra",
 ]
 
 [[package]]
-name = "upnow-cli"
+name = "upgate-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
@@ -1962,30 +1962,30 @@ dependencies = [
  "serde_json",
  "toml 0.9.12+spec-1.1.0",
  "toml_edit 0.23.10+spec-1.0.0",
- "upnow-audit",
- "upnow-domain",
- "upnow-execution",
- "upnow-infra",
- "upnow-managers",
- "upnow-planning",
- "upnow-presentation",
- "upnow-release",
+ "upgate-audit",
+ "upgate-domain",
+ "upgate-execution",
+ "upgate-infra",
+ "upgate-managers",
+ "upgate-planning",
+ "upgate-presentation",
+ "upgate-release",
 ]
 
 [[package]]
-name = "upnow-domain"
+name = "upgate-domain"
 version = "0.1.0"
 
 [[package]]
-name = "upnow-execution"
+name = "upgate-execution"
 version = "0.1.0"
 dependencies = [
- "upnow-domain",
- "upnow-infra",
+ "upgate-domain",
+ "upgate-infra",
 ]
 
 [[package]]
-name = "upnow-infra"
+name = "upgate-infra"
 version = "0.1.0"
 dependencies = [
  "chrono",
@@ -1998,7 +1998,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "upnow-managers"
+name = "upgate-managers"
 version = "0.1.0"
 dependencies = [
  "chrono",
@@ -2009,23 +2009,23 @@ dependencies = [
  "serde",
  "serde_json",
  "toml 0.8.23",
- "upnow-domain",
- "upnow-execution",
- "upnow-infra",
- "upnow-release",
+ "upgate-domain",
+ "upgate-execution",
+ "upgate-infra",
+ "upgate-release",
 ]
 
 [[package]]
-name = "upnow-planning"
+name = "upgate-planning"
 version = "0.1.0"
 dependencies = [
  "pep440_rs",
  "semver",
- "upnow-domain",
+ "upgate-domain",
 ]
 
 [[package]]
-name = "upnow-presentation"
+name = "upgate-presentation"
 version = "0.1.0"
 dependencies = [
  "crossterm",
@@ -2033,17 +2033,17 @@ dependencies = [
  "owo-colors",
  "ratatui",
  "unicode-width",
- "upnow-domain",
- "upnow-execution",
+ "upgate-domain",
+ "upgate-execution",
 ]
 
 [[package]]
-name = "upnow-release"
+name = "upgate-release"
 version = "0.1.0"
 dependencies = [
  "pep440_rs",
  "semver",
- "upnow-domain",
+ "upgate-domain",
 ]
 
 [[package]]

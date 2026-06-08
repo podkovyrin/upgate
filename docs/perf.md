@@ -11,7 +11,7 @@ scripts/profile.sh
 Default command profiled:
 
 ```bash
-target/release/upnow -S brew.no_update=true
+target/release/upgate -S brew.no_update=true
 ```
 
 ## Compare `--max-parallel-checks-per-manager`
@@ -47,7 +47,7 @@ Artifacts are stored under:
   - `hyperfine.md`
   - `hyperfine.txt` (console output)
   - `meta.env` (git SHA/branch/flags)
-  - `upnow-args.txt`
+  - `upgate-args.txt`
   - `system.txt`
 - `.perf/index.tsv` (append-only run index)
 - `.perf/runs/latest` (symlink to latest run)
@@ -63,6 +63,6 @@ scripts/profile.sh --runs 10 --warmup 2 -- --managers brew -S brew.no_update=tru
 - The profiling script defaults to `-S brew.no_update=true` to reduce brew update noise in baseline runs.
 - For realistic user-facing performance, pass explicit args without this override.
 - Avoid passing `--max-parallel-checks-per-manager` directly when using `--compare-parallel`.
-- Manager concurrency is configured separately with `[upnow].manager_concurrency`
+- Manager concurrency is configured separately with `[upgate].manager_concurrency`
   or `--manager-concurrency`, so total metadata pressure can exceed the
   per-manager value when multiple managers run at once.

@@ -1,14 +1,14 @@
-# upnow Configuration (User-Level)
+# upgate Configuration (User-Level)
 
 ## Config file location
 
-`upnow` reads configuration from:
+`upgate` reads configuration from:
 
-1. `$XDG_CONFIG_HOME/upnow/config.toml`
-2. fallback: `~/.config/upnow/config.toml`
+1. `$XDG_CONFIG_HOME/upgate/config.toml`
+2. fallback: `~/.config/upgate/config.toml`
 
 If the file is missing, built-in defaults are used.
-If the file exists but is invalid TOML, `upnow` exits with an error.
+If the file exists but is invalid TOML, `upgate` exits with an error.
 
 Configuration precedence is:
 
@@ -22,13 +22,13 @@ Configuration precedence is:
 
 Configuration has:
 
-- global section: `[upnow]`
+- global section: `[upgate]`
 - manager sections: `[brew]`, `[npm]`, etc.
 
 Example:
 
 ```toml
-[upnow]
+[upgate]
 scan_old_age_threshold = "365d"
 manager_concurrency = 4
 audit_concurrency = 8
@@ -52,12 +52,12 @@ except = ["typescript"]
 
 ## Global settings
 
-### `[upnow].scan_old_age_threshold`
+### `[upgate].scan_old_age_threshold`
 
 - Default: `365d`
 - Used in verbose scan output to mark older releases.
 
-### `[upnow].manager_concurrency`
+### `[upgate].manager_concurrency`
 
 - Default: `4`
 - Valid values: integers greater than `0`
@@ -68,7 +68,7 @@ Metadata lookups inside each manager are controlled separately by
 up to `manager_concurrency * max_parallel_checks_per_manager` for commands that
 perform metadata checks across multiple managers.
 
-### `[upnow].audit_concurrency`
+### `[upgate].audit_concurrency`
 
 - Default: `8`
 - Valid values: integers from `1` through `16`
@@ -89,7 +89,7 @@ Controls when a manager is allowed to run:
 
 ### `min_release_age`
 
-Defines how old a release must be before `upnow` considers it eligible for upgrade.
+Defines how old a release must be before `upgate` considers it eligible for upgrade.
 
 Common defaults:
 
@@ -161,13 +161,13 @@ Optional Homebrew-specific behavior toggle.
 You can override config values at runtime:
 
 ```bash
-upnow plan -S brew.no_update=true -S npm.min_release_age=14d -S npm.version_policy=stable
+upgate plan -S brew.no_update=true -S npm.min_release_age=14d -S npm.version_policy=stable
 ```
 
 Format:
 
 - `<section>.<key>=<value>`
-- `<section>` is `upnow` or a manager ID
+- `<section>` is `upgate` or a manager ID
 
 Notes:
 
@@ -182,7 +182,7 @@ Notes:
 
 ## Interactive apply and selection policy
 
-With `upnow apply`:
+With `upgate apply`:
 
 - You choose which updates to apply.
 - The resulting package selection policy is persisted to that manager's
@@ -190,7 +190,7 @@ With `upnow apply`:
 
 This lets users maintain either an allow-by-default or skip-by-default policy.
 
-Use `upnow apply --yolo` for non-interactive batch apply. `--yes` and
+Use `upgate apply --yolo` for non-interactive batch apply. `--yes` and
 `--no-approval` are accepted aliases.
 
 ---

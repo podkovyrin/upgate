@@ -1,0 +1,18 @@
+[package]
+name = "upgate-presentation"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+crossterm = "0.29"
+indicatif = "0.18"
+owo-colors = "4.1"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+unicode-width = "0.2"
+upgate-domain = { path = "../upgate-domain" }
+upgate-execution = { path = "../upgate-execution" }

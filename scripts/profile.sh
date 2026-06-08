@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Lightweight profiler scaffold for upnow.
+# Lightweight profiler scaffold for upgate.
 #
 # Examples:
 #   scripts/profile.sh
@@ -18,7 +18,7 @@ EXTRA_ARGS=()
 
 usage() {
   cat <<'EOF'
-Usage: scripts/profile.sh [options] [-- <upnow args...>]
+Usage: scripts/profile.sh [options] [-- <upgate args...>]
 
 Options:
   --runs <n>               Number of benchmark runs (default: 6)
@@ -29,7 +29,7 @@ Options:
   --label <name>           Optional label appended to run id
   -h, --help               Show this help
 
-If no extra upnow args are provided, defaults to:
+If no extra upgate args are provided, defaults to:
   -S brew.no_update=true
 EOF
 }
@@ -155,7 +155,7 @@ fi
 echo "==> Building release binary"
 cargo build --release
 
-BIN="target/release/upnow"
+BIN="target/release/upgate"
 DEFAULT_ARGS=(-S brew.no_update=true)
 
 if [[ ${#EXTRA_ARGS[@]} -eq 0 ]]; then
@@ -194,7 +194,7 @@ CSV_OUT="${RUN_DIR}/hyperfine.csv"
 MD_OUT="${RUN_DIR}/hyperfine.md"
 TXT_OUT="${RUN_DIR}/hyperfine.txt"
 META_OUT="${RUN_DIR}/meta.env"
-ARGS_OUT="${RUN_DIR}/upnow-args.txt"
+ARGS_OUT="${RUN_DIR}/upgate-args.txt"
 SYSTEM_OUT="${RUN_DIR}/system.txt"
 
 printf '%s\n' "${ARGS[@]}" > "$ARGS_OUT"
@@ -210,7 +210,7 @@ PARALLEL_VALUES_JOINED="$(IFS=,; echo "${PARALLEL_VALUES[*]}")"
   echo "warmup=${WARMUP}"
   echo "compare_parallel=${COMPARE_PARALLEL}"
   echo "parallel_values=${PARALLEL_VALUES_JOINED}"
-  echo -n "upnow_args="
+  echo -n "upgate_args="
   for arg in "${ARGS[@]}"; do
     printf '%q ' "$arg"
   done
