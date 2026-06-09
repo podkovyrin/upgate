@@ -1972,86 +1972,144 @@ fn scan_item_from_input(input: ManagerScanInput) -> ScanItem {
     }
 }
 
+pub struct CliRunOutput {
+    pub stdout: String,
+    pub command_log_dir: Option<PathBuf>,
+}
+
+pub enum CliRunResult {
+    Completed(CliRunOutput),
+    Cancelled(CliRunOutput),
+    Failed {
+        error: AppError,
+        command_log_dir: Option<PathBuf>,
+    },
+}
+
 /// Runs from process environment and command-line arguments.
 ///
 /// # Errors
 ///
 /// Returns an error for invalid arguments or command execution failures.
 pub fn run_from_env() -> Result<String, AppError> {
+    match run_from_env_with_report() {
+        CliRunResult::Completed(output) => Ok(output.stdout),
+        CliRunResult::Cancelled(_) => std::process::exit(0),
+        CliRunResult::Failed { error, .. } => Err(error),
+    }
+}
+
+pub fn run_from_env_with_report() -> CliRunResult {
     let cli = Cli::parse();
     run_cli(&cli)
 }
 
-fn run_cli(cli: &Cli) -> Result<String, AppError> {
-    let config = ConfigFile::load()?;
+fn run_cli(cli: &Cli) -> CliRunResult {
+    let config = match ConfigFile::load() {
+        Ok(config) => config,
+        Err(error) => {
+            return CliRunResult::Failed {
+                error: error.into(),
+                command_log_dir: None,
+            };
+        }
+    };
     let env = Env::real();
     let command = cli.command.unwrap_or(CliCommand::Plan);
     let interactive_apply = command == CliCommand::Apply && !cli.yolo;
-    let log_dir = init_command_logging(cli, &env, command, interactive_apply)?;
+    let log_dir = match init_command_logging(cli, &env, command, interactive_apply) {
+        Ok(log_dir) => log_dir,
+        Err(error) => {
+            return CliRunResult::Failed {
+                error,
+                command_log_dir: None,
+            };
+        }
+    };
     let process = ProcessRunner::new(MutationMode::from_dry_run(cli.dry_run));
-    if cli.yolo && command != CliCommand::Apply {
-        return Err(AppError::InvalidArgs(
-            "--yolo is only supported with apply".to_owned(),
-        ));
-    }
-    if interactive_apply {
-        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+    let result = (|| {
+        if cli.yolo && command != CliCommand::Apply {
             return Err(AppError::InvalidArgs(
-                "interactive apply requires a TTY; use --yolo for non-interactive apply".to_owned(),
+                "--yolo is only supported with apply".to_owned(),
             ));
         }
-        let command_log = InteractiveCommandLog::new(cli.trace_commands);
-        let output = run_interactive_apply_with_sources_and_options(
+        if interactive_apply {
+            if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                return Err(AppError::InvalidArgs(
+                    "interactive apply requires a TTY; use --yolo for non-interactive apply"
+                        .to_owned(),
+                ));
+            }
+            let command_log = InteractiveCommandLog::new(cli.trace_commands);
+            return run_interactive_apply_with_sources_and_options(
+                config,
+                &process,
+                &HttpClient::real(&HttpSettings::default_client_settings())
+                    .map_err(|err| AppError::Manager(err.to_string()))?,
+                &env,
+                Clock::system(),
+                &cli.managers,
+                &cli.overrides,
+                cli.max_parallel_checks_per_manager,
+                cli.manager_concurrency.map(NonZeroUsize::get),
+                &command_log,
+                log_dir.as_deref(),
+            );
+        }
+        let theme = OutputTheme::from_environment(ThemeOptions {
+            plain: cli.plain,
+            no_color: cli.no_color,
+            verbose: cli.verbose,
+        });
+        let terminal = BatchTerminal::from_environment(theme);
+        maybe_emit_apply_mutation_mode_notice(command.into(), &process, terminal, cli.dry_run);
+        let terminal = if cli.trace_commands {
+            terminal.suppress_spinner()
+        } else {
+            terminal
+        };
+        run_batch_with_terminal_and_sources(
+            command.into(),
             config,
             &process,
             &HttpClient::real(&HttpSettings::default_client_settings())
                 .map_err(|err| AppError::Manager(err.to_string()))?,
             &env,
             Clock::system(),
+            theme,
+            terminal,
+            cli.max_parallel_checks_per_manager,
             &cli.managers,
             &cli.overrides,
-            cli.max_parallel_checks_per_manager,
             cli.manager_concurrency.map(NonZeroUsize::get),
-            &command_log,
-            log_dir.as_deref(),
-        )?;
-        if output == INTERACTIVE_SELECTION_CANCELLED_OUTPUT {
-            std::process::exit(0);
+            if command == CliCommand::Apply {
+                log_dir.as_deref()
+            } else {
+                None
+            },
+        )
+    })();
+
+    match result {
+        Ok(stdout) if stdout == INTERACTIVE_SELECTION_CANCELLED_OUTPUT => {
+            CliRunResult::Cancelled(CliRunOutput {
+                stdout: String::new(),
+                command_log_dir: reported_command_log_dir(cli, &log_dir),
+            })
         }
-        return Ok(output);
-    }
-    let theme = OutputTheme::from_environment(ThemeOptions {
-        plain: cli.plain,
-        no_color: cli.no_color,
-        verbose: cli.verbose,
-    });
-    let terminal = BatchTerminal::from_environment(theme);
-    maybe_emit_apply_mutation_mode_notice(command.into(), &process, terminal, cli.dry_run);
-    let terminal = if cli.trace_commands {
-        terminal.suppress_spinner()
-    } else {
-        terminal
-    };
-    run_batch_with_terminal_and_sources(
-        command.into(),
-        config,
-        &process,
-        &HttpClient::real(&HttpSettings::default_client_settings())
-            .map_err(|err| AppError::Manager(err.to_string()))?,
-        &env,
-        Clock::system(),
-        theme,
-        terminal,
-        cli.max_parallel_checks_per_manager,
-        &cli.managers,
-        &cli.overrides,
-        cli.manager_concurrency.map(NonZeroUsize::get),
-        if command == CliCommand::Apply {
-            log_dir.as_deref()
-        } else {
-            None
+        Ok(stdout) => CliRunResult::Completed(CliRunOutput {
+            stdout,
+            command_log_dir: reported_command_log_dir(cli, &log_dir),
+        }),
+        Err(error) => CliRunResult::Failed {
+            error,
+            command_log_dir: reported_command_log_dir(cli, &log_dir),
         },
-    )
+    }
+}
+
+fn reported_command_log_dir(cli: &Cli, log_dir: &Option<PathBuf>) -> Option<PathBuf> {
+    cli.log_commands.then(|| log_dir.clone()).flatten()
 }
 
 fn init_command_logging(
@@ -2075,13 +2133,6 @@ fn init_command_logging(
         }
         Err(_) => None,
     };
-
-    if options.log_commands && (cli.yolo || command != CliCommand::Apply) {
-        let path = path
-            .as_ref()
-            .expect("command logging initialization succeeded");
-        eprintln!("command logs: {}", path.display());
-    }
 
     Ok(path)
 }

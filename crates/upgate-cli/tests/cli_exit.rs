@@ -142,6 +142,64 @@ esac
 }
 
 #[test]
+fn binary_plan_log_commands_prints_session_path() {
+    let sandbox = Sandbox::new("log-commands-path");
+    sandbox.write_executable(
+        "npm",
+        r#"#!/bin/sh
+case "$*" in
+  "outdated -g --json")
+    printf '%s\n' '{"alpha-ready":{"current":"1.0.0"}}'
+    ;;
+  "view alpha-ready time --json")
+    printf '%s\n' '{"1.0.0":"2021-01-01T00:00:00.000Z","1.2.0":"2021-12-01T00:00:00.000Z"}'
+    ;;
+  *)
+    echo "unexpected npm command: $*" >&2
+    exit 42
+    ;;
+esac
+"#,
+    );
+
+    let output = sandbox.run(["--manager", "npm", "--log-commands", "plan"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let log_path = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("command logs: "))
+        .map(PathBuf::from)
+        .expect("stderr should include command log session path");
+
+    assert!(output.status.success());
+    assert!(stdout.contains("[npm]"));
+    assert!(stdout.contains("+ Update"));
+    assert!(log_path.is_absolute());
+    assert!(log_path.starts_with(sandbox.log_base_dir()));
+    assert!(log_path.join("core.log").is_file());
+}
+
+#[test]
+fn binary_log_commands_prints_session_path_after_cli_error() {
+    let sandbox = Sandbox::new("log-commands-error");
+
+    let output = sandbox.run(["--log-commands", "--yolo", "plan"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let log_path = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("command logs: "))
+        .map(PathBuf::from)
+        .expect("stderr should include command log session path");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr.contains("--yolo is only supported with apply"));
+    assert!(stderr.find("--yolo is only supported with apply") < stderr.find("command logs: "));
+    assert!(log_path.is_absolute());
+    assert!(log_path.starts_with(sandbox.log_base_dir()));
+    assert!(log_path.join("core.log").is_file());
+}
+
+#[test]
 fn binary_apply_dry_run_skips_mutating_command() {
     let sandbox = Sandbox::new("dry-run");
     let mutation_marker = sandbox.root.join("mutation-ran");
@@ -257,6 +315,14 @@ impl Sandbox {
             command.env(key, value);
         }
         command.output().expect("upgate binary should run")
+    }
+
+    fn log_base_dir(&self) -> PathBuf {
+        if cfg!(target_os = "macos") {
+            self.home.join("Library").join("Logs").join("upgate")
+        } else {
+            self.state_home.join("upgate").join("logs")
+        }
     }
 }
 
