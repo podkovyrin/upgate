@@ -2030,9 +2030,9 @@ fn selection_tab_title(
 ) -> Line<'static> {
     match status {
         SelectionTabStatus::Loading => Line::from(vec![
-            Span::raw(label.to_owned()),
-            Span::raw(" "),
             Span::styled(spinner_frame(spinner_tick), theme.running),
+            Span::raw(" "),
+            Span::raw(label.to_owned()),
         ]),
         SelectionTabStatus::Ready => Line::raw(label.to_owned()),
     }
