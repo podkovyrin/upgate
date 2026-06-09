@@ -20,7 +20,7 @@ pub use logging::{LoggingOptions, init_logging};
 pub use parallel::{effective_parallelism, run_ordered_parallel, run_ordered_parallel_stoppable};
 pub use process::{
     CommandCheck, CommandFailure, CommandOutput, CommandSpec, CommandStartEvent, FakeProcess,
-    MUTATION_ENABLE_NOTICE, MUTATION_SKIP_NOTICE, MutationMode, ProcessRunner, command_exists,
+    MUTATION_ENABLE_NOTICE, MUTATION_SKIP_NOTICE, MutationMode, ProcessRunner,
     command_exists_in_env, status_allowed,
 };
 
@@ -61,7 +61,6 @@ pub enum InfraError {
     FakeProcessState {
         detail: String,
     },
-    ClockBeforeUnixEpoch,
     ParallelPoolBuild {
         label: String,
         detail: String,
@@ -119,7 +118,6 @@ impl fmt::Display for InfraError {
             Self::FakeProcessState { detail } => {
                 write!(formatter, "fake process state unavailable: {detail}")
             }
-            Self::ClockBeforeUnixEpoch => formatter.write_str("system clock before UNIX epoch"),
             Self::ParallelPoolBuild { label, detail } => {
                 write!(formatter, "failed to build {label} thread pool: {detail}")
             }

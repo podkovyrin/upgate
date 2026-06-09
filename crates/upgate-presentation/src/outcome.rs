@@ -139,12 +139,6 @@ impl OutcomeNote {
             visibility: OutcomeVisibility::Always,
         }
     }
-    pub fn emphasized(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            visibility: OutcomeVisibility::Always,
-        }
-    }
     pub fn warning(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),

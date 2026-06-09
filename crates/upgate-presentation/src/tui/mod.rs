@@ -10,6 +10,6 @@ pub use progress::{InteractiveProgressOutcome, run_interactive_progress};
 pub use selection::{
     InteractiveManagerSelectionDraft, InteractiveSelectionOutcome, InteractiveSelectionPlan,
     InteractiveSelectionPlanningEvent, InteractiveSelectionScreen, SelectionControl,
-    SelectionInput, run_interactive_selection, run_interactive_selection_with_planning_events,
+    SelectionInput, run_interactive_selection_with_planning_events,
 };
 pub use selection_state::{InteractiveSelectionState, SelectionStateError};

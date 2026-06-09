@@ -24,7 +24,7 @@ use upgate_audit::AuditService;
 use upgate_domain::{
     AuditLookupResult, AuditQuery, ManagerConfig, ManagerId, ManagerMode, ManagerScanEvidenceInput,
     ManagerScanInput, PlanItem, PlanSelection, ScanAuditFact, ScanIssue, ScanItem, ScanReport,
-    SelectedUpdate, UpdatePlan, UpdateSelectionPolicy, VersionPolicy,
+    SelectedUpdate, UpdatePlan,
 };
 use upgate_execution::progress::{
     ExecutionProgressEvent, ExecutionProgressState, ExecutionProgressSummary,
@@ -35,7 +35,7 @@ use upgate_execution::{
 };
 use upgate_infra::{
     Clock, Env, HttpClient, HttpSettings, LoggingOptions, MutationMode, ProcessRunner,
-    command_exists_in_env, init_logging, run_ordered_parallel, run_ordered_parallel_stoppable,
+    command_exists_in_env, init_logging, run_ordered_parallel_stoppable,
 };
 use upgate_managers::adapter::{ManagerAdapter, ManagerAdapterError};
 use upgate_planning::{
@@ -43,8 +43,8 @@ use upgate_planning::{
 };
 use upgate_presentation::tui::{
     InteractiveManagerSelectionDraft, InteractiveProgressOutcome, InteractiveSelectionOutcome,
-    InteractiveSelectionPlan, InteractiveSelectionPlanningEvent, run_interactive_progress,
-    run_interactive_selection, run_interactive_selection_with_planning_events,
+    InteractiveSelectionPlanningEvent, run_interactive_progress,
+    run_interactive_selection_with_planning_events,
 };
 use upgate_presentation::{
     BatchRenderOptions, OutcomeTable, OutputTheme, ThemeOptions, apply_execution_report_table,
@@ -70,10 +70,6 @@ impl InteractiveCommandLog {
             enabled,
             entries: Arc::new(Mutex::new(Vec::new())),
         }
-    }
-
-    fn disabled() -> Self {
-        Self::new(false)
     }
 
     const fn enabled(&self) -> bool {
@@ -426,154 +422,14 @@ fn snapshot_plan_target(item: &PlanItem) -> Option<String> {
     }
 }
 
-/// Runs a batch command for the migrated managers selected by config and args.
-///
-/// # Errors
-///
-/// Returns an error for config, discovery, planning, or execution failures.
-pub fn run_batch(
-    command: BatchCommand,
-    config: ConfigFile,
-    process: &ProcessRunner,
-    clock: Clock,
-    verbose: bool,
-    selected_managers: &[String],
-    overrides: &[String],
-) -> Result<String, AppError> {
-    let env = Env::real();
-    let http = HttpClient::real(&HttpSettings::default_client_settings())
-        .map_err(|err| AppError::Manager(err.to_string()))?;
-    run_batch_with_theme_and_sources(
-        command,
-        config,
-        process,
-        &http,
-        &env,
-        clock,
-        OutputTheme::plain(verbose),
-        DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER,
-        selected_managers,
-        overrides,
-        None,
-        None,
-    )
-}
-
-/// Runs interactive apply selection with real metadata sources.
-///
-/// This phase intentionally stops before config persistence or execution.
-///
-/// # Errors
-///
-/// Returns an error for config, discovery, planning, terminal, or selection failures.
-pub fn run_interactive_apply_selection(
-    config: ConfigFile,
-    process: &ProcessRunner,
-    clock: Clock,
-    selected_managers: &[String],
-    overrides: &[String],
-) -> Result<Option<Vec<(ManagerId, PlanSelection)>>, AppError> {
-    let env = Env::real();
-    let http = HttpClient::real(&HttpSettings::default_client_settings())
-        .map_err(|err| AppError::Manager(err.to_string()))?;
-    run_interactive_apply_selection_with_sources(
-        config,
-        process,
-        &http,
-        &env,
-        clock,
-        selected_managers,
-        overrides,
-    )
-}
-
 /// Runs interactive apply through selection, config persistence, execution, and progress output.
 ///
 /// # Errors
 ///
 /// Returns an error for config, discovery, planning, terminal, selection, persistence, or
 /// interrupted execution failures.
-pub fn run_interactive_apply(
-    config: ConfigFile,
-    process: &ProcessRunner,
-    clock: Clock,
-    selected_managers: &[String],
-    overrides: &[String],
-) -> Result<String, AppError> {
-    let env = Env::real();
-    let http = HttpClient::real(&HttpSettings::default_client_settings())
-        .map_err(|err| AppError::Manager(err.to_string()))?;
-    run_interactive_apply_with_sources(
-        config,
-        process,
-        &http,
-        &env,
-        clock,
-        selected_managers,
-        overrides,
-    )
-}
-
-/// Runs interactive apply with explicit metadata sources.
-///
-/// # Errors
-///
-/// Returns an error for config, discovery, planning, terminal, selection, persistence, or
-/// interrupted execution failures.
-pub fn run_interactive_apply_with_sources(
-    config: ConfigFile,
-    process: &ProcessRunner,
-    http: &HttpClient,
-    env: &Env,
-    clock: Clock,
-    selected_managers: &[String],
-    overrides: &[String],
-) -> Result<String, AppError> {
-    run_interactive_apply_with_sources_and_manager_concurrency_override(
-        config,
-        process,
-        http,
-        env,
-        clock,
-        selected_managers,
-        overrides,
-        DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER,
-        None,
-        None,
-    )
-}
-
 #[expect(clippy::too_many_arguments)]
-fn run_interactive_apply_with_sources_and_manager_concurrency_override(
-    config: ConfigFile,
-    process: &ProcessRunner,
-    http: &HttpClient,
-    env: &Env,
-    clock: Clock,
-    selected_managers: &[String],
-    overrides: &[String],
-    max_parallel_checks_per_manager: usize,
-    manager_concurrency_override: Option<usize>,
-    snapshot_log_dir: Option<&Path>,
-) -> Result<String, AppError> {
-    let command_log = InteractiveCommandLog::disabled();
-    run_interactive_apply_with_sources_and_options(
-        config,
-        process,
-        http,
-        env,
-        clock,
-        selected_managers,
-        overrides,
-        max_parallel_checks_per_manager,
-        manager_concurrency_override,
-        &command_log,
-        snapshot_log_dir,
-    )
-}
-
-#[expect(clippy::too_many_arguments)]
-fn run_interactive_apply_with_sources_and_options(
+fn run_interactive_apply(
     config: ConfigFile,
     process: &ProcessRunner,
     http: &HttpClient,
@@ -625,74 +481,13 @@ fn run_interactive_apply_with_sources_and_options(
     }
 }
 
-/// Runs a batch command with explicit release metadata sources.
+/// Runs a batch command for the managers selected by config and args.
 ///
 /// # Errors
 ///
 /// Returns an error for config, discovery, planning, or execution failures.
 #[expect(clippy::too_many_arguments)]
-pub fn run_batch_with_sources(
-    command: BatchCommand,
-    config: ConfigFile,
-    process: &ProcessRunner,
-    http: &HttpClient,
-    env: &Env,
-    clock: Clock,
-    verbose: bool,
-    selected_managers: &[String],
-    overrides: &[String],
-) -> Result<String, AppError> {
-    run_batch_with_theme_and_sources(
-        command,
-        config,
-        process,
-        http,
-        env,
-        clock,
-        OutputTheme::plain(verbose),
-        DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER,
-        selected_managers,
-        overrides,
-        None,
-        None,
-    )
-}
-
-#[expect(clippy::too_many_arguments)]
-fn run_batch_with_theme_and_sources(
-    command: BatchCommand,
-    config: ConfigFile,
-    process: &ProcessRunner,
-    http: &HttpClient,
-    env: &Env,
-    clock: Clock,
-    theme: OutputTheme,
-    max_parallel_checks_per_manager: usize,
-    selected_managers: &[String],
-    overrides: &[String],
-    manager_concurrency_override: Option<usize>,
-    snapshot_log_dir: Option<&Path>,
-) -> Result<String, AppError> {
-    let terminal = BatchTerminal::disabled(theme);
-    run_batch_with_terminal_and_sources(
-        command,
-        config,
-        process,
-        http,
-        env,
-        clock,
-        theme,
-        terminal,
-        max_parallel_checks_per_manager,
-        selected_managers,
-        overrides,
-        manager_concurrency_override,
-        snapshot_log_dir,
-    )
-}
-
-#[expect(clippy::too_many_arguments)]
-fn run_batch_with_terminal_and_sources(
+fn run_batch(
     command: BatchCommand,
     mut config: ConfigFile,
     process: &ProcessRunner,
@@ -739,89 +534,6 @@ fn run_batch_with_terminal_and_sources(
         &manager_ids,
         snapshot_log_dir,
     )
-}
-
-/// Builds interactive apply plans without executing selected updates.
-///
-/// # Errors
-///
-/// Returns an error for config, discovery, or planning failures.
-pub fn build_interactive_apply_selection_plans_with_sources(
-    config: ConfigFile,
-    process: &ProcessRunner,
-    http: &HttpClient,
-    env: &Env,
-    clock: Clock,
-    selected_managers: &[String],
-    overrides: &[String],
-) -> Result<Vec<(UpdatePlan, UpdateSelectionPolicy, VersionPolicy)>, AppError> {
-    let prepared = prepare_interactive_apply_with_sources(
-        config,
-        process,
-        http,
-        env,
-        clock,
-        selected_managers,
-        overrides,
-        DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER,
-    )?;
-    Ok(prepared
-        .managers
-        .into_iter()
-        .map(|manager| {
-            let selection = manager.manager_config.selection.clone();
-            let version_policy = manager.manager_config.version_policy;
-            (manager.plan, selection, version_policy)
-        })
-        .collect())
-}
-
-#[expect(clippy::too_many_arguments)]
-fn prepare_interactive_apply_with_sources(
-    config: ConfigFile,
-    process: &ProcessRunner,
-    http: &HttpClient,
-    env: &Env,
-    clock: Clock,
-    selected_managers: &[String],
-    overrides: &[String],
-    max_parallel_checks_per_manager: usize,
-) -> Result<PreparedInteractiveApply, AppError> {
-    let (config, manager_configs) =
-        prepare_interactive_manager_configs(config, selected_managers, overrides)?;
-    let manager_configs = available_manager_configs(manager_configs, env)?;
-    let manager_concurrency = config.manager_concurrency()?;
-    let audit_service = AuditService::new(http.clone(), env, config.audit_concurrency()?);
-    let managers = run_ordered_parallel(
-        manager_configs,
-        manager_concurrency,
-        "interactive planning managers",
-        |manager_config| {
-            let manager = configured_manager(manager_config.clone()).map_err(map_manager_error)?;
-            let plan = build_manager_plan(
-                manager.as_ref(),
-                process,
-                http,
-                &audit_service,
-                env,
-                clock,
-                &manager_config,
-                max_parallel_checks_per_manager,
-            )?;
-            Ok(PreparedInteractiveManagerApply {
-                plan,
-                manager_config,
-            })
-        },
-    )
-    .map_err(|err| AppError::Execution(err.to_string()))?
-    .into_iter()
-    .collect::<Result<Vec<_>, AppError>>()?;
-    Ok(PreparedInteractiveApply {
-        config,
-        managers,
-        planning_failures: Vec::new(),
-    })
 }
 
 fn prepare_interactive_manager_configs(
@@ -886,76 +598,6 @@ fn runnable_manager_ids(
             }
         })
         .collect()
-}
-
-/// Runs interactive apply selection and returns the confirmed typed selection.
-///
-/// This phase intentionally stops before config persistence or execution.
-///
-/// # Errors
-///
-/// Returns an error for config, discovery, planning, terminal, or selection failures.
-pub fn run_interactive_apply_selection_with_sources(
-    config: ConfigFile,
-    process: &ProcessRunner,
-    http: &HttpClient,
-    env: &Env,
-    clock: Clock,
-    selected_managers: &[String],
-    overrides: &[String],
-) -> Result<Option<Vec<(ManagerId, PlanSelection)>>, AppError> {
-    let plans = build_interactive_apply_selection_plans_with_sources(
-        config,
-        process,
-        http,
-        env,
-        clock,
-        selected_managers,
-        overrides,
-    )?;
-    let selection_plans = plans
-        .iter()
-        .map(|(plan, selection_policy, version_policy)| {
-            InteractiveSelectionPlan::new(
-                selection_view(plan, selection_policy),
-                plan.issues.clone(),
-                selection_policy.clone(),
-                *version_policy,
-            )
-        })
-        .collect();
-    match run_interactive_selection(selection_plans)
-        .map_err(|err| AppError::Planning(err.to_string()))?
-    {
-        InteractiveSelectionOutcome::Cancelled => Ok(None),
-        InteractiveSelectionOutcome::Interrupted => Err(AppError::Interrupted(
-            "interactive selection interrupted".to_owned(),
-        )),
-        InteractiveSelectionOutcome::Confirmed(drafts) => {
-            if drafts.len() != plans.len() {
-                return Err(AppError::Planning(format!(
-                    "interactive selection count mismatch: expected {}, got {}",
-                    plans.len(),
-                    drafts.len()
-                )));
-            }
-            let mut selections = Vec::new();
-            for ((plan, _, _), draft) in plans.iter().zip(drafts) {
-                if plan.manager_id != draft.manager_id {
-                    return Err(AppError::Planning(format!(
-                        "interactive selection manager mismatch: expected {}, got {}",
-                        plan.manager_id.as_str(),
-                        draft.manager_id.as_str()
-                    )));
-                }
-                let selection =
-                    PlanSelection::new(plan, draft.selected_items, draft.selection_policy)
-                        .map_err(|err| AppError::Planning(err.to_string()))?;
-                selections.push((plan.manager_id.clone(), selection));
-            }
-            Ok(Some(selections))
-        }
-    }
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -1246,21 +888,6 @@ fn confirmed_from_drafts(
     Ok((prepared.config, confirmed))
 }
 
-/// Executes confirmed interactive selections and persists selection policy to the default config.
-///
-/// # Errors
-///
-/// Returns an error for config persistence, selection resolution, or interrupted execution.
-/// Manager command construction and execution failures are reported in the progress report.
-pub fn execute_confirmed_interactive_apply_with_sources(
-    config: ConfigFile,
-    process: &ProcessRunner,
-    env: &Env,
-    confirmed: Vec<ConfirmedInteractiveManagerApply>,
-) -> Result<InteractiveApplyReport, AppError> {
-    execute_confirmed_interactive_apply(config, process, env, confirmed, None)
-}
-
 /// Executes confirmed interactive selections and persists selection policy to a specific config.
 ///
 /// # Errors
@@ -1268,21 +895,11 @@ pub fn execute_confirmed_interactive_apply_with_sources(
 /// Returns an error for config persistence, selection resolution, or interrupted execution.
 /// Manager command construction and execution failures are reported in the progress report.
 pub fn execute_confirmed_interactive_apply_with_config_path(
-    config: ConfigFile,
-    process: &ProcessRunner,
-    env: &Env,
-    confirmed: Vec<ConfirmedInteractiveManagerApply>,
-    config_path: &Path,
-) -> Result<InteractiveApplyReport, AppError> {
-    execute_confirmed_interactive_apply(config, process, env, confirmed, Some(config_path))
-}
-
-fn execute_confirmed_interactive_apply(
     mut config: ConfigFile,
     process: &ProcessRunner,
     env: &Env,
     confirmed: Vec<ConfirmedInteractiveManagerApply>,
-    config_path: Option<&Path>,
+    config_path: &Path,
 ) -> Result<InteractiveApplyReport, AppError> {
     let resolved = resolve_confirmed_execution_plans(&confirmed)?;
     let mut progress = ExecutionProgressState::from_execution_plans(resolved.clone());
@@ -1292,7 +909,7 @@ fn execute_confirmed_interactive_apply(
         env,
         confirmed,
         &resolved,
-        config_path,
+        Some(config_path),
         None,
         &mut |event| {
             progress.apply_event(event);
@@ -1986,19 +1603,6 @@ pub enum CliRunResult {
     },
 }
 
-/// Runs from process environment and command-line arguments.
-///
-/// # Errors
-///
-/// Returns an error for invalid arguments or command execution failures.
-pub fn run_from_env() -> Result<String, AppError> {
-    match run_from_env_with_report() {
-        CliRunResult::Completed(output) => Ok(output.stdout),
-        CliRunResult::Cancelled(_) => std::process::exit(0),
-        CliRunResult::Failed { error, .. } => Err(error),
-    }
-}
-
 pub fn run_from_env_with_report() -> CliRunResult {
     let cli = Cli::parse();
     run_cli(&cli)
@@ -2041,7 +1645,7 @@ fn run_cli(cli: &Cli) -> CliRunResult {
                 ));
             }
             let command_log = InteractiveCommandLog::new(cli.trace_commands);
-            return run_interactive_apply_with_sources_and_options(
+            return run_interactive_apply(
                 config,
                 &process,
                 &HttpClient::real(&HttpSettings::default_client_settings())
@@ -2068,7 +1672,7 @@ fn run_cli(cli: &Cli) -> CliRunResult {
         } else {
             terminal
         };
-        run_batch_with_terminal_and_sources(
+        run_batch(
             command.into(),
             config,
             &process,
@@ -2094,22 +1698,22 @@ fn run_cli(cli: &Cli) -> CliRunResult {
         Ok(stdout) if stdout == INTERACTIVE_SELECTION_CANCELLED_OUTPUT => {
             CliRunResult::Cancelled(CliRunOutput {
                 stdout: String::new(),
-                command_log_dir: reported_command_log_dir(cli, &log_dir),
+                command_log_dir: reported_command_log_dir(cli, log_dir.as_ref()),
             })
         }
         Ok(stdout) => CliRunResult::Completed(CliRunOutput {
             stdout,
-            command_log_dir: reported_command_log_dir(cli, &log_dir),
+            command_log_dir: reported_command_log_dir(cli, log_dir.as_ref()),
         }),
         Err(error) => CliRunResult::Failed {
             error,
-            command_log_dir: reported_command_log_dir(cli, &log_dir),
+            command_log_dir: reported_command_log_dir(cli, log_dir.as_ref()),
         },
     }
 }
 
-fn reported_command_log_dir(cli: &Cli, log_dir: &Option<PathBuf>) -> Option<PathBuf> {
-    cli.log_commands.then(|| log_dir.clone()).flatten()
+fn reported_command_log_dir(cli: &Cli, log_dir: Option<&PathBuf>) -> Option<PathBuf> {
+    cli.log_commands.then(|| log_dir.cloned()).flatten()
 }
 
 fn init_command_logging(

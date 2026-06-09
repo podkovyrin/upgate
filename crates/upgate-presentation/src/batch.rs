@@ -38,20 +38,6 @@ impl BatchRenderOptions {
         self
     }
 }
-pub fn render_scan_report(report: &ScanReport, options: BatchRenderOptions) -> String {
-    render_batch_table(&scan_report_table(report, options), options.theme)
-}
-pub fn render_update_plan(plan: &UpdatePlan, options: BatchRenderOptions) -> String {
-    render_batch_table(&update_plan_table(plan, options), options.theme)
-}
-pub fn render_execution_report(
-    report: &ExecutionReport,
-    issues: &[PlanIssue],
-    options: BatchRenderOptions,
-) -> String {
-    render_batch_table(&execution_report_table(report, issues), options.theme)
-}
-
 pub fn apply_execution_report_table(
     report: &ExecutionReport,
     plan: &UpdatePlan,
@@ -73,14 +59,6 @@ pub fn apply_execution_report_table(
 
     rows.extend(execution_report_rows(report));
     OutcomeTable::new(rows)
-}
-pub fn render_manager_error(
-    manager_id: &ManagerId,
-    command: &str,
-    detail: &str,
-    theme: OutputTheme,
-) -> String {
-    render_batch_table(&manager_error_table(manager_id, command, detail), theme)
 }
 pub fn render_batch_table(table: &OutcomeTable, theme: OutputTheme) -> String {
     let rendered = render_outcome_table(table, theme);
@@ -399,24 +377,6 @@ fn candidate_row(
         ),
     )
 }
-pub fn execution_report_table(report: &ExecutionReport, issues: &[PlanIssue]) -> OutcomeTable {
-    let mut rows = issues
-        .iter()
-        .map(|issue| plan_issue_row(&report.manager_id, issue))
-        .collect::<Vec<_>>();
-
-    if report.items.is_empty() {
-        rows.push(
-            OutcomeRow::manager(OutcomeStatusView::Current, report.manager_id.clone())
-                .with_note(OutcomeNote::metadata("no selected updates")),
-        );
-    }
-
-    rows.extend(execution_report_rows(report));
-
-    OutcomeTable::new(rows)
-}
-
 fn unselected_update_rows(plan: &UpdatePlan, selection: &PlanSelection) -> Vec<OutcomeRow> {
     let selected_ids = selection
         .selected_items

@@ -96,9 +96,6 @@ impl InteractiveProgressScreen {
             table_offset: 0,
         }
     }
-    pub const fn state(&self) -> &ExecutionProgressState {
-        &self.state
-    }
     pub const fn quit_confirmation_open(&self) -> bool {
         matches!(self.phase, ProgressPhase::QuitConfirm)
     }
@@ -566,10 +563,6 @@ fn modal_inner_rect(area: Rect, width: u16, height: u16) -> Option<Rect> {
 
 const fn rect_contains(area: Rect, column: u16, row: u16) -> bool {
     column >= area.x && column < area.right() && row >= area.y && row < area.bottom()
-}
-
-pub fn progress_input_from_event(event: &Event, quit_confirmation_open: bool) -> ProgressInput {
-    progress_input_from_event_for_phase(event, quit_confirmation_open, false)
 }
 
 fn progress_input_from_event_for_phase(

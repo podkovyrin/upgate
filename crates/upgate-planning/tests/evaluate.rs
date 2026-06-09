@@ -508,3 +508,82 @@ fn manager_selected_policy_blocked_target_keeps_audit_fact_for_picker() {
         Some(CandidateAuditFact::Vulnerable { .. })
     ));
 }
+
+#[test]
+fn pep440_timeline_skips_unparseable_entries() {
+    let seed = UpdateSeed::new(
+        installed_tool("alpha", "1.0.0"),
+        version("1.2.0"),
+        VersionScheme::Pep440,
+        ReleaseLookupResult::Known(ReleaseTimeline::new(vec![
+            ReleaseEntry::new(
+                version("not-a-version"),
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 300)),
+            ),
+            ReleaseEntry::new(
+                version("1.2.0"),
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 200)),
+            ),
+        ])),
+        ExecutionSupport::exact_only(),
+    );
+
+    let PlanItem::Update { candidate, .. } = evaluate_seed(
+        item_id("item"),
+        seed,
+        VersionPolicy::None,
+        SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
+        Duration::ZERO,
+    ) else {
+        panic!("expected update despite unparseable timeline entry")
+    };
+
+    assert_eq!(
+        candidate.target_version().expect("known target").as_str(),
+        "1.2.0"
+    );
+}
+
+#[test]
+fn pep440_age_gate_selects_publish_date_newest_eligible_target() {
+    let seed = UpdateSeed::new(
+        installed_tool("alpha", "3.0.0"),
+        version("3.10.0"),
+        VersionScheme::Pep440,
+        ReleaseLookupResult::Known(ReleaseTimeline::new(vec![
+            ReleaseEntry::new(
+                version("3.9.0"),
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 200)),
+            ),
+            ReleaseEntry::new(
+                version("3.10.0"),
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 10)),
+            ),
+        ])),
+        ExecutionSupport::exact_only(),
+    );
+
+    let PlanItem::Update { candidate, .. } = evaluate_seed(
+        item_id("item"),
+        seed,
+        VersionPolicy::None,
+        SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
+        Duration::from_secs(100),
+    ) else {
+        panic!("expected update")
+    };
+
+    assert_eq!(
+        candidate.target_version().expect("known target").as_str(),
+        "3.9.0"
+    );
+    assert_eq!(
+        candidate
+            .diagnostics
+            .latest_overall
+            .expect("latest overall")
+            .version
+            .as_str(),
+        "3.10.0"
+    );
+}

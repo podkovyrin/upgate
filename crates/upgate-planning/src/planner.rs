@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime};
 
 use upgate_domain::{
     AuditLookupResult, AuditQuery, DomainError, ManagerId, ManagerUpdateInput, PlanItem,
-    PlanItemId, PlanSelection, SelectedItem, ToolId, UpdatePlan, UpdateSeed, UpdateSelectionPolicy,
+    PlanItemId, PlanSelection, SelectedItem, ToolId, UpdatePlan, UpdateSelectionPolicy,
     VersionPolicy,
 };
 
@@ -14,23 +14,6 @@ pub struct PlanningSettings {
     pub policy: VersionPolicy,
     pub now: SystemTime,
     pub min_release_age: Duration,
-}
-
-/// Builds a typed manager update plan from manager-discovered seeds.
-///
-/// # Errors
-///
-/// Returns an error when generated plan item ids are invalid or duplicated.
-pub fn update_plan_from_seeds(
-    manager_id: ManagerId,
-    seeds: Vec<UpdateSeed>,
-    settings: PlanningSettings,
-) -> Result<UpdatePlan, DomainError> {
-    update_plan_from_inputs(
-        manager_id,
-        seeds.into_iter().map(ManagerUpdateInput::Seed).collect(),
-        settings,
-    )
 }
 
 /// Builds a typed manager update plan from manager-owned planning inputs.

@@ -182,7 +182,7 @@ impl ProcessRunner {
                 display,
                 self.interrupt_requested.as_deref(),
             ),
-            ProcessRunnerKind::Fake(fake) => fake.run(spec, check, display),
+            ProcessRunnerKind::Fake(fake) => fake.run(check, display),
         }
     }
 }
@@ -190,35 +190,16 @@ impl ProcessRunner {
 #[derive(Debug, Clone)]
 pub struct FakeProcess {
     responses: Arc<Mutex<VecDeque<Result<CommandOutput, InfraError>>>>,
-    calls: Arc<Mutex<Vec<CommandSpec>>>,
 }
 
 impl FakeProcess {
     pub fn new(responses: impl IntoIterator<Item = Result<CommandOutput, InfraError>>) -> Self {
         Self {
             responses: Arc::new(Mutex::new(responses.into_iter().collect())),
-            calls: Arc::new(Mutex::new(Vec::new())),
         }
     }
-    pub fn calls(&self) -> Vec<CommandSpec> {
-        self.calls.lock().map_or_else(
-            |poisoned| poisoned.into_inner().clone(),
-            |calls| calls.clone(),
-        )
-    }
 
-    fn run(
-        &self,
-        spec: &CommandSpec,
-        check: &CommandCheck,
-        display: String,
-    ) -> Result<CommandOutput, InfraError> {
-        self.calls
-            .lock()
-            .map_err(|err| InfraError::FakeProcessState {
-                detail: err.to_string(),
-            })?
-            .push(spec.clone());
+    fn run(&self, check: &CommandCheck, display: String) -> Result<CommandOutput, InfraError> {
         let mut output = self
             .responses
             .lock()
@@ -582,9 +563,6 @@ pub fn status_allowed(status: ExitStatus, check: &CommandCheck) -> bool {
         }
         CommandCheck::IgnoreStatus => true,
     }
-}
-pub fn command_exists(command: &str) -> bool {
-    command_exists_in_env(command, &Env::real())
 }
 pub fn command_exists_in_env(command: &str, env: &Env) -> bool {
     let trimmed = command.trim();

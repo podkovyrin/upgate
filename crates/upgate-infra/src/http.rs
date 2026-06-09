@@ -33,9 +33,6 @@ impl HttpClient {
     pub fn fake(responses: impl IntoIterator<Item = (String, HttpResponse)>) -> Self {
         Self::Fake(FakeHttpClient::new(responses))
     }
-    pub fn fake_bytes(responses: impl IntoIterator<Item = (String, HttpBytesResponse)>) -> Self {
-        Self::Fake(FakeHttpClient::new_bytes(responses))
-    }
 
     /// Sends a GET request and returns the status code plus response body.
     ///
@@ -226,12 +223,6 @@ impl FakeHttpClient {
                 .collect(),
         }
     }
-    pub fn new_bytes(responses: impl IntoIterator<Item = (String, HttpBytesResponse)>) -> Self {
-        Self {
-            responses: responses.into_iter().collect(),
-        }
-    }
-
     fn get_text(&self, url: &str) -> Result<HttpResponse, InfraError> {
         let response = self.get_bytes(url)?;
         let body = String::from_utf8(response.body).map_err(|err| InfraError::HttpBody {

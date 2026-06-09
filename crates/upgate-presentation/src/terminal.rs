@@ -61,13 +61,6 @@ impl BatchTerminal {
             spinner_suppressed: false,
         }
     }
-    pub const fn disabled(theme: OutputTheme) -> Self {
-        Self {
-            theme,
-            stderr_is_tty: false,
-            spinner_suppressed: true,
-        }
-    }
     pub const fn suppress_spinner(self) -> Self {
         Self {
             spinner_suppressed: true,
@@ -79,13 +72,6 @@ impl BatchTerminal {
     }
     pub const fn notice_enabled(self) -> bool {
         self.stderr_is_tty
-    }
-    pub fn start_manager_spinner(
-        self,
-        action: BatchTerminalAction,
-        _manager_id: &str,
-    ) -> ManagerSpinner {
-        self.start_action_spinner(action)
     }
     pub fn start_action_spinner(self, action: BatchTerminalAction) -> ManagerSpinner {
         if !self.spinner_enabled() {

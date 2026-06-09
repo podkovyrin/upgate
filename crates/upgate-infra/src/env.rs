@@ -32,14 +32,6 @@ impl Env {
     pub fn home_dir(&self) -> Option<PathBuf> {
         self.non_empty_path_var("HOME")
     }
-    pub fn truthy(&self, name: &str) -> bool {
-        self.non_empty_var(name).is_some_and(|value| {
-            matches!(
-                value.to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-    }
 }
 pub fn trim_non_empty(value: &str) -> Option<&str> {
     let trimmed = value.trim();

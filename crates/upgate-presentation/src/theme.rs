@@ -41,12 +41,6 @@ impl OutputTheme {
             verbose: options.verbose,
         }
     }
-    pub const fn plain(verbose: bool) -> Self {
-        Self {
-            mode: OutputMode::Plain,
-            verbose,
-        }
-    }
     pub const fn styled(color: bool, verbose: bool) -> Self {
         Self {
             mode: OutputMode::Styled { color },

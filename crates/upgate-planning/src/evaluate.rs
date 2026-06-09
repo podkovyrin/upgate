@@ -145,10 +145,10 @@ fn audit_queries_for_planner_selectable_seed(
 
     match seed.version_scheme {
         VersionScheme::SemVer => {
-            audit_queries_for_semver_timeline(seed, subject, discovered_target, timeline)
+            audit_queries_for_timeline(seed, subject, discovered_target, timeline, parse_semver)
         }
         VersionScheme::Pep440 => {
-            audit_queries_for_pep440_timeline(seed, subject, discovered_target, timeline)
+            audit_queries_for_timeline(seed, subject, discovered_target, timeline, parse_pep440)
         }
         VersionScheme::ManagerNative => Vec::new(),
     }
@@ -171,20 +171,21 @@ fn audit_queries_for_manager_selected_seed(
     vec![AuditQuery::new(subject.clone(), selected_target.clone())]
 }
 
-fn audit_queries_for_semver_timeline(
+fn audit_queries_for_timeline<V: Ord>(
     seed: &UpdateSeed,
     subject: &AuditSubject,
     discovered_target: &VersionText,
     timeline: &ReleaseTimeline,
+    parse: fn(&str) -> Result<V, String>,
 ) -> Vec<AuditQuery> {
-    let Ok(installed_version) = parse_semver(seed.installed.installed_version.as_str()) else {
+    let Ok(installed_version) = parse(seed.installed.installed_version.as_str()) else {
         return Vec::new();
     };
-    let Ok(parsed_discovered_target) = parse_semver(discovered_target.as_str()) else {
+    let Ok(parsed_discovered_target) = parse(discovered_target.as_str()) else {
         return Vec::new();
     };
     if !timeline.versions.iter().any(|entry| {
-        parse_semver(entry.version.as_str())
+        parse(entry.version.as_str())
             .map(|parsed| parsed == parsed_discovered_target)
             .unwrap_or(false)
     }) {
@@ -195,40 +196,7 @@ fn audit_queries_for_semver_timeline(
         .versions
         .iter()
         .filter_map(|entry| {
-            let parsed = parse_semver(entry.version.as_str()).ok()?;
-            if parsed <= installed_version {
-                return None;
-            }
-            Some(AuditQuery::new(subject.clone(), entry.version.clone()))
-        })
-        .collect()
-}
-
-fn audit_queries_for_pep440_timeline(
-    seed: &UpdateSeed,
-    subject: &AuditSubject,
-    discovered_target: &VersionText,
-    timeline: &ReleaseTimeline,
-) -> Vec<AuditQuery> {
-    let Ok(installed_version) = parse_pep440(seed.installed.installed_version.as_str()) else {
-        return Vec::new();
-    };
-    let Ok(parsed_discovered_target) = parse_pep440(discovered_target.as_str()) else {
-        return Vec::new();
-    };
-    if !timeline.versions.iter().any(|entry| {
-        parse_pep440(entry.version.as_str())
-            .map(|parsed| parsed == parsed_discovered_target)
-            .unwrap_or(false)
-    }) {
-        return Vec::new();
-    }
-
-    timeline
-        .versions
-        .iter()
-        .filter_map(|entry| {
-            let parsed = parse_pep440(entry.version.as_str()).ok()?;
+            let parsed = parse(entry.version.as_str()).ok()?;
             if parsed <= installed_version {
                 return None;
             }
@@ -265,7 +233,7 @@ fn evaluate_planner_selectable_seed(
             diagnostics: PlanDiagnostics::new(min_release_age).with_lookup_failure(err),
         },
         ReleaseLookupResult::Known(timeline) => match seed.version_scheme {
-            VersionScheme::SemVer => evaluate_semver_seed(
+            VersionScheme::SemVer => evaluate_timeline_seed(
                 id,
                 seed,
                 discovered_target,
@@ -274,8 +242,10 @@ fn evaluate_planner_selectable_seed(
                 now,
                 min_release_age,
                 audit_results,
+                parse_semver,
+                classify_semver_release,
             ),
-            VersionScheme::Pep440 => evaluate_pep440_seed(
+            VersionScheme::Pep440 => evaluate_timeline_seed(
                 id,
                 seed,
                 discovered_target,
@@ -284,6 +254,8 @@ fn evaluate_planner_selectable_seed(
                 now,
                 min_release_age,
                 audit_results,
+                parse_pep440,
+                classify_pep440_release,
             ),
             VersionScheme::ManagerNative => PlanItem::ResolverError {
                 id,
@@ -444,7 +416,7 @@ fn evaluate_manager_selected_seed(
 
 #[expect(clippy::too_many_arguments)]
 #[expect(clippy::too_many_lines)]
-fn evaluate_semver_seed(
+fn evaluate_timeline_seed<V: Ord + Clone>(
     id: PlanItemId,
     seed: UpdateSeed,
     discovered_target: &VersionText,
@@ -453,15 +425,17 @@ fn evaluate_semver_seed(
     now: SystemTime,
     min_release_age: Duration,
     audit_results: &BTreeMap<AuditQuery, AuditLookupResult>,
+    parse: fn(&str) -> Result<V, String>,
+    classify: fn(&str) -> ReleaseClass,
 ) -> PlanItem {
-    let Ok(installed_version) = parse_semver(seed.installed.installed_version.as_str()) else {
+    let Ok(installed_version) = parse(seed.installed.installed_version.as_str()) else {
         return PlanItem::ResolverError {
             id,
             installed: seed.installed,
             message: "failed to parse installed version".to_owned(),
         };
     };
-    let Ok(parsed_discovered_target) = parse_semver(discovered_target.as_str()) else {
+    let Ok(parsed_discovered_target) = parse(discovered_target.as_str()) else {
         return PlanItem::ResolverError {
             id,
             installed: seed.installed,
@@ -469,7 +443,7 @@ fn evaluate_semver_seed(
         };
     };
     let target_metadata_found = timeline.versions.iter().any(|entry| {
-        let Ok(parsed) = parse_semver(entry.version.as_str()) else {
+        let Ok(parsed) = parse(entry.version.as_str()) else {
             return false;
         };
         parsed == parsed_discovered_target
@@ -485,22 +459,23 @@ fn evaluate_semver_seed(
         };
     }
 
-    let mut newest_overall = None::<(SemverVersion, CandidateFact)>;
-    let mut newest_policy_eligible = None::<(SemverVersion, CandidateFact)>;
-    let mut newest_age_eligible = None::<(SemverVersion, CandidateFact)>;
-    let mut newest_audit_eligible = None::<(SemverVersion, CandidateFact)>;
-    let mut candidate_facts = Vec::<(SemverVersion, CandidateFact)>::new();
-    let installed_class = classify_semver_release(seed.installed.installed_version.as_str());
+    let mut newest_overall = None::<(V, CandidateFact)>;
+    let mut newest_policy_eligible = None::<(V, CandidateFact)>;
+    let mut newest_age_eligible = None::<(V, CandidateFact)>;
+    let mut newest_audit_eligible = None::<(V, CandidateFact)>;
+    let mut candidate_facts = Vec::<(V, CandidateFact)>::new();
+    let installed_class = classify(seed.installed.installed_version.as_str());
 
     for entry in &timeline.versions {
-        let Ok(parsed) = parse_semver(entry.version.as_str()) else {
+        // Unparseable timeline entries are skipped, not fatal (old-behavior parity, 83305cb).
+        let Ok(parsed) = parse(entry.version.as_str()) else {
             continue;
         };
         if parsed <= installed_version {
             continue;
         }
 
-        let candidate_class = classify_semver_release(entry.version.as_str());
+        let candidate_class = classify(entry.version.as_str());
         let policy_decision = evaluate_policy(policy, installed_class, candidate_class);
         let policy_allowed = policy_decision.allowed();
         let mut fact = CandidateFact::new(entry, now, min_release_age, &policy_decision);
@@ -558,200 +533,7 @@ fn evaluate_semver_seed(
     };
 
     let Some((_, policy_candidate)) = newest_policy_eligible else {
-        let target_class = classify_semver_release(newest_overall.version.as_str());
-        let PolicyDecision::Blocked { reason, .. } =
-            evaluate_policy(policy, installed_class, target_class)
-        else {
-            unreachable!("missing policy candidate implies blocked newest candidate");
-        };
-        return PlanItem::Blocked {
-            id,
-            seed,
-            reason: BlockReason::VersionPolicy(reason),
-            policy_warnings: newest_overall.warnings,
-            diagnostics,
-        };
-    };
-
-    let mut diagnostics = diagnostics;
-    diagnostics.selected_target = Some(policy_candidate.candidate_age());
-
-    let Some(_) = newest_age_eligible.as_ref() else {
-        let candidate = candidate_from_seed(
-            &seed,
-            policy_candidate.version,
-            policy_candidate.warnings,
-            diagnostics,
-        );
-        return PlanItem::Delayed {
-            id,
-            candidate,
-            reason: DelayReason::ReleaseTooFresh,
-        };
-    };
-
-    let Some((_, audit_candidate)) = newest_audit_eligible else {
-        let audit = newest_age_eligible
-            .as_ref()
-            .and_then(|(_, fact)| fact.audit.clone())
-            .unwrap_or_else(|| CandidateAuditFact::LookupFailed {
-                detail: "audit lookup result missing".to_owned(),
-            });
-        let mut diagnostics = diagnostics;
-        diagnostics.audit_blocking_target = Some(audit.clone());
-        diagnostics.audit_blocking_candidate = newest_age_eligible
-            .as_ref()
-            .map(|(_, fact)| fact.candidate_evaluation());
-        return PlanItem::Blocked {
-            id,
-            seed,
-            reason: audit_block_reason(&audit),
-            policy_warnings: Vec::new(),
-            diagnostics,
-        };
-    };
-
-    let selected_target = audit_candidate.candidate_age();
-    PlanItem::Update {
-        id,
-        candidate: candidate_from_seed(&seed, audit_candidate.version, audit_candidate.warnings, {
-            let mut diagnostics = diagnostics;
-            diagnostics.selected_target = Some(selected_target);
-            diagnostics
-        }),
-    }
-}
-
-#[expect(clippy::too_many_arguments)]
-#[expect(clippy::too_many_lines)]
-fn evaluate_pep440_seed(
-    id: PlanItemId,
-    seed: UpdateSeed,
-    discovered_target: &VersionText,
-    timeline: &ReleaseTimeline,
-    policy: VersionPolicy,
-    now: SystemTime,
-    min_release_age: Duration,
-    audit_results: &BTreeMap<AuditQuery, AuditLookupResult>,
-) -> PlanItem {
-    let Ok(installed_version) = parse_pep440(seed.installed.installed_version.as_str()) else {
-        return PlanItem::ResolverError {
-            id,
-            installed: seed.installed,
-            message: "failed to parse installed version".to_owned(),
-        };
-    };
-    let Ok(parsed_discovered_target) = parse_pep440(discovered_target.as_str()) else {
-        return PlanItem::ResolverError {
-            id,
-            installed: seed.installed,
-            message: "failed to parse discovered target version".to_owned(),
-        };
-    };
-    let mut target_metadata_found = false;
-    for entry in &timeline.versions {
-        let Ok(parsed) = parse_pep440(entry.version.as_str()) else {
-            let bad_version = entry.version.as_str().to_owned();
-            return PlanItem::ResolverError {
-                id,
-                installed: seed.installed,
-                message: format!("failed to parse release version `{bad_version}`"),
-            };
-        };
-        if parsed == parsed_discovered_target {
-            target_metadata_found = true;
-        }
-    }
-    if !target_metadata_found {
-        return PlanItem::Blocked {
-            id,
-            seed,
-            reason: BlockReason::MissingReleaseMetadata,
-            policy_warnings: Vec::new(),
-            diagnostics: PlanDiagnostics::new(min_release_age)
-                .with_missing_metadata(MissingMetadataKind::DiscoveredTarget),
-        };
-    }
-
-    let mut newest_overall = None::<(Pep440Version, CandidateFact)>;
-    let mut newest_policy_eligible = None::<(Pep440Version, CandidateFact)>;
-    let mut newest_age_eligible = None::<(Pep440Version, CandidateFact)>;
-    let mut newest_audit_eligible = None::<(Pep440Version, CandidateFact)>;
-    let mut candidate_facts = Vec::<(Pep440Version, CandidateFact)>::new();
-    let installed_class = classify_pep440_release(seed.installed.installed_version.as_str());
-
-    for entry in &timeline.versions {
-        let Ok(parsed) = parse_pep440(entry.version.as_str()) else {
-            let bad_version = entry.version.as_str().to_owned();
-            return PlanItem::ResolverError {
-                id,
-                installed: seed.installed,
-                message: format!("failed to parse release version `{bad_version}`"),
-            };
-        };
-        if parsed <= installed_version {
-            continue;
-        }
-
-        let candidate_class = classify_pep440_release(entry.version.as_str());
-        let policy_decision = evaluate_policy(policy, installed_class, candidate_class);
-        let policy_allowed = policy_decision.allowed();
-        let mut fact = CandidateFact::new(entry, now, min_release_age, &policy_decision);
-        fact.audit = audit_fact_for(
-            seed.installed.audit_subject.as_ref(),
-            &entry.version,
-            audit_results,
-        );
-        candidate_facts.push((parsed.clone(), fact.clone()));
-        if newest_overall
-            .as_ref()
-            .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
-        {
-            newest_overall = Some((parsed.clone(), fact.clone()));
-        }
-
-        if policy_allowed {
-            if newest_policy_eligible
-                .as_ref()
-                .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
-            {
-                newest_policy_eligible = Some((parsed.clone(), fact.clone()));
-            }
-            if fact.age_allowed
-                && newest_age_eligible
-                    .as_ref()
-                    .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
-            {
-                newest_age_eligible = Some((parsed.clone(), fact.clone()));
-            }
-            if fact.age_allowed
-                && audit_allows_optional_target(fact.audit.as_ref())
-                && newest_audit_eligible
-                    .as_ref()
-                    .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
-            {
-                newest_audit_eligible = Some((parsed, fact));
-            }
-        }
-    }
-
-    let diagnostics = diagnostics_from_candidate_facts(
-        min_release_age,
-        candidate_facts,
-        newest_overall.as_ref().map(|(_, fact)| fact),
-        newest_policy_eligible.as_ref().map(|(_, fact)| fact),
-        newest_age_eligible.as_ref().map(|(_, fact)| fact),
-    );
-
-    let Some((_, newest_overall)) = newest_overall else {
-        return PlanItem::Current {
-            id,
-            installed: seed.installed,
-        };
-    };
-
-    let Some((_, policy_candidate)) = newest_policy_eligible else {
-        let target_class = classify_pep440_release(newest_overall.version.as_str());
+        let target_class = classify(newest_overall.version.as_str());
         let PolicyDecision::Blocked { reason, .. } =
             evaluate_policy(policy, installed_class, target_class)
         else {

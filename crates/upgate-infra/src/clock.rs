@@ -1,6 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use crate::InfraError;
+use std::time::SystemTime;
 
 /// Clock source used by release-age and command tests.
 #[derive(Debug, Clone, Copy)]
@@ -21,18 +19,5 @@ impl Clock {
             Self::System => SystemTime::now(),
             Self::Fixed(time) => time,
         }
-    }
-
-    /// Returns the current time as UNIX seconds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the clock value is before the UNIX epoch.
-    pub fn unix_secs(self) -> Result<u64, InfraError> {
-        Ok(self
-            .now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| InfraError::ClockBeforeUnixEpoch)?
-            .as_secs())
     }
 }

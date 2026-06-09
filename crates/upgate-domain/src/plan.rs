@@ -283,15 +283,6 @@ impl UpdateCandidate {
         self.diagnostics = diagnostics;
         self
     }
-    pub const fn tool_id(&self) -> &ToolId {
-        &self.tool_id
-    }
-    pub const fn package_name(&self) -> &PackageName {
-        &self.package_name
-    }
-    pub const fn installed_version(&self) -> &VersionText {
-        &self.installed_version
-    }
     pub const fn target(&self) -> PlannedTargetRef<'_> {
         self.target.as_ref()
     }
@@ -300,15 +291,6 @@ impl UpdateCandidate {
             PlannedTargetRef::Known(version) => Some(version),
             PlannedTargetRef::ManagerResolved => None,
         }
-    }
-    pub const fn version_scheme(&self) -> VersionScheme {
-        self.version_scheme
-    }
-    pub const fn execution_support(&self) -> ExecutionSupport {
-        self.execution_support
-    }
-    pub const fn execution_target_kind(&self) -> ExecutionTargetKind {
-        self.execution_target_kind
     }
 }
 
@@ -467,12 +449,6 @@ impl ExecutionSupport {
     pub const fn supports_native_target(self) -> bool {
         self.native_selected
     }
-    pub const fn supports_native_global(self) -> bool {
-        self.native_global
-    }
-    pub const fn supports_resolver_native(self) -> bool {
-        self.resolver_native_selected.selected
-    }
     pub const fn supports_manager_resolved_target(self) -> bool {
         self.native_selected || self.resolver_native_selected.manager_resolved_target
     }
@@ -580,18 +556,13 @@ impl UpdatePlan {
     pub fn item(&self, id: &PlanItemId) -> Option<&PlanItem> {
         self.items.iter().find(|item| item.id() == id)
     }
-    pub fn contains_package(&self, package_name: &PackageName) -> bool {
-        self.items
-            .iter()
-            .any(|item| item.package_name() == package_name)
-    }
 }
 
 impl PlanItem {
     pub const fn package_name(&self) -> &PackageName {
         match self {
             Self::Update { candidate, .. } | Self::Delayed { candidate, .. } => {
-                candidate.package_name()
+                &candidate.package_name
             }
             Self::Current { installed, .. }
             | Self::Skipped { installed, .. }

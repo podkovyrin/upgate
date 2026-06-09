@@ -1,10 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Display};
 
-use upgate_domain::{
-    PlanItemId, PlanSelection, SelectedItem, SelectedUpdate, UpdatePlan, UpdateSelectionPolicy,
-    VersionText,
-};
+use upgate_domain::{PlanItemId, SelectedItem, SelectedUpdate, UpdateSelectionPolicy, VersionText};
 
 use crate::{SelectionRow, SelectionRowStatus, SelectionView, TargetOption};
 
@@ -191,61 +188,6 @@ impl InteractiveSelectionState {
         self.selected_targets
             .insert(plan_item_id.clone(), SelectedUpdate::ManagerResolved);
         Ok(())
-    }
-
-    /// Pins an update row by removing it from the selected set.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SelectionStateError::UnknownPlanItem`] when the id is not in the view, or
-    /// [`SelectionStateError::TargetUnavailable`] when the row is not an update.
-    pub fn pin(&mut self, plan_item_id: &PlanItemId) -> Result<(), SelectionStateError> {
-        let row = self.row(plan_item_id)?;
-        if row.status != SelectionRowStatus::Update {
-            return Err(SelectionStateError::TargetUnavailable(
-                plan_item_id.to_string(),
-            ));
-        }
-        let package_name = row.package_name.clone();
-        self.selected_targets.remove(plan_item_id);
-        self.selection_policy.set_included(package_name, false);
-        Ok(())
-    }
-
-    /// Unpins an update row by selecting its recommended target.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SelectionStateError::UnknownPlanItem`] when the id is not in the view, or
-    /// [`SelectionStateError::TargetUnavailable`] when the row is not an update.
-    pub fn unpin(&mut self, plan_item_id: &PlanItemId) -> Result<(), SelectionStateError> {
-        self.select_recommended(plan_item_id)
-    }
-
-    pub fn pin_all(&mut self) {
-        self.selection_policy = UpdateSelectionPolicy::skip_all();
-        self.selected_targets.clear();
-    }
-
-    pub fn unpin_all(&mut self) {
-        self.selection_policy = UpdateSelectionPolicy::include_all();
-        for row in &self.rows {
-            if row.status == SelectionRowStatus::Update {
-                self.selected_targets
-                    .insert(row.plan_item_id.clone(), SelectedUpdate::Recommended);
-            }
-        }
-    }
-
-    /// Builds the typed plan selection represented by this reducer state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SelectionStateError::InvalidSelection`] if the generated selection no longer
-    /// validates against the source plan.
-    pub fn plan_selection(&self, plan: &UpdatePlan) -> Result<PlanSelection, SelectionStateError> {
-        PlanSelection::new(plan, self.selected_items(), self.selection_policy.clone())
-            .map_err(|err| SelectionStateError::InvalidSelection(err.to_string()))
     }
 
     fn row(&self, plan_item_id: &PlanItemId) -> Result<&SelectionRow, SelectionStateError> {

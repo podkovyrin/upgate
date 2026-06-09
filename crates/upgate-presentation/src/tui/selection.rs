@@ -525,47 +525,14 @@ impl InteractiveSelectionScreen {
         self.clamp_cursor();
         self.rebind_or_close_target_picker(open_picker_row);
     }
-    pub const fn active_tab(&self) -> usize {
-        self.active_tab
-    }
     pub const fn cursor(&self) -> Option<usize> {
         self.cursor
-    }
-    pub const fn show_all(&self) -> bool {
-        self.show_all
-    }
-    pub const fn tab_offset(&self) -> usize {
-        self.tab_offset
     }
     pub const fn target_picker_open(&self) -> bool {
         self.target_picker.is_some()
     }
     const fn confirmation_dialog_open(&self) -> bool {
         self.confirmation_dialog.is_some()
-    }
-    pub fn target_picker_options(&self) -> Vec<TargetOption> {
-        let Some(picker) = self.target_picker else {
-            return Vec::new();
-        };
-        let row = self.row(picker.visible_row);
-        row.target_options.clone()
-    }
-    pub fn visible_rows(&self) -> Vec<&SelectionRow> {
-        self.visible_row_refs()
-            .into_iter()
-            .map(|visible| self.row(visible))
-            .collect()
-    }
-    pub fn has_selectable_rows(&self) -> bool {
-        self.managers.iter().any(|manager| {
-            manager.state.rows().iter().any(|row| {
-                row.status == SelectionRowStatus::Update
-                    || row
-                        .target_options
-                        .iter()
-                        .any(|option| matches!(option, TargetOption::ForcedCandidate { .. }))
-            })
-        })
     }
     pub fn placeholder_message(&self) -> Option<String> {
         if !self.visible_row_refs().is_empty() {
@@ -1285,18 +1252,6 @@ fn manager_placeholder_message(manager: &ManagerSelectionState) -> String {
             .map_or_else(|| "No selectable updates".to_owned(), plan_issue_label),
         ManagerPlanningStatus::Error { detail } => detail.clone(),
     }
-}
-
-/// Runs the terminal selection UI and returns confirm or cancel.
-///
-/// # Errors
-///
-/// Returns an I/O error for terminal setup, rendering, event reading, or typed selection
-/// validation failures surfaced by the event loop.
-pub fn run_interactive_selection(
-    plans: Vec<InteractiveSelectionPlan>,
-) -> io::Result<InteractiveSelectionOutcome> {
-    run_interactive_selection_screen(InteractiveSelectionScreen::new(plans), None)
 }
 
 /// Runs the terminal selection UI from manager ids while planning events arrive externally.
