@@ -2015,7 +2015,7 @@ fn run_cli(cli: &Cli) -> CliRunResult {
         }
     };
     let env = Env::real();
-    let command = cli.command.unwrap_or(CliCommand::Plan);
+    let command = cli.command.unwrap_or(CliCommand::Apply);
     let interactive_apply = command == CliCommand::Apply && !cli.yolo;
     let log_dir = match init_command_logging(cli, &env, command, interactive_apply) {
         Ok(log_dir) => log_dir,
