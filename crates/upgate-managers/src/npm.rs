@@ -6,8 +6,8 @@ use chrono::DateTime;
 use serde::Deserialize;
 use upgate_domain::{
     AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
-    ManagerId, ManagerMetadata, ManagerScanInput, ManagerUpdateInput, OsvEcosystem, PackageName,
-    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
+    ManagerId, ManagerScanInput, ManagerUpdateInput, OsvEcosystem, PackageName, ReleaseEntry,
+    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
     ResolverNativeSupport, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upgate_execution::{
@@ -26,11 +26,11 @@ use crate::adapter::{
 };
 use crate::platform_artifacts::is_platform_artifact_version;
 
-pub const MANAGER_ID: &str = "npm";
+const MANAGER_ID: &str = "npm";
 const NPM_MAX_PARALLEL_CHECKS: usize = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NpmError {
+enum NpmError {
     Infra(String),
     Interrupted(String),
     Json(String),
@@ -82,22 +82,16 @@ impl From<DomainError> for NpmError {
     }
 }
 
-impl NpmError {
-    pub const fn is_interruption(&self) -> bool {
-        matches!(self, Self::Interrupted(_))
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NpmInstalledPackage {
+    name: PackageName,
+    version: VersionText,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NpmInstalledPackage {
-    pub name: PackageName,
-    pub version: VersionText,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NpmOutdatedPackage {
-    pub name: PackageName,
-    pub current: VersionText,
+struct NpmOutdatedPackage {
+    name: PackageName,
+    current: VersionText,
 }
 
 #[derive(Debug, Deserialize)]
@@ -204,7 +198,7 @@ impl ManagerAdapter for NpmManager {
 /// # Errors
 ///
 /// Returns an error when JSON is malformed or a package/version is blank.
-pub fn parse_installed_json(raw: &str) -> Result<Vec<NpmInstalledPackage>, NpmError> {
+fn parse_installed_json(raw: &str) -> Result<Vec<NpmInstalledPackage>, NpmError> {
     let parsed: NpmListJson =
         serde_json::from_str(raw).map_err(|err| NpmError::Json(err.to_string()))?;
 
@@ -226,7 +220,7 @@ pub fn parse_installed_json(raw: &str) -> Result<Vec<NpmInstalledPackage>, NpmEr
 /// # Errors
 ///
 /// Returns an error when JSON is malformed or a package/version is blank.
-pub fn parse_outdated_json(raw: &str) -> Result<Vec<NpmOutdatedPackage>, NpmError> {
+fn parse_outdated_json(raw: &str) -> Result<Vec<NpmOutdatedPackage>, NpmError> {
     let entries: BTreeMap<String, NpmOutdatedMapEntry> =
         serde_json::from_str(raw).map_err(|err| NpmError::Json(err.to_string()))?;
 
@@ -246,7 +240,7 @@ pub fn parse_outdated_json(raw: &str) -> Result<Vec<NpmOutdatedPackage>, NpmErro
 /// # Errors
 ///
 /// Returns an error when the command fails or output cannot be parsed.
-pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, NpmError> {
+fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, NpmError> {
     let output = process.run(
         &CommandSpec::new("npm", ["ls", "-g", "--depth=0", "--json"]),
         &CommandCheck::Success,
@@ -262,7 +256,7 @@ pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, N
 /// # Errors
 ///
 /// Returns an error when the command fails unexpectedly or output cannot be parsed.
-pub fn outdated_global(process: &ProcessRunner) -> Result<Vec<NpmOutdatedPackage>, NpmError> {
+fn outdated_global(process: &ProcessRunner) -> Result<Vec<NpmOutdatedPackage>, NpmError> {
     let output = process.run(
         &CommandSpec::new("npm", ["outdated", "-g", "--json"]),
         &CommandCheck::Allow(vec![1]),
@@ -279,7 +273,7 @@ pub fn outdated_global(process: &ProcessRunner) -> Result<Vec<NpmOutdatedPackage
 /// # Errors
 ///
 /// Returns an error when installed discovery fails or release lookup is interrupted.
-pub fn update_inputs(
+fn update_inputs(
     process: &ProcessRunner,
     version_policy: VersionPolicy,
     max_parallel_checks_per_manager: usize,
@@ -305,7 +299,7 @@ pub fn update_inputs(
 /// # Errors
 ///
 /// Returns an error only when command execution is interrupted.
-pub fn lookup_release(
+fn lookup_release(
     process: &ProcessRunner,
     package: &PackageName,
 ) -> Result<ReleaseLookupResult, NpmError> {
@@ -337,7 +331,7 @@ pub fn lookup_release(
 /// # Errors
 ///
 /// Returns an error when JSON or timestamps are invalid, or no version timestamps are present.
-pub fn parse_npm_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeline, NpmError> {
+fn parse_npm_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeline, NpmError> {
     let timestamps: BTreeMap<String, String> =
         serde_json::from_str(raw).map_err(|err| NpmError::Json(err.to_string()))?;
     time_map_to_timeline(package, timestamps)
@@ -348,7 +342,7 @@ pub fn parse_npm_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTi
 /// # Errors
 ///
 /// Returns an error when the resolved execution mode is not supported by npm.
-pub fn commands_for_execution_plan(
+fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
     min_release_age: Duration,
 ) -> Result<Vec<ExecutionCommand>, NpmError> {
@@ -396,53 +390,28 @@ fn exact_command_for_item(
     item: &ResolvedExecutionItem,
     min_age_days: u64,
 ) -> Result<CommandSpec, NpmError> {
-    Ok(exact_command_parts(
-        &item.package_name,
-        item.known_target_version().ok_or_else(|| {
-            NpmError::UnsupportedCommandIntent("exact-without-known-target".to_owned())
-        })?,
-        min_age_days,
-        item.bypass_min_release_age,
-    ))
-}
-
-fn exact_command_parts(
-    package_name: &PackageName,
-    target_version: &VersionText,
-    min_age_days: u64,
-    bypass_min_release_age: bool,
-) -> CommandSpec {
-    let spec = format!("{package_name}@{target_version}");
+    let target_version = item.known_target_version().ok_or_else(|| {
+        NpmError::UnsupportedCommandIntent("exact-without-known-target".to_owned())
+    })?;
+    let spec = format!("{}@{target_version}", item.package_name);
     let mut args = vec!["install".to_owned(), "-g".to_owned(), spec];
-    if !bypass_min_release_age {
+    if !item.bypass_min_release_age {
         args.push("--min-release-age".to_owned());
         args.push(min_age_days.to_string());
     }
-    CommandSpec::new("npm", args).mutating()
+    Ok(CommandSpec::new("npm", args).mutating())
 }
 
 fn selected_native_update_command_for_item(
     item: &ResolvedExecutionItem,
     min_age_days: u64,
 ) -> CommandSpec {
-    selected_native_update_command_parts(
-        &item.package_name,
-        min_age_days,
-        item.bypass_min_release_age,
-    )
-}
-
-fn selected_native_update_command_parts(
-    package_name: &PackageName,
-    min_age_days: u64,
-    bypass_min_release_age: bool,
-) -> CommandSpec {
     let mut args = vec![
         "-g".to_owned(),
         "update".to_owned(),
-        package_name.as_str().to_owned(),
+        item.package_name.as_str().to_owned(),
     ];
-    if !bypass_min_release_age {
+    if !item.bypass_min_release_age {
         args.push("--min-release-age".to_owned());
         args.push(min_age_days.to_string());
     }
@@ -469,7 +438,6 @@ fn installed_tool(package: NpmInstalledPackage) -> Result<InstalledTool, NpmErro
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
         package.version,
-        ManagerMetadata::empty(),
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Npm,
@@ -484,7 +452,6 @@ fn installed_tool_from_outdated(package: NpmOutdatedPackage) -> Result<Installed
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
         package.current,
-        ManagerMetadata::empty(),
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Npm,
@@ -506,19 +473,15 @@ fn update_input(tool: InstalledTool, lookup: ReleaseLookupResult) -> ManagerUpda
         discovered_target,
         VersionScheme::SemVer,
         lookup,
-        npm_execution_support(),
+        ExecutionSupport {
+            exact: true,
+            native_selected: true,
+            native_global: true,
+            grouped_native: false,
+            resolver_native_selected: ResolverNativeSupport::none(),
+            resolver_native_global: false,
+        },
     ))
-}
-
-const fn npm_execution_support() -> ExecutionSupport {
-    ExecutionSupport {
-        exact: true,
-        native_selected: true,
-        native_global: true,
-        grouped_native: false,
-        resolver_native_selected: ResolverNativeSupport::none(),
-        resolver_native_global: false,
-    }
 }
 
 fn time_map_to_timeline(
@@ -588,9 +551,5 @@ fn adapter_error(err: &NpmError) -> ManagerAdapterError {
         NpmError::UnsupportedCommandIntent(_) => ManagerAdapterErrorKind::CommandConstruction,
         NpmError::Infra(_) => ManagerAdapterErrorKind::Infra,
     };
-    ManagerAdapterError::Manager {
-        manager_id: MANAGER_ID.to_owned(),
-        kind,
-        detail,
-    }
+    ManagerAdapterError::Manager { kind, detail }
 }

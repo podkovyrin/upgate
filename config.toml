@@ -2,8 +2,6 @@
 # Copy to $XDG_CONFIG_HOME/upgate/config.toml or ~/.config/upgate/config.toml and edit values as needed.
 
 [upgate]
-# Marks older releases in verbose scan output.
-scan_old_age_threshold = "365d"
 # Limits how many managers may scan or plan at the same time.
 manager_concurrency = 4
 # Limits concurrent OSV security-audit batch requests. Valid range: 1 through 16.

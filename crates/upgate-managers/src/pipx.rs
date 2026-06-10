@@ -8,9 +8,9 @@ use pep440_rs::Version as Pep440Version;
 use serde::Deserialize;
 use upgate_domain::{
     AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
-    ManagerId, ManagerMetadata, ManagerScanInput, ManagerUpdateInput, OsvEcosystem, PackageName,
-    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
-    ToolId, ToolName, UpdateSeed, VersionScheme, VersionText,
+    ManagerId, ManagerScanInput, ManagerUpdateInput, OsvEcosystem, PackageName, ReleaseEntry,
+    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName,
+    UpdateSeed, VersionScheme, VersionText,
 };
 use upgate_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -347,7 +347,6 @@ fn installed_tool(package: PipxInstalledPackage) -> Result<InstalledTool, PipxEr
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
         package.version,
-        ManagerMetadata::empty(),
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Pypi,
@@ -407,12 +406,6 @@ fn time_map_to_timeline(
             ReleaseTimestamp::new(system_time_from_datetime(parsed)),
         ));
     }
-    if entries.is_empty() {
-        return Err(PipxError::MissingReleaseMetadata(format!(
-            "registry time metadata is empty for {}",
-            package.as_str()
-        )));
-    }
     Ok(ReleaseTimeline::new(entries))
 }
 
@@ -470,7 +463,6 @@ fn adapter_error(err: &PipxError) -> ManagerAdapterError {
         PipxError::Infra(_) => ManagerAdapterErrorKind::Infra,
     };
     ManagerAdapterError::Manager {
-        manager_id: MANAGER_ID.to_owned(),
         kind,
         detail: err.to_string(),
     }

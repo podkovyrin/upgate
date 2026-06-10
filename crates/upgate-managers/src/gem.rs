@@ -7,10 +7,9 @@ use semver::Version;
 use serde::Deserialize;
 use upgate_domain::{
     AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
-    ManagerId, ManagerMetadata, ManagerScanEvidenceInput, ManagerScanInput, ManagerUpdateInput,
-    OsvEcosystem, PackageName, ReleaseEntry, ReleaseEvidenceSource, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
-    VersionPolicy, VersionScheme, VersionText,
+    ManagerId, ManagerScanEvidenceInput, ManagerScanInput, ManagerUpdateInput, OsvEcosystem,
+    PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
+    ReleaseTimestamp, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upgate_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -173,7 +172,6 @@ impl ManagerAdapter for GemManager {
                         release_evidence: release_evidence_for_version(
                             &timeline,
                             &tool.installed_version,
-                            ReleaseEvidenceSource::ReleaseTimeline,
                         ),
                         tool,
                     },
@@ -275,9 +273,6 @@ pub fn parse_gem_list(raw: &str) -> Result<Vec<GemInstalledPackage>, GemError> {
             .entry(name.to_owned())
             .and_modify(|existing| {
                 existing.is_default |= package.is_default;
-                if existing.version.as_str().is_empty() {
-                    existing.version = package.version.clone();
-                }
             })
             .or_insert(package);
     }
@@ -649,7 +644,6 @@ fn installed_tool(package: GemInstalledPackage) -> Result<InstalledTool, GemErro
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
         package.version,
-        ManagerMetadata::empty(),
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::RubyGems,
@@ -664,7 +658,6 @@ fn installed_tool_from_outdated(package: GemOutdatedPackage) -> Result<Installed
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
         package.current,
-        ManagerMetadata::empty(),
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::RubyGems,
@@ -707,12 +700,6 @@ fn time_map_to_timeline(
             ReleaseTimestamp::new(system_time_from_datetime(parsed)),
         ));
     }
-    if entries.is_empty() {
-        return Err(GemError::MissingReleaseMetadata(format!(
-            "registry time metadata is empty for {}",
-            package.as_str()
-        )));
-    }
     Ok(ReleaseTimeline::new(entries))
 }
 
@@ -741,7 +728,6 @@ fn adapter_error(err: &GemError) -> ManagerAdapterError {
         GemError::Infra(_) => ManagerAdapterErrorKind::Infra,
     };
     ManagerAdapterError::Manager {
-        manager_id: MANAGER_ID.to_owned(),
         kind,
         detail: err.to_string(),
     }

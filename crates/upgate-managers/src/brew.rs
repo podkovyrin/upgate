@@ -6,11 +6,11 @@ use chrono::DateTime;
 use serde::Deserialize;
 use upgate_domain::{
     AuditPackageName, AuditSubject, DomainError, ExecutionSupport, ExecutionTargetKind,
-    InstalledTool, ManagerConfig, ManagerId, ManagerMetadata, ManagerScanEvidenceInput,
-    ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput, OsvEcosystem, PackageName,
-    ReleaseEntry, ReleaseEvidenceSource, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
-    ReleaseTimestamp, SkipReason, TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName,
-    UpdateSeed, VersionReleaseEvidence, VersionScheme, VersionText,
+    InstalledTool, ManagerConfig, ManagerId, ManagerScanEvidenceInput, ManagerScanInput,
+    ManagerSelectedTarget, ManagerUpdateInput, OsvEcosystem, PackageName, ReleaseEntry,
+    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, SkipReason,
+    TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionReleaseEvidence,
+    VersionScheme, VersionText,
 };
 use upgate_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -35,7 +35,6 @@ pub enum BrewError {
     Interrupted(String),
     Json(String),
     Domain(String),
-    MissingReleaseMetadata(String),
     ReleaseLookup(String),
     UnsupportedCommandIntent(String),
 }
@@ -47,7 +46,6 @@ impl Display for BrewError {
             | Self::Interrupted(detail)
             | Self::Json(detail)
             | Self::Domain(detail)
-            | Self::MissingReleaseMetadata(detail)
             | Self::ReleaseLookup(detail) => formatter.write_str(detail),
             Self::UnsupportedCommandIntent(kind) => {
                 write!(
@@ -780,12 +778,6 @@ fn scan_input_for_target_age(
             release_evidence: Some(VersionReleaseEvidence::new(
                 tool.installed_version.clone(),
                 evidence.timestamp().clone(),
-                match evidence {
-                    TargetAgeEvidence::PublishedAt(_) => ReleaseEvidenceSource::PublishedAt,
-                    TargetAgeEvidence::ManagerNativeTimestamp(_) => {
-                        ReleaseEvidenceSource::ManagerNativeTimestamp
-                    }
-                },
             )),
             tool,
         },
@@ -983,7 +975,6 @@ fn installed_tool(package: &BrewInstalledPackage) -> Result<InstalledTool, BrewE
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
         package.version.clone(),
-        ManagerMetadata::empty(),
     );
     if let Some(subject) = brew_audit_subject(package.repo_url.as_deref()) {
         Ok(tool.with_audit_subject(subject))
@@ -1002,7 +993,6 @@ fn installed_tool_for_outdated(
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
         package.installed.clone(),
-        ManagerMetadata::empty(),
     );
     let repo_url = package
         .repo_url
@@ -1122,13 +1112,7 @@ fn adapter_error(err: &BrewError) -> ManagerAdapterError {
         BrewError::Interrupted(_) => ManagerAdapterErrorKind::Interrupted,
         BrewError::Json(_) | BrewError::Domain(_) => ManagerAdapterErrorKind::Parse,
         BrewError::UnsupportedCommandIntent(_) => ManagerAdapterErrorKind::CommandConstruction,
-        BrewError::Infra(_)
-        | BrewError::MissingReleaseMetadata(_)
-        | BrewError::ReleaseLookup(_) => ManagerAdapterErrorKind::Infra,
+        BrewError::Infra(_) | BrewError::ReleaseLookup(_) => ManagerAdapterErrorKind::Infra,
     };
-    ManagerAdapterError::Manager {
-        manager_id: MANAGER_ID.to_owned(),
-        kind,
-        detail,
-    }
+    ManagerAdapterError::Manager { kind, detail }
 }

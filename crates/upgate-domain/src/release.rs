@@ -68,41 +68,18 @@ impl TargetAgeEvidence {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReleaseEvidenceSource {
-    ReleaseTimeline,
-    PublishedAt,
-    ManagerNativeTimestamp,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionReleaseEvidence {
     pub version: VersionText,
     pub published_at: ReleaseTimestamp,
-    pub source: ReleaseEvidenceSource,
 }
 
 impl VersionReleaseEvidence {
-    pub const fn new(
-        version: VersionText,
-        published_at: ReleaseTimestamp,
-        source: ReleaseEvidenceSource,
-    ) -> Self {
+    pub const fn new(version: VersionText, published_at: ReleaseTimestamp) -> Self {
         Self {
             version,
             published_at,
-            source,
         }
-    }
-
-    pub fn from_target_age(version: VersionText, evidence: &TargetAgeEvidence) -> Self {
-        let source = match evidence {
-            TargetAgeEvidence::PublishedAt(_) => ReleaseEvidenceSource::PublishedAt,
-            TargetAgeEvidence::ManagerNativeTimestamp(_) => {
-                ReleaseEvidenceSource::ManagerNativeTimestamp
-            }
-        };
-        Self::new(version, evidence.timestamp().clone(), source)
     }
 }
 

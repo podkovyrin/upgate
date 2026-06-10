@@ -59,7 +59,10 @@ pub struct ResolvedExecutionItem {
 
 impl ResolvedExecutionItem {
     pub const fn known_target_version(&self) -> Option<&VersionText> {
-        self.target.known_version()
+        match &self.target {
+            ResolvedExecutionTarget::Known(version) => Some(version),
+            ResolvedExecutionTarget::ManagerResolved => None,
+        }
     }
 }
 
@@ -67,24 +70,6 @@ impl ResolvedExecutionItem {
 pub enum ResolvedExecutionTarget {
     Known(VersionText),
     ManagerResolved,
-}
-
-impl ResolvedExecutionTarget {
-    pub const fn known_version(&self) -> Option<&VersionText> {
-        match self {
-            Self::Known(version) => Some(version),
-            Self::ManagerResolved => None,
-        }
-    }
-}
-
-impl Display for ResolvedExecutionTarget {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Known(version) => write!(formatter, "{version}"),
-            Self::ManagerResolved => formatter.write_str("manager-resolved"),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

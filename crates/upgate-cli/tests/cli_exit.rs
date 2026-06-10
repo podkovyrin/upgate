@@ -295,14 +295,6 @@ impl Sandbox {
     }
 
     fn run<const N: usize>(&self, args: [&str; N]) -> std::process::Output {
-        self.run_with_env(args, [])
-    }
-
-    fn run_with_env<const N: usize, const M: usize>(
-        &self,
-        args: [&str; N],
-        envs: [(&str, &str); M],
-    ) -> std::process::Output {
         let mut command = Command::new(binary_path());
         command
             .args(args)
@@ -311,9 +303,6 @@ impl Sandbox {
             .env("XDG_CONFIG_HOME", &self.config_home)
             .env("XDG_STATE_HOME", &self.state_home)
             .env("HOME", &self.home);
-        for (key, value) in envs {
-            command.env(key, value);
-        }
         command.output().expect("upgate binary should run")
     }
 

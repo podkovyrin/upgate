@@ -11,7 +11,7 @@ pub use footer::{KeyBinding, key_footer, key_footer_hit};
 pub use frame::{app_block, render_separator};
 pub use modal::render_modal_frame;
 pub use table::{
-    TuiTable, progress_update_columns, render_selection_table, render_table, update_header_row,
+    TuiTable, progress_update_columns, render_table, selection_update_columns, update_header_row,
     version_picker_columns,
 };
 pub use tabs::{render_tabs, visible_tabs};

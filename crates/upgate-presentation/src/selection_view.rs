@@ -1,5 +1,5 @@
 use upgate_domain::{
-    AdvisoryLatestFact, BlockReason, CandidateAgeFact, CandidateAuditFact, CandidateEvaluationFact,
+    AdvisoryLatestFact, AuditLookupResult, BlockReason, CandidateAgeFact, CandidateEvaluationFact,
     DelayReason, ManagerId, MissingMetadataKind, PackageName, PlanDiagnostics, PlanItem,
     PlanItemId, PolicyBlockReason, PolicyWarning, ReleaseLookupError, SkipReason, UpdateCandidate,
     UpdatePlan, UpdateSeed, UpdateSelectionPolicy, VersionText,
@@ -106,12 +106,6 @@ impl CandidateNotePart {
             tone: CandidateNoteTone::Normal,
         }
     }
-    pub const fn metadata(kind: CandidateNoteKind) -> Self {
-        Self {
-            kind,
-            tone: CandidateNoteTone::Metadata,
-        }
-    }
     pub const fn violation(kind: CandidateNoteKind) -> Self {
         Self {
             kind,
@@ -126,7 +120,6 @@ impl CandidateNotePart {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CandidateNoteTone {
     Normal,
-    Metadata,
     Violation,
 }
 
@@ -185,7 +178,8 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
         PlanItem::Update { id, candidate } => {
             let selected = selection_policy.includes(&candidate.package_name);
             let notes = update_notes(candidate);
-            let target_options = update_target_options(candidate, notes.clone());
+            let target_options =
+                primary_target_options(candidate, notes.clone(), TargetOptionKind::Recommended);
             SelectionRow {
                 plan_item_id: id.clone(),
                 package_name: candidate.package_name.clone(),
@@ -297,35 +291,15 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
     }
 }
 
-fn update_target_options(
-    candidate: &UpdateCandidate,
-    notes: Vec<CandidateNotePart>,
-) -> Vec<TargetOption> {
-    primary_target_options(candidate, notes, TargetOptionKind::Recommended)
-}
-
 fn delayed_target_options(
     candidate: &UpdateCandidate,
     notes: Vec<CandidateNotePart>,
 ) -> Vec<TargetOption> {
     if candidate.execution_support.supports_age_bypass() {
-        let Some(target_version) = candidate.target_version().cloned() else {
-            if candidate
-                .execution_support
-                .supports_manager_resolved_target()
-            {
-                return vec![TargetOption::ManagerResolved { note_parts: notes }];
-            }
-            return Vec::new();
-        };
-        return target_options_for_known_primary(
-            candidate,
-            target_version,
-            notes,
-            TargetOptionKind::ForcedCandidate,
-        );
+        primary_target_options(candidate, notes, TargetOptionKind::ForcedCandidate)
+    } else {
+        Vec::new()
     }
-    Vec::new()
 }
 
 fn blocked_target_options(
@@ -494,12 +468,12 @@ fn exact_target_options(candidate: &UpdateCandidate) -> Vec<TargetOption> {
 fn update_notes(candidate: &UpdateCandidate) -> Vec<CandidateNotePart> {
     let mut notes = Vec::new();
     if let Some(target) = candidate.diagnostics.selected_target.as_ref() {
-        notes.push(CandidateNotePart::metadata(CandidateNoteKind::Released {
+        notes.push(CandidateNotePart::normal(CandidateNoteKind::Released {
             age: target.age,
         }));
     }
     if let Some(latest) = latest_too_fresh(&candidate.diagnostics) {
-        notes.push(CandidateNotePart::metadata(CandidateNoteKind::TooFresh {
+        notes.push(CandidateNotePart::normal(CandidateNoteKind::TooFresh {
             version: Some(latest.version.clone()),
             age: Some(latest.age),
             required_age: candidate.diagnostics.required_age,
@@ -524,7 +498,7 @@ fn candidate_evaluation_notes(
     let mut notes = Vec::new();
     match candidate.age {
         Some(age) if candidate.age_allowed => {
-            notes.push(CandidateNotePart::metadata(CandidateNoteKind::Released {
+            notes.push(CandidateNotePart::normal(CandidateNoteKind::Released {
                 age,
             }));
         }
@@ -581,7 +555,7 @@ fn blocked_notes(
 ) -> Vec<CandidateNotePart> {
     let mut notes = match reason {
         BlockReason::MissingReleaseMetadata => {
-            vec![CandidateNotePart::metadata(
+            vec![CandidateNotePart::normal(
                 CandidateNoteKind::MissingReleaseMetadata,
             )]
         }
@@ -609,17 +583,17 @@ fn blocked_notes(
     notes
 }
 
-fn audit_notes(audit: &CandidateAuditFact) -> Vec<CandidateNotePart> {
+fn audit_notes(audit: &AuditLookupResult) -> Vec<CandidateNotePart> {
     match audit {
-        CandidateAuditFact::Clean => Vec::new(),
-        CandidateAuditFact::Vulnerable { findings } => {
+        AuditLookupResult::Clean => Vec::new(),
+        AuditLookupResult::Vulnerable { findings } => {
             vec![CandidateNotePart::violation(
                 CandidateNoteKind::AuditVulnerable {
                     findings: findings.clone(),
                 },
             )]
         }
-        CandidateAuditFact::LookupFailed { detail } => {
+        AuditLookupResult::LookupFailed { detail } => {
             vec![CandidateNotePart::violation(
                 CandidateNoteKind::AuditLookupFailed {
                     detail: detail.clone(),
@@ -711,7 +685,7 @@ pub(crate) fn note_part_text(part: &CandidateNotePart) -> String {
             required_age,
         } => version.as_ref().map_or_else(
             || notes::too_fresh(*age, *required_age),
-            |version| notes::version_too_fresh(version, *age, Some(*required_age), false),
+            notes::version_too_fresh,
         ),
         CandidateNoteKind::VersionPolicyBlocked { version, .. } => {
             notes::version_blocked_by_policy(version)

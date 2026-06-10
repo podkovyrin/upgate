@@ -6,8 +6,8 @@ use reqwest::header::{HeaderName, HeaderValue};
 
 use crate::{Env, InfraError};
 
-pub const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
-pub const HTTP_USER_AGENT: &str = concat!("upgate/", env!("CARGO_PKG_VERSION"));
+const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
+const HTTP_USER_AGENT: &str = concat!("upgate/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpSettings {
@@ -28,7 +28,14 @@ impl HttpClient {
     ///
     /// Returns an error when reqwest cannot construct the client.
     pub fn real(settings: &HttpSettings) -> Result<Self, InfraError> {
-        Ok(Self::Real(blocking_client(settings)?))
+        let client = Client::builder()
+            .user_agent(settings.user_agent.clone())
+            .timeout(settings.timeout)
+            .build()
+            .map_err(|err| InfraError::HttpClientBuild {
+                detail: err.to_string(),
+            })?;
+        Ok(Self::Real(client))
     }
     pub fn fake(responses: impl IntoIterator<Item = (String, HttpResponse)>) -> Self {
         Self::Fake(FakeHttpClient::new(responses))
@@ -308,26 +315,6 @@ impl Default for HttpSettings {
     }
 }
 
-impl HttpSettings {
-    pub fn default_client_settings() -> Self {
-        Self::default()
-    }
-}
-
-/// Builds a blocking HTTP client from explicit settings.
-///
-/// # Errors
-///
-/// Returns an error when reqwest cannot construct the client.
-pub fn blocking_client(settings: &HttpSettings) -> Result<Client, InfraError> {
-    Client::builder()
-        .user_agent(settings.user_agent.clone())
-        .timeout(settings.timeout)
-        .build()
-        .map_err(|err| InfraError::HttpClientBuild {
-            detail: err.to_string(),
-        })
-}
 pub fn env_base_url(env: &Env, var_name: &str, default: &str) -> String {
     env.non_empty_var(var_name)
         .map(|value| value.trim_end_matches('/').to_owned())

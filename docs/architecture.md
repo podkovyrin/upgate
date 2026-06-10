@@ -45,7 +45,7 @@ output.
 - `upgate-execution`: conversion from typed selections to execution commands
   and execution reports.
 - `upgate-presentation`: batch output and interactive TUI state/rendering.
-- `upgate-infra`: process execution, HTTP, clock, environment, logging, and
+- `upgate-infra`: process execution, HTTP, environment, logging, and
   parallelism.
 
 ## Data Flow

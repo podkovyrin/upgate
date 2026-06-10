@@ -114,7 +114,7 @@ fn print_command_start(command_display: &str, options: LoggingOptions, is_mutati
     }
 }
 
-pub fn on_command_spawn_error(command_display: &str, is_mutation: bool, err: &std::io::Error) {
+pub fn on_command_spawn_error(command_display: &str, is_mutation: bool, err: &str) {
     let Some(logger) = LOGGER.get() else {
         return;
     };

@@ -9,7 +9,7 @@ use pep440_rs::Version as Pep440Version;
 use serde::Deserialize;
 use upgate_domain::{
     AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
-    ManagerId, ManagerMetadata, ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput,
+    ManagerId, ManagerScanInput, ManagerSelectedTarget, ManagerUpdateInput,
     MinAgeConstraintSupport, OsvEcosystem, PackageName, ReleaseEntry, ReleaseLookupError,
     ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
     TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
@@ -341,13 +341,14 @@ fn lookup_uv_selected_target(
 ) -> ManagerSelectedTarget {
     let lookup = lookup_release(http, env, package);
     let target_age = match &lookup {
-        ReleaseLookupResult::Known(timeline) => matching_versions(timeline, &target)
-            .first()
-            .map_or(TargetAgeLookupResult::MissingMetadata, |entry| {
+        ReleaseLookupResult::Known(timeline) => first_matching_version(timeline, &target).map_or(
+            TargetAgeLookupResult::MissingMetadata,
+            |entry| {
                 TargetAgeLookupResult::Known(TargetAgeEvidence::PublishedAt(
                     entry.published_at.clone(),
                 ))
-            }),
+            },
+        ),
         ReleaseLookupResult::MissingMetadata => TargetAgeLookupResult::MissingMetadata,
         ReleaseLookupResult::LookupFailed(err) => TargetAgeLookupResult::LookupFailed(err.clone()),
     };
@@ -380,7 +381,7 @@ fn outdated_latest_map(
     )?;
     let mut latest = BTreeMap::new();
     for line in output.stdout()?.lines() {
-        let Some((name, _current, Some(version))) = parse_outdated_tool_line(line) else {
+        let Some((name, version)) = parse_outdated_tool_line(line) else {
             continue;
         };
         latest.insert(name, version);
@@ -388,7 +389,7 @@ fn outdated_latest_map(
     Ok(latest)
 }
 
-fn parse_outdated_tool_line(line: &str) -> Option<(PackageName, VersionText, Option<VersionText>)> {
+fn parse_outdated_tool_line(line: &str) -> Option<(PackageName, VersionText)> {
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.starts_with('-') {
         return None;
@@ -396,10 +397,9 @@ fn parse_outdated_tool_line(line: &str) -> Option<(PackageName, VersionText, Opt
 
     let mut parts = trimmed.split_whitespace();
     let name = PackageName::new(parts.next()?).ok()?;
-    let current = VersionText::new(strip_v_prefix(parts.next()?)).ok()?;
-    let latest =
-        bracket_value(trimmed, "latest: ").and_then(|version| VersionText::new(version).ok());
-    Some((name, current, latest))
+    VersionText::new(strip_v_prefix(parts.next()?)).ok()?;
+    let latest = VersionText::new(bracket_value(trimmed, "latest: ")?).ok()?;
+    Some((name, latest))
 }
 
 fn bracket_value(line: &str, marker: &str) -> Option<String> {
@@ -410,22 +410,20 @@ fn bracket_value(line: &str, marker: &str) -> Option<String> {
     Some(after[..end].to_owned())
 }
 
-fn matching_versions(timeline: &ReleaseTimeline, target: &VersionText) -> Vec<ReleaseEntry> {
+fn first_matching_version<'a>(
+    timeline: &'a ReleaseTimeline,
+    target: &VersionText,
+) -> Option<&'a ReleaseEntry> {
     let parsed_target = Pep440Version::from_str(target.as_str()).ok();
-    timeline
-        .versions
-        .iter()
-        .filter(|entry| {
-            parsed_target.as_ref().map_or_else(
-                || entry.version.as_str() == target.as_str(),
-                |target| {
-                    Pep440Version::from_str(entry.version.as_str())
-                        .is_ok_and(|version| version == *target)
-                },
-            )
-        })
-        .cloned()
-        .collect()
+    timeline.versions.iter().find(|entry| {
+        parsed_target.as_ref().map_or_else(
+            || entry.version.as_str() == target.as_str(),
+            |target| {
+                Pep440Version::from_str(entry.version.as_str())
+                    .is_ok_and(|version| version == *target)
+            },
+        )
+    })
 }
 
 /// Parses `PyPI` package metadata into a release timeline.
@@ -631,7 +629,6 @@ fn installed_tool(tool: &UvTool) -> Result<InstalledTool, UvError> {
         tool.name.clone(),
         ToolName::new(tool.name.as_str().to_owned())?,
         tool.current.clone(),
-        ManagerMetadata::empty(),
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Pypi,
@@ -768,7 +765,6 @@ fn adapter_error(err: &UvError) -> ManagerAdapterError {
         UvError::Infra(_) => ManagerAdapterErrorKind::Infra,
     };
     ManagerAdapterError::Manager {
-        manager_id: MANAGER_ID.to_owned(),
         kind,
         detail: err.to_string(),
     }

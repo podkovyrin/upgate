@@ -3,9 +3,8 @@ use std::time::Duration;
 
 use upgate_domain::{
     AdvisoryLatestFact, BlockReason, CandidateAgeFact, DelayReason, InstalledTool, ManagerId,
-    ManagerRuleReason, PlanDiagnostics, PlanIssue, PlanItem, PlanSelection, PolicyWarning,
-    ScanAuditFact, ScanIssue, ScanItem, ScanReport, SkipReason, UpdateCandidate, UpdatePlan,
-    UpdateSeed, VersionPolicy,
+    ManagerRuleReason, PlanDiagnostics, PlanItem, PlanSelection, PolicyWarning, ScanIssue,
+    ScanItem, ScanReport, SkipReason, UpdateCandidate, UpdatePlan, UpdateSeed, VersionPolicy,
 };
 use upgate_execution::{ExecutionReport, ExecutionStatus, ResolvedExecutionTarget};
 
@@ -17,7 +16,6 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatchRenderOptions {
     pub theme: OutputTheme,
-    pub old_age_threshold: Option<Duration>,
     pub version_policy: Option<VersionPolicy>,
 }
 
@@ -25,13 +23,8 @@ impl BatchRenderOptions {
     pub const fn new(theme: OutputTheme) -> Self {
         Self {
             theme,
-            old_age_threshold: None,
             version_policy: None,
         }
-    }
-    pub const fn with_old_age_threshold(mut self, old_age_threshold: Duration) -> Self {
-        self.old_age_threshold = Some(old_age_threshold);
-        self
     }
     pub const fn with_version_policy(mut self, version_policy: VersionPolicy) -> Self {
         self.version_policy = Some(version_policy);
@@ -43,17 +36,12 @@ pub fn apply_execution_report_table(
     plan: &UpdatePlan,
     selection: &PlanSelection,
 ) -> OutcomeTable {
-    let mut rows = plan
-        .issues
-        .iter()
-        .map(|issue| plan_issue_row(&report.manager_id, issue))
-        .collect::<Vec<_>>();
-    rows.extend(unselected_update_rows(plan, selection));
+    let mut rows = unselected_update_rows(plan, selection);
 
     if report.items.is_empty() && rows.is_empty() {
         rows.push(
             OutcomeRow::manager(OutcomeStatusView::Current, report.manager_id.clone())
-                .with_note(OutcomeNote::metadata("no selected updates")),
+                .with_note(OutcomeNote::normal("no selected updates")),
         );
     }
 
@@ -72,7 +60,7 @@ pub fn manager_error_table(manager_id: &ManagerId, command: &str, detail: &str) 
         .with_note(OutcomeNote::normal(format!("{command} failed: {detail}")));
     OutcomeTable::new(vec![row])
 }
-pub fn scan_report_table(report: &ScanReport, options: BatchRenderOptions) -> OutcomeTable {
+pub fn scan_report_table(report: &ScanReport) -> OutcomeTable {
     let mut rows = report
         .issues
         .iter()
@@ -83,48 +71,30 @@ pub fn scan_report_table(report: &ScanReport, options: BatchRenderOptions) -> Ou
         report
             .items
             .iter()
-            .map(|item| scan_item_row(&report.manager_id, item, options)),
+            .map(|item| scan_item_row(&report.manager_id, item)),
     );
     OutcomeTable::new(rows)
 }
 
 fn scan_issue_row(manager_id: &ManagerId, issue: &ScanIssue) -> OutcomeRow {
-    let status = match issue {
-        ScanIssue::DiscoveryFailed { .. }
-        | ScanIssue::ReleaseLookupFailed { .. }
-        | ScanIssue::MissingReleaseMetadata => OutcomeStatusView::Error,
-        ScanIssue::ExcludedByManagerRule(_) => OutcomeStatusView::Skipped,
-    };
-    OutcomeRow::manager(status, manager_id.clone()).with_note(note_for_scan_issue(issue))
+    OutcomeRow::manager(scan_issue_status(issue), manager_id.clone())
+        .with_note(note_for_scan_issue(issue))
 }
 
-fn scan_item_row(
-    manager_id: &ManagerId,
-    item: &ScanItem,
-    options: BatchRenderOptions,
-) -> OutcomeRow {
+fn scan_item_row(manager_id: &ManagerId, item: &ScanItem) -> OutcomeRow {
     match item {
         ScanItem::Installed(tool) => current_scan_row(manager_id, tool),
-        ScanItem::InstalledWithReleaseAge { tool, age } => {
-            let is_old = options
-                .old_age_threshold
-                .is_some_and(|threshold| *age >= threshold);
-            current_scan_row(manager_id, tool).with_note(
-                release_age_note(*age, is_old).with_visibility(OutcomeVisibility::VerboseOnly),
-            )
-        }
+        ScanItem::InstalledWithReleaseAge { tool, age } => current_scan_row(manager_id, tool)
+            .with_note(release_age_note(*age).with_visibility(OutcomeVisibility::VerboseOnly)),
         ScanItem::InstalledWithAudit { tool, age, audit } => {
-            let is_old = (*age)
-                .zip(options.old_age_threshold)
-                .is_some_and(|(age, threshold)| age >= threshold);
             let mut row = current_scan_row(manager_id, tool);
             if let Some(age) = age {
                 row = row.with_note(
-                    release_age_note(*age, is_old).with_visibility(OutcomeVisibility::VerboseOnly),
+                    release_age_note(*age).with_visibility(OutcomeVisibility::VerboseOnly),
                 );
             }
-            if let Some(note) = notes::scan_audit(audit) {
-                row = row.with_note(audit_note(audit, note));
+            if let Some(note) = notes::audit_candidate(audit) {
+                row = row.with_note(OutcomeNote::normal(note));
             }
             row
         }
@@ -161,35 +131,15 @@ const fn scan_issue_status(issue: &ScanIssue) -> OutcomeStatusView {
 }
 
 fn note_for_scan_issue(issue: &ScanIssue) -> OutcomeNote {
-    match issue {
-        ScanIssue::DiscoveryFailed { .. } | ScanIssue::ReleaseLookupFailed { .. } => {
-            OutcomeNote::normal(scan_issue_text(issue))
-        }
-        ScanIssue::MissingReleaseMetadata | ScanIssue::ExcludedByManagerRule(_) => {
-            OutcomeNote::metadata(scan_issue_text(issue))
-        }
-    }
+    OutcomeNote::normal(scan_issue_text(issue))
 }
 pub fn update_plan_table(plan: &UpdatePlan, options: BatchRenderOptions) -> OutcomeTable {
-    let mut rows = plan
-        .issues
+    let rows = plan
+        .items
         .iter()
-        .map(|issue| plan_issue_row(&plan.manager_id, issue))
+        .map(|item| plan_item_row(&plan.manager_id, item, options))
         .collect::<Vec<_>>();
-    rows.extend(
-        plan.items
-            .iter()
-            .map(|item| plan_item_row(&plan.manager_id, item, options)),
-    );
     OutcomeTable::new(rows)
-}
-
-fn plan_issue_row(manager_id: &ManagerId, issue: &PlanIssue) -> OutcomeRow {
-    let status = match issue {
-        PlanIssue::DiscoveryFailed { .. } => OutcomeStatusView::Error,
-    };
-    OutcomeRow::manager(status, manager_id.clone())
-        .with_note(OutcomeNote::normal(plan_issue_text(issue)))
 }
 
 fn plan_item_row(
@@ -298,7 +248,7 @@ fn blocked_row(
             seed.installed.package_name.clone(),
             versions,
         )
-        .with_note(OutcomeNote::metadata("missing release metadata")),
+        .with_note(OutcomeNote::normal("missing release metadata")),
         BlockReason::ReleaseLookupFailed => OutcomeRow::item(
             OutcomeStatusView::Error,
             manager_id.clone(),
@@ -318,7 +268,7 @@ fn blocked_row(
                 seed.installed.package_name.clone(),
                 versions,
             )
-            .with_note(OutcomeNote::warning(note))
+            .with_note(OutcomeNote::normal(note))
         }
     };
     if matches!(reason, BlockReason::VersionPolicy(_)) {
@@ -337,7 +287,7 @@ fn current_no_newer_row(manager_id: &ManagerId, installed: &InstalledTool) -> Ou
             version: installed.installed_version.clone(),
         },
     )
-    .with_note(OutcomeNote::metadata("no newer version found"))
+    .with_note(OutcomeNote::normal("no newer version found"))
     .with_visibility(OutcomeVisibility::VerboseOnly)
 }
 
@@ -354,7 +304,7 @@ fn skipped_plan_row(
             version: installed.installed_version.clone(),
         },
     )
-    .with_note(OutcomeNote::metadata(notes::skip_reason(reason)))
+    .with_note(OutcomeNote::normal(notes::skip_reason(reason)))
 }
 
 fn candidate_row(
@@ -440,8 +390,8 @@ fn append_policy_notes(
         return row;
     }
     if let Some(latest) = latest_policy_blocked_version(diagnostics) {
-        return row.with_note(OutcomeNote::normal(notes::latest_blocked_by_policy(
-            latest, policy,
+        return row.with_note(OutcomeNote::normal(notes::version_blocked_by_policy(
+            latest,
         )));
     }
     row
@@ -462,7 +412,7 @@ fn append_advisory_warning_notes(mut row: OutcomeRow, diagnostics: &PlanDiagnost
         },
     );
     if let Some(error) = advisory_failure {
-        row = row.with_note(OutcomeNote::warning(format!(
+        row = row.with_note(OutcomeNote::normal(format!(
             "advisory latest lookup failed: {}",
             error.detail
         )));
@@ -485,15 +435,6 @@ fn blocked_target_version(
     seed.target_selection.target_version().cloned()
 }
 
-fn audit_note(audit: &ScanAuditFact, text: String) -> OutcomeNote {
-    match audit {
-        ScanAuditFact::Clean => OutcomeNote::metadata(text),
-        ScanAuditFact::Vulnerable { .. } | ScanAuditFact::LookupFailed { .. } => {
-            OutcomeNote::warning(text)
-        }
-    }
-}
-
 fn latest_policy_blocked_version(
     diagnostics: &PlanDiagnostics,
 ) -> Option<&upgate_domain::VersionText> {
@@ -506,13 +447,9 @@ fn latest_policy_blocked_version(
 
 fn latest_too_fresh_note(diagnostics: &PlanDiagnostics) -> Option<OutcomeNote> {
     let latest = latest_too_fresh(diagnostics)?;
-    let note = notes::version_too_fresh(
+    Some(OutcomeNote::normal(notes::version_too_fresh(
         &latest.version,
-        Some(latest.age),
-        Some(diagnostics.required_age),
-        false,
-    );
-    Some(OutcomeNote::metadata(note))
+    )))
 }
 
 fn delayed_note(reason: &DelayReason, diagnostics: &PlanDiagnostics) -> OutcomeNote {
@@ -525,12 +462,7 @@ fn delayed_note(reason: &DelayReason, diagnostics: &PlanDiagnostics) -> OutcomeN
                 ));
             }
             if let Some(latest) = latest_too_fresh(diagnostics) {
-                return OutcomeNote::normal(notes::no_eligible_latest_too_fresh(
-                    &latest.version,
-                    Some(latest.age),
-                    Some(diagnostics.required_age),
-                    false,
-                ));
+                return OutcomeNote::normal(notes::no_eligible_latest_too_fresh(&latest.version));
             }
             OutcomeNote::normal(format!(
                 "no eligible release yet; required age {}",
@@ -569,18 +501,15 @@ fn advisory_latest_age_fact(advisory: &AdvisoryLatestFact) -> Option<&CandidateA
     }
 }
 
-fn release_age_note(age: Duration, is_old: bool) -> OutcomeNote {
-    let text = notes::released(age);
-    if is_old {
-        return OutcomeNote::warning(text);
-    }
-    OutcomeNote::metadata(text)
+fn release_age_note(age: Duration) -> OutcomeNote {
+    OutcomeNote::normal(notes::released(age))
 }
 
 fn target_release_note(diagnostics: &PlanDiagnostics) -> Option<OutcomeNote> {
-    diagnostics.selected_target.as_ref().map(|target| {
-        release_age_note(target.age, false).with_visibility(OutcomeVisibility::VerboseOnly)
-    })
+    diagnostics
+        .selected_target
+        .as_ref()
+        .map(|target| release_age_note(target.age).with_visibility(OutcomeVisibility::VerboseOnly))
 }
 
 fn lookup_failure_text(diagnostics: &PlanDiagnostics) -> String {
@@ -597,12 +526,6 @@ fn scan_issue_text(issue: &ScanIssue) -> String {
         }
         ScanIssue::MissingReleaseMetadata => "missing release metadata".to_owned(),
         ScanIssue::ExcludedByManagerRule(reason) => manager_rule_reason_text(reason),
-    }
-}
-
-fn plan_issue_text(issue: &PlanIssue) -> String {
-    match issue {
-        PlanIssue::DiscoveryFailed { detail } => detail.clone(),
     }
 }
 

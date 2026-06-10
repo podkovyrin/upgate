@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::{InstalledTool, ManagerId, ScanAuditFact, VersionReleaseEvidence};
+use crate::{AuditLookupResult, InstalledTool, ManagerId, VersionReleaseEvidence};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanReport {
@@ -50,7 +50,7 @@ pub enum ScanItem {
     InstalledWithAudit {
         tool: InstalledTool,
         age: Option<Duration>,
-        audit: ScanAuditFact,
+        audit: AuditLookupResult,
     },
     Skipped {
         tool: InstalledTool,

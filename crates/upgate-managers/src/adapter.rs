@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use upgate_domain::{
     InstalledTool, ManagerId, ManagerMode, ManagerScanEvidenceInput, ManagerScanInput,
-    ManagerUpdateInput, PackageName, ReleaseEvidenceSource, ReleaseLookupResult, VersionPolicy,
+    ManagerUpdateInput, PackageName, ReleaseLookupResult, VersionPolicy,
 };
 use upgate_execution::{ExecutionCommand, ResolvedExecutionPlan};
 use upgate_infra::{Env, HttpClient, ProcessRunner, run_ordered_parallel};
@@ -28,7 +28,6 @@ impl<'a> ReleaseLookupSubject<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManagerAdapterErrorKind {
-    Discovery,
     Parse,
     CommandConstruction,
     Interrupted,
@@ -38,7 +37,6 @@ pub enum ManagerAdapterErrorKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManagerAdapterError {
     Manager {
-        manager_id: String,
         kind: ManagerAdapterErrorKind,
         detail: String,
     },
@@ -189,11 +187,8 @@ pub trait ManagerAdapter: Sync {
                     ReleaseLookupSubject::Installed(&tool),
                 )? {
                     ReleaseLookupResult::Known(timeline) => {
-                        let release_evidence = release_evidence_for_version(
-                            &timeline,
-                            &tool.installed_version,
-                            ReleaseEvidenceSource::ReleaseTimeline,
-                        );
+                        let release_evidence =
+                            release_evidence_for_version(&timeline, &tool.installed_version);
                         Ok(ManagerScanEvidenceInput::Installed {
                             tool,
                             release_evidence,
@@ -212,7 +207,6 @@ pub trait ManagerAdapter: Sync {
             },
         )
         .map_err(|err| ManagerAdapterError::Manager {
-            manager_id: "adapter".to_owned(),
             kind: ManagerAdapterErrorKind::Infra,
             detail: err.to_string(),
         })?

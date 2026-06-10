@@ -10,10 +10,10 @@ use semver::Version;
 use serde::Deserialize;
 use upgate_domain::{
     AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
-    ManagerId, ManagerMetadata, ManagerRuleReason, ManagerScanEvidenceInput, ManagerScanInput,
-    ManagerUpdateInput, OsvEcosystem, PackageName, ReleaseEntry, ReleaseEvidenceSource,
-    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ScanIssue,
-    SkipReason, ToolId, ToolName, UpdateSeed, VersionScheme, VersionText,
+    ManagerId, ManagerRuleReason, ManagerScanEvidenceInput, ManagerScanInput, ManagerUpdateInput,
+    OsvEcosystem, PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult,
+    ReleaseTimeline, ReleaseTimestamp, ScanIssue, SkipReason, ToolId, ToolName, UpdateSeed,
+    VersionScheme, VersionText,
 };
 use upgate_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -45,7 +45,6 @@ pub enum GoError {
     Io(String),
     MissingHome,
     InvalidTimestamp { version: String, value: String },
-    MissingReleaseMetadata(String),
     UnsupportedCommandIntent(String),
     MissingInstallPath(String),
 }
@@ -57,8 +56,7 @@ impl Display for GoError {
             | Self::Interrupted(detail)
             | Self::Json(detail)
             | Self::Domain(detail)
-            | Self::Io(detail)
-            | Self::MissingReleaseMetadata(detail) => formatter.write_str(detail),
+            | Self::Io(detail) => formatter.write_str(detail),
             Self::MissingHome => formatter.write_str("HOME env var is not set"),
             Self::InvalidTimestamp { version, value } => {
                 write!(
@@ -175,7 +173,6 @@ impl ManagerAdapter for GoManager {
                                 release_evidence: release_evidence_for_version(
                                     &timeline,
                                     &installed.installed_version,
-                                    ReleaseEvidenceSource::ReleaseTimeline,
                                 ),
                                 tool: installed,
                             })
@@ -600,7 +597,6 @@ fn installed_tool(tool: &GoManagedTool) -> InstalledTool {
         ToolName::new(tool.binary_name.as_str().to_owned())
             .expect("valid package is valid tool name"),
         tool.current_version.clone(),
-        ManagerMetadata::empty(),
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Go,
@@ -615,7 +611,6 @@ fn placeholder_installed_tool(name: &PackageName) -> Result<InstalledTool, GoErr
         name.clone(),
         ToolName::new(name.as_str().to_owned())?,
         VersionText::new("*")?,
-        ManagerMetadata::empty(),
     ))
 }
 
@@ -750,17 +745,15 @@ fn system_time_from_datetime(datetime: DateTime<chrono::FixedOffset>) -> SystemT
 fn adapter_error(err: &GoError) -> ManagerAdapterError {
     let kind = match err {
         GoError::Interrupted(_) => ManagerAdapterErrorKind::Interrupted,
-        GoError::Json(_)
-        | GoError::Domain(_)
-        | GoError::InvalidTimestamp { .. }
-        | GoError::MissingReleaseMetadata(_) => ManagerAdapterErrorKind::Parse,
+        GoError::Json(_) | GoError::Domain(_) | GoError::InvalidTimestamp { .. } => {
+            ManagerAdapterErrorKind::Parse
+        }
         GoError::UnsupportedCommandIntent(_) | GoError::MissingInstallPath(_) => {
             ManagerAdapterErrorKind::CommandConstruction
         }
         GoError::Infra(_) | GoError::Io(_) | GoError::MissingHome => ManagerAdapterErrorKind::Infra,
     };
     ManagerAdapterError::Manager {
-        manager_id: MANAGER_ID.to_owned(),
         kind,
         detail: err.to_string(),
     }

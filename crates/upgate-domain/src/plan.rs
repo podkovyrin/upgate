@@ -6,8 +6,8 @@ use std::{
 
 use crate::{
     DomainError, InstalledTool, ManagerId, PackageName, PolicyWarning, ReleaseLookupError,
-    ReleaseLookupResult, TargetAgeLookupResult, ToolId, VersionReleaseEvidence, VersionScheme,
-    VersionText, audit::CandidateAuditFact,
+    ReleaseLookupResult, TargetAgeLookupResult, ToolId, VersionScheme, VersionText,
+    audit::AuditLookupResult,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -53,21 +53,6 @@ pub struct UpdateSeed {
 
 impl UpdateSeed {
     pub const fn new(
-        installed: InstalledTool,
-        discovered_target: VersionText,
-        version_scheme: VersionScheme,
-        release_lookup: ReleaseLookupResult,
-        execution_support: ExecutionSupport,
-    ) -> Self {
-        Self::planner_selectable(
-            installed,
-            discovered_target,
-            version_scheme,
-            release_lookup,
-            execution_support,
-        )
-    }
-    pub const fn planner_selectable(
         installed: InstalledTool,
         discovered_target: VersionText,
         version_scheme: VersionScheme,
@@ -160,14 +145,6 @@ impl ManagerSelectedTarget {
             advisory_lookup_failure: None,
         }
     }
-    pub const fn manager_resolved(target_age: TargetAgeLookupResult) -> Self {
-        Self {
-            target: PlannedTarget::ManagerResolved,
-            target_age,
-            advisory_release_lookup: None,
-            advisory_lookup_failure: None,
-        }
-    }
     pub const fn target_version(&self) -> Option<&VersionText> {
         match self.target.as_ref() {
             PlannedTargetRef::Known(version) => Some(version),
@@ -242,25 +219,6 @@ impl UpdateCandidate {
             package_name,
             installed_version,
             target: PlannedTarget::Known(target_version),
-            version_scheme,
-            execution_support,
-            execution_target_kind: ExecutionTargetKind::Standard,
-            policy_warnings: Vec::new(),
-            diagnostics: PlanDiagnostics::default(),
-        }
-    }
-    pub fn manager_resolved(
-        tool_id: ToolId,
-        package_name: PackageName,
-        installed_version: VersionText,
-        version_scheme: VersionScheme,
-        execution_support: ExecutionSupport,
-    ) -> Self {
-        Self {
-            tool_id,
-            package_name,
-            installed_version,
-            target: PlannedTarget::ManagerResolved,
             version_scheme,
             execution_support,
             execution_target_kind: ExecutionTargetKind::Standard,
@@ -463,7 +421,6 @@ impl ExecutionSupport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[expect(clippy::large_enum_variant)]
 pub enum PlanItem {
     Update {
         id: PlanItemId,
@@ -514,7 +471,6 @@ impl PlanItem {
 pub struct UpdatePlan {
     pub manager_id: ManagerId,
     pub items: Vec<PlanItem>,
-    pub issues: Vec<PlanIssue>,
 }
 
 impl UpdatePlan {
@@ -524,19 +480,6 @@ impl UpdatePlan {
     ///
     /// Returns [`DomainError::DuplicatePlanItemId`] when two items share an id.
     pub fn new(manager_id: ManagerId, items: Vec<PlanItem>) -> Result<Self, DomainError> {
-        Self::with_issues(manager_id, items, Vec::new())
-    }
-
-    /// Creates an update plan with manager-level issues.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DomainError::DuplicatePlanItemId`] when two items share an id.
-    pub fn with_issues(
-        manager_id: ManagerId,
-        items: Vec<PlanItem>,
-        issues: Vec<PlanIssue>,
-    ) -> Result<Self, DomainError> {
         let mut seen = BTreeSet::new();
         for item in &items {
             if !seen.insert(item.id()) {
@@ -544,11 +487,7 @@ impl UpdatePlan {
             }
         }
 
-        Ok(Self {
-            manager_id,
-            items,
-            issues,
-        })
+        Ok(Self { manager_id, items })
     }
     pub fn contains_item(&self, id: &PlanItemId) -> bool {
         self.items.iter().any(|item| item.id() == id)
@@ -596,13 +535,11 @@ pub struct PlanDiagnostics {
     pub candidates: Vec<CandidateEvaluationFact>,
     pub selected_target: Option<CandidateAgeFact>,
     pub latest_overall: Option<CandidateAgeFact>,
-    pub latest_policy_eligible: Option<CandidateAgeFact>,
-    pub latest_age_eligible: Option<CandidateAgeFact>,
     pub missing_metadata: Option<MissingMetadataKind>,
     pub lookup_failure: Option<ReleaseLookupError>,
     pub advisory_latest: Option<AdvisoryLatestFact>,
     pub advisory_lookup_failure: Option<ReleaseLookupError>,
-    pub audit_blocking_target: Option<CandidateAuditFact>,
+    pub audit_blocking_target: Option<AuditLookupResult>,
     pub audit_blocking_candidate: Option<CandidateEvaluationFact>,
 }
 
@@ -627,31 +564,12 @@ impl PlanDiagnostics {
 pub struct CandidateAgeFact {
     pub version: VersionText,
     pub age: Duration,
-    pub age_source: CandidateAgeSource,
-    pub release_evidence: VersionReleaseEvidence,
 }
 
 impl CandidateAgeFact {
-    pub const fn new(
-        version: VersionText,
-        age: Duration,
-        age_source: CandidateAgeSource,
-        release_evidence: VersionReleaseEvidence,
-    ) -> Self {
-        Self {
-            version,
-            age,
-            age_source,
-            release_evidence,
-        }
+    pub const fn new(version: VersionText, age: Duration) -> Self {
+        Self { version, age }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CandidateAgeSource {
-    ReleaseTimeline,
-    PublishedAt,
-    ManagerNativeTimestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -659,11 +577,10 @@ pub enum CandidateAgeSource {
 pub struct CandidateEvaluationFact {
     pub version: VersionText,
     pub age: Option<Duration>,
-    pub policy_allowed: bool,
     pub age_allowed: bool,
     pub policy_block_reason: Option<PolicyBlockReason>,
     pub policy_warning: Option<PolicyWarning>,
-    pub audit: Option<CandidateAuditFact>,
+    pub audit: Option<AuditLookupResult>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -686,11 +603,6 @@ pub enum AdvisoryLatestFact {
         latest_version: VersionText,
         error: ReleaseLookupError,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PlanIssue {
-    DiscoveryFailed { detail: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

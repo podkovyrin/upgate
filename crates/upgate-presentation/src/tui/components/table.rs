@@ -83,31 +83,11 @@ pub fn render_table<const N: usize>(
     );
 }
 
-pub fn render_selection_table(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    rows: Vec<Row<'static>>,
-    selected: Option<usize>,
-    offset: usize,
-    theme: &TuiTheme,
-) {
-    render_table(
-        frame,
-        area,
-        TuiTable::new(rows, selection_update_columns(area.width))
-            .header(update_header_row(theme))
-            .selected(selected)
-            .offset(offset)
-            .row_highlight_style(theme.selected_row_highlight),
-        theme,
-    );
-}
-
 pub fn update_header_row(theme: &TuiTheme) -> Row<'static> {
     Row::new(vec!["", "Manager", "Name", "Current", "Target", "Note"]).style(theme.header)
 }
 
-const fn selection_update_columns(width: u16) -> [Constraint; 6] {
+pub const fn selection_update_columns(width: u16) -> [Constraint; 6] {
     if width < VERY_NARROW_TABLE_WIDTH {
         return [
             Constraint::Length(3),

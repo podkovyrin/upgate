@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
+
 use upgate_domain::{
-    ExecutionSupport, InstalledTool, ManagerId, ManagerMetadata, ManagerUpdateInput, PackageName,
-    PlanItem, PlanItemId, ReleaseEntry, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
+    ExecutionSupport, InstalledTool, ManagerId, ManagerUpdateInput, PackageName, PlanItem,
+    PlanItemId, ReleaseEntry, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
     SelectedUpdate, ToolId, ToolName, UpdateCandidate, UpdatePlan, UpdateSeed, UpdateSelectionMode,
     UpdateSelectionPolicy, VersionPolicy, VersionScheme, VersionText,
 };
-use upgate_planning::{PlanningSettings, default_batch_selection, update_plan_from_inputs};
+use upgate_planning::{PlanningSettings, default_batch_selection, finalize_plan_from_inputs};
 
 fn manager_id() -> ManagerId {
     ManagerId::new("pnpm").expect("valid manager id")
@@ -45,7 +47,7 @@ fn plan() -> UpdatePlan {
 #[test]
 fn plan_ids_use_tool_identity_when_packages_share_a_name() {
     let package_name = PackageName::new("shared-name").expect("valid package name");
-    let plan = update_plan_from_inputs(
+    let plan = finalize_plan_from_inputs(
         manager_id(),
         vec![
             ManagerUpdateInput::Seed(seed("formula:shared-name", &package_name)),
@@ -56,6 +58,7 @@ fn plan_ids_use_tool_identity_when_packages_share_a_name() {
             now: std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(20),
             min_release_age: std::time::Duration::ZERO,
         },
+        &BTreeMap::new(),
     )
     .expect("distinct tools with one package name should produce a valid plan");
 
@@ -114,7 +117,6 @@ fn seed(tool_id: &str, package_name: &PackageName) -> UpdateSeed {
             package_name.clone(),
             ToolName::new(package_name.as_str()).expect("valid tool name"),
             VersionText::new("1.0.0").expect("valid installed version"),
-            ManagerMetadata::empty(),
         ),
         VersionText::new("1.1.0").expect("valid target version"),
         VersionScheme::SemVer,

@@ -7,9 +7,9 @@ use flate2::read::GzDecoder;
 use serde::Deserialize;
 use upgate_domain::{
     AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
-    ManagerId, ManagerMetadata, ManagerScanInput, ManagerUpdateInput, OsvEcosystem, PackageName,
-    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
-    ToolId, ToolName, UpdateSeed, VersionScheme, VersionText,
+    ManagerId, ManagerScanInput, ManagerUpdateInput, OsvEcosystem, PackageName, ReleaseEntry,
+    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName,
+    UpdateSeed, VersionScheme, VersionText,
 };
 use upgate_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -26,11 +26,11 @@ use crate::adapter::{
     ManagerConfigDefaults, ReleaseLookupSubject, validate_version_policy,
 };
 
-pub const MANAGER_ID: &str = "dotnet";
+const MANAGER_ID: &str = "dotnet";
 const DOTNET_MAX_PARALLEL_CHECKS: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DotnetError {
+enum DotnetError {
     Infra(String),
     Interrupted(String),
     Json(String),
@@ -82,16 +82,10 @@ impl From<DomainError> for DotnetError {
     }
 }
 
-impl DotnetError {
-    pub const fn is_interruption(&self) -> bool {
-        matches!(self, Self::Interrupted(_))
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DotnetToolPackage {
-    pub package_id: PackageName,
-    pub version: VersionText,
+struct DotnetToolPackage {
+    package_id: PackageName,
+    version: VersionText,
 }
 
 #[derive(Debug, Deserialize)]
@@ -216,7 +210,7 @@ impl ManagerAdapter for DotnetManager {
 /// # Errors
 ///
 /// Returns an error when JSON is malformed or a package/version is blank.
-pub fn parse_tool_list_json(raw: &str) -> Result<Vec<DotnetToolPackage>, DotnetError> {
+fn parse_tool_list_json(raw: &str) -> Result<Vec<DotnetToolPackage>, DotnetError> {
     if raw.trim().is_empty() {
         return Ok(Vec::new());
     }
@@ -239,7 +233,7 @@ pub fn parse_tool_list_json(raw: &str) -> Result<Vec<DotnetToolPackage>, DotnetE
 /// # Errors
 ///
 /// Returns an error when command output cannot be parsed.
-pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, DotnetError> {
+fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, DotnetError> {
     let output = process.run(
         &CommandSpec::new("dotnet", ["tool", "list", "--global", "--format", "json"]),
         &CommandCheck::IgnoreStatus,
@@ -281,7 +275,7 @@ fn dotnet_missing_sdk_hint(text: &str) -> bool {
 /// # Errors
 ///
 /// Returns an error when installed discovery fails.
-pub fn update_inputs(
+fn update_inputs(
     process: &ProcessRunner,
     http: &HttpClient,
     env: &Env,
@@ -299,7 +293,7 @@ pub fn update_inputs(
 }
 
 /// Looks up `NuGet` release metadata.
-pub fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> ReleaseLookupResult {
+fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> ReleaseLookupResult {
     match nuget_timeline(http, env, package) {
         Ok(timeline) => ReleaseLookupResult::Known(timeline),
         Err(DotnetError::MissingReleaseMetadata(_)) => ReleaseLookupResult::MissingMetadata,
@@ -312,7 +306,7 @@ pub fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> Re
 /// # Errors
 ///
 /// Returns an error when JSON or timestamps are invalid.
-pub fn parse_nuget_page_json(raw: &str) -> Result<Vec<ReleaseEntry>, DotnetError> {
+fn parse_nuget_page_json(raw: &str) -> Result<Vec<ReleaseEntry>, DotnetError> {
     let page: NugetRegistrationPage =
         serde_json::from_str(raw).map_err(|err| DotnetError::Json(err.to_string()))?;
     let mut entries = Vec::new();
@@ -341,7 +335,7 @@ pub fn parse_nuget_page_json(raw: &str) -> Result<Vec<ReleaseEntry>, DotnetError
 /// # Errors
 ///
 /// Returns an error when the resolved execution mode is not supported.
-pub fn commands_for_execution_plan(
+fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
 ) -> Result<Vec<ExecutionCommand>, DotnetError> {
     let mut commands = Vec::new();
@@ -456,28 +450,22 @@ fn fetch_registration_text(
 }
 
 fn exact_command_for_item(item: &ResolvedExecutionItem) -> Result<CommandSpec, DotnetError> {
-    Ok(exact_command_parts(
-        &item.package_name,
-        item.known_target_version().ok_or_else(|| {
-            DotnetError::UnsupportedCommandIntent("exact-without-known-target".to_owned())
-        })?,
-    ))
-}
-
-fn exact_command_parts(package_name: &PackageName, target_version: &VersionText) -> CommandSpec {
-    CommandSpec::new(
+    let target_version = item.known_target_version().ok_or_else(|| {
+        DotnetError::UnsupportedCommandIntent("exact-without-known-target".to_owned())
+    })?;
+    Ok(CommandSpec::new(
         "dotnet",
         [
             "tool",
             "update",
             "--global",
-            package_name.as_str(),
+            item.package_name.as_str(),
             "--version",
             target_version.as_str(),
             "--allow-downgrade",
         ],
     )
-    .mutating()
+    .mutating())
 }
 
 fn installed_tool(package: DotnetToolPackage) -> Result<InstalledTool, DotnetError> {
@@ -487,7 +475,6 @@ fn installed_tool(package: DotnetToolPackage) -> Result<InstalledTool, DotnetErr
         package.package_id.clone(),
         ToolName::new(package.package_id.as_str().to_owned())?,
         package.version,
-        ManagerMetadata::empty(),
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::NuGet,
@@ -537,7 +524,6 @@ fn adapter_error(err: &DotnetError) -> ManagerAdapterError {
         DotnetError::Infra(_) => ManagerAdapterErrorKind::Infra,
     };
     ManagerAdapterError::Manager {
-        manager_id: MANAGER_ID.to_owned(),
         kind,
         detail: err.to_string(),
     }

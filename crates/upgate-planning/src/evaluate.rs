@@ -1,46 +1,19 @@
 use std::collections::BTreeMap;
-use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 
-use pep440_rs::{PrereleaseKind as Pep440PrereleaseKind, Version as Pep440Version};
-use semver::Version as SemverVersion;
 use upgate_domain::{
     AdvisoryLatestFact, AdvisoryReleaseLookup, AuditLookupResult, AuditQuery, AuditSubject,
-    BlockReason, CandidateAgeFact, CandidateAgeSource, CandidateAuditFact, CandidateEvaluationFact,
-    DelayReason, ManagerSelectedTarget, MissingMetadataKind, PlanDiagnostics, PlanItem, PlanItemId,
-    PlannedTarget, PolicyBlockReason, PolicyWarning, ReleaseEntry, ReleaseEvidenceSource,
-    ReleaseLookupResult, ReleaseTimeline, TargetAgeEvidence, TargetAgeLookupResult,
-    TargetSelection, UpdateCandidate, UpdateSeed, VersionPolicy, VersionReleaseEvidence,
+    BlockReason, CandidateAgeFact, CandidateEvaluationFact, DelayReason, ManagerSelectedTarget,
+    MissingMetadataKind, PlanDiagnostics, PlanItem, PlanItemId, PlannedTarget, PolicyBlockReason,
+    PolicyWarning, ReleaseEntry, ReleaseLookupResult, ReleaseTimeline, TargetAgeEvidence,
+    TargetAgeLookupResult, TargetSelection, UpdateCandidate, UpdateSeed, VersionPolicy,
     VersionScheme, VersionText,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReleaseClass {
-    Dev,
-    Alpha,
-    Beta,
-    Rc,
-    Final,
-    UnknownPrerelease,
-    Unknown,
-}
-
-impl ReleaseClass {
-    const fn is_final(self) -> bool {
-        matches!(self, Self::Final)
-    }
-
-    const fn stability_rank(self) -> Option<u8> {
-        match self {
-            Self::Dev => Some(0),
-            Self::Alpha => Some(1),
-            Self::Beta => Some(2),
-            Self::Rc => Some(3),
-            Self::Final => Some(4),
-            Self::UnknownPrerelease | Self::Unknown => None,
-        }
-    }
-}
+use crate::classify::{
+    ReleaseClass, classify_manager_native_release, classify_pep440_release,
+    classify_semver_release, parse_pep440, parse_semver,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PolicyDecision {
@@ -54,10 +27,6 @@ enum PolicyDecision {
 }
 
 impl PolicyDecision {
-    const fn allowed(&self) -> bool {
-        matches!(self, Self::Allowed { .. })
-    }
-
     const fn warning(&self) -> Option<PolicyWarning> {
         match self {
             Self::Allowed { warning } | Self::Blocked { warning, .. } => *warning,
@@ -70,17 +39,6 @@ impl PolicyDecision {
             Self::Blocked { reason, .. } => Some(reason.clone()),
         }
     }
-}
-
-/// Evaluate one manager-discovered update seed into a typed plan item.
-pub fn evaluate_seed(
-    id: PlanItemId,
-    seed: UpdateSeed,
-    policy: VersionPolicy,
-    now: SystemTime,
-    min_release_age: Duration,
-) -> PlanItem {
-    evaluate_seed_with_audit(id, seed, policy, now, min_release_age, &BTreeMap::new())
 }
 
 /// Evaluate one manager-discovered update seed into a typed plan item using
@@ -119,7 +77,7 @@ pub fn evaluate_seed_with_audit(
     }
 }
 
-pub fn audit_queries_for_seed(seed: &UpdateSeed) -> Vec<AuditQuery> {
+pub(crate) fn audit_queries_for_seed(seed: &UpdateSeed) -> Vec<AuditQuery> {
     match &seed.target_selection {
         TargetSelection::PlannerSelectable {
             discovered_target,
@@ -244,6 +202,7 @@ fn evaluate_planner_selectable_seed(
                 audit_results,
                 parse_semver,
                 classify_semver_release,
+                false,
             ),
             VersionScheme::Pep440 => evaluate_timeline_seed(
                 id,
@@ -256,6 +215,7 @@ fn evaluate_planner_selectable_seed(
                 audit_results,
                 parse_pep440,
                 classify_pep440_release,
+                true,
             ),
             VersionScheme::ManagerNative => PlanItem::ResolverError {
                 id,
@@ -321,7 +281,6 @@ fn evaluate_manager_selected_seed(
     let candidate_fact = CandidateEvaluationFact {
         version: selected_target.clone(),
         age: target_age_duration(&target_age, now),
-        policy_allowed: policy_decision.allowed(),
         age_allowed: target_age_is_old_enough(&target_age, now, min_release_age),
         policy_block_reason: policy_decision.block_reason(),
         policy_warning: policy_decision.warning(),
@@ -350,8 +309,6 @@ fn evaluate_manager_selected_seed(
             diagnostics.selected_target = Some(CandidateAgeFact::new(
                 selected_target.clone(),
                 evidence_age(&evidence, now),
-                candidate_age_source(&evidence),
-                VersionReleaseEvidence::from_target_age(selected_target.clone(), &evidence),
             ));
             evidence
         }
@@ -427,6 +384,7 @@ fn evaluate_timeline_seed<V: Ord + Clone>(
     audit_results: &BTreeMap<AuditQuery, AuditLookupResult>,
     parse: fn(&str) -> Result<V, String>,
     classify: fn(&str) -> ReleaseClass,
+    unparseable_entry_is_fatal: bool,
 ) -> PlanItem {
     let Ok(installed_version) = parse(seed.installed.installed_version.as_str()) else {
         return PlanItem::ResolverError {
@@ -442,12 +400,23 @@ fn evaluate_timeline_seed<V: Ord + Clone>(
             message: "failed to parse discovered target version".to_owned(),
         };
     };
-    let target_metadata_found = timeline.versions.iter().any(|entry| {
+    let mut target_metadata_found = false;
+    for entry in &timeline.versions {
         let Ok(parsed) = parse(entry.version.as_str()) else {
-            return false;
+            // SemVer timelines tolerate unparseable entries (83305cb); pep440 surfaces them.
+            if unparseable_entry_is_fatal {
+                return PlanItem::ResolverError {
+                    id,
+                    installed: seed.installed,
+                    message: format!("failed to parse release version `{}`", entry.version),
+                };
+            }
+            continue;
         };
-        parsed == parsed_discovered_target
-    });
+        if parsed == parsed_discovered_target {
+            target_metadata_found = true;
+        }
+    }
     if !target_metadata_found {
         return PlanItem::Blocked {
             id,
@@ -459,15 +428,12 @@ fn evaluate_timeline_seed<V: Ord + Clone>(
         };
     }
 
-    let mut newest_overall = None::<(V, CandidateFact)>;
-    let mut newest_policy_eligible = None::<(V, CandidateFact)>;
-    let mut newest_age_eligible = None::<(V, CandidateFact)>;
-    let mut newest_audit_eligible = None::<(V, CandidateFact)>;
     let mut candidate_facts = Vec::<(V, CandidateFact)>::new();
     let installed_class = classify(seed.installed.installed_version.as_str());
 
     for entry in &timeline.versions {
-        // Unparseable timeline entries are skipped, not fatal (old-behavior parity, 83305cb).
+        // Unparseable entries: fatal schemes already errored in the metadata loop above;
+        // the rest skip them (83305cb).
         let Ok(parsed) = parse(entry.version.as_str()) else {
             continue;
         };
@@ -477,52 +443,67 @@ fn evaluate_timeline_seed<V: Ord + Clone>(
 
         let candidate_class = classify(entry.version.as_str());
         let policy_decision = evaluate_policy(policy, installed_class, candidate_class);
-        let policy_allowed = policy_decision.allowed();
         let mut fact = CandidateFact::new(entry, now, min_release_age, &policy_decision);
         fact.audit = audit_fact_for(
             seed.installed.audit_subject.as_ref(),
             &entry.version,
             audit_results,
         );
-        candidate_facts.push((parsed.clone(), fact.clone()));
-        if newest_overall
-            .as_ref()
-            .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
-        {
-            newest_overall = Some((parsed.clone(), fact.clone()));
-        }
-
-        if policy_allowed {
-            if newest_policy_eligible
-                .as_ref()
-                .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
-            {
-                newest_policy_eligible = Some((parsed.clone(), fact.clone()));
-            }
-            if fact.age_allowed
-                && newest_age_eligible
-                    .as_ref()
-                    .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
-            {
-                newest_age_eligible = Some((parsed.clone(), fact.clone()));
-            }
-            if fact.age_allowed
-                && audit_allows_optional_target(fact.audit.as_ref())
-                && newest_audit_eligible
-                    .as_ref()
-                    .is_none_or(|current| candidate_is_newer_by_date(&parsed, &fact, current))
-            {
-                newest_audit_eligible = Some((parsed, fact));
-            }
-        }
+        candidate_facts.push((parsed, fact));
     }
 
-    let diagnostics = diagnostics_from_candidate_facts(
+    let newest_overall = candidate_facts
+        .iter()
+        .reduce(|current, candidate| {
+            if candidate_is_newer_by_date(&candidate.0, &candidate.1, current) {
+                candidate
+            } else {
+                current
+            }
+        })
+        .cloned();
+    let newest_policy_eligible = candidate_facts
+        .iter()
+        .filter(|(_, fact)| fact.policy_block_reason.is_none())
+        .reduce(|current, candidate| {
+            if candidate_is_newer_by_date(&candidate.0, &candidate.1, current) {
+                candidate
+            } else {
+                current
+            }
+        })
+        .cloned();
+    let newest_age_eligible = candidate_facts
+        .iter()
+        .filter(|(_, fact)| fact.policy_block_reason.is_none() && fact.age_allowed)
+        .reduce(|current, candidate| {
+            if candidate_is_newer_by_date(&candidate.0, &candidate.1, current) {
+                candidate
+            } else {
+                current
+            }
+        })
+        .cloned();
+    let newest_audit_eligible = candidate_facts
+        .iter()
+        .filter(|(_, fact)| {
+            fact.policy_block_reason.is_none()
+                && fact.age_allowed
+                && audit_allows_optional_target(fact.audit.as_ref())
+        })
+        .reduce(|current, candidate| {
+            if candidate_is_newer_by_date(&candidate.0, &candidate.1, current) {
+                candidate
+            } else {
+                current
+            }
+        })
+        .cloned();
+
+    let mut diagnostics = diagnostics_from_candidate_facts(
         min_release_age,
         candidate_facts,
         newest_overall.as_ref().map(|(_, fact)| fact),
-        newest_policy_eligible.as_ref().map(|(_, fact)| fact),
-        newest_age_eligible.as_ref().map(|(_, fact)| fact),
     );
 
     let Some((_, newest_overall)) = newest_overall else {
@@ -548,10 +529,9 @@ fn evaluate_timeline_seed<V: Ord + Clone>(
         };
     };
 
-    let mut diagnostics = diagnostics;
     diagnostics.selected_target = Some(policy_candidate.candidate_age());
 
-    let Some(_) = newest_age_eligible.as_ref() else {
+    let Some((_, age_candidate)) = newest_age_eligible else {
         let candidate = candidate_from_seed(
             &seed,
             policy_candidate.version,
@@ -566,17 +546,15 @@ fn evaluate_timeline_seed<V: Ord + Clone>(
     };
 
     let Some((_, audit_candidate)) = newest_audit_eligible else {
-        let audit = newest_age_eligible
-            .as_ref()
-            .and_then(|(_, fact)| fact.audit.clone())
-            .unwrap_or_else(|| CandidateAuditFact::LookupFailed {
-                detail: "audit lookup result missing".to_owned(),
-            });
-        let mut diagnostics = diagnostics;
+        let audit =
+            age_candidate
+                .audit
+                .clone()
+                .unwrap_or_else(|| AuditLookupResult::LookupFailed {
+                    detail: "audit lookup result missing".to_owned(),
+                });
         diagnostics.audit_blocking_target = Some(audit.clone());
-        diagnostics.audit_blocking_candidate = newest_age_eligible
-            .as_ref()
-            .map(|(_, fact)| fact.candidate_evaluation());
+        diagnostics.audit_blocking_candidate = Some(age_candidate.candidate_evaluation());
         return PlanItem::Blocked {
             id,
             seed,
@@ -586,14 +564,15 @@ fn evaluate_timeline_seed<V: Ord + Clone>(
         };
     };
 
-    let selected_target = audit_candidate.candidate_age();
+    diagnostics.selected_target = Some(audit_candidate.candidate_age());
     PlanItem::Update {
         id,
-        candidate: candidate_from_seed(&seed, audit_candidate.version, audit_candidate.warnings, {
-            let mut diagnostics = diagnostics;
-            diagnostics.selected_target = Some(selected_target);
-            diagnostics
-        }),
+        candidate: candidate_from_seed(
+            &seed,
+            audit_candidate.version,
+            audit_candidate.warnings,
+            diagnostics,
+        ),
     }
 }
 
@@ -620,34 +599,34 @@ fn audit_fact_for(
     subject: Option<&AuditSubject>,
     version: &VersionText,
     audit_results: &BTreeMap<AuditQuery, AuditLookupResult>,
-) -> Option<CandidateAuditFact> {
+) -> Option<AuditLookupResult> {
     let subject = subject?;
     let query = AuditQuery::new(subject.clone(), version.clone());
     Some(audit_results.get(&query).map_or_else(
-        || CandidateAuditFact::LookupFailed {
+        || AuditLookupResult::LookupFailed {
             detail: "audit lookup result missing".to_owned(),
         },
-        CandidateAuditFact::from,
+        Clone::clone,
     ))
 }
 
-const fn audit_allows_optional_target(audit: Option<&CandidateAuditFact>) -> bool {
+const fn audit_allows_optional_target(audit: Option<&AuditLookupResult>) -> bool {
     match audit {
-        None | Some(CandidateAuditFact::Clean) => true,
-        Some(CandidateAuditFact::Vulnerable { .. } | CandidateAuditFact::LookupFailed { .. }) => {
+        None | Some(AuditLookupResult::Clean) => true,
+        Some(AuditLookupResult::Vulnerable { .. } | AuditLookupResult::LookupFailed { .. }) => {
             false
         }
     }
 }
 
-const fn audit_allows_target(audit: &CandidateAuditFact) -> bool {
-    matches!(audit, CandidateAuditFact::Clean)
+const fn audit_allows_target(audit: &AuditLookupResult) -> bool {
+    matches!(audit, AuditLookupResult::Clean)
 }
 
-const fn audit_block_reason(audit: &CandidateAuditFact) -> BlockReason {
+const fn audit_block_reason(audit: &AuditLookupResult) -> BlockReason {
     match audit {
-        CandidateAuditFact::Vulnerable { .. } => BlockReason::AuditVulnerable,
-        CandidateAuditFact::Clean | CandidateAuditFact::LookupFailed { .. } => {
+        AuditLookupResult::Vulnerable { .. } => BlockReason::AuditVulnerable,
+        AuditLookupResult::Clean | AuditLookupResult::LookupFailed { .. } => {
             BlockReason::AuditLookupFailed
         }
     }
@@ -776,13 +755,6 @@ fn evidence_age(evidence: &TargetAgeEvidence, now: SystemTime) -> Duration {
         .unwrap_or_default()
 }
 
-const fn candidate_age_source(evidence: &TargetAgeEvidence) -> CandidateAgeSource {
-    match evidence {
-        TargetAgeEvidence::PublishedAt(_) => CandidateAgeSource::PublishedAt,
-        TargetAgeEvidence::ManagerNativeTimestamp(_) => CandidateAgeSource::ManagerNativeTimestamp,
-    }
-}
-
 fn release_age(entry: &ReleaseEntry, now: SystemTime) -> Duration {
     now.duration_since(*entry.published_at.as_system_time())
         .unwrap_or_default()
@@ -799,18 +771,7 @@ fn advisory_latest_diagnostics(
             candidates: timeline
                 .versions
                 .iter()
-                .map(|entry| {
-                    CandidateAgeFact::new(
-                        entry.version.clone(),
-                        release_age(entry, now),
-                        CandidateAgeSource::ReleaseTimeline,
-                        VersionReleaseEvidence::new(
-                            entry.version.clone(),
-                            entry.published_at.clone(),
-                            ReleaseEvidenceSource::ReleaseTimeline,
-                        ),
-                    )
-                })
+                .map(|entry| CandidateAgeFact::new(entry.version.clone(), release_age(entry, now)))
                 .collect(),
         },
         ReleaseLookupResult::MissingMetadata => AdvisoryLatestFact::MissingMetadata {
@@ -827,8 +788,6 @@ fn diagnostics_from_candidate_facts<T>(
     required_age: Duration,
     mut candidates: Vec<(T, CandidateFact)>,
     latest_overall: Option<&CandidateFact>,
-    latest_policy_eligible: Option<&CandidateFact>,
-    latest_age_eligible: Option<&CandidateFact>,
 ) -> PlanDiagnostics
 where
     T: Ord,
@@ -842,8 +801,6 @@ where
             .collect(),
         selected_target: None,
         latest_overall: latest_overall.map(CandidateFact::candidate_age),
-        latest_policy_eligible: latest_policy_eligible.map(CandidateFact::candidate_age),
-        latest_age_eligible: latest_age_eligible.map(CandidateFact::candidate_age),
         missing_metadata: None,
         lookup_failure: None,
         advisory_latest: None,
@@ -874,10 +831,9 @@ struct CandidateFact {
     age: Duration,
     published_at: upgate_domain::ReleaseTimestamp,
     age_allowed: bool,
-    policy_allowed: bool,
     policy_block_reason: Option<PolicyBlockReason>,
     warnings: Vec<PolicyWarning>,
-    audit: Option<CandidateAuditFact>,
+    audit: Option<AuditLookupResult>,
 }
 
 impl CandidateFact {
@@ -893,7 +849,6 @@ impl CandidateFact {
             age,
             published_at: entry.published_at.clone(),
             age_allowed: age >= min_release_age,
-            policy_allowed: policy_decision.allowed(),
             policy_block_reason: policy_decision.block_reason(),
             warnings: policy_decision.warning().into_iter().collect(),
             audit: None,
@@ -901,259 +856,17 @@ impl CandidateFact {
     }
 
     fn candidate_age(&self) -> CandidateAgeFact {
-        CandidateAgeFact::new(
-            self.version.clone(),
-            self.age,
-            CandidateAgeSource::ReleaseTimeline,
-            VersionReleaseEvidence::new(
-                self.version.clone(),
-                self.published_at.clone(),
-                ReleaseEvidenceSource::ReleaseTimeline,
-            ),
-        )
+        CandidateAgeFact::new(self.version.clone(), self.age)
     }
 
     fn candidate_evaluation(&self) -> CandidateEvaluationFact {
         CandidateEvaluationFact {
             version: self.version.clone(),
             age: Some(self.age),
-            policy_allowed: self.policy_allowed,
             age_allowed: self.age_allowed,
             policy_block_reason: self.policy_block_reason.clone(),
             policy_warning: self.warnings.first().copied(),
             audit: self.audit.clone(),
         }
     }
-}
-
-fn parse_semver(raw: &str) -> Result<SemverVersion, String> {
-    let trimmed = raw.trim().trim_start_matches(['v', 'V']);
-    SemverVersion::parse(trimmed)
-        .or_else(|_| {
-            let parts = trimmed.split('.').collect::<Vec<_>>();
-            if parts.is_empty()
-                || parts.len() > 3
-                || parts.iter().any(|part| part.is_empty())
-                || !parts
-                    .iter()
-                    .all(|part| part.chars().all(|ch| ch.is_ascii_digit()))
-            {
-                return SemverVersion::parse(trimmed);
-            }
-            let mut padded = parts;
-            while padded.len() < 3 {
-                padded.push("0");
-            }
-            SemverVersion::parse(&padded.join("."))
-        })
-        .map_err(|err| err.to_string())
-}
-
-fn parse_pep440(raw: &str) -> Result<Pep440Version, String> {
-    Pep440Version::from_str(raw).map_err(|err| err.to_string())
-}
-
-fn classify_semver_release(raw: &str) -> ReleaseClass {
-    let raw = raw.trim();
-    let Ok(parsed) = parse_semver(raw) else {
-        return classify_semver_like_fallback(raw);
-    };
-    if parsed.pre.is_empty() {
-        return ReleaseClass::Final;
-    }
-    classify_prerelease_text(parsed.pre.as_str()).unwrap_or(ReleaseClass::UnknownPrerelease)
-}
-
-fn classify_pep440_release(raw: &str) -> ReleaseClass {
-    let Ok(parsed) = Pep440Version::from_str(raw) else {
-        return ReleaseClass::Unknown;
-    };
-    if parsed.is_dev() {
-        return ReleaseClass::Dev;
-    }
-    if let Some(pre) = parsed.pre() {
-        return match pre.kind {
-            Pep440PrereleaseKind::Alpha => ReleaseClass::Alpha,
-            Pep440PrereleaseKind::Beta => ReleaseClass::Beta,
-            Pep440PrereleaseKind::Rc => ReleaseClass::Rc,
-        };
-    }
-    ReleaseClass::Final
-}
-
-fn classify_semver_like_fallback(raw: &str) -> ReleaseClass {
-    let raw = raw.trim();
-    let raw = raw.strip_prefix(['v', 'V']).unwrap_or(raw);
-    if raw.is_empty() {
-        return ReleaseClass::Unknown;
-    }
-    if let Some((core, prerelease)) = raw.split_once('-')
-        && is_numeric_dot_core(core)
-    {
-        return classify_prerelease_text(prerelease).unwrap_or(ReleaseClass::UnknownPrerelease);
-    }
-    if is_numeric_dot_core(raw) {
-        return ReleaseClass::Final;
-    }
-    ReleaseClass::Unknown
-}
-
-fn classify_manager_native_release(raw: &str) -> ReleaseClass {
-    let normalized = normalize_brew_version(raw);
-    let version = normalized.trim();
-    if version.is_empty()
-        || version.eq_ignore_ascii_case("latest")
-        || !version.chars().any(|ch| ch.is_ascii_alphanumeric())
-    {
-        return ReleaseClass::Unknown;
-    }
-    classify_brew_prerelease(version).unwrap_or(ReleaseClass::Final)
-}
-
-fn normalize_brew_version(raw: &str) -> &str {
-    let trimmed = raw.trim();
-    let without_cask_build = trimmed
-        .split_once(',')
-        .map_or(trimmed, |(head, _)| head.trim());
-    strip_brew_revision_suffix(without_cask_build)
-}
-
-fn strip_brew_revision_suffix(raw: &str) -> &str {
-    let Some((head, revision)) = raw.rsplit_once('_') else {
-        return raw;
-    };
-    if !head.is_empty() && revision.chars().all(|ch| ch.is_ascii_digit()) {
-        head
-    } else {
-        raw
-    }
-}
-
-fn classify_brew_prerelease(version: &str) -> Option<ReleaseClass> {
-    let mut best_match = None;
-    let mut token_start = None;
-    for (idx, ch) in version.char_indices() {
-        if ch.is_ascii_alphanumeric() {
-            token_start.get_or_insert(idx);
-        } else if let Some(start) = token_start.take() {
-            best_match = select_less_stable(best_match, classify_brew_token(version, start, idx));
-        }
-    }
-    if let Some(start) = token_start {
-        best_match = select_less_stable(
-            best_match,
-            classify_brew_token(version, start, version.len()),
-        );
-    }
-    best_match
-}
-
-fn classify_brew_token(version: &str, start: usize, end: usize) -> Option<ReleaseClass> {
-    let token = &version[start..end];
-    let normalized = token.to_ascii_lowercase();
-    let marker = normalized
-        .trim_start_matches(|ch: char| ch.is_ascii_digit())
-        .trim();
-    let label = leading_alpha_prefix(marker);
-    if label.is_empty() {
-        return None;
-    }
-    if matches!(
-        label,
-        "canary"
-            | "nightly"
-            | "snapshot"
-            | "dev"
-            | "devel"
-            | "development"
-            | "next"
-            | "edge"
-            | "preview"
-            | "experimental"
-            | "exp"
-    ) {
-        return Some(ReleaseClass::Dev);
-    }
-    if label == "alpha" {
-        return Some(ReleaseClass::Alpha);
-    }
-    if label == "beta" {
-        return Some(ReleaseClass::Beta);
-    }
-    if matches!(label, "prerelease" | "pre" | "rc") {
-        return Some(ReleaseClass::Rc);
-    }
-    if label == "a" && has_short_brew_prerelease_context(version, start, token, marker) {
-        return Some(ReleaseClass::Alpha);
-    }
-    if label == "b" && has_short_brew_prerelease_context(version, start, token, marker) {
-        return Some(ReleaseClass::Beta);
-    }
-    None
-}
-
-fn has_short_brew_prerelease_context(
-    version: &str,
-    token_start: usize,
-    token: &str,
-    marker: &str,
-) -> bool {
-    if marker.len() < token.len() {
-        return true;
-    }
-    let prefix = version[..token_start]
-        .trim_start_matches(['v', 'V'])
-        .trim_matches(|ch: char| matches!(ch, '.' | '-' | '_' | '+'));
-    prefix.is_empty()
-        || (prefix.chars().any(|ch| ch.is_ascii_digit())
-            && prefix
-                .chars()
-                .all(|ch| ch.is_ascii_digit() || matches!(ch, '.' | '-' | '_' | '+')))
-}
-
-fn classify_prerelease_text(raw: &str) -> Option<ReleaseClass> {
-    let mut best = None;
-    for token in raw.split(['.', '-', '_']) {
-        let normalized = token.to_ascii_lowercase();
-        let label = leading_alpha_prefix(&normalized);
-        let next = match label {
-            "canary" | "nightly" | "snapshot" | "dev" | "devel" | "development" | "next"
-            | "edge" | "preview" | "experimental" | "exp" => Some(ReleaseClass::Dev),
-            "alpha" | "a" => Some(ReleaseClass::Alpha),
-            "beta" | "b" => Some(ReleaseClass::Beta),
-            "prerelease" | "pre" | "rc" => Some(ReleaseClass::Rc),
-            _ => None,
-        };
-        best = select_less_stable(best, next);
-    }
-    best
-}
-
-const fn select_less_stable(
-    current: Option<ReleaseClass>,
-    next: Option<ReleaseClass>,
-) -> Option<ReleaseClass> {
-    let Some(next) = next else {
-        return current;
-    };
-    let Some(current) = current else {
-        return Some(next);
-    };
-    match (current.stability_rank(), next.stability_rank()) {
-        (Some(current_rank), Some(next_rank)) if next_rank < current_rank => Some(next),
-        _ => Some(current),
-    }
-}
-
-fn leading_alpha_prefix(token: &str) -> &str {
-    let end = token
-        .char_indices()
-        .find_map(|(idx, ch)| (!ch.is_ascii_alphabetic()).then_some(idx))
-        .unwrap_or(token.len());
-    &token[..end]
-}
-
-fn is_numeric_dot_core(raw: &str) -> bool {
-    raw.split('.')
-        .all(|segment| !segment.is_empty() && segment.chars().all(|ch| ch.is_ascii_digit()))
 }

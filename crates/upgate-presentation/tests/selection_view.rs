@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use upgate_domain::{
-    AuditFinding, BlockReason, CandidateAuditFact, CandidateEvaluationFact, ExecutionSupport,
-    InstalledTool, ManagerId, ManagerMetadata, PackageName, PlanDiagnostics, PlanItem, PlanItemId,
+    AuditFinding, AuditLookupResult, BlockReason, CandidateEvaluationFact, ExecutionSupport,
+    InstalledTool, ManagerId, PackageName, PlanDiagnostics, PlanItem, PlanItemId,
     ReleaseLookupResult, ToolId, ToolName, UpdatePlan, UpdateSeed, UpdateSelectionPolicy,
     VersionScheme, VersionText,
 };
@@ -23,7 +23,6 @@ fn installed_tool(package: &str) -> InstalledTool {
         PackageName::new(package).expect("valid package name"),
         ToolName::new(package).expect("valid tool name"),
         version("1.0.0"),
-        ManagerMetadata::empty(),
     )
 }
 
@@ -39,13 +38,12 @@ fn finding(id: &str) -> AuditFinding {
 
 #[test]
 fn audit_blocked_picker_option_uses_the_blocked_candidate_version() {
-    let audit = CandidateAuditFact::Vulnerable {
+    let audit = AuditLookupResult::Vulnerable {
         findings: vec![finding("GHSA-alpha")],
     };
     let audit_blocking_candidate = CandidateEvaluationFact {
         version: version("2.0.0"),
         age: Some(Duration::from_secs(500)),
-        policy_allowed: true,
         age_allowed: true,
         policy_block_reason: None,
         policy_warning: None,

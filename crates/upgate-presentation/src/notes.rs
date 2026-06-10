@@ -1,9 +1,6 @@
 use std::time::Duration;
 
-use upgate_domain::{
-    AuditFinding, CandidateAuditFact, PolicyWarning, ScanAuditFact, SkipReason, VersionPolicy,
-    VersionText,
-};
+use upgate_domain::{AuditFinding, AuditLookupResult, PolicyWarning, SkipReason, VersionText};
 
 use crate::version_label;
 
@@ -24,41 +21,16 @@ pub fn too_fresh(age: Option<Duration>, required_age: Duration) -> String {
     )
 }
 
-pub fn version_too_fresh(
-    version: &VersionText,
-    age: Option<Duration>,
-    required_age: Option<Duration>,
-    verbose: bool,
-) -> String {
-    let version = version_label(version.as_str());
-    match (verbose, age, required_age) {
-        (true, Some(age), Some(required_age)) => format!(
-            "{version} too fresh: {} < {}",
-            human_age(age),
-            human_age(required_age)
-        ),
-        _ => format!("{version} too fresh"),
-    }
+pub fn version_too_fresh(version: &VersionText) -> String {
+    format!("{} too fresh", version_label(version.as_str()))
 }
 
-pub fn no_eligible_latest_too_fresh(
-    version: &VersionText,
-    age: Option<Duration>,
-    required_age: Option<Duration>,
-    verbose: bool,
-) -> String {
-    format!(
-        "no eligible release yet; {}",
-        version_too_fresh(version, age, required_age, verbose)
-    )
+pub fn no_eligible_latest_too_fresh(version: &VersionText) -> String {
+    format!("no eligible release yet; {}", version_too_fresh(version))
 }
 
 pub fn version_blocked_by_policy(version: &VersionText) -> String {
     format!("{} blocked by policy", version_label(version.as_str()))
-}
-
-pub fn latest_blocked_by_policy(version: &VersionText, _policy: VersionPolicy) -> String {
-    version_blocked_by_policy(version)
 }
 
 pub const fn policy_warning(warning: PolicyWarning) -> &'static str {
@@ -73,19 +45,11 @@ pub fn version_policy_warning(warning: PolicyWarning) -> String {
     format!("version policy warning: {}", policy_warning(warning))
 }
 
-pub fn audit_candidate(audit: &CandidateAuditFact) -> Option<String> {
+pub fn audit_candidate(audit: &AuditLookupResult) -> Option<String> {
     match audit {
-        CandidateAuditFact::Clean => None,
-        CandidateAuditFact::Vulnerable { findings } => Some(vulnerability_note(findings)),
-        CandidateAuditFact::LookupFailed { .. } => Some("audit unavailable".to_owned()),
-    }
-}
-
-pub fn scan_audit(audit: &ScanAuditFact) -> Option<String> {
-    match audit {
-        ScanAuditFact::Clean => None,
-        ScanAuditFact::Vulnerable { findings } => Some(vulnerability_note(findings)),
-        ScanAuditFact::LookupFailed { .. } => Some("audit unavailable".to_owned()),
+        AuditLookupResult::Clean => None,
+        AuditLookupResult::Vulnerable { findings } => Some(vulnerability_note(findings)),
+        AuditLookupResult::LookupFailed { .. } => Some("audit unavailable".to_owned()),
     }
 }
 

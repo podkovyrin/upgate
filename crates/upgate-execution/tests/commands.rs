@@ -3,13 +3,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use upgate_domain::{
-    BlockReason, CandidateAuditFact, CandidateEvaluationFact, ExecutionSupport,
-    ExecutionTargetKind, InstalledTool, ManagerCapabilities, ManagerId, ManagerMetadata,
-    ManagerSelectedTarget, MinAgeConstraintSupport, MissingMetadataKind, PackageName,
-    PlanDiagnostics, PlanItem, PlanItemId, PlanSelection, PolicyBlockReason, ReleaseEntry,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, SelectedItem, TargetAgeLookupResult,
-    ToolId, ToolName, UpdateCandidate, UpdatePlan, UpdateSeed, UpdateSelectionPolicy,
-    VersionPolicy, VersionScheme, VersionText,
+    AuditLookupResult, BlockReason, CandidateEvaluationFact, ExecutionSupport, ExecutionTargetKind,
+    InstalledTool, ManagerCapabilities, ManagerId, ManagerSelectedTarget, MinAgeConstraintSupport,
+    MissingMetadataKind, PackageName, PlanDiagnostics, PlanItem, PlanItemId, PlanSelection,
+    PolicyBlockReason, ReleaseEntry, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
+    SelectedItem, TargetAgeLookupResult, ToolId, ToolName, UpdateCandidate, UpdatePlan, UpdateSeed,
+    UpdateSelectionPolicy, VersionPolicy, VersionScheme, VersionText,
 };
 use upgate_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionTarget,
@@ -506,7 +505,6 @@ fn update_item_with_diagnostics(
             candidates: vec![CandidateEvaluationFact {
                 version: VersionText::new("2.0.0").expect("valid version"),
                 age: Some(Duration::from_secs(24 * 60 * 60)),
-                policy_allowed: true,
                 age_allowed: false,
                 policy_block_reason: None,
                 policy_warning: None,
@@ -545,7 +543,6 @@ fn delayed_item(id: &str, package: &str, eligibility: ExecutionSupport) -> PlanI
             candidates: vec![CandidateEvaluationFact {
                 version: VersionText::new("1.2.0").expect("valid version"),
                 age: Some(Duration::from_secs(24 * 60 * 60)),
-                policy_allowed: true,
                 age_allowed: false,
                 policy_block_reason: None,
                 policy_warning: None,
@@ -564,10 +561,11 @@ fn manager_resolved_update_item(
 ) -> PlanItem {
     PlanItem::Update {
         id: PlanItemId::new(id).expect("valid id"),
-        candidate: UpdateCandidate::manager_resolved(
+        candidate: UpdateCandidate::new(
             ToolId::new(id).expect("valid tool id"),
             PackageName::new(package).expect("valid package"),
             VersionText::new("1.0.0").expect("valid version"),
+            VersionText::new("1.2.0").expect("valid version"),
             VersionScheme::SemVer,
             eligibility,
         ),
@@ -602,7 +600,6 @@ fn blocked_policy_item(id: &str, package: &str, eligibility: ExecutionSupport) -
             candidates: vec![CandidateEvaluationFact {
                 version: VersionText::new("2.0.0").expect("valid version"),
                 age: Some(Duration::from_secs(30 * 24 * 60 * 60)),
-                policy_allowed: false,
                 age_allowed: true,
                 policy_block_reason: Some(PolicyBlockReason::PreReleaseBlocked),
                 policy_warning: None,
@@ -617,11 +614,10 @@ fn blocked_audit_item(id: &str, package: &str, eligibility: ExecutionSupport) ->
     let audit_blocking_candidate = CandidateEvaluationFact {
         version: VersionText::new("2.0.0").expect("valid version"),
         age: Some(Duration::from_secs(30 * 24 * 60 * 60)),
-        policy_allowed: true,
         age_allowed: true,
         policy_block_reason: None,
         policy_warning: None,
-        audit: Some(CandidateAuditFact::LookupFailed {
+        audit: Some(AuditLookupResult::LookupFailed {
             detail: "OSV unavailable".to_owned(),
         }),
     };
@@ -676,7 +672,6 @@ fn installed_tool(package: &str) -> InstalledTool {
         PackageName::new(package).expect("valid package"),
         ToolName::new(package).expect("valid tool name"),
         VersionText::new("1.0.0").expect("valid version"),
-        ManagerMetadata::empty(),
     )
 }
 

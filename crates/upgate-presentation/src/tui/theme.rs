@@ -91,27 +91,13 @@ impl TuiTheme {
         }
     }
 
-    pub(super) const fn row_for_selectable_state(&self, selected: bool, forced: bool) -> Style {
-        if selected {
-            self.selected
-        } else if forced {
-            self.forced
-        } else {
-            self.normal
-        }
+    pub(super) const fn row_for_selectable_state(&self, selected: bool) -> Style {
+        if selected { self.selected } else { self.normal }
     }
 
     #[expect(clippy::unused_self)]
     pub(super) const fn emphasis(&self, style: Style) -> Style {
         style.add_modifier(Modifier::BOLD)
-    }
-
-    pub(super) const fn note_for(&self, _style: Style) -> Style {
-        self.note
-    }
-
-    pub(super) const fn forced_note_for(&self, _selected: bool) -> Style {
-        self.forced
     }
 
     pub(super) const fn version_changed_for(&self, selected: bool) -> Style {

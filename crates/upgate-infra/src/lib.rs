@@ -3,25 +3,21 @@
 
 use std::fmt;
 
-pub mod clock;
 pub mod env;
 pub mod http;
 pub mod logging;
 pub mod parallel;
 pub mod process;
 
-pub use clock::Clock;
 pub use env::Env;
 pub use http::{
-    FakeHttpClient, HTTP_TIMEOUT, HTTP_USER_AGENT, HttpBytesResponse, HttpClient, HttpHeader,
-    HttpResponse, HttpSettings, blocking_client, env_base_url,
+    HttpBytesResponse, HttpClient, HttpHeader, HttpResponse, HttpSettings, env_base_url,
 };
 pub use logging::{LoggingOptions, init_logging};
 pub use parallel::{effective_parallelism, run_ordered_parallel, run_ordered_parallel_stoppable};
 pub use process::{
-    CommandCheck, CommandFailure, CommandOutput, CommandSpec, CommandStartEvent, FakeProcess,
-    MUTATION_ENABLE_NOTICE, MUTATION_SKIP_NOTICE, MutationMode, ProcessRunner,
-    command_exists_in_env, status_allowed,
+    CommandCheck, CommandFailure, CommandOutput, CommandSpec, MutationMode, ProcessRunner,
+    command_exists_in_env,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

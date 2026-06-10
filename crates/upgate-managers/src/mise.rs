@@ -9,11 +9,11 @@ use semver::Version as SemverVersion;
 use serde::Deserialize;
 use upgate_domain::{
     AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
-    ManagerId, ManagerMetadata, ManagerScanEvidenceInput, ManagerScanInput, ManagerSelectedTarget,
+    ManagerId, ManagerScanEvidenceInput, ManagerScanInput, ManagerSelectedTarget,
     ManagerUpdateInput, MinAgeConstraintSupport, OsvEcosystem, PackageName, ReleaseEntry,
-    ReleaseEvidenceSource, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
-    ReleaseTimestamp, TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed,
-    VersionPolicy, VersionReleaseEvidence, VersionScheme, VersionText,
+    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
+    TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionReleaseEvidence,
+    VersionScheme, VersionText,
 };
 use upgate_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionPlan,
@@ -303,17 +303,6 @@ pub fn parse_installed_json(raw: &str) -> Result<Vec<MiseInstalledTool>, MiseErr
             })
         })
         .collect()
-}
-
-/// Parses `mise upgrade --dry-run --before <age>` output.
-///
-/// # Errors
-///
-/// Returns an error when recognized dry-run action lines are malformed or
-/// install lines are not preceded by a matching uninstall.
-#[cfg(test)]
-fn parse_upgrade_dry_run(raw: &str) -> Result<Vec<MisePlanItem>, MiseError> {
-    complete_dry_run_items_without_installed_lookup(parse_upgrade_dry_run_targets(raw)?)
 }
 
 fn parse_upgrade_dry_run_targets(raw: &str) -> Result<Vec<MiseDryRunItem>, MiseError> {
@@ -701,7 +690,7 @@ fn lookup_target_age(
     tool: &PackageName,
     target: &VersionText,
 ) -> TargetAgeLookupResult {
-    match lookup_target_release_for_tool(process, http, env, tool, target) {
+    match lookup_release_for_tool(process, http, env, tool, Some(target)) {
         ReleaseLookupResult::Known(timeline) => matching_entry(&timeline, target).map_or(
             TargetAgeLookupResult::MissingMetadata,
             |entry| {
@@ -712,27 +701,6 @@ fn lookup_target_age(
         ),
         ReleaseLookupResult::MissingMetadata => TargetAgeLookupResult::MissingMetadata,
         ReleaseLookupResult::LookupFailed(err) => TargetAgeLookupResult::LookupFailed(err),
-    }
-}
-
-fn lookup_target_release_for_tool(
-    process: &ProcessRunner,
-    http: &HttpClient,
-    env: &Env,
-    tool: &PackageName,
-    target: &VersionText,
-) -> ReleaseLookupResult {
-    if tool.as_str().starts_with("npm:") {
-        return lookup_release_for_tool(process, http, env, tool, Some(target));
-    }
-
-    match mise_target_release_timeline(process, http, env, tool.as_str(), target) {
-        Ok(Some(timeline)) if timeline.versions.is_empty() => ReleaseLookupResult::MissingMetadata,
-        Ok(Some(timeline)) => ReleaseLookupResult::Known(timeline),
-        Ok(None) | Err(MiseError::MissingReleaseMetadata(_)) => {
-            ReleaseLookupResult::MissingMetadata
-        }
-        Err(err) => ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(err.to_string())),
     }
 }
 
@@ -767,7 +735,6 @@ fn scan_input_for_release_lookup(
                 VersionReleaseEvidence::new(
                     tool.installed_version.clone(),
                     entry.published_at.clone(),
-                    ReleaseEvidenceSource::ReleaseTimeline,
                 )
             }),
             tool,
@@ -844,31 +811,6 @@ fn mise_release_timeline(
         if !timeline.versions.is_empty()
             && current.is_none_or(|version| timeline_contains_version(&timeline, version))
         {
-            return Ok(Some(timeline));
-        }
-    }
-
-    versions_host_timeline(http, env, tool)
-}
-
-fn mise_target_release_timeline(
-    process: &ProcessRunner,
-    http: &HttpClient,
-    env: &Env,
-    tool: &str,
-    target: &VersionText,
-) -> Result<Option<ReleaseTimeline>, MiseError> {
-    if tool.contains(':') {
-        let timeline = ls_remote_timeline(process, tool)?;
-        if matching_entry(&timeline, target).is_some() {
-            return Ok(Some(timeline));
-        }
-        return versions_host_timeline_for_backend(process, http, env, tool, Some(target));
-    }
-
-    for backend in registry_backends(process, tool)? {
-        let timeline = ls_remote_timeline(process, &backend)?;
-        if matching_entry(&timeline, target).is_some() {
             return Ok(Some(timeline));
         }
     }
@@ -1089,7 +1031,6 @@ fn installed_tool(tool: &MiseInstalledTool) -> Result<InstalledTool, MiseError> 
         tool.tool.clone(),
         ToolName::new(tool.tool.as_str().to_owned())?,
         tool.version.clone(),
-        ManagerMetadata::empty(),
     );
     Ok(match audit_subject_for_mise_tool(&tool.tool)? {
         Some(subject) => installed.with_audit_subject(subject),
@@ -1107,7 +1048,6 @@ fn installed_tool_with_registry_audit(
         tool.tool.clone(),
         ToolName::new(tool.tool.as_str().to_owned())?,
         tool.version.clone(),
-        ManagerMetadata::empty(),
     );
     Ok(
         match audit_subject_for_mise_tool_with_registry(process, &tool.tool)? {
@@ -1127,7 +1067,6 @@ fn installed_tool_from_plan_item(
         item.tool.clone(),
         ToolName::new(item.tool.as_str().to_owned())?,
         item.from_version.clone(),
-        ManagerMetadata::empty(),
     );
     Ok(
         match audit_subject_for_mise_tool_with_registry(process, &item.tool)? {
@@ -1225,7 +1164,6 @@ fn adapter_error(err: &MiseError) -> ManagerAdapterError {
         MiseError::Infra(_) => ManagerAdapterErrorKind::Infra,
     };
     ManagerAdapterError::Manager {
-        manager_id: MANAGER_ID.to_owned(),
         kind,
         detail: err.to_string(),
     }
@@ -1237,9 +1175,13 @@ mod tests {
 
     #[test]
     fn parse_upgrade_dry_run_keeps_uninstall_install_pair_versions() {
-        let items =
-            parse_upgrade_dry_run("Would uninstall node@24.14.1\nWould install node@24.16.0\n")
-                .expect("paired dry-run output should parse");
+        let items = complete_dry_run_items_without_installed_lookup(
+            parse_upgrade_dry_run_targets(
+                "Would uninstall node@24.14.1\nWould install node@24.16.0\n",
+            )
+            .expect("paired dry-run output should parse"),
+        )
+        .expect("paired dry-run targets should complete");
 
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].tool.as_str(), "node");
@@ -1297,7 +1239,7 @@ mod tests {
 
     #[test]
     fn malformed_recognized_dry_run_line_still_fails() {
-        let err = parse_upgrade_dry_run("Would install node\n")
+        let err = parse_upgrade_dry_run_targets("Would install node\n")
             .expect_err("malformed install line should fail");
 
         assert!(matches!(err, MiseError::InvalidDryRun(_)));

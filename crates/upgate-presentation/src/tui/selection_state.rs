@@ -16,7 +16,6 @@ pub struct InteractiveSelectionState {
 pub enum SelectionStateError {
     UnknownPlanItem(String),
     TargetUnavailable(String),
-    InvalidSelection(String),
     PlanningFailed(String),
 }
 
@@ -27,7 +26,7 @@ impl Display for SelectionStateError {
             Self::TargetUnavailable(id) => {
                 write!(formatter, "selection target is unavailable for `{id}`")
             }
-            Self::InvalidSelection(message) | Self::PlanningFailed(message) => {
+            Self::PlanningFailed(message) => {
                 write!(formatter, "{message}")
             }
         }

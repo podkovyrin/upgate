@@ -9,9 +9,9 @@ use semver::Version;
 use serde::Deserialize;
 use upgate_domain::{
     AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
-    ManagerId, ManagerMetadata, ManagerScanInput, ManagerUpdateInput, OsvEcosystem, PackageName,
-    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
-    ToolId, ToolName, UpdateSeed, VersionScheme, VersionText,
+    ManagerId, ManagerScanInput, ManagerUpdateInput, OsvEcosystem, PackageName, ReleaseEntry,
+    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName,
+    UpdateSeed, VersionScheme, VersionText,
 };
 use upgate_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -28,11 +28,11 @@ use crate::adapter::{
     ReleaseLookupSubject, validate_version_policy,
 };
 
-pub const MANAGER_ID: &str = "cargo";
+const MANAGER_ID: &str = "cargo";
 const CARGO_MAX_PARALLEL_CHECKS: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CargoError {
+enum CargoError {
     Infra(String),
     Interrupted(String),
     Json(String),
@@ -95,17 +95,17 @@ impl CargoError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InstalledCrate {
-    pub name: PackageName,
-    pub version: VersionText,
+struct InstalledCrate {
+    name: PackageName,
+    version: VersionText,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct CargoInstallMeta {
-    pub bins: Vec<String>,
-    pub features: Vec<String>,
-    pub all_features: bool,
-    pub no_default_features: bool,
+struct CargoInstallMeta {
+    bins: Vec<String>,
+    features: Vec<String>,
+    all_features: bool,
+    no_default_features: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -199,7 +199,7 @@ impl ManagerAdapter for CargoManager {
 /// # Errors
 ///
 /// Returns an error when a parsed crate name or version is blank.
-pub fn parse_install_list(raw: &str) -> Result<Vec<InstalledCrate>, CargoError> {
+fn parse_install_list(raw: &str) -> Result<Vec<InstalledCrate>, CargoError> {
     let mut crates = BTreeMap::new();
     for line in raw.lines() {
         let trimmed = line.trim();
@@ -294,7 +294,7 @@ fn parse_search_latest_version(crate_name: &PackageName, raw: &str) -> Result<Ve
 /// # Errors
 ///
 /// Returns an error when command output cannot be parsed.
-pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, CargoError> {
+fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, CargoError> {
     let output = process.run(
         &CommandSpec::new("cargo", ["install", "--list"]),
         &CommandCheck::Success,
@@ -310,7 +310,7 @@ pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, C
 /// # Errors
 ///
 /// Returns an error when installed discovery fails.
-pub fn update_inputs(
+fn update_inputs(
     process: &ProcessRunner,
     http: &HttpClient,
     env: &Env,
@@ -346,7 +346,7 @@ pub fn update_inputs(
 }
 
 /// Looks up crates.io release metadata.
-pub fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> ReleaseLookupResult {
+fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> ReleaseLookupResult {
     let base_url =
         upgate_infra::env_base_url(env, "upgate_CARGO_CRATES_IO_BASE_URL", "https://crates.io");
     let url = format!("{base_url}/api/v1/crates/{package}");
@@ -366,10 +366,7 @@ pub fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> Re
 ///
 /// Returns an error when JSON or timestamps are invalid, or no non-yanked
 /// version timestamps are present.
-pub fn parse_crates_io_json(
-    package: &PackageName,
-    raw: &str,
-) -> Result<ReleaseTimeline, CargoError> {
+fn parse_crates_io_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeline, CargoError> {
     let root: CratesIoRoot =
         serde_json::from_str(raw).map_err(|err| CargoError::Json(err.to_string()))?;
     let mut timestamps = BTreeMap::new();
@@ -386,7 +383,7 @@ pub fn parse_crates_io_json(
 /// # Errors
 ///
 /// Returns an error when the resolved execution mode is not supported.
-pub fn commands_for_execution_plan(
+fn commands_for_execution_plan(
     env: &Env,
     plan: &ResolvedExecutionPlan,
 ) -> Result<Vec<ExecutionCommand>, CargoError> {
@@ -437,7 +434,7 @@ pub fn commands_for_execution_plan(
 ///
 /// Returns an error when the command fails or the exact search row cannot be
 /// parsed.
-pub fn search_latest_version(
+fn search_latest_version(
     process: &ProcessRunner,
     package: &PackageName,
 ) -> Result<VersionText, CargoError> {
@@ -454,28 +451,17 @@ fn exact_command_for_item(
     item: &ResolvedExecutionItem,
     meta: Option<&CargoInstallMeta>,
 ) -> Result<CommandSpec, CargoError> {
-    Ok(exact_command_parts(
-        &item.package_name,
-        item.known_target_version().ok_or_else(|| {
-            CargoError::UnsupportedCommandIntent("exact-without-known-target".to_owned())
-        })?,
-        meta,
-    ))
-}
-
-fn exact_command_parts(
-    package_name: &PackageName,
-    target_version: &VersionText,
-    meta: Option<&CargoInstallMeta>,
-) -> CommandSpec {
+    let target_version = item.known_target_version().ok_or_else(|| {
+        CargoError::UnsupportedCommandIntent("exact-without-known-target".to_owned())
+    })?;
     let mut args = vec!["install".to_owned(), "--force".to_owned()];
     add_install_meta_args(&mut args, meta);
     args.push(format!(
         "{}@{}",
-        package_name.as_str(),
+        item.package_name.as_str(),
         target_version.as_str()
     ));
-    CommandSpec::new("cargo", args).mutating()
+    Ok(CommandSpec::new("cargo", args).mutating())
 }
 
 fn add_install_meta_args(args: &mut Vec<String>, meta: Option<&CargoInstallMeta>) {
@@ -551,7 +537,6 @@ fn installed_tool(package: InstalledCrate) -> Result<InstalledTool, CargoError> 
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
         package.version,
-        ManagerMetadata::empty(),
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::CratesIo,
@@ -635,7 +620,6 @@ fn adapter_error(err: &CargoError) -> ManagerAdapterError {
         CargoError::Infra(_) => ManagerAdapterErrorKind::Infra,
     };
     ManagerAdapterError::Manager {
-        manager_id: MANAGER_ID.to_owned(),
         kind,
         detail: err.to_string(),
     }

@@ -13,27 +13,22 @@ pub mod selection;
 pub mod version;
 
 pub use audit::{
-    AuditFinding, AuditLookupResult, AuditPackageName, AuditQuery, AuditSubject,
-    CandidateAuditFact, OsvEcosystem, ScanAuditFact,
+    AuditFinding, AuditLookupResult, AuditPackageName, AuditQuery, AuditSubject, OsvEcosystem,
 };
 pub use config::{ManagerConfig, ManagerMode};
 pub use error::DomainError;
-pub use manager::{
-    InstalledTool, ManagerCapabilities, ManagerId, ManagerMetadata, ManagerMetadataField,
-    ManagerMetadataKey, ManagerMetadataValue, PackageName, ToolId, ToolName,
-};
+pub use manager::{InstalledTool, ManagerCapabilities, ManagerId, PackageName, ToolId, ToolName};
 pub use plan::{
-    AdvisoryLatestFact, AdvisoryReleaseLookup, BlockReason, CandidateAgeFact, CandidateAgeSource,
+    AdvisoryLatestFact, AdvisoryReleaseLookup, BlockReason, CandidateAgeFact,
     CandidateEvaluationFact, DelayReason, ExecutionSupport, ExecutionTargetKind,
     ManagerSelectedTarget, ManagerUpdateInput, MinAgeConstraintSupport, MissingMetadataKind,
-    PlanDiagnostics, PlanIssue, PlanItem, PlanItemId, PlannedTarget, PlannedTargetRef,
-    PolicyBlockReason, ResolverNativeSupport, SkipReason, TargetSelection, UpdateCandidate,
-    UpdatePlan, UpdateSeed,
+    PlanDiagnostics, PlanItem, PlanItemId, PlannedTarget, PlannedTargetRef, PolicyBlockReason,
+    ResolverNativeSupport, SkipReason, TargetSelection, UpdateCandidate, UpdatePlan, UpdateSeed,
 };
 pub use policy::{PolicyWarning, VersionPolicy};
 pub use release::{
-    ReleaseEntry, ReleaseEvidenceSource, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
-    ReleaseTimestamp, TargetAgeEvidence, TargetAgeLookupResult, VersionReleaseEvidence,
+    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
+    TargetAgeEvidence, TargetAgeLookupResult, VersionReleaseEvidence,
 };
 pub use scan::{
     ManagerRuleReason, ManagerScanEvidenceInput, ManagerScanInput, ScanIssue, ScanItem, ScanReport,

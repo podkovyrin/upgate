@@ -3,11 +3,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Display};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use upgate_domain::{AuditFinding, AuditLookupResult, AuditQuery};
-use upgate_infra::{Env, HttpClient, InfraError, env_base_url, run_ordered_parallel};
+use upgate_infra::{Env, HttpClient, env_base_url, run_ordered_parallel};
 
 const OSV_BASE_URL_ENV: &str = "upgate_OSV_BASE_URL";
 const DEFAULT_OSV_BASE_URL: &str = "https://api.osv.dev";
@@ -44,13 +44,6 @@ struct AuditServiceInner {
     chunk_size: usize,
     query_lock: Mutex<()>,
     cache: Mutex<BTreeMap<AuditQuery, AuditLookupResult>>,
-    permits: AuditPermits,
-}
-
-#[derive(Debug)]
-struct AuditPermits {
-    available: Mutex<usize>,
-    changed: Condvar,
 }
 
 impl AuditService {
@@ -64,10 +57,6 @@ impl AuditService {
                 chunk_size: DEFAULT_CHUNK_SIZE,
                 query_lock: Mutex::new(()),
                 cache: Mutex::new(BTreeMap::new()),
-                permits: AuditPermits {
-                    available: Mutex::new(concurrency),
-                    changed: Condvar::new(),
-                },
             }),
         }
     }
@@ -166,46 +155,12 @@ impl AuditService {
         let body =
             serde_json::to_string(&request).map_err(|err| AuditError::Json(err.to_string()))?;
         let url = format!("{}/v1/querybatch", self.inner.base_url);
-        let _permit = self.acquire_request_permit()?;
         let response = self
             .inner
             .http
             .post_json_text(&url, &body, [])
             .map_err(|err| AuditError::Infra(err.to_string()))?;
         parse_batch_response(queries, &response.body)
-    }
-
-    fn acquire_request_permit(&self) -> Result<RequestPermit<'_>, AuditError> {
-        let mut available = self
-            .inner
-            .permits
-            .available
-            .lock()
-            .map_err(|_| AuditError::CachePoisoned)?;
-        while *available == 0 {
-            available = self
-                .inner
-                .permits
-                .changed
-                .wait(available)
-                .map_err(|_| AuditError::CachePoisoned)?;
-        }
-        *available -= 1;
-        drop(available);
-        Ok(RequestPermit { service: self })
-    }
-}
-
-struct RequestPermit<'a> {
-    service: &'a AuditService,
-}
-
-impl Drop for RequestPermit<'_> {
-    fn drop(&mut self) {
-        if let Ok(mut available) = self.service.inner.permits.available.lock() {
-            *available += 1;
-            self.service.inner.permits.changed.notify_one();
-        }
     }
 }
 
@@ -334,10 +289,4 @@ struct OsvSeverity {
 #[derive(Debug, Deserialize)]
 struct OsvReference {
     url: Option<String>,
-}
-
-impl From<InfraError> for AuditError {
-    fn from(value: InfraError) -> Self {
-        Self::Infra(value.to_string())
-    }
 }

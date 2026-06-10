@@ -7,26 +7,13 @@ use upgate_domain::{
     VersionPolicy,
 };
 
-use crate::{audit_queries_for_seed, evaluate_seed_with_audit};
+use crate::{evaluate::audit_queries_for_seed, evaluate_seed_with_audit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlanningSettings {
     pub policy: VersionPolicy,
     pub now: SystemTime,
     pub min_release_age: Duration,
-}
-
-/// Builds a typed manager update plan from manager-owned planning inputs.
-///
-/// # Errors
-///
-/// Returns an error when generated plan item ids are invalid or duplicated.
-pub fn update_plan_from_inputs(
-    manager_id: ManagerId,
-    inputs: Vec<ManagerUpdateInput>,
-    settings: PlanningSettings,
-) -> Result<UpdatePlan, DomainError> {
-    finalize_plan_from_inputs(manager_id, inputs, settings, &BTreeMap::new())
 }
 
 pub fn derive_audit_queries(inputs: &[ManagerUpdateInput]) -> Vec<AuditQuery> {

@@ -6,9 +6,9 @@ use chrono::DateTime;
 use serde::Deserialize;
 use upgate_domain::{
     AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
-    ManagerId, ManagerMetadata, ManagerScanInput, ManagerUpdateInput, OsvEcosystem, PackageName,
-    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
-    ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    ManagerId, ManagerScanInput, ManagerUpdateInput, OsvEcosystem, PackageName, ReleaseEntry,
+    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName,
+    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upgate_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -26,11 +26,11 @@ use crate::adapter::{
 };
 use crate::platform_artifacts::is_platform_artifact_version;
 
-pub const MANAGER_ID: &str = "pnpm";
+const MANAGER_ID: &str = "pnpm";
 const PNPM_MAX_PARALLEL_CHECKS: usize = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PnpmError {
+enum PnpmError {
     Infra(String),
     Interrupted(String),
     Json(String),
@@ -82,22 +82,16 @@ impl From<DomainError> for PnpmError {
     }
 }
 
-impl PnpmError {
-    pub const fn is_interruption(&self) -> bool {
-        matches!(self, Self::Interrupted(_))
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PnpmInstalledPackage {
+    name: PackageName,
+    version: VersionText,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PnpmInstalledPackage {
-    pub name: PackageName,
-    pub version: VersionText,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PnpmOutdatedPackage {
-    pub name: PackageName,
-    pub current: VersionText,
+struct PnpmOutdatedPackage {
+    name: PackageName,
+    current: VersionText,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,7 +187,7 @@ struct PnpmOutdatedMapEntry {
 /// # Errors
 ///
 /// Returns an error when JSON is malformed or a package/version is blank.
-pub fn parse_installed_json(raw: &str) -> Result<Vec<PnpmInstalledPackage>, PnpmError> {
+fn parse_installed_json(raw: &str) -> Result<Vec<PnpmInstalledPackage>, PnpmError> {
     let items: Vec<PnpmListItem> =
         serde_json::from_str(raw).map_err(|err| PnpmError::Json(err.to_string()))?;
     let mut packages = BTreeMap::new();
@@ -221,7 +215,7 @@ pub fn parse_installed_json(raw: &str) -> Result<Vec<PnpmInstalledPackage>, Pnpm
 /// # Errors
 ///
 /// Returns an error when JSON is malformed or a package/version is blank.
-pub fn parse_outdated_json(raw: &str) -> Result<Vec<PnpmOutdatedPackage>, PnpmError> {
+fn parse_outdated_json(raw: &str) -> Result<Vec<PnpmOutdatedPackage>, PnpmError> {
     let entries: BTreeMap<String, PnpmOutdatedMapEntry> =
         serde_json::from_str(raw).map_err(|err| PnpmError::Json(err.to_string()))?;
 
@@ -245,7 +239,7 @@ fn is_no_importer_manifest_error(text: &str) -> bool {
 /// # Errors
 ///
 /// Returns an error when the command fails or output cannot be parsed.
-pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, PnpmError> {
+fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, PnpmError> {
     let output = process.run(
         &CommandSpec::new("pnpm", ["list", "-g", "--depth", "0", "--json"]),
         &CommandCheck::Success,
@@ -261,7 +255,7 @@ pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, P
 /// # Errors
 ///
 /// Returns an error when the command fails unexpectedly or output cannot be parsed.
-pub fn outdated_global(process: &ProcessRunner) -> Result<Vec<PnpmOutdatedPackage>, PnpmError> {
+fn outdated_global(process: &ProcessRunner) -> Result<Vec<PnpmOutdatedPackage>, PnpmError> {
     let output = process.run(
         &CommandSpec::new("pnpm", ["outdated", "-g", "--json"]),
         &CommandCheck::IgnoreStatus,
@@ -297,7 +291,7 @@ pub fn outdated_global(process: &ProcessRunner) -> Result<Vec<PnpmOutdatedPackag
 /// # Errors
 ///
 /// Returns an error when installed discovery fails or release lookup is interrupted.
-pub fn update_inputs(
+fn update_inputs(
     process: &ProcessRunner,
     version_policy: VersionPolicy,
     max_parallel_checks_per_manager: usize,
@@ -323,7 +317,7 @@ pub fn update_inputs(
 /// # Errors
 ///
 /// Returns an error only when command execution is interrupted.
-pub fn lookup_release(
+fn lookup_release(
     process: &ProcessRunner,
     package: &PackageName,
 ) -> Result<ReleaseLookupResult, PnpmError> {
@@ -355,10 +349,7 @@ pub fn lookup_release(
 /// # Errors
 ///
 /// Returns an error when JSON or timestamps are invalid, or no version timestamps are present.
-pub fn parse_pnpm_time_json(
-    package: &PackageName,
-    raw: &str,
-) -> Result<ReleaseTimeline, PnpmError> {
+fn parse_pnpm_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeline, PnpmError> {
     let timestamps: BTreeMap<String, String> =
         serde_json::from_str(raw).map_err(|err| PnpmError::Json(err.to_string()))?;
     time_map_to_timeline(package, timestamps)
@@ -369,7 +360,7 @@ pub fn parse_pnpm_time_json(
 /// # Errors
 ///
 /// Returns an error when the resolved execution mode is not supported by pnpm.
-pub fn exact_commands_for_execution_plan(
+fn exact_commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
 ) -> Result<Vec<ExecutionCommand>, PnpmError> {
     let mut commands = Vec::new();
@@ -412,17 +403,11 @@ pub fn exact_commands_for_execution_plan(
 }
 
 fn exact_command_for_item(item: &ResolvedExecutionItem) -> Result<CommandSpec, PnpmError> {
-    Ok(exact_command_parts(
-        &item.package_name,
-        item.known_target_version().ok_or_else(|| {
-            PnpmError::UnsupportedCommandIntent("exact-without-known-target".to_owned())
-        })?,
-    ))
-}
-
-fn exact_command_parts(package_name: &PackageName, target_version: &VersionText) -> CommandSpec {
-    let spec = format!("{package_name}@{target_version}");
-    CommandSpec::new("pnpm", ["add", "-g", &spec]).mutating()
+    let target_version = item.known_target_version().ok_or_else(|| {
+        PnpmError::UnsupportedCommandIntent("exact-without-known-target".to_owned())
+    })?;
+    let spec = format!("{}@{target_version}", item.package_name);
+    Ok(CommandSpec::new("pnpm", ["add", "-g", &spec]).mutating())
 }
 
 fn installed_tool(package: PnpmInstalledPackage) -> Result<InstalledTool, PnpmError> {
@@ -432,7 +417,6 @@ fn installed_tool(package: PnpmInstalledPackage) -> Result<InstalledTool, PnpmEr
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
         package.version,
-        ManagerMetadata::empty(),
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Npm,
@@ -447,7 +431,6 @@ fn installed_tool_from_outdated(package: PnpmOutdatedPackage) -> Result<Installe
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
         package.current,
-        ManagerMetadata::empty(),
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Npm,
@@ -540,9 +523,5 @@ fn adapter_error(err: &PnpmError) -> ManagerAdapterError {
         PnpmError::UnsupportedCommandIntent(_) => ManagerAdapterErrorKind::CommandConstruction,
         PnpmError::Infra(_) => ManagerAdapterErrorKind::Infra,
     };
-    ManagerAdapterError::Manager {
-        manager_id: MANAGER_ID.to_owned(),
-        kind,
-        detail,
-    }
+    ManagerAdapterError::Manager { kind, detail }
 }

@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressFinish, ProgressStyle};
 
-use crate::{OutputTheme, TerminalCapabilities};
+use crate::OutputTheme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchTerminalAction {
@@ -47,13 +47,6 @@ pub struct BatchTerminal {
 }
 
 impl BatchTerminal {
-    pub const fn new(theme: OutputTheme, capabilities: TerminalCapabilities) -> Self {
-        Self {
-            theme,
-            stderr_is_tty: capabilities.stderr_is_tty,
-            spinner_suppressed: false,
-        }
-    }
     pub fn from_environment(theme: OutputTheme) -> Self {
         Self {
             theme,

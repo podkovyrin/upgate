@@ -115,7 +115,6 @@ pub enum OutcomeTargetView {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeVersionEmphasis {
-    None,
     Current,
     Target,
 }
@@ -128,18 +127,6 @@ pub struct OutcomeNote {
 
 impl OutcomeNote {
     pub fn normal(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            visibility: OutcomeVisibility::Always,
-        }
-    }
-    pub fn metadata(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            visibility: OutcomeVisibility::Always,
-        }
-    }
-    pub fn warning(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
             visibility: OutcomeVisibility::Always,

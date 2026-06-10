@@ -814,7 +814,7 @@ const fn progress_row_style(status: &ExecutionProgressStatus, theme: &TuiTheme) 
     }
 }
 
-pub(crate) fn spinner_frame(spinner_tick: usize) -> &'static str {
+pub fn spinner_frame(spinner_tick: usize) -> &'static str {
     SPINNER[spinner_tick % SPINNER.len()]
 }
 

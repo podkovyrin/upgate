@@ -33,7 +33,7 @@ impl Env {
         self.non_empty_path_var("HOME")
     }
 }
-pub fn trim_non_empty(value: &str) -> Option<&str> {
+fn trim_non_empty(value: &str) -> Option<&str> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         None

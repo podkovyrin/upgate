@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::io::{self, Read};
+use std::io::Read;
 use std::process::{Command, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,9 +11,6 @@ use std::time::{Duration, Instant};
 use serde::de::DeserializeOwned;
 
 use crate::{Env, InfraError, logging};
-
-pub const MUTATION_SKIP_NOTICE: &str = "mutating commands are skipped (safe mode)";
-pub const MUTATION_ENABLE_NOTICE: &str = "real mutating commands are ENABLED";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandCheck {
@@ -110,13 +107,7 @@ impl fmt::Debug for ProcessRunnerKind {
     }
 }
 
-#[derive(Clone)]
-pub struct CommandStartEvent {
-    pub command_display: String,
-    pub is_mutation: bool,
-}
-
-type CommandStartListener = Arc<dyn Fn(CommandStartEvent) + Send + Sync + 'static>;
+type CommandStartListener = Arc<dyn Fn(String) + Send + Sync + 'static>;
 
 impl ProcessRunner {
     pub fn new(mutation_mode: MutationMode) -> Self {
@@ -135,7 +126,7 @@ impl ProcessRunner {
     }
     pub fn with_command_start_listener(
         mut self,
-        listener: impl Fn(CommandStartEvent) + Send + Sync + 'static,
+        listener: impl Fn(String) + Send + Sync + 'static,
     ) -> Self {
         self.command_start = Some(Arc::new(listener));
         self
@@ -169,10 +160,7 @@ impl ProcessRunner {
     ) -> Result<CommandOutput, InfraError> {
         let display = spec.to_string();
         if let Some(listener) = &self.command_start {
-            listener(CommandStartEvent {
-                command_display: display.clone(),
-                is_mutation: spec.is_mutation,
-            });
+            listener(display.clone());
         }
         match &self.kind {
             ProcessRunnerKind::Real { mutation_mode } => run_real(
@@ -188,12 +176,12 @@ impl ProcessRunner {
 }
 
 #[derive(Debug, Clone)]
-pub struct FakeProcess {
+struct FakeProcess {
     responses: Arc<Mutex<VecDeque<Result<CommandOutput, InfraError>>>>,
 }
 
 impl FakeProcess {
-    pub fn new(responses: impl IntoIterator<Item = Result<CommandOutput, InfraError>>) -> Self {
+    fn new(responses: impl IntoIterator<Item = Result<CommandOutput, InfraError>>) -> Self {
         Self {
             responses: Arc::new(Mutex::new(responses.into_iter().collect())),
         }
@@ -239,11 +227,7 @@ fn run_real(
     } else {
         run_real_command(spec, &display, interrupt_requested).map_err(|err| {
             if matches!(err, InfraError::ProcessSpawn { .. }) {
-                logging::on_command_spawn_error(
-                    &display,
-                    spec.is_mutation,
-                    &io::Error::other(err.to_string()),
-                );
+                logging::on_command_spawn_error(&display, spec.is_mutation, &err.to_string());
             }
             err
         })?
@@ -517,23 +501,8 @@ impl CommandFailure {
             stderr,
         }
     }
-    pub fn command(&self) -> &str {
-        &self.command
-    }
-    pub const fn status(&self) -> ExitStatus {
-        self.status
-    }
-    pub fn code(&self) -> Option<i32> {
-        self.status.code()
-    }
-    pub fn was_signaled(&self) -> bool {
-        self.status.code().is_none()
-    }
     pub fn is_interruption(&self) -> bool {
-        self.was_signaled()
-    }
-    pub fn stderr(&self) -> &str {
-        &self.stderr
+        self.status.code().is_none()
     }
 }
 
@@ -552,7 +521,7 @@ impl fmt::Display for CommandFailure {
         }
     }
 }
-pub fn status_allowed(status: ExitStatus, check: &CommandCheck) -> bool {
+fn status_allowed(status: ExitStatus, check: &CommandCheck) -> bool {
     match check {
         CommandCheck::Success => status.success(),
         CommandCheck::Allow(extra_codes) => {

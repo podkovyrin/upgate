@@ -213,31 +213,6 @@ impl ExecutionProgressState {
     }
 }
 
-impl ExecutionProgressEvent {
-    pub const fn manager_started(manager_id: ManagerId) -> Self {
-        Self::ManagerStarted { manager_id }
-    }
-    pub fn command_started(command: impl Into<String>) -> Self {
-        Self::CommandStarted {
-            command: command.into(),
-        }
-    }
-    pub const fn manager_finished(report: ExecutionReport) -> Self {
-        Self::ManagerFinished { report }
-    }
-    pub fn manager_failed(manager_id: ManagerId, detail: impl Into<String>) -> Self {
-        Self::ManagerFailed {
-            manager_id,
-            detail: detail.into(),
-        }
-    }
-    pub fn fatal(detail: impl Into<String>) -> Self {
-        Self::Fatal {
-            detail: detail.into(),
-        }
-    }
-}
-
 fn execution_intent_items(intent: ExecutionCommandIntent) -> Vec<ResolvedExecutionItem> {
     match intent {
         ExecutionCommandIntent::Exact(item)
@@ -287,22 +262,26 @@ mod tests {
             stop_after_current: false,
         };
 
-        state.apply_event(ExecutionProgressEvent::manager_started(manager_id.clone()));
-        state.apply_event(ExecutionProgressEvent::manager_finished(ExecutionReport {
-            manager_id,
-            items: vec![ExecutionItemResult {
-                plan_item_id: first_id,
-                package_name: PackageName::new("first").expect("valid package"),
-                installed_version: VersionText::new("1.0.0").expect("valid version"),
-                target: ResolvedExecutionTarget::Known(
-                    VersionText::new("1.2.0").expect("valid version"),
-                ),
-                status: ExecutionStatus::Succeeded {
-                    command: "first upgrade".to_owned(),
-                    skipped_mutation: false,
-                },
-            }],
-        }));
+        state.apply_event(ExecutionProgressEvent::ManagerStarted {
+            manager_id: manager_id.clone(),
+        });
+        state.apply_event(ExecutionProgressEvent::ManagerFinished {
+            report: ExecutionReport {
+                manager_id,
+                items: vec![ExecutionItemResult {
+                    plan_item_id: first_id,
+                    package_name: PackageName::new("first").expect("valid package"),
+                    installed_version: VersionText::new("1.0.0").expect("valid version"),
+                    target: ResolvedExecutionTarget::Known(
+                        VersionText::new("1.2.0").expect("valid version"),
+                    ),
+                    status: ExecutionStatus::Succeeded {
+                        command: "first upgrade".to_owned(),
+                        skipped_mutation: false,
+                    },
+                }],
+            },
+        });
         state.apply_event(ExecutionProgressEvent::StopAfterCurrentRequested);
         state.apply_event(ExecutionProgressEvent::Finished);
 

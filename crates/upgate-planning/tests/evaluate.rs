@@ -3,13 +3,12 @@ use std::time::{Duration, SystemTime};
 
 use upgate_domain::{
     AuditFinding, AuditLookupResult, AuditPackageName, AuditQuery, AuditSubject, BlockReason,
-    CandidateAuditFact, ExecutionSupport, InstalledTool, ManagerId, ManagerMetadata,
-    ManagerSelectedTarget, ManagerUpdateInput, OsvEcosystem, PackageName, PlanItem, PlanItemId,
-    ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
-    TargetAgeEvidence, TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy,
-    VersionScheme, VersionText,
+    ExecutionSupport, InstalledTool, ManagerId, ManagerSelectedTarget, ManagerUpdateInput,
+    OsvEcosystem, PackageName, PlanItem, PlanItemId, ReleaseEntry, ReleaseLookupError,
+    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, TargetAgeEvidence,
+    TargetAgeLookupResult, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
-use upgate_planning::{derive_audit_queries, evaluate_seed, evaluate_seed_with_audit};
+use upgate_planning::{derive_audit_queries, evaluate_seed_with_audit};
 
 const NOW_SECS: u64 = 1_800_000_000;
 
@@ -32,7 +31,6 @@ fn installed_tool(package: &str, installed_version: &str) -> InstalledTool {
         PackageName::new(package).expect("valid package name"),
         ToolName::new(package).expect("valid tool name"),
         version(installed_version),
-        ManagerMetadata::empty(),
     )
 }
 
@@ -97,12 +95,13 @@ fn advisory_latest_does_not_replace_manager_selected_target() {
         ExecutionSupport::native_or_exact(),
     );
 
-    let item = evaluate_seed(
+    let item = evaluate_seed_with_audit(
         item_id("item"),
         seed,
         VersionPolicy::None,
         SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
         Duration::from_secs(0),
+        &BTreeMap::new(),
     );
 
     let PlanItem::Update { candidate, .. } = item else {
@@ -123,12 +122,13 @@ fn manager_selected_target_missing_required_evidence_blocks_the_item() {
         TargetAgeLookupResult::MissingMetadata,
     );
 
-    let item = evaluate_seed(
+    let item = evaluate_seed_with_audit(
         item_id("item"),
         seed,
         VersionPolicy::None,
         SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
         Duration::from_secs(0),
+        &BTreeMap::new(),
     );
 
     assert!(matches!(
@@ -155,12 +155,13 @@ fn advisory_lookup_failure_is_non_blocking_diagnostic_for_manager_selected_targe
         ExecutionSupport::native_or_exact(),
     );
 
-    let item = evaluate_seed(
+    let item = evaluate_seed_with_audit(
         item_id("item"),
         seed,
         VersionPolicy::None,
         SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
         Duration::from_secs(0),
+        &BTreeMap::new(),
     );
 
     let PlanItem::Update { candidate, .. } = item else {
@@ -194,12 +195,13 @@ fn planner_preserves_manager_produced_item_execution_support() {
         ExecutionSupport::exact_only(),
     );
 
-    let PlanItem::Update { candidate, .. } = evaluate_seed(
+    let PlanItem::Update { candidate, .. } = evaluate_seed_with_audit(
         item_id("item"),
         seed,
         VersionPolicy::Stable,
         SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
         Duration::from_secs(0),
+        &BTreeMap::new(),
     ) else {
         panic!("expected update")
     };
@@ -226,12 +228,13 @@ fn planner_selects_publish_date_newest_target_before_version_newest_target() {
         ExecutionSupport::exact_only(),
     );
 
-    let PlanItem::Update { candidate, .. } = evaluate_seed(
+    let PlanItem::Update { candidate, .. } = evaluate_seed_with_audit(
         item_id("item"),
         seed,
         VersionPolicy::None,
         SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
         Duration::ZERO,
+        &BTreeMap::new(),
     ) else {
         panic!("expected update")
     };
@@ -278,12 +281,13 @@ fn planner_age_gate_selects_publish_date_newest_eligible_target() {
         ExecutionSupport::exact_only(),
     );
 
-    let PlanItem::Update { candidate, .. } = evaluate_seed(
+    let PlanItem::Update { candidate, .. } = evaluate_seed_with_audit(
         item_id("item"),
         seed,
         VersionPolicy::None,
         SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
         Duration::from_secs(100),
+        &BTreeMap::new(),
     ) else {
         panic!("expected update")
     };
@@ -300,15 +304,6 @@ fn planner_age_gate_selects_publish_date_newest_eligible_target() {
             .version
             .as_str(),
         "3.10.0"
-    );
-    assert_eq!(
-        candidate
-            .diagnostics
-            .latest_age_eligible
-            .expect("latest age eligible")
-            .version
-            .as_str(),
-        "3.9.0"
     );
 }
 
@@ -408,7 +403,7 @@ fn planner_attaches_audit_facts_to_policy_and_age_blocked_picker_candidates() {
         .expect("too-fresh candidate");
     assert!(matches!(
         too_fresh.audit,
-        Some(CandidateAuditFact::LookupFailed { .. })
+        Some(AuditLookupResult::LookupFailed { .. })
     ));
     let policy_blocked = candidate
         .diagnostics
@@ -418,7 +413,7 @@ fn planner_attaches_audit_facts_to_policy_and_age_blocked_picker_candidates() {
         .expect("policy-blocked candidate");
     assert!(matches!(
         policy_blocked.audit,
-        Some(CandidateAuditFact::Vulnerable { .. })
+        Some(AuditLookupResult::Vulnerable { .. })
     ));
 }
 
@@ -505,12 +500,12 @@ fn manager_selected_policy_blocked_target_keeps_audit_fact_for_picker() {
 
     assert!(matches!(
         diagnostics.candidates[0].audit,
-        Some(CandidateAuditFact::Vulnerable { .. })
+        Some(AuditLookupResult::Vulnerable { .. })
     ));
 }
 
 #[test]
-fn pep440_timeline_skips_unparseable_entries() {
+fn pep440_timeline_unparseable_entry_is_resolver_error() {
     let seed = UpdateSeed::new(
         installed_tool("alpha", "1.0.0"),
         version("1.2.0"),
@@ -528,20 +523,18 @@ fn pep440_timeline_skips_unparseable_entries() {
         ExecutionSupport::exact_only(),
     );
 
-    let PlanItem::Update { candidate, .. } = evaluate_seed(
+    let PlanItem::ResolverError { message, .. } = evaluate_seed_with_audit(
         item_id("item"),
         seed,
         VersionPolicy::None,
         SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
         Duration::ZERO,
+        &BTreeMap::new(),
     ) else {
-        panic!("expected update despite unparseable timeline entry")
+        panic!("expected resolver error for unparseable timeline entry")
     };
 
-    assert_eq!(
-        candidate.target_version().expect("known target").as_str(),
-        "1.2.0"
-    );
+    assert_eq!(message, "failed to parse release version `not-a-version`");
 }
 
 #[test]
@@ -563,12 +556,13 @@ fn pep440_age_gate_selects_publish_date_newest_eligible_target() {
         ExecutionSupport::exact_only(),
     );
 
-    let PlanItem::Update { candidate, .. } = evaluate_seed(
+    let PlanItem::Update { candidate, .. } = evaluate_seed_with_audit(
         item_id("item"),
         seed,
         VersionPolicy::None,
         SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
         Duration::from_secs(100),
+        &BTreeMap::new(),
     ) else {
         panic!("expected update")
     };

@@ -25,7 +25,3 @@ upgate-infra = { path = "../upgate-infra" }
 upgate-managers = { path = "../upgate-managers" }
 upgate-planning = { path = "../upgate-planning" }
 upgate-presentation = { path = "../upgate-presentation" }
-upgate-release = { path = "../upgate-release" }
-
-[dev-dependencies]
-flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }

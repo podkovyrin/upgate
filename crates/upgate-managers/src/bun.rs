@@ -6,10 +6,9 @@ use chrono::DateTime;
 use serde::Deserialize;
 use upgate_domain::{
     AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
-    ManagerId, ManagerMetadata, ManagerScanEvidenceInput, ManagerScanInput, ManagerUpdateInput,
-    OsvEcosystem, PackageName, ReleaseEntry, ReleaseEvidenceSource, ReleaseLookupError,
-    ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName, UpdateSeed,
-    VersionScheme, VersionText,
+    ManagerId, ManagerScanEvidenceInput, ManagerScanInput, ManagerUpdateInput, OsvEcosystem,
+    PackageName, ReleaseEntry, ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline,
+    ReleaseTimestamp, ToolId, ToolName, UpdateSeed, VersionScheme, VersionText,
 };
 use upgate_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionPlan,
@@ -25,11 +24,11 @@ use crate::adapter::{
     ReleaseLookupSubject, validate_version_policy,
 };
 
-pub const MANAGER_ID: &str = "bun";
+const MANAGER_ID: &str = "bun";
 const BUN_MAX_PARALLEL_CHECKS: usize = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BunError {
+enum BunError {
     Infra(String),
     Interrupted(String),
     Json(String),
@@ -81,16 +80,10 @@ impl From<DomainError> for BunError {
     }
 }
 
-impl BunError {
-    pub const fn is_interruption(&self) -> bool {
-        matches!(self, Self::Interrupted(_))
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BunInstalledPackage {
-    pub name: PackageName,
-    pub version: VersionText,
+struct BunInstalledPackage {
+    name: PackageName,
+    version: VersionText,
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,12 +143,11 @@ impl ManagerAdapter for BunManager {
         env: &Env,
         _max_parallel_checks_per_manager: usize,
     ) -> Result<Vec<ManagerScanEvidenceInput>, ManagerAdapterError> {
-        let installed =
-            installed_global_with_bun(process, MANAGER_ID).map_err(|err| adapter_error(&err))?;
+        let installed = installed_global(process).map_err(|err| adapter_error(&err))?;
         installed
             .into_iter()
             .map(|tool| {
-                match lookup_release_with_bun(process, env, MANAGER_ID, &tool.package_name)
+                match lookup_release(process, env, &tool.package_name)
                     .map_err(|err| adapter_error(&err))?
                 {
                     ReleaseLookupResult::Known(timeline) => {
@@ -163,7 +155,6 @@ impl ManagerAdapter for BunManager {
                             release_evidence: release_evidence_for_version(
                                 &timeline,
                                 &tool.installed_version,
-                                ReleaseEvidenceSource::ReleaseTimeline,
                             ),
                             tool,
                         })
@@ -186,8 +177,7 @@ impl ManagerAdapter for BunManager {
         env: &Env,
         subject: ReleaseLookupSubject<'_>,
     ) -> Result<ReleaseLookupResult, ManagerAdapterError> {
-        lookup_release_with_bun(process, env, MANAGER_ID, subject.package_name())
-            .map_err(|err| adapter_error(&err))
+        lookup_release(process, env, subject.package_name()).map_err(|err| adapter_error(&err))
     }
 
     fn update_inputs(
@@ -222,7 +212,7 @@ impl ManagerAdapter for BunManager {
 /// # Errors
 ///
 /// Returns an error when JSON is malformed or a package/version is blank.
-pub fn parse_pm_ls_json(raw: &str) -> Result<Vec<BunInstalledPackage>, BunError> {
+fn parse_pm_ls_json(raw: &str) -> Result<Vec<BunInstalledPackage>, BunError> {
     if raw.trim().is_empty() {
         return Ok(Vec::new());
     }
@@ -263,16 +253,9 @@ fn is_missing_global_manifest(text: &str) -> bool {
 /// # Errors
 ///
 /// Returns an error when the command fails unexpectedly or output cannot be parsed.
-pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, BunError> {
-    installed_global_with_bun(process, MANAGER_ID)
-}
-
-fn installed_global_with_bun(
-    process: &ProcessRunner,
-    bun: &str,
-) -> Result<Vec<InstalledTool>, BunError> {
+fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, BunError> {
     let output = process.run(
-        &CommandSpec::new(bun, ["pm", "ls", "-g", "--json"]),
+        &CommandSpec::new(MANAGER_ID, ["pm", "ls", "-g", "--json"]),
         &CommandCheck::IgnoreStatus,
     )?;
     let stdout = output.stdout()?;
@@ -306,15 +289,15 @@ fn installed_global_with_bun(
 /// # Errors
 ///
 /// Returns an error when discovery fails.
-pub fn update_inputs(
+fn update_inputs(
     process: &ProcessRunner,
     env: &Env,
     max_parallel_checks_per_manager: usize,
 ) -> Result<Vec<ManagerUpdateInput>, BunError> {
-    let tools = installed_global_with_bun(process, MANAGER_ID)?;
+    let tools = installed_global(process)?;
     let threads = effective_parallelism(max_parallel_checks_per_manager, BUN_MAX_PARALLEL_CHECKS);
     run_ordered_parallel(tools, threads, MANAGER_ID, |tool| {
-        let lookup = lookup_release_with_bun(process, env, MANAGER_ID, &tool.package_name)?;
+        let lookup = lookup_release(process, env, &tool.package_name)?;
         Ok(update_input(tool, lookup))
     })?
     .into_iter()
@@ -326,17 +309,16 @@ pub fn update_inputs(
 /// # Errors
 ///
 /// Returns an error only when command execution is interrupted.
-pub fn lookup_release_with_bun(
+fn lookup_release(
     process: &ProcessRunner,
     env: &Env,
-    bun: &str,
     package: &PackageName,
 ) -> Result<ReleaseLookupResult, BunError> {
     let Some(cwd) = bun_global_cwd(env) else {
         return Ok(ReleaseLookupResult::MissingMetadata);
     };
     let command = CommandSpec::new(
-        bun,
+        MANAGER_ID,
         [
             "pm",
             "view",
@@ -381,27 +363,17 @@ pub fn lookup_release_with_bun(
 /// # Errors
 ///
 /// Returns an error when JSON or timestamps are invalid, or no version timestamps are present.
-pub fn parse_bun_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeline, BunError> {
+fn parse_bun_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeline, BunError> {
     let timestamps: BTreeMap<String, String> =
         serde_json::from_str(raw).map_err(|err| BunError::Json(err.to_string()))?;
     time_map_to_timeline(package, timestamps)
 }
-fn bun_global_cwd_from_values(bun_install: Option<&str>, home: Option<&str>) -> Option<String> {
-    bun_install
-        .and_then(trim_non_empty)
-        .map(|path| format!("{path}/install/global"))
-        .or_else(|| {
-            home.and_then(trim_non_empty)
-                .map(|path| format!("{path}/.bun/install/global"))
-        })
-}
-
 /// Creates Bun commands for a resolved execution plan.
 ///
 /// # Errors
 ///
 /// Returns an error when the resolved execution mode is not supported by Bun.
-pub fn commands_for_execution_plan(
+fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
     min_release_age: Duration,
 ) -> Result<Vec<ExecutionCommand>, BunError> {
@@ -426,7 +398,7 @@ pub fn commands_for_execution_plan(
             ExecutionCommandIntent::NativeGlobal(items) => {
                 commands.push(ExecutionCommand {
                     items: items.iter().map(ExecutionCommandItem::from).collect(),
-                    command: global_update_command(MANAGER_ID, min_release_age),
+                    command: global_update_command(min_release_age),
                 });
             }
             ExecutionCommandIntent::Exact(item) => {
@@ -435,8 +407,7 @@ pub fn commands_for_execution_plan(
                 })?;
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
-                    command: exact_command_with_program(
-                        MANAGER_ID,
+                    command: exact_command(
                         &item.package_name,
                         target_version,
                         min_release_age,
@@ -448,7 +419,6 @@ pub fn commands_for_execution_plan(
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
                     command: selected_native_update_command(
-                        MANAGER_ID,
                         &item.package_name,
                         min_release_age,
                         item.bypass_min_release_age,
@@ -459,8 +429,7 @@ pub fn commands_for_execution_plan(
     }
     Ok(commands)
 }
-fn exact_command_with_program(
-    bun: &str,
+fn exact_command(
     package_name: &PackageName,
     target_version: &VersionText,
     min_release_age: Duration,
@@ -473,12 +442,12 @@ fn exact_command_with_program(
         args.push("--minimum-release-age".to_owned());
         args.push(min_age_secs);
     }
-    CommandSpec::new(bun, args).mutating()
+    CommandSpec::new(MANAGER_ID, args).mutating()
 }
-fn global_update_command(bun: &str, min_release_age: Duration) -> CommandSpec {
+fn global_update_command(min_release_age: Duration) -> CommandSpec {
     let min_age_secs = min_release_age.as_secs().to_string();
     CommandSpec::new(
-        bun,
+        MANAGER_ID,
         [
             "update",
             "-g",
@@ -490,7 +459,6 @@ fn global_update_command(bun: &str, min_release_age: Duration) -> CommandSpec {
 }
 
 fn selected_native_update_command(
-    bun: &str,
     package_name: &PackageName,
     min_release_age: Duration,
     bypass_min_release_age: bool,
@@ -505,7 +473,7 @@ fn selected_native_update_command(
         args.push("--minimum-release-age".to_owned());
         args.push(min_age_secs);
     }
-    CommandSpec::new(bun, args).mutating()
+    CommandSpec::new(MANAGER_ID, args).mutating()
 }
 
 fn trim_non_empty(value: &str) -> Option<&str> {
@@ -524,7 +492,6 @@ fn installed_tool(package: BunInstalledPackage) -> Result<InstalledTool, BunErro
         package.name.clone(),
         ToolName::new(package.name.as_str().to_owned())?,
         package.version,
-        ManagerMetadata::empty(),
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Npm,
@@ -604,10 +571,17 @@ fn system_time_from_datetime(datetime: DateTime<chrono::FixedOffset>) -> SystemT
 }
 
 fn bun_global_cwd(env: &Env) -> Option<String> {
-    bun_global_cwd_from_values(
-        env.var("BUN_INSTALL").as_deref(),
-        env.var("HOME").as_deref(),
-    )
+    let bun_install = env.var("BUN_INSTALL");
+    let home = env.var("HOME");
+    bun_install
+        .as_deref()
+        .and_then(trim_non_empty)
+        .map(|path| format!("{path}/install/global"))
+        .or_else(|| {
+            home.as_deref()
+                .and_then(trim_non_empty)
+                .map(|path| format!("{path}/.bun/install/global"))
+        })
 }
 
 fn adapter_error(err: &BunError) -> ManagerAdapterError {
@@ -621,9 +595,5 @@ fn adapter_error(err: &BunError) -> ManagerAdapterError {
         &BunError::UnsupportedCommandIntent(_) => ManagerAdapterErrorKind::CommandConstruction,
         &BunError::Infra(_) => ManagerAdapterErrorKind::Infra,
     };
-    ManagerAdapterError::Manager {
-        manager_id: MANAGER_ID.to_owned(),
-        kind,
-        detail,
-    }
+    ManagerAdapterError::Manager { kind, detail }
 }

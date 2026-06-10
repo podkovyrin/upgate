@@ -21,7 +21,6 @@ use crate::registry::{
 };
 
 const CONFIG_RELATIVE_PATH: &str = "upgate/config.toml";
-const DEFAULT_SCAN_OLD_AGE_THRESHOLD: &str = "365d";
 const DEFAULT_MANAGER_CONCURRENCY: usize = 4;
 const DEFAULT_AUDIT_CONCURRENCY: usize = 8;
 const MAX_AUDIT_CONCURRENCY: usize = 16;
@@ -183,7 +182,6 @@ pub struct ConfigFile {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 struct GlobalSectionConfig {
-    scan_old_age_threshold: Option<String>,
     manager_concurrency: Option<usize>,
     audit_concurrency: Option<usize>,
 }
@@ -240,20 +238,6 @@ impl ConfigFile {
                 path.display()
             ))
         })
-    }
-
-    /// Resolves the global verbose-scan old-age threshold.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the duration string is invalid.
-    pub fn scan_old_age_threshold(&self) -> Result<Duration, ConfigError> {
-        let raw = self
-            .upgate
-            .scan_old_age_threshold
-            .as_deref()
-            .unwrap_or(DEFAULT_SCAN_OLD_AGE_THRESHOLD);
-        parse_duration_key("[upgate].scan_old_age_threshold", raw)
     }
 
     /// Resolves the app-level manager concurrency budget.
@@ -373,11 +357,6 @@ impl ConfigFile {
 
         if section == "upgate" {
             return match key {
-                "scan_old_age_threshold" => {
-                    parse_duration_key("[upgate].scan_old_age_threshold", value)?;
-                    self.upgate.scan_old_age_threshold = Some(value.to_owned());
-                    Ok(())
-                }
                 "manager_concurrency" => {
                     let parsed = value
                         .parse::<usize>()

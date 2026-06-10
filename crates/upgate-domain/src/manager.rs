@@ -158,7 +158,6 @@ pub struct InstalledTool {
     pub tool_name: ToolName,
     pub installed_version: VersionText,
     pub audit_subject: Option<AuditSubject>,
-    pub metadata: ManagerMetadata,
 }
 
 impl InstalledTool {
@@ -168,7 +167,6 @@ impl InstalledTool {
         package_name: PackageName,
         tool_name: ToolName,
         installed_version: VersionText,
-        metadata: ManagerMetadata,
     ) -> Self {
         Self {
             manager_id,
@@ -177,71 +175,10 @@ impl InstalledTool {
             tool_name,
             installed_version,
             audit_subject: None,
-            metadata,
         }
     }
     pub fn with_audit_subject(mut self, audit_subject: AuditSubject) -> Self {
         self.audit_subject = Some(audit_subject);
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ManagerMetadata {
-    pub fields: Vec<ManagerMetadataField>,
-}
-
-impl ManagerMetadata {
-    pub fn empty() -> Self {
-        Self::default()
-    }
-    pub const fn new(fields: Vec<ManagerMetadataField>) -> Self {
-        Self { fields }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ManagerMetadataField {
-    pub key: ManagerMetadataKey,
-    pub value: ManagerMetadataValue,
-}
-
-impl ManagerMetadataField {
-    pub const fn new(key: ManagerMetadataKey, value: ManagerMetadataValue) -> Self {
-        Self { key, value }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ManagerMetadataKey(String);
-
-impl ManagerMetadataKey {
-    /// Creates a manager-owned metadata key.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DomainError::EmptyMetadataKey`] when the value is blank.
-    pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
-        let value = value.into();
-        if value.trim().is_empty() {
-            return Err(DomainError::EmptyMetadataKey);
-        }
-        Ok(Self(value))
-    }
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Display for ManagerMetadataKey {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ManagerMetadataValue {
-    Bool(bool),
-    Text(String),
-    List(Vec<String>),
 }

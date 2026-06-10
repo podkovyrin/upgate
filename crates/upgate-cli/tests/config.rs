@@ -30,12 +30,6 @@ fn missing_config_uses_global_defaults() {
 
     assert_eq!(
         config
-            .scan_old_age_threshold()
-            .expect("scan age should resolve"),
-        Duration::from_secs(365 * 24 * 60 * 60)
-    );
-    assert_eq!(
-        config
             .manager_concurrency()
             .expect("manager concurrency should resolve"),
         4
@@ -55,7 +49,6 @@ fn file_values_resolve_to_typed_manager_config() {
         &path,
         r#"
 [upgate]
-scan_old_age_threshold = "30d"
 manager_concurrency = 3
 
 [brew]
@@ -71,12 +64,6 @@ except = ["aom"]
     );
 
     let config = ConfigFile::load_from_path(&path).expect("config should load");
-    assert_eq!(
-        config
-            .scan_old_age_threshold()
-            .expect("scan threshold should parse"),
-        Duration::from_secs(30 * 24 * 60 * 60)
-    );
     assert_eq!(
         config
             .manager_concurrency()
@@ -243,7 +230,7 @@ fn selection_persistence_preserves_unrelated_toml_and_writes_only_one_manager() 
         &path,
         r#"
 [upgate]
-scan_old_age_threshold = "30d"
+manager_concurrency = 3
 
 [npm]
 mode = "apply"
@@ -279,7 +266,7 @@ except = ["aom"]
         .expect("selection policy should persist");
 
     let raw = std::fs::read_to_string(&path).expect("config should be readable");
-    assert!(raw.contains("scan_old_age_threshold = \"30d\""));
+    assert!(raw.contains("manager_concurrency = 3"));
     assert!(raw.contains("no_update = true"));
     assert!(raw.contains("[brew.selection]"));
     assert!(raw.contains("except = [\"aom\"]"));
