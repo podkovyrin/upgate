@@ -2,8 +2,8 @@
 #![allow(clippy::must_use_candidate, clippy::return_self_not_must_use)]
 
 mod classify;
-pub mod evaluate;
-pub mod planner;
+mod evaluate;
+mod planner;
 
 pub use evaluate::evaluate_seed_with_audit;
 pub use planner::{

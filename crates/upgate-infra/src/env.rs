@@ -23,21 +23,18 @@ impl Env {
         }
     }
     pub fn non_empty_var(&self, name: &str) -> Option<String> {
-        self.var(name)
-            .and_then(|value| trim_non_empty(&value).map(ToOwned::to_owned))
+        let value = self.var(name)?;
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
     }
     pub fn non_empty_path_var(&self, name: &str) -> Option<PathBuf> {
         self.non_empty_var(name).map(PathBuf::from)
     }
     pub fn home_dir(&self) -> Option<PathBuf> {
         self.non_empty_path_var("HOME")
-    }
-}
-fn trim_non_empty(value: &str) -> Option<&str> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
     }
 }

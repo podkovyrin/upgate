@@ -27,11 +27,11 @@ use crate::adapter::{
     ReleaseLookupSubject, validate_version_policy,
 };
 
-pub const MANAGER_ID: &str = "uv";
+const MANAGER_ID: &str = "uv";
 const UV_MAX_PARALLEL_CHECKS: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UvError {
+enum UvError {
     Infra(String),
     Interrupted(String),
     Json(String),
@@ -90,7 +90,7 @@ impl UvError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UvTool {
+struct UvTool {
     pub name: PackageName,
     pub current: VersionText,
     pub python_path: String,
@@ -179,7 +179,7 @@ impl ManagerAdapter for UvManager {
             .map_err(|err| adapter_error(&err))
     }
 }
-pub fn parse_installed_tool_line(line: &str, tool_dir: &str) -> Option<UvTool> {
+fn parse_installed_tool_line(line: &str, tool_dir: &str) -> Option<UvTool> {
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.starts_with('-') {
         return None;
@@ -195,10 +195,7 @@ pub fn parse_installed_tool_line(line: &str, tool_dir: &str) -> Option<UvTool> {
         python_path,
     })
 }
-pub fn parse_install_target_for_package(
-    text: &str,
-    package_name: &PackageName,
-) -> Option<VersionText> {
+fn parse_install_target_for_package(text: &str, package_name: &PackageName) -> Option<VersionText> {
     let package_norm = normalize_package_name(package_name.as_str());
     for line in text.lines() {
         let trimmed = line.trim();
@@ -220,7 +217,7 @@ pub fn parse_install_target_for_package(
 /// # Errors
 ///
 /// Returns an error when `uv tool dir`, list parsing, or receipt fallback fails.
-pub fn installed_global(process: &ProcessRunner) -> Result<Vec<UvTool>, UvError> {
+fn installed_global(process: &ProcessRunner) -> Result<Vec<UvTool>, UvError> {
     let tool_dir = uv_tool_dir(process)?;
     let output = process.run(
         &CommandSpec::new("uv", ["tool", "list", "--show-version-specifiers"]),
@@ -243,7 +240,7 @@ pub fn installed_global(process: &ProcessRunner) -> Result<Vec<UvTool>, UvError>
 /// # Errors
 ///
 /// Returns an error when installed discovery fails.
-pub fn update_inputs(
+fn update_inputs(
     process: &ProcessRunner,
     http: &HttpClient,
     env: &Env,
@@ -254,7 +251,7 @@ pub fn update_inputs(
     let installed = installed_global(process)?;
     let advisory_latest = match outdated_latest_map(process) {
         Ok(map) => UvAdvisoryLatest::Known(map),
-        Err(err @ UvError::Interrupted(_)) => return Err(err),
+        Err(err) if err.is_interruption() => return Err(err),
         Err(err) => UvAdvisoryLatest::LookupFailed(ReleaseLookupError::new(format!(
             "uv advisory latest lookup failed: {err}"
         ))),
@@ -264,7 +261,7 @@ pub fn update_inputs(
         let installed_tool = installed_tool(&tool)?;
         let target = match resolve_target_with_exclude_newer(process, &tool, &min_age_arg) {
             Ok(target) => target,
-            Err(err @ UvError::Interrupted(_)) => return Err(err),
+            Err(err) if err.is_interruption() => return Err(err),
             Err(err) => {
                 return Ok(RawUvResolvedTool::ResolverError {
                     installed: installed_tool,
@@ -319,7 +316,7 @@ enum RawUvResolvedTool {
 }
 
 /// Looks up `PyPI` release metadata for a uv tool.
-pub fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> ReleaseLookupResult {
+fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> ReleaseLookupResult {
     let base_url = upgate_infra::env_base_url(env, "upgate_UV_PYPI_BASE_URL", "https://pypi.org");
     let url = format!("{base_url}/pypi/{package}/json");
     match http.get_text(&url) {
@@ -344,9 +341,7 @@ fn lookup_uv_selected_target(
         ReleaseLookupResult::Known(timeline) => first_matching_version(timeline, &target).map_or(
             TargetAgeLookupResult::MissingMetadata,
             |entry| {
-                TargetAgeLookupResult::Known(TargetAgeEvidence::PublishedAt(
-                    entry.published_at.clone(),
-                ))
+                TargetAgeLookupResult::Known(TargetAgeEvidence::PublishedAt(entry.published_at))
             },
         ),
         ReleaseLookupResult::MissingMetadata => TargetAgeLookupResult::MissingMetadata,
@@ -379,14 +374,11 @@ fn outdated_latest_map(
         &CommandSpec::new("uv", ["tool", "list", "--outdated"]),
         &CommandCheck::Success,
     )?;
-    let mut latest = BTreeMap::new();
-    for line in output.stdout()?.lines() {
-        let Some((name, version)) = parse_outdated_tool_line(line) else {
-            continue;
-        };
-        latest.insert(name, version);
-    }
-    Ok(latest)
+    Ok(output
+        .stdout()?
+        .lines()
+        .filter_map(parse_outdated_tool_line)
+        .collect())
 }
 
 fn parse_outdated_tool_line(line: &str) -> Option<(PackageName, VersionText)> {
@@ -402,12 +394,11 @@ fn parse_outdated_tool_line(line: &str) -> Option<(PackageName, VersionText)> {
     Some((name, latest))
 }
 
-fn bracket_value(line: &str, marker: &str) -> Option<String> {
+fn bracket_value<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
     let token = format!("[{marker}");
-    let start = line.find(&token)?;
-    let after = &line[start + token.len()..];
-    let end = after.find(']')?;
-    Some(after[..end].to_owned())
+    let (_, after) = line.split_once(token.as_str())?;
+    let (value, _) = after.split_once(']')?;
+    Some(value)
 }
 
 fn first_matching_version<'a>(
@@ -432,7 +423,7 @@ fn first_matching_version<'a>(
 ///
 /// Returns an error when JSON or timestamps are invalid, or no version
 /// timestamps are present.
-pub fn parse_pypi_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeline, UvError> {
+fn parse_pypi_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeline, UvError> {
     let root: PypiRoot = serde_json::from_str(raw).map_err(|err| UvError::Json(err.to_string()))?;
     let mut timestamps = BTreeMap::new();
     for (version, files) in root.releases {
@@ -452,7 +443,7 @@ pub fn parse_pypi_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeli
 /// # Errors
 ///
 /// Returns an error when the resolved execution mode is not supported.
-pub fn commands_for_execution_plan(
+fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
     min_release_age: Duration,
 ) -> Result<Vec<ExecutionCommand>, UvError> {
@@ -529,7 +520,7 @@ fn uv_tool_dir(process: &ProcessRunner) -> Result<String, UvError> {
         &CommandSpec::new("uv", ["tool", "dir"]),
         &CommandCheck::Success,
     )?;
-    let path = output.stdout()?.trim();
+    let path = output.stdout()?;
     if path.is_empty() {
         return Err(UvError::Infra(
             "uv tool dir returned an empty path".to_owned(),
@@ -556,7 +547,7 @@ fn installed_from_receipts(
         let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
             continue;
         };
-        let package = PackageName::new(name.to_owned())?;
+        let package = PackageName::new(name)?;
         let python_path = uv_tool_python_path(tool_dir, package.as_str());
         let current = python_package_version(process, &python_path, &package)?;
         tools.push(UvTool {
@@ -578,11 +569,10 @@ fn python_package_version(
         &CommandSpec::new(python_path, ["-c", script, package.as_str()]),
         &CommandCheck::Success,
     )?;
-    let version = output.stdout()?.trim();
+    let version = output.stdout()?;
     if version.is_empty() {
         return Err(UvError::Infra(format!(
-            "python returned empty version for uv tool '{}'",
-            package.as_str()
+            "python returned empty version for uv tool '{package}'"
         )));
     }
     VersionText::new(version).map_err(UvError::from)
@@ -625,14 +615,14 @@ fn resolve_target_with_exclude_newer(
 fn installed_tool(tool: &UvTool) -> Result<InstalledTool, UvError> {
     Ok(InstalledTool::new(
         UvManager::id(),
-        ToolId::new(tool.name.as_str().to_owned())?,
+        ToolId::new(tool.name.as_str())?,
         tool.name.clone(),
-        ToolName::new(tool.name.as_str().to_owned())?,
+        ToolName::new(tool.name.as_str())?,
         tool.current.clone(),
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Pypi,
-        AuditPackageName::new(tool.name.as_str().to_owned())?,
+        AuditPackageName::new(tool.name.as_str())?,
     )))
 }
 
@@ -654,8 +644,7 @@ fn time_map_to_timeline(
 ) -> Result<ReleaseTimeline, UvError> {
     if timestamps.is_empty() {
         return Err(UvError::MissingReleaseMetadata(format!(
-            "registry time metadata is empty for {}",
-            package.as_str()
+            "registry time metadata is empty for {package}"
         )));
     }
 
@@ -722,7 +711,7 @@ fn uv_tool_python_path(tool_dir: &str, tool_name: &str) -> String {
         .join("bin")
         .join("python")
         .to_string_lossy()
-        .to_string()
+        .into_owned()
 }
 
 fn normalize_package_name(name: &str) -> String {

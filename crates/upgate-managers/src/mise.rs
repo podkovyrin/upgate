@@ -153,7 +153,7 @@ impl ManagerAdapter for MiseManager {
             .and_then(|tools| {
                 tools
                     .into_iter()
-                    .map(|tool| installed_tool(&tool).map(ManagerScanInput::Installed))
+                    .map(|tool| installed_tool(tool).map(ManagerScanInput::Installed))
                     .collect()
             })
             .map_err(|err| adapter_error(&err))
@@ -239,7 +239,6 @@ struct MiseOutdatedEntry {
 #[derive(Debug, Deserialize)]
 struct MiseLsRemoteVersion {
     version: String,
-    #[serde(default)]
     created_at: Option<String>,
 }
 
@@ -282,7 +281,7 @@ enum VersionsHostCreatedAt {
 pub fn parse_installed_json(raw: &str) -> Result<Vec<MiseInstalledTool>, MiseError> {
     let parsed: BTreeMap<String, Vec<MiseLsEntry>> =
         serde_json::from_str(raw).map_err(|err| MiseError::Json(err.to_string()))?;
-    let mut tools = BTreeMap::new();
+    let mut tools = Vec::new();
     for (tool, entries) in parsed {
         let active_version = entries
             .iter()
@@ -291,18 +290,13 @@ pub fn parse_installed_json(raw: &str) -> Result<Vec<MiseInstalledTool>, MiseErr
         if let Some(version) =
             active_version.or_else(|| entries.into_iter().rev().find_map(|entry| entry.version))
         {
-            tools.insert(tool, version);
-        }
-    }
-    tools
-        .into_iter()
-        .map(|(tool, version)| {
-            Ok(MiseInstalledTool {
+            tools.push(MiseInstalledTool {
                 tool: PackageName::new(tool)?,
                 version: VersionText::new(version)?,
-            })
-        })
-        .collect()
+            });
+        }
+    }
+    Ok(tools)
 }
 
 fn parse_upgrade_dry_run_targets(raw: &str) -> Result<Vec<MiseDryRunItem>, MiseError> {
@@ -316,7 +310,7 @@ fn parse_upgrade_dry_run_targets(raw: &str) -> Result<Vec<MiseDryRunItem>, MiseE
         }
 
         if let Some(rest) = trimmed.strip_prefix("Would uninstall ") {
-            let (tool, version) = split_tool_and_version(rest).ok_or_else(|| {
+            let (tool, version) = rest.rsplit_once('@').ok_or_else(|| {
                 MiseError::InvalidDryRun(format!("invalid mise dry-run uninstall line: {trimmed}"))
             })?;
             old_versions.insert(tool.to_owned(), version.to_owned());
@@ -324,7 +318,7 @@ fn parse_upgrade_dry_run_targets(raw: &str) -> Result<Vec<MiseDryRunItem>, MiseE
         }
 
         if let Some(rest) = trimmed.strip_prefix("Would install ") {
-            let (tool, version) = split_tool_and_version(rest).ok_or_else(|| {
+            let (tool, version) = rest.rsplit_once('@').ok_or_else(|| {
                 MiseError::InvalidDryRun(format!("invalid mise dry-run install line: {trimmed}"))
             })?;
             let from_version = old_versions
@@ -339,7 +333,7 @@ fn parse_upgrade_dry_run_targets(raw: &str) -> Result<Vec<MiseDryRunItem>, MiseE
         }
     }
 
-    if let Some((tool, _)) = old_versions.into_iter().next() {
+    if let Some(tool) = old_versions.into_keys().next() {
         return Err(MiseError::InvalidDryRun(format!(
             "mise dry-run uninstall for {tool} was not followed by matching install"
         )));
@@ -391,7 +385,7 @@ pub fn parse_outdated_json(raw: &str) -> Result<BTreeMap<PackageName, VersionTex
 pub fn parse_ls_remote_json(tool: &str, raw: &str) -> Result<ReleaseTimeline, MiseError> {
     let value: serde_json::Value =
         serde_json::from_str(raw).map_err(|err| MiseError::Json(err.to_string()))?;
-    if let Ok(entries) = serde_json::from_value::<Vec<MiseLsRemoteVersion>>(value.clone()) {
+    if let Ok(entries) = Vec::<MiseLsRemoteVersion>::deserialize(&value) {
         let mut releases = Vec::new();
         for entry in entries {
             let Some(created_at) = entry.created_at else {
@@ -423,7 +417,7 @@ pub fn parse_versions_host_toml(raw: &str) -> Result<ReleaseTimeline, MiseError>
         toml::from_str(raw).map_err(|err| MiseError::Toml(err.to_string()))?;
     let mut releases = Vec::new();
     for (version, entry) in parsed.versions {
-        if let Ok(release) = release_entry(version, entry.created_at.to_timestamp_string()) {
+        if let Ok(release) = release_entry(version, entry.created_at.into_timestamp_string()) {
             releases.push(release);
         }
     }
@@ -510,7 +504,7 @@ fn scan_inputs_with_release_evidence(
         max_parallel_checks_per_manager.max(1),
         "mise verbose scan",
         |tool| {
-            let installed = installed_tool_with_registry_audit(process, &tool)?;
+            let installed = installed_tool_with_registry_audit(process, tool)?;
             let release_lookup = lookup_release_for_tool(
                 process,
                 http,
@@ -590,12 +584,6 @@ fn selected_upgrade_command(
 }
 fn global_upgrade_command(min_age_arg: &str) -> CommandSpec {
     CommandSpec::new("mise", ["upgrade", "--before", min_age_arg]).mutating()
-}
-
-fn split_tool_and_version(input: &str) -> Option<(&str, &str)> {
-    let idx = input.rfind('@')?;
-    let (tool, version) = input.split_at(idx);
-    Some((tool, version.strip_prefix('@')?))
 }
 
 fn upgrade_dry_run(process: &ProcessRunner, before: &str) -> Result<Vec<MisePlanItem>, MiseError> {
@@ -694,9 +682,7 @@ fn lookup_target_age(
         ReleaseLookupResult::Known(timeline) => matching_entry(&timeline, target).map_or(
             TargetAgeLookupResult::MissingMetadata,
             |entry| {
-                TargetAgeLookupResult::Known(TargetAgeEvidence::PublishedAt(
-                    entry.published_at.clone(),
-                ))
+                TargetAgeLookupResult::Known(TargetAgeEvidence::PublishedAt(entry.published_at))
             },
         ),
         ReleaseLookupResult::MissingMetadata => TargetAgeLookupResult::MissingMetadata,
@@ -732,10 +718,7 @@ fn scan_input_for_release_lookup(
     match lookup {
         ReleaseLookupResult::Known(timeline) => ManagerScanEvidenceInput::Installed {
             release_evidence: matching_entry(&timeline, &tool.installed_version).map(|entry| {
-                VersionReleaseEvidence::new(
-                    tool.installed_version.clone(),
-                    entry.published_at.clone(),
-                )
+                VersionReleaseEvidence::new(tool.installed_version.clone(), entry.published_at)
             }),
             tool,
         },
@@ -945,10 +928,10 @@ fn release_entry(version: String, timestamp: String) -> Result<ReleaseEntry, Mis
 }
 
 impl VersionsHostCreatedAt {
-    fn to_timestamp_string(&self) -> String {
+    fn into_timestamp_string(self) -> String {
         match self {
             Self::Datetime(value) => value.to_string(),
-            Self::String(value) => value.clone(),
+            Self::String(value) => value,
         }
     }
 }
@@ -1024,13 +1007,13 @@ fn strip_v_prefix(value: &str) -> &str {
     value.strip_prefix('v').unwrap_or(value)
 }
 
-fn installed_tool(tool: &MiseInstalledTool) -> Result<InstalledTool, MiseError> {
+fn installed_tool(tool: MiseInstalledTool) -> Result<InstalledTool, MiseError> {
     let installed = InstalledTool::new(
         MiseManager::id(),
         ToolId::new(tool.tool.as_str().to_owned())?,
         tool.tool.clone(),
         ToolName::new(tool.tool.as_str().to_owned())?,
-        tool.version.clone(),
+        tool.version,
     );
     Ok(match audit_subject_for_mise_tool(&tool.tool)? {
         Some(subject) => installed.with_audit_subject(subject),
@@ -1040,14 +1023,14 @@ fn installed_tool(tool: &MiseInstalledTool) -> Result<InstalledTool, MiseError> 
 
 fn installed_tool_with_registry_audit(
     process: &ProcessRunner,
-    tool: &MiseInstalledTool,
+    tool: MiseInstalledTool,
 ) -> Result<InstalledTool, MiseError> {
     let installed = InstalledTool::new(
         MiseManager::id(),
         ToolId::new(tool.tool.as_str().to_owned())?,
         tool.tool.clone(),
         ToolName::new(tool.tool.as_str().to_owned())?,
-        tool.version.clone(),
+        tool.version,
     );
     Ok(
         match audit_subject_for_mise_tool_with_registry(process, &tool.tool)? {

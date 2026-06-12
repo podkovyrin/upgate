@@ -386,21 +386,6 @@ impl ExecutionSupport {
             resolver_native_global,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Extra command-shape discriminator for managers whose selected updates need
-/// different native command forms.
-pub enum ExecutionTargetKind {
-    /// Standard package update command with no manager-specific grouping kind.
-    Standard,
-    /// Homebrew formula update command/group.
-    BrewFormula,
-    /// Homebrew cask update command/group.
-    BrewCask,
-}
-
-impl ExecutionSupport {
     pub const fn supports_exact_target(self) -> bool {
         self.exact
     }
@@ -418,6 +403,18 @@ impl ExecutionSupport {
                     MinAgeConstraintSupport::Optional | MinAgeConstraintSupport::NotApplicable
                 ))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Extra command-shape discriminator for managers whose selected updates need
+/// different native command forms.
+pub enum ExecutionTargetKind {
+    /// Standard package update command with no manager-specific grouping kind.
+    Standard,
+    /// Homebrew formula update command/group.
+    BrewFormula,
+    /// Homebrew cask update command/group.
+    BrewCask,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -465,6 +462,17 @@ impl PlanItem {
             | Self::ResolverError { id, .. } => id,
         }
     }
+    pub const fn package_name(&self) -> &PackageName {
+        match self {
+            Self::Update { candidate, .. } | Self::Delayed { candidate, .. } => {
+                &candidate.package_name
+            }
+            Self::Current { installed, .. }
+            | Self::Skipped { installed, .. }
+            | Self::ResolverError { installed, .. } => &installed.package_name,
+            Self::Blocked { seed, .. } => &seed.installed.package_name,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -494,20 +502,6 @@ impl UpdatePlan {
     }
     pub fn item(&self, id: &PlanItemId) -> Option<&PlanItem> {
         self.items.iter().find(|item| item.id() == id)
-    }
-}
-
-impl PlanItem {
-    pub const fn package_name(&self) -> &PackageName {
-        match self {
-            Self::Update { candidate, .. } | Self::Delayed { candidate, .. } => {
-                &candidate.package_name
-            }
-            Self::Current { installed, .. }
-            | Self::Skipped { installed, .. }
-            | Self::ResolverError { installed, .. } => &installed.package_name,
-            Self::Blocked { seed, .. } => &seed.installed.package_name,
-        }
     }
 }
 
@@ -605,7 +599,7 @@ pub enum AdvisoryLatestFact {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyBlockReason {
     PreReleaseBlocked,
     TrackRegression,

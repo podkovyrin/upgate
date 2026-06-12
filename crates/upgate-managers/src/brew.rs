@@ -26,11 +26,11 @@ use crate::adapter::{
     ManagerConfigDefaults, ReleaseLookupSubject, validate_version_policy,
 };
 
-pub const MANAGER_ID: &str = "brew";
+const MANAGER_ID: &str = "brew";
 const GITHUB_ACCEPT_HEADER: &str = "application/vnd.github+json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BrewError {
+enum BrewError {
     Infra(String),
     Interrupted(String),
     Json(String),
@@ -76,19 +76,19 @@ impl From<DomainError> for BrewError {
 }
 
 impl BrewError {
-    pub const fn is_interruption(&self) -> bool {
+    const fn is_interruption(&self) -> bool {
         matches!(self, Self::Interrupted(_))
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum BrewPackageKind {
+enum BrewPackageKind {
     Formula,
     Cask,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BrewInstalledPackage {
+struct BrewInstalledPackage {
     pub name: PackageName,
     pub version: VersionText,
     pub kind: BrewPackageKind,
@@ -98,7 +98,7 @@ pub struct BrewInstalledPackage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BrewOutdatedPackage {
+struct BrewOutdatedPackage {
     pub name: PackageName,
     pub installed: VersionText,
     pub target: VersionText,
@@ -356,7 +356,7 @@ impl ManagerAdapter for BrewManager {
 /// # Errors
 ///
 /// Returns an error when JSON is malformed or a package/version is blank.
-pub fn parse_outdated_json(raw: &str) -> Result<Vec<BrewOutdatedPackage>, BrewError> {
+fn parse_outdated_json(raw: &str) -> Result<Vec<BrewOutdatedPackage>, BrewError> {
     let parsed: OutdatedRoot =
         serde_json::from_str(raw).map_err(|err| BrewError::Json(err.to_string()))?;
     let mut packages = Vec::new();
@@ -388,7 +388,7 @@ pub fn parse_outdated_json(raw: &str) -> Result<Vec<BrewOutdatedPackage>, BrewEr
 /// # Errors
 ///
 /// Returns an error when JSON is malformed or package fields are blank.
-pub fn parse_installed_info_json(raw: &str) -> Result<Vec<BrewInstalledPackage>, BrewError> {
+fn parse_installed_info_json(raw: &str) -> Result<Vec<BrewInstalledPackage>, BrewError> {
     let parsed: InfoRoot =
         serde_json::from_str(raw).map_err(|err| BrewError::Json(err.to_string()))?;
     let mut packages = Vec::new();
@@ -474,7 +474,7 @@ fn parse_package_info_json(
 /// # Errors
 ///
 /// Returns an error when Brew discovery fails.
-pub fn update_inputs(
+fn update_inputs(
     process: &ProcessRunner,
     http: &HttpClient,
     env: &Env,
@@ -549,7 +549,7 @@ pub fn update_inputs(
 /// # Errors
 ///
 /// Returns an error when the resolved execution mode is unsupported by Brew.
-pub fn commands_for_execution_plan(
+fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
 ) -> Result<Vec<ExecutionCommand>, BrewError> {
     let mut formulae = Vec::new();
@@ -761,7 +761,7 @@ fn release_lookup_for_installed(
         TargetAgeLookupResult::Known(evidence) => {
             ReleaseLookupResult::Known(ReleaseTimeline::new(vec![ReleaseEntry::new(
                 tool.installed_version.clone(),
-                evidence.timestamp().clone(),
+                *evidence.timestamp(),
             )]))
         }
         TargetAgeLookupResult::MissingMetadata => ReleaseLookupResult::MissingMetadata,
@@ -777,7 +777,7 @@ fn scan_input_for_target_age(
         TargetAgeLookupResult::Known(evidence) => ManagerScanEvidenceInput::Installed {
             release_evidence: Some(VersionReleaseEvidence::new(
                 tool.installed_version.clone(),
-                evidence.timestamp().clone(),
+                *evidence.timestamp(),
             )),
             tool,
         },
@@ -843,7 +843,7 @@ fn git_log_timestamp_for_ref(
         ),
         &CommandCheck::Success,
     )?;
-    let seconds = output.stdout()?.trim().parse::<u64>().map_err(|err| {
+    let seconds = output.stdout()?.parse::<u64>().map_err(|err| {
         BrewError::ReleaseLookup(format!("invalid git timestamp for {source_path}: {err}"))
     })?;
     Ok(timestamp_from_unix_seconds(seconds))
@@ -885,14 +885,8 @@ fn github_target_age(
         .commit
         .committer
         .as_ref()
+        .or(first.commit.author.as_ref())
         .map(|person| person.date.as_str())
-        .or_else(|| {
-            first
-                .commit
-                .author
-                .as_ref()
-                .map(|person| person.date.as_str())
-        })
         .ok_or_else(|| "GitHub commit payload missing date".to_owned())?;
     let parsed = DateTime::parse_from_rfc3339(date).map_err(|err| err.to_string())?;
     let seconds = u64::try_from(parsed.timestamp())
@@ -914,21 +908,18 @@ fn github_token(env: &Env) -> Option<String> {
         .find_map(|var_name| env.non_empty_var(var_name))
 }
 
-fn parse_github_remote(remote: &str) -> Option<(String, String)> {
-    let rest = if let Some(rest) = remote.strip_prefix("https://github.com/") {
-        rest
-    } else if let Some(rest) = remote.strip_prefix("http://github.com/") {
-        rest
-    } else if let Some(rest) = remote.strip_prefix("git@github.com:") {
-        rest
-    } else if let Some(rest) = remote.strip_prefix("ssh://git@github.com/") {
-        rest
-    } else {
-        return None;
-    };
+fn parse_github_remote(remote: &str) -> Option<(&str, &str)> {
+    let rest = [
+        "https://github.com/",
+        "http://github.com/",
+        "git@github.com:",
+        "ssh://git@github.com/",
+    ]
+    .into_iter()
+    .find_map(|prefix| remote.strip_prefix(prefix))?;
     let cleaned = rest.trim_end_matches('/').trim_end_matches(".git");
     let mut parts = cleaned.split('/');
-    Some((parts.next()?.to_owned(), parts.next()?.to_owned()))
+    Some((parts.next()?, parts.next()?))
 }
 
 fn fallback_remote_branch(
@@ -973,7 +964,7 @@ fn installed_tool(package: &BrewInstalledPackage) -> Result<InstalledTool, BrewE
         BrewManager::id(),
         brew_tool_id(&package.kind, &package.name)?,
         package.name.clone(),
-        ToolName::new(package.name.as_str().to_owned())?,
+        ToolName::new(package.name.as_str())?,
         package.version.clone(),
     );
     if let Some(subject) = brew_audit_subject(package.repo_url.as_deref()) {
@@ -991,7 +982,7 @@ fn installed_tool_for_outdated(
         BrewManager::id(),
         brew_tool_id(&package.kind, &package.name)?,
         package.name.clone(),
-        ToolName::new(package.name.as_str().to_owned())?,
+        ToolName::new(package.name.as_str())?,
         package.installed.clone(),
     );
     let repo_url = package
@@ -1010,7 +1001,7 @@ fn brew_audit_subject(repo_url: Option<&str>) -> Option<AuditSubject> {
     if repo_url.is_empty() {
         return None;
     }
-    AuditPackageName::new(repo_url.to_owned())
+    AuditPackageName::new(repo_url)
         .ok()
         .map(|name| AuditSubject::new(OsvEcosystem::Git, name))
 }
@@ -1038,7 +1029,7 @@ fn metadata_for_installed_tool(
     tool: &InstalledTool,
 ) -> Option<BrewPackageMetadata> {
     for kind in [BrewPackageKind::Formula, BrewPackageKind::Cask] {
-        if brew_tool_id(&kind, &tool.package_name).ok().as_ref() == Some(&tool.tool_id) {
+        if brew_tool_id(&kind, &tool.package_name).is_ok_and(|id| id == tool.tool_id) {
             return packages.remove(&brew_package_key(tool.package_name.clone(), kind));
         }
     }

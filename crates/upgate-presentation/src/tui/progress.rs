@@ -1,5 +1,4 @@
 use std::io;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
@@ -50,9 +49,11 @@ const QUIT_CONFIRM_KEYS: &[KeyBinding<'static>] = &[
     },
 ];
 const MAX_DRAINED_INPUT_EVENTS: usize = 256;
+const QUIT_DIALOG_WIDTH: u16 = 54;
+const QUIT_DIALOG_HEIGHT: u16 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProgressInput {
+enum ProgressInput {
     Quit,
     ConfirmQuitAfterCurrent,
     CancelQuit,
@@ -67,7 +68,7 @@ pub enum InteractiveProgressOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InteractiveProgressScreen {
+struct InteractiveProgressScreen {
     state: ExecutionProgressState,
     phase: ProgressPhase,
     spinner_tick: usize,
@@ -86,7 +87,7 @@ enum ProgressPhase {
 }
 
 impl InteractiveProgressScreen {
-    pub const fn new(state: ExecutionProgressState, trace_commands: bool) -> Self {
+    const fn new(state: ExecutionProgressState, trace_commands: bool) -> Self {
         Self {
             state,
             phase: ProgressPhase::Running,
@@ -96,10 +97,10 @@ impl InteractiveProgressScreen {
             table_offset: 0,
         }
     }
-    pub const fn quit_confirmation_open(&self) -> bool {
+    const fn quit_confirmation_open(&self) -> bool {
         matches!(self.phase, ProgressPhase::QuitConfirm)
     }
-    pub const fn finished(&self) -> bool {
+    const fn finished(&self) -> bool {
         matches!(self.phase, ProgressPhase::Result | ProgressPhase::Done)
     }
 
@@ -115,11 +116,11 @@ impl InteractiveProgressScreen {
         matches!(self.phase, ProgressPhase::Result)
     }
 
-    pub const fn tick(&mut self) {
+    const fn tick(&mut self) {
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
     }
 
-    pub fn apply_event(&mut self, event: ExecutionProgressEvent) {
+    fn apply_event(&mut self, event: ExecutionProgressEvent) {
         let finished = matches!(event, ExecutionProgressEvent::Finished);
         let command_log_len = self.state.command_log.len();
         self.state.apply_event(event);
@@ -133,7 +134,7 @@ impl InteractiveProgressScreen {
         }
     }
 
-    pub fn handle_input(&mut self, input: ProgressInput, stop_requested: &AtomicBool) {
+    fn handle_input(&mut self, input: ProgressInput, stop_requested: &AtomicBool) {
         match (self.phase, input) {
             (ProgressPhase::QuitConfirm, ProgressInput::ConfirmQuitAfterCurrent) => {
                 stop_requested.store(true, Ordering::Relaxed);
@@ -169,13 +170,9 @@ impl InteractiveProgressScreen {
     }
 
     fn scroll_command_log_by(&mut self, delta: isize, visible_height: usize) {
-        let next_scroll = if delta.is_positive() {
-            self.command_log_scroll_from_bottom
-                .saturating_add(delta.unsigned_abs())
-        } else {
-            self.command_log_scroll_from_bottom
-                .saturating_sub(delta.unsigned_abs())
-        };
+        let next_scroll = self
+            .command_log_scroll_from_bottom
+            .saturating_add_signed(delta);
         self.command_log_scroll_from_bottom =
             clamp_command_log_scroll(next_scroll, self.state.command_log.len(), visible_height);
     }
@@ -189,11 +186,7 @@ impl InteractiveProgressScreen {
     }
 
     fn scroll_table_by(&mut self, delta: isize, visible_height: usize) {
-        let next_offset = if delta.is_positive() {
-            self.table_offset.saturating_add(delta.unsigned_abs())
-        } else {
-            self.table_offset.saturating_sub(delta.unsigned_abs())
-        };
+        let next_offset = self.table_offset.saturating_add_signed(delta);
         self.table_offset = next_offset.min(progress_table_max_offset(
             self.progress_table_row_count(),
             visible_height,
@@ -218,11 +211,10 @@ impl InteractiveProgressScreen {
 /// # Errors
 ///
 /// Returns an I/O error for terminal setup, rendering, event reading, or cleanup failures.
-#[expect(clippy::needless_pass_by_value)]
 pub fn run_interactive_progress(
     state: ExecutionProgressState,
     rx: &Receiver<ExecutionProgressEvent>,
-    stop_requested: Arc<AtomicBool>,
+    stop_requested: &AtomicBool,
     trace_commands: bool,
 ) -> io::Result<InteractiveProgressOutcome> {
     let mut stdout = io::stdout();
@@ -243,7 +235,7 @@ pub fn run_interactive_progress(
     };
     let mut screen = InteractiveProgressScreen::new(state, trace_commands);
 
-    let result = run_progress_loop(&mut terminal, &mut screen, rx, &stop_requested);
+    let result = run_progress_loop(&mut terminal, &mut screen, rx, stop_requested);
 
     let cleanup = cleanup_terminal(&mut terminal);
     match (result, cleanup) {
@@ -439,11 +431,7 @@ fn handle_progress_event(
         return;
     }
 
-    let input = progress_input_from_event_for_phase(
-        event,
-        screen.quit_confirmation_open(),
-        screen.result_open(),
-    );
+    let input = progress_input_from_event_for_phase(event, screen.phase);
     screen.handle_input(input, stop_requested);
 }
 
@@ -490,7 +478,7 @@ fn handle_quit_dialog_mouse(
     if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
         return;
     }
-    let Some(inner) = modal_inner_rect(area, 54, 7) else {
+    let Some(inner) = modal_inner_rect(area, QUIT_DIALOG_WIDTH, QUIT_DIALOG_HEIGHT) else {
         return;
     };
     if !rect_contains(inner, mouse.column, mouse.row) {
@@ -565,11 +553,7 @@ const fn rect_contains(area: Rect, column: u16, row: u16) -> bool {
     column >= area.x && column < area.right() && row >= area.y && row < area.bottom()
 }
 
-fn progress_input_from_event_for_phase(
-    event: &Event,
-    quit_confirmation_open: bool,
-    result_open: bool,
-) -> ProgressInput {
+fn progress_input_from_event_for_phase(event: &Event, phase: ProgressPhase) -> ProgressInput {
     let Event::Key(key) = event else {
         return ProgressInput::Ignore;
     };
@@ -577,7 +561,7 @@ fn progress_input_from_event_for_phase(
         return ProgressInput::Ignore;
     }
 
-    if result_open {
+    if matches!(phase, ProgressPhase::Result) {
         return match key.code {
             KeyCode::Char('q' | 'Q') => ProgressInput::Quit,
             _ => ProgressInput::Ignore,
@@ -588,7 +572,7 @@ fn progress_input_from_event_for_phase(
         return ProgressInput::Interrupt;
     }
 
-    if quit_confirmation_open {
+    if matches!(phase, ProgressPhase::QuitConfirm) {
         return match key.code {
             KeyCode::Enter | KeyCode::Char('y' | 'Y') => ProgressInput::ConfirmQuitAfterCurrent,
             KeyCode::Esc | KeyCode::Char('n' | 'N') => ProgressInput::CancelQuit,
@@ -635,7 +619,10 @@ fn draw_progress(frame: &mut ratatui::Frame<'_>, screen: &mut InteractiveProgres
     render_separator(frame, app_frame.header_separator, &theme);
     draw_progress_body(frame, screen, app_frame.body, &theme);
     render_separator(frame, app_frame.footer_separator, &theme);
-    frame.render_widget(Paragraph::new(footer_line(&theme)), app_frame.footer);
+    frame.render_widget(
+        Paragraph::new(key_footer(FOOTER_KEYS, &theme)),
+        app_frame.footer,
+    );
 
     if screen.quit_confirmation_open() {
         draw_quit_dialog(frame, app_frame.inner, &theme);
@@ -647,8 +634,7 @@ fn header_line(screen: &InteractiveProgressScreen, theme: &TuiTheme) -> Line<'st
         .state
         .rows
         .iter()
-        .find(|row| matches!(row.status, ExecutionProgressStatus::Running))
-        .map(|row| row.manager_id.to_string());
+        .find(|row| matches!(row.status, ExecutionProgressStatus::Running));
     let title = running_manager.map_or_else(
         || {
             if screen.finished() {
@@ -660,7 +646,7 @@ fn header_line(screen: &InteractiveProgressScreen, theme: &TuiTheme) -> Line<'st
                 "Applying updates".to_owned()
             }
         },
-        |manager| format!("Applying updates: {manager}"),
+        |row| format!("Applying updates: {}", row.manager_id),
     );
     Line::from(Span::styled(title, theme.title))
 }
@@ -677,18 +663,12 @@ fn draw_progress_body(
     };
 
     draw_progress_table(frame, screen, layout.main, theme);
-    let commands = screen
-        .state
-        .command_log
-        .iter()
-        .map(|entry| entry.command.clone())
-        .collect::<Vec<_>>();
     screen.clamp_command_log_scroll(usize::from(layout.log.height));
     render_command_log(
         frame,
         layout.separator,
         layout.log,
-        &commands,
+        &screen.state.command_log,
         screen.command_log_scroll_from_bottom,
         theme,
     );
@@ -814,7 +794,7 @@ const fn progress_row_style(status: &ExecutionProgressStatus, theme: &TuiTheme) 
     }
 }
 
-pub fn spinner_frame(spinner_tick: usize) -> &'static str {
+pub(super) fn spinner_frame(spinner_tick: usize) -> &'static str {
     SPINNER[spinner_tick % SPINNER.len()]
 }
 
@@ -855,12 +835,15 @@ fn status_note(status: &ExecutionProgressStatus) -> String {
     }
 }
 
-fn footer_line(theme: &TuiTheme) -> Line<'static> {
-    key_footer(FOOTER_KEYS, theme)
-}
-
 fn draw_quit_dialog(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect, theme: &TuiTheme) {
-    let Some(inner) = render_modal_frame(frame, area, 54, 7, None, theme) else {
+    let Some(inner) = render_modal_frame(
+        frame,
+        area,
+        QUIT_DIALOG_WIDTH,
+        QUIT_DIALOG_HEIGHT,
+        None,
+        theme,
+    ) else {
         return;
     };
     let lines = vec![

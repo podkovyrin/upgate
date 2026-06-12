@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Display};
 use std::time::{Duration, SystemTime};
 
@@ -26,11 +26,11 @@ use crate::adapter::{
     ManagerConfigDefaults, ReleaseLookupSubject, validate_version_policy,
 };
 
-pub const MANAGER_ID: &str = "gem";
+const MANAGER_ID: &str = "gem";
 const GEM_MAX_PARALLEL_CHECKS: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GemError {
+enum GemError {
     Infra(String),
     Interrupted(String),
     Json(String),
@@ -91,14 +91,14 @@ impl GemError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GemInstalledPackage {
+struct GemInstalledPackage {
     pub name: PackageName,
     pub version: VersionText,
     pub is_default: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GemOutdatedPackage {
+struct GemOutdatedPackage {
     pub name: PackageName,
     pub current: VersionText,
 }
@@ -237,7 +237,7 @@ impl ManagerAdapter for GemManager {
 /// # Errors
 ///
 /// Returns an error when a parsed gem name or version is blank.
-pub fn parse_gem_list(raw: &str) -> Result<Vec<GemInstalledPackage>, GemError> {
+fn parse_gem_list(raw: &str) -> Result<Vec<GemInstalledPackage>, GemError> {
     let mut packages = BTreeMap::<String, GemInstalledPackage>::new();
     for line in raw.lines() {
         let trimmed = line.trim();
@@ -284,7 +284,7 @@ pub fn parse_gem_list(raw: &str) -> Result<Vec<GemInstalledPackage>, GemError> {
 /// # Errors
 ///
 /// Returns an error when a parsed gem name or version is blank.
-pub fn parse_gem_outdated(raw: &str) -> Result<Vec<GemOutdatedPackage>, GemError> {
+fn parse_gem_outdated(raw: &str) -> Result<Vec<GemOutdatedPackage>, GemError> {
     let mut packages = BTreeMap::new();
     for line in raw.lines() {
         let trimmed = line.trim();
@@ -300,10 +300,8 @@ pub fn parse_gem_outdated(raw: &str) -> Result<Vec<GemOutdatedPackage>, GemError
         let Some((current, _latest)) = inner.split_once(" < ") else {
             continue;
         };
-        let current = current
-            .trim()
-            .strip_prefix("default:")
-            .map_or_else(|| current.trim(), str::trim);
+        let current = current.trim();
+        let current = current.strip_prefix("default:").map_or(current, str::trim);
         if current.is_empty() {
             continue;
         }
@@ -323,7 +321,7 @@ pub fn parse_gem_outdated(raw: &str) -> Result<Vec<GemOutdatedPackage>, GemError
 /// # Errors
 ///
 /// Returns an error when command output cannot be parsed.
-pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, GemError> {
+fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, GemError> {
     let output = process.run(&CommandSpec::new("gem", ["list"]), &CommandCheck::Success)?;
     parse_gem_list(output.stdout()?)?
         .into_iter()
@@ -337,7 +335,7 @@ pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, G
 /// # Errors
 ///
 /// Returns an error when discovery fails or Ruby runtime cannot be parsed.
-pub fn update_inputs(
+fn update_inputs(
     process: &ProcessRunner,
     http: &HttpClient,
     env: &Env,
@@ -348,10 +346,11 @@ pub fn update_inputs(
             .run(&CommandSpec::new("gem", ["list"]), &CommandCheck::Success)?
             .stdout()?,
     )?;
-    let installed_defaults = installed
-        .into_iter()
-        .map(|package| (package.name.as_str().to_owned(), package.is_default))
-        .collect::<BTreeMap<_, _>>();
+    let default_names = installed
+        .iter()
+        .filter(|package| package.is_default)
+        .map(|package| package.name.as_str())
+        .collect::<BTreeSet<_>>();
     let outdated = parse_gem_outdated(
         process
             .run(
@@ -362,12 +361,7 @@ pub fn update_inputs(
     )?;
     let candidates = outdated
         .into_iter()
-        .filter(|package| {
-            !installed_defaults
-                .get(package.name.as_str())
-                .copied()
-                .unwrap_or(false)
-        })
+        .filter(|package| !default_names.contains(package.name.as_str()))
         .collect::<Vec<_>>();
     if candidates.is_empty() {
         return Ok(Vec::new());
@@ -386,7 +380,7 @@ pub fn update_inputs(
 }
 
 /// Looks up `RubyGems` release metadata.
-pub fn lookup_release(
+fn lookup_release(
     http: &HttpClient,
     env: &Env,
     package: &PackageName,
@@ -413,7 +407,7 @@ pub fn lookup_release(
 ///
 /// Returns an error when JSON or timestamps are invalid, or no compatible
 /// version timestamps are present.
-pub fn parse_rubygems_json(
+fn parse_rubygems_json(
     package: &PackageName,
     raw: &str,
     ruby_runtime: Option<&Version>,
@@ -432,7 +426,7 @@ pub fn parse_rubygems_json(
         }
         timestamps.insert(item.number, item.created_at);
     }
-    time_map_to_timeline(package, timestamps.into_iter().collect())
+    time_map_to_timeline(package, timestamps)
 }
 
 /// Creates gem commands for a resolved execution plan.
@@ -440,7 +434,7 @@ pub fn parse_rubygems_json(
 /// # Errors
 ///
 /// Returns an error when the resolved execution mode is not supported.
-pub fn commands_for_execution_plan(
+fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
 ) -> Result<Vec<ExecutionCommand>, GemError> {
     let mut commands = Vec::new();
@@ -501,7 +495,7 @@ fn newest_stable_version(timeline: &ReleaseTimeline) -> Option<VersionText> {
             left_entry
                 .published_at
                 .as_system_time()
-                .cmp(right_entry.published_at.as_system_time())
+                .cmp(&right_entry.published_at.as_system_time())
                 .then_with(|| left_version.cmp(right_version))
         })
         .map(|(entry, _)| entry.version.clone())
@@ -527,19 +521,10 @@ fn ruby_requirement_allows(runtime: &Version, requirement_raw: Option<&str>) -> 
     if raw.is_empty() {
         return true;
     }
-    for token in raw
-        .split(',')
+    raw.split(',')
         .map(str::trim)
         .filter(|token| !token.is_empty())
-    {
-        let Some(matches) = requirement_token_matches(runtime, token) else {
-            return false;
-        };
-        if !matches {
-            return false;
-        }
-    }
-    true
+        .all(|token| requirement_token_matches(runtime, token) == Some(true))
 }
 
 fn requirement_token_matches(runtime: &Version, token: &str) -> Option<bool> {
@@ -573,21 +558,16 @@ fn pessimistic_upper_bound(raw: &str) -> Option<Version> {
         return None;
     }
     let original_len = segments.len();
-    let mut nums = segments
+    let nums = segments
         .iter()
         .map(|segment| segment.parse::<u64>().ok())
         .collect::<Option<Vec<_>>>()?;
-    while nums.len() < 3 {
-        nums.push(0);
-    }
-    if original_len <= 2 {
-        nums[0] = nums[0].saturating_add(1);
-        nums[1] = 0;
+    let (major, minor) = if original_len <= 2 {
+        (nums[0].saturating_add(1), 0)
     } else {
-        nums[1] = nums[1].saturating_add(1);
-    }
-    nums[2] = 0;
-    Version::parse(&format!("{}.{}.{}", nums[0], nums[1], nums[2])).ok()
+        (nums[0], nums[1].saturating_add(1))
+    };
+    Some(Version::new(major, minor, 0))
 }
 
 fn parse_version_for_compare(raw: &str) -> Option<Version> {
@@ -612,7 +592,7 @@ fn parse_version_for_compare(raw: &str) -> Option<Version> {
     while nums.len() < 3 {
         nums.push(0);
     }
-    Version::parse(&format!("{}.{}.{}", nums[0], nums[1], nums[2])).ok()
+    Some(Version::new(nums[0], nums[1], nums[2]))
 }
 
 fn exact_command_for_item(item: &ResolvedExecutionItem) -> Result<CommandSpec, GemError> {
@@ -681,7 +661,7 @@ const fn update_input(
 
 fn time_map_to_timeline(
     package: &PackageName,
-    timestamps: Vec<(String, String)>,
+    timestamps: BTreeMap<String, String>,
 ) -> Result<ReleaseTimeline, GemError> {
     if timestamps.is_empty() {
         return Err(GemError::MissingReleaseMetadata(format!(

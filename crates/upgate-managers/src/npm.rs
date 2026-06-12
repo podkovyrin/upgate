@@ -434,28 +434,28 @@ fn native_global_update_command(min_age_days: u64) -> CommandSpec {
 fn installed_tool(package: NpmInstalledPackage) -> Result<InstalledTool, NpmError> {
     Ok(InstalledTool::new(
         NpmManager::id(),
-        ToolId::new(package.name.as_str().to_owned())?,
+        ToolId::new(package.name.as_str())?,
         package.name.clone(),
-        ToolName::new(package.name.as_str().to_owned())?,
+        ToolName::new(package.name.as_str())?,
         package.version,
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Npm,
-        AuditPackageName::new(package.name.as_str().to_owned())?,
+        AuditPackageName::new(package.name.as_str())?,
     )))
 }
 
 fn installed_tool_from_outdated(package: NpmOutdatedPackage) -> Result<InstalledTool, NpmError> {
     Ok(InstalledTool::new(
         NpmManager::id(),
-        ToolId::new(package.name.as_str().to_owned())?,
+        ToolId::new(package.name.as_str())?,
         package.name.clone(),
-        ToolName::new(package.name.as_str().to_owned())?,
+        ToolName::new(package.name.as_str())?,
         package.current,
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Npm,
-        AuditPackageName::new(package.name.as_str().to_owned())?,
+        AuditPackageName::new(package.name.as_str())?,
     )))
 }
 
@@ -524,10 +524,7 @@ fn time_map_to_timeline(
 fn parse_timestamp(value: &str) -> Option<DateTime<chrono::FixedOffset>> {
     DateTime::parse_from_rfc3339(value).ok().or_else(|| {
         let naive = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f").ok()?;
-        Some(DateTime::from_naive_utc_and_offset(
-            naive,
-            chrono::FixedOffset::east_opt(0)?,
-        ))
+        Some(naive.and_utc().fixed_offset())
     })
 }
 

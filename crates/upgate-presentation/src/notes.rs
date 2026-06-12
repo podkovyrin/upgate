@@ -68,10 +68,10 @@ pub fn vulnerability_note(findings: &[AuditFinding]) -> String {
     }
 }
 
-pub fn skip_reason(reason: &SkipReason) -> String {
+pub fn skip_reason(reason: &SkipReason) -> &str {
     match reason {
-        SkipReason::Pinned => "pinned".to_owned(),
-        SkipReason::ManagerRule(detail) => detail.clone(),
+        SkipReason::Pinned => "pinned",
+        SkipReason::ManagerRule(detail) => detail,
     }
 }
 

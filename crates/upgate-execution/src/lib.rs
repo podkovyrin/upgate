@@ -313,18 +313,18 @@ fn resolve_recommended_selection(
     item: &PlanItem,
     selected: &SelectedItem,
 ) -> Result<ResolvedExecutionItem, ExecutionSelectionError> {
-    if let PlanItem::Update { candidate, .. } = item {
-        return Ok(resolved_item(
+    match item {
+        PlanItem::Update { candidate, .. } => Ok(resolved_item(
             selected.plan_item_id.clone(),
             candidate,
             known_candidate_target(candidate)?,
             false,
             false,
-        ));
+        )),
+        _ => Err(ExecutionSelectionError::ItemNotExecutable(
+            item.id().to_string(),
+        )),
     }
-    Err(ExecutionSelectionError::ItemNotExecutable(
-        item.id().to_string(),
-    ))
 }
 
 fn resolve_exact_selection(
@@ -344,7 +344,7 @@ fn resolve_exact_selection(
                 candidate,
                 ResolvedExecutionTarget::Known(target_version.clone()),
                 true,
-                exact_target_bypasses_min_release_age(candidate, target_version),
+                target_bypasses_min_release_age(&candidate.diagnostics, target_version),
             ))
         }
         PlanItem::Blocked {
@@ -632,14 +632,12 @@ fn should_use_native_global_update(
 ) -> bool {
     if !capabilities.native_global_update
         || selected.is_empty()
-        || selected.iter().any(|item| item.bypass_min_release_age)
-        || selected.iter().any(|item| item.exact_target_required)
-        || !selected
-            .iter()
-            .all(|item| item.execution_support.native_global)
-        || !selected
-            .iter()
-            .all(|item| item.execution_target_kind == ExecutionTargetKind::Standard)
+        || !selected.iter().all(|item| {
+            !item.bypass_min_release_age
+                && !item.exact_target_required
+                && item.execution_support.native_global
+                && item.execution_target_kind == ExecutionTargetKind::Standard
+        })
     {
         return false;
     }
@@ -735,13 +733,6 @@ const fn should_use_grouped_native_update(item: &ResolvedExecutionItem) -> bool 
 
 const fn supports_exact_target(item: &ResolvedExecutionItem) -> bool {
     item.execution_support.exact && matches!(item.target, ResolvedExecutionTarget::Known(_))
-}
-
-fn exact_target_bypasses_min_release_age(
-    candidate: &UpdateCandidate,
-    target_version: &VersionText,
-) -> bool {
-    target_bypasses_min_release_age(&candidate.diagnostics, target_version)
 }
 
 fn target_bypasses_min_release_age(

@@ -6,14 +6,14 @@ use upgate_domain::{PlanItemId, SelectedItem, SelectedUpdate, UpdateSelectionPol
 use crate::{SelectionRow, SelectionRowStatus, SelectionView, TargetOption};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InteractiveSelectionState {
+pub(super) struct InteractiveSelectionState {
     rows: Vec<SelectionRow>,
     selection_policy: UpdateSelectionPolicy,
     selected_targets: BTreeMap<PlanItemId, SelectedUpdate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SelectionStateError {
+pub(super) enum SelectionStateError {
     UnknownPlanItem(String),
     TargetUnavailable(String),
     PlanningFailed(String),
@@ -36,7 +36,7 @@ impl Display for SelectionStateError {
 impl std::error::Error for SelectionStateError {}
 
 impl InteractiveSelectionState {
-    pub fn new(view: SelectionView, selection_policy: UpdateSelectionPolicy) -> Self {
+    pub(super) fn new(view: SelectionView, selection_policy: UpdateSelectionPolicy) -> Self {
         let selected_targets = view
             .rows
             .iter()
@@ -50,19 +50,22 @@ impl InteractiveSelectionState {
             selected_targets,
         }
     }
-    pub fn rows(&self) -> &[SelectionRow] {
+    pub(super) fn rows(&self) -> &[SelectionRow] {
         &self.rows
     }
-    pub fn selected_target(&self, plan_item_id: &PlanItemId) -> Option<&SelectedUpdate> {
+    pub(super) fn selected_target(&self, plan_item_id: &PlanItemId) -> Option<&SelectedUpdate> {
         self.selected_targets.get(plan_item_id)
     }
-    pub fn selected_items(&self) -> Vec<SelectedItem> {
+    pub(super) fn selected_items(&self) -> Vec<SelectedItem> {
         self.selected_targets
             .iter()
             .map(|(plan_item_id, target)| SelectedItem::new(plan_item_id.clone(), target.clone()))
             .collect()
     }
-    pub const fn selection_policy(&self) -> &UpdateSelectionPolicy {
+    pub(super) fn selected_count(&self) -> usize {
+        self.selected_targets.len()
+    }
+    pub(super) const fn selection_policy(&self) -> &UpdateSelectionPolicy {
         &self.selection_policy
     }
 
@@ -72,7 +75,7 @@ impl InteractiveSelectionState {
     ///
     /// Returns [`SelectionStateError::UnknownPlanItem`] when the id is not in the view, or
     /// [`SelectionStateError::TargetUnavailable`] when the row is not a selectable update.
-    pub fn select_recommended(
+    pub(super) fn select_recommended(
         &mut self,
         plan_item_id: &PlanItemId,
     ) -> Result<(), SelectionStateError> {
@@ -94,7 +97,10 @@ impl InteractiveSelectionState {
     /// # Errors
     ///
     /// Returns [`SelectionStateError::UnknownPlanItem`] when the id is not in the view.
-    pub fn deselect(&mut self, plan_item_id: &PlanItemId) -> Result<(), SelectionStateError> {
+    pub(super) fn deselect(
+        &mut self,
+        plan_item_id: &PlanItemId,
+    ) -> Result<(), SelectionStateError> {
         let row = self.row(plan_item_id)?;
         let package_name = row.package_name.clone();
         let is_update = row.status == SelectionRowStatus::Update;
@@ -112,7 +118,7 @@ impl InteractiveSelectionState {
     /// Returns [`SelectionStateError::UnknownPlanItem`] when the id is not in the view, or
     /// [`SelectionStateError::TargetUnavailable`] when the row does not support forced exact
     /// execution.
-    pub fn force_candidate(
+    pub(super) fn force_candidate(
         &mut self,
         plan_item_id: &PlanItemId,
     ) -> Result<(), SelectionStateError> {
@@ -138,7 +144,7 @@ impl InteractiveSelectionState {
     /// Returns [`SelectionStateError::UnknownPlanItem`] when the id is not in the view, or
     /// [`SelectionStateError::TargetUnavailable`] when the target version is not available for the
     /// row.
-    pub fn choose_alternate_exact(
+    pub(super) fn choose_alternate_exact(
         &mut self,
         plan_item_id: &PlanItemId,
         target_version: VersionText,
@@ -170,7 +176,7 @@ impl InteractiveSelectionState {
     ///
     /// Returns an error when the item is unknown or has no manager-resolved
     /// target option.
-    pub fn choose_manager_resolved(
+    pub(super) fn choose_manager_resolved(
         &mut self,
         plan_item_id: &PlanItemId,
     ) -> Result<(), SelectionStateError> {

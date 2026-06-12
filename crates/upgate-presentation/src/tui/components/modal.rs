@@ -17,7 +17,7 @@ pub fn render_modal_frame(
         return None;
     }
 
-    let popup = centered_rect(area, width.min(area.width), height.min(area.height));
+    let popup = centered_rect(area, width, height);
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme.frame_border);

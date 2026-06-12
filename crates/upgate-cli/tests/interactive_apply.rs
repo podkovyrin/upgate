@@ -57,7 +57,7 @@ fn confirmed_interactive_apply_persists_selection_before_failed_execution() {
 fn update_plan(manager_id: &str, package_name: &str) -> UpdatePlan {
     let manager_id = ManagerId::new(manager_id).expect("valid manager id");
     let package_name_value = PackageName::new(package_name).expect("valid package name");
-    let item_id = plan_item_id(&format!("{}:{}", manager_id.as_str(), package_name));
+    let item_id = plan_item_id(&format!("{manager_id}:{package_name}"));
     UpdatePlan::new(
         manager_id,
         vec![PlanItem::Update {

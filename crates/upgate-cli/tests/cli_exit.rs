@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -322,8 +322,5 @@ impl Drop for Sandbox {
 }
 
 fn binary_path() -> PathBuf {
-    std::env::var_os("CARGO_BIN_EXE_upgate").map_or_else(
-        || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/upgate"),
-        PathBuf::from,
-    )
+    PathBuf::from(env!("CARGO_BIN_EXE_upgate"))
 }

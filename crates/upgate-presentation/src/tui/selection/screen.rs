@@ -11,7 +11,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InteractiveSelectionScreen {
+pub(super) struct InteractiveSelectionScreen {
     pub(super) managers: Vec<ManagerSelectionState>,
     pub(super) command_log: Vec<String>,
     pub(super) command_log_scroll_from_bottom: usize,
@@ -91,10 +91,21 @@ pub(super) struct ConfirmationSummary {
 }
 
 impl InteractiveSelectionScreen {
-    pub fn from_manager_ids(manager_ids: Vec<ManagerId>) -> Self {
+    pub(super) fn from_manager_ids(manager_ids: Vec<ManagerId>) -> Self {
         let managers = manager_ids
             .into_iter()
-            .map(|manager_id| empty_manager_state(manager_id, ManagerPlanningStatus::Waiting))
+            .map(|manager_id| {
+                let view = SelectionView {
+                    manager_id: manager_id.clone(),
+                    rows: Vec::new(),
+                };
+                ManagerSelectionState {
+                    manager_id,
+                    version_policy: VersionPolicy::None,
+                    planning_status: ManagerPlanningStatus::Waiting,
+                    state: InteractiveSelectionState::new(view, UpdateSelectionPolicy::default()),
+                }
+            })
             .collect();
 
         let mut screen = Self {
@@ -116,16 +127,16 @@ impl InteractiveSelectionScreen {
         screen.clamp_cursor();
         screen
     }
-    pub const fn trace_commands(mut self, trace_commands: bool) -> Self {
+    pub(super) const fn trace_commands(mut self, trace_commands: bool) -> Self {
         self.trace_commands = trace_commands;
         self
     }
 
-    pub const fn tick(&mut self) {
+    pub(super) const fn tick(&mut self) {
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
     }
 
-    pub fn apply_planning_event(&mut self, event: InteractiveSelectionPlanningEvent) {
+    pub(super) fn apply_planning_event(&mut self, event: InteractiveSelectionPlanningEvent) {
         let active_tab = self.active_tab_identity();
         let open_picker_row = self
             .target_picker
@@ -169,18 +180,15 @@ impl InteractiveSelectionScreen {
                 );
             }
             InteractiveSelectionPlanningEvent::ManagerError { manager_id, detail } => {
-                let policy = self
+                let existing = self
                     .managers
                     .iter()
-                    .find(|manager| manager.manager_id == manager_id)
-                    .map_or_else(UpdateSelectionPolicy::default, |manager| {
-                        manager.state.selection_policy().clone()
-                    });
-                let version_policy = self
-                    .managers
-                    .iter()
-                    .find(|manager| manager.manager_id == manager_id)
-                    .map_or(VersionPolicy::None, |manager| manager.version_policy);
+                    .find(|manager| manager.manager_id == manager_id);
+                let policy = existing.map_or_else(UpdateSelectionPolicy::default, |manager| {
+                    manager.state.selection_policy().clone()
+                });
+                let version_policy =
+                    existing.map_or(VersionPolicy::None, |manager| manager.version_policy);
                 self.replace_manager_state(
                     manager_id,
                     version_policy,
@@ -221,7 +229,7 @@ impl InteractiveSelectionScreen {
             });
         }
     }
-    pub const fn target_picker_open(&self) -> bool {
+    pub(super) const fn target_picker_open(&self) -> bool {
         self.target_picker.is_some()
     }
     pub(super) const fn target_picker(&self) -> Option<TargetPickerState> {
@@ -257,7 +265,7 @@ impl InteractiveSelectionScreen {
     pub(super) const fn sync_tab_offset(&mut self, tab_offset: usize) {
         self.tab_offset = tab_offset;
     }
-    pub fn placeholder_message(&self) -> Option<String> {
+    pub(super) fn placeholder_message(&self) -> Option<String> {
         if !self.visible_row_refs().is_empty() {
             return None;
         }
@@ -298,7 +306,7 @@ impl InteractiveSelectionScreen {
     ///
     /// Returns an error if the input tries to select a target that is not available for the
     /// current row, or if the resulting typed selection would not validate against the plan.
-    pub fn handle_input(
+    pub(super) fn handle_input(
         &mut self,
         input: SelectionInput,
     ) -> Result<SelectionControl, SelectionStateError> {
@@ -341,7 +349,7 @@ impl InteractiveSelectionScreen {
 
         Ok(SelectionControl::Continue)
     }
-    pub fn selection_drafts(&self) -> Vec<InteractiveManagerSelectionDraft> {
+    pub(super) fn selection_drafts(&self) -> Vec<InteractiveManagerSelectionDraft> {
         self.managers
             .iter()
             .map(|manager| InteractiveManagerSelectionDraft {
@@ -356,7 +364,7 @@ impl InteractiveSelectionScreen {
             .managers
             .iter()
             .filter_map(|manager| {
-                let selected_count = manager.state.selected_items().len();
+                let selected_count = manager.state.selected_count();
                 (selected_count > 0).then(|| ConfirmationManagerSummary {
                     manager: manager.manager_id.to_string(),
                     selected_count,
@@ -432,7 +440,17 @@ impl InteractiveSelectionScreen {
             SelectionInput::PickerNextRow => self.move_picker_to_row(1),
             SelectionInput::RecommendedTarget => self.choose_recommended_target()?,
             SelectionInput::PickerConfirm => self.confirm_picker_target()?,
-            _ => {}
+            SelectionInput::Up
+            | SelectionInput::Down
+            | SelectionInput::NextTab
+            | SelectionInput::PreviousTab
+            | SelectionInput::ToggleCurrent
+            | SelectionInput::SelectVisible
+            | SelectionInput::SelectNoneVisible
+            | SelectionInput::ToggleViewAll
+            | SelectionInput::OpenTargetPicker
+            | SelectionInput::Confirm
+            | SelectionInput::Ignore => {}
         }
         Ok(SelectionControl::Continue)
     }
@@ -462,7 +480,6 @@ impl InteractiveSelectionScreen {
     }
 
     pub(super) fn scroll_table_by(&mut self, delta: isize, visible_height: usize) {
-        let max_offset = self.table_max_offset(visible_height);
         if delta == 0 {
             return;
         }
@@ -473,6 +490,7 @@ impl InteractiveSelectionScreen {
             return;
         }
 
+        let max_offset = self.table_max_offset(visible_height);
         self.table_offset = if delta.is_positive() {
             self.table_offset
                 .saturating_add(delta.unsigned_abs())
@@ -527,32 +545,36 @@ impl InteractiveSelectionScreen {
         let Some(visible) = self.current_visible_row() else {
             return Ok(());
         };
-        let row = self.row(visible).clone();
-        let manager = &mut self.managers[visible.manager_idx];
-        if manager.state.selected_target(&row.plan_item_id).is_some() {
-            manager.state.deselect(&row.plan_item_id)?;
-        } else if row.status == SelectionRowStatus::Update {
-            manager.state.select_recommended(&row.plan_item_id)?;
-        } else if row
+        let row = self.row(visible);
+        let plan_item_id = row.plan_item_id.clone();
+        let is_update = row.status == SelectionRowStatus::Update;
+        let has_forced_candidate = row
             .target_options
             .iter()
-            .any(|option| matches!(option, TargetOption::ForcedCandidate { .. }))
-        {
-            manager.state.force_candidate(&row.plan_item_id)?;
+            .any(|option| matches!(option, TargetOption::ForcedCandidate { .. }));
+        let manager = &mut self.managers[visible.manager_idx];
+        if manager.state.selected_target(&plan_item_id).is_some() {
+            manager.state.deselect(&plan_item_id)?;
+        } else if is_update {
+            manager.state.select_recommended(&plan_item_id)?;
+        } else if has_forced_candidate {
+            manager.state.force_candidate(&plan_item_id)?;
         }
         Ok(())
     }
 
     fn select_visible(&mut self, selected: bool) -> Result<(), SelectionStateError> {
         for visible in self.visible_row_refs() {
-            let row = self.row(visible).clone();
+            let row = self.row(visible);
+            let plan_item_id = row.plan_item_id.clone();
+            let is_update = row.status == SelectionRowStatus::Update;
             let manager = &mut self.managers[visible.manager_idx];
             if selected {
-                if row.status == SelectionRowStatus::Update {
-                    manager.state.select_recommended(&row.plan_item_id)?;
+                if is_update {
+                    manager.state.select_recommended(&plan_item_id)?;
                 }
-            } else if manager.state.selected_target(&row.plan_item_id).is_some() {
-                manager.state.deselect(&row.plan_item_id)?;
+            } else if manager.state.selected_target(&plan_item_id).is_some() {
+                manager.state.deselect(&plan_item_id)?;
             }
         }
         Ok(())
@@ -637,9 +659,6 @@ impl InteractiveSelectionScreen {
         else {
             return;
         };
-        if visible_rows.is_empty() {
-            return;
-        }
 
         let mut next_idx = current_idx;
         for _ in 0..visible_rows.len() {
@@ -676,15 +695,16 @@ impl InteractiveSelectionScreen {
         let Some(picker) = self.target_picker else {
             return Ok(());
         };
-        let row = self.row(picker.visible_row).clone();
-        if row
+        let row = self.row(picker.visible_row);
+        let plan_item_id = row.plan_item_id.clone();
+        let has_recommended = row
             .target_options
             .iter()
-            .any(|option| matches!(option, TargetOption::Recommended { .. }))
-        {
+            .any(|option| matches!(option, TargetOption::Recommended { .. }));
+        if has_recommended {
             self.managers[picker.visible_row.manager_idx]
                 .state
-                .select_recommended(&row.plan_item_id)?;
+                .select_recommended(&plan_item_id)?;
         }
         self.target_picker = None;
         Ok(())
@@ -694,23 +714,25 @@ impl InteractiveSelectionScreen {
         let Some(picker) = self.target_picker else {
             return Ok(());
         };
-        let row = self.row(picker.visible_row).clone();
+        let row = self.row(picker.visible_row);
+        let plan_item_id = row.plan_item_id.clone();
+        let option = row.target_options.get(picker.cursor).cloned();
         let manager = &mut self.managers[picker.visible_row.manager_idx];
-        if let Some(option) = row.target_options.get(picker.cursor) {
+        if let Some(option) = option {
             match option {
                 TargetOption::Recommended { .. } => {
-                    manager.state.select_recommended(&row.plan_item_id)?;
+                    manager.state.select_recommended(&plan_item_id)?;
                 }
                 TargetOption::ForcedCandidate { .. } => {
-                    manager.state.force_candidate(&row.plan_item_id)?;
+                    manager.state.force_candidate(&plan_item_id)?;
                 }
                 TargetOption::AlternateExact { target_version, .. } => {
                     manager
                         .state
-                        .choose_alternate_exact(&row.plan_item_id, target_version.clone())?;
+                        .choose_alternate_exact(&plan_item_id, target_version)?;
                 }
                 TargetOption::ManagerResolved { .. } => {
-                    manager.state.choose_manager_resolved(&row.plan_item_id)?;
+                    manager.state.choose_manager_resolved(&plan_item_id)?;
                 }
             }
         }
@@ -936,22 +958,6 @@ impl InteractiveSelectionScreen {
             self.command_log.len(),
             visible_height,
         );
-    }
-}
-
-fn empty_manager_state(
-    manager_id: ManagerId,
-    planning_status: ManagerPlanningStatus,
-) -> ManagerSelectionState {
-    let view = SelectionView {
-        manager_id: manager_id.clone(),
-        rows: Vec::new(),
-    };
-    ManagerSelectionState {
-        manager_id,
-        version_policy: VersionPolicy::None,
-        planning_status,
-        state: InteractiveSelectionState::new(view, UpdateSelectionPolicy::default()),
     }
 }
 

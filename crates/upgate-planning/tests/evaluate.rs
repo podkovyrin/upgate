@@ -45,8 +45,8 @@ fn audit_subject(package: &str) -> AuditSubject {
     )
 }
 
-fn audit_query(package: &str, version: &str) -> AuditQuery {
-    AuditQuery::new(audit_subject(package), self::version(version))
+fn audit_query(package: &str, version_text: &str) -> AuditQuery {
+    AuditQuery::new(audit_subject(package), version(version_text))
 }
 
 fn finding(id: &str) -> AuditFinding {
@@ -100,7 +100,7 @@ fn advisory_latest_does_not_replace_manager_selected_target() {
         seed,
         VersionPolicy::None,
         SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
-        Duration::from_secs(0),
+        Duration::ZERO,
         &BTreeMap::new(),
     );
 
@@ -127,7 +127,7 @@ fn manager_selected_target_missing_required_evidence_blocks_the_item() {
         seed,
         VersionPolicy::None,
         SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
-        Duration::from_secs(0),
+        Duration::ZERO,
         &BTreeMap::new(),
     );
 
@@ -160,7 +160,7 @@ fn advisory_lookup_failure_is_non_blocking_diagnostic_for_manager_selected_targe
         seed,
         VersionPolicy::None,
         SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
-        Duration::from_secs(0),
+        Duration::ZERO,
         &BTreeMap::new(),
     );
 
@@ -200,7 +200,7 @@ fn planner_preserves_manager_produced_item_execution_support() {
         seed,
         VersionPolicy::Stable,
         SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS),
-        Duration::from_secs(0),
+        Duration::ZERO,
         &BTreeMap::new(),
     ) else {
         panic!("expected update")
@@ -468,18 +468,17 @@ fn audit_block_records_the_specific_blocked_candidate_version() {
 
 #[test]
 fn manager_selected_policy_blocked_target_keeps_audit_fact_for_picker() {
-    let seed = manager_selected_seed(
-        "alpha",
-        "1.0.0",
-        "2.0.0-alpha.1",
-        TargetAgeLookupResult::Known(TargetAgeEvidence::PublishedAt(ReleaseTimestamp::new(
-            SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 500),
-        ))),
+    let seed = UpdateSeed::manager_selected(
+        installed_tool_with_audit("alpha", "1.0.0"),
+        ManagerSelectedTarget::new(
+            version("2.0.0-alpha.1"),
+            TargetAgeLookupResult::Known(TargetAgeEvidence::PublishedAt(ReleaseTimestamp::new(
+                SystemTime::UNIX_EPOCH + Duration::from_secs(NOW_SECS - 500),
+            ))),
+        ),
+        VersionScheme::SemVer,
+        ExecutionSupport::native_or_exact(),
     );
-    let seed = UpdateSeed {
-        installed: seed.installed.with_audit_subject(audit_subject("alpha")),
-        ..seed
-    };
     let audit_results = BTreeMap::from([(
         audit_query("alpha", "2.0.0-alpha.1"),
         AuditLookupResult::Vulnerable {

@@ -65,13 +65,17 @@ pub fn visible_tabs(
     }
 }
 
-pub fn render_tabs(frame: &mut Frame<'_>, area: Rect, tabs: &VisibleTabs, theme: &TuiTheme) {
+pub fn render_tabs(frame: &mut Frame<'_>, area: Rect, tabs: VisibleTabs, theme: &TuiTheme) {
     if area.is_empty() {
         return;
     }
 
-    let left_hint_width =
-        hint_area_width(tabs.has_left_overflow, area.width, LEFT_OVERFLOW_HINT_WIDTH);
+    let left_hint_width = if tabs.has_left_overflow {
+        area.width
+            .min(u16::try_from(LEFT_OVERFLOW_HINT_WIDTH).unwrap_or(u16::MAX))
+    } else {
+        0
+    };
 
     let [left_area, tabs_area] =
         Layout::horizontal([Constraint::Length(left_hint_width), Constraint::Fill(1)]).areas(area);
@@ -81,7 +85,7 @@ pub fn render_tabs(frame: &mut Frame<'_>, area: Rect, tabs: &VisibleTabs, theme:
     }
 
     if !tabs.titles.is_empty() {
-        let widget = Tabs::new(tabs.titles.clone())
+        let widget = Tabs::new(tabs.titles)
             .select(tabs.selected_in_slice)
             .style(theme.normal)
             .highlight_style(theme.keycap)
@@ -105,12 +109,4 @@ fn tab_width(title: &Line<'_>) -> usize {
 
 const fn left_overflow_hint_width(enabled: bool) -> usize {
     if enabled { LEFT_OVERFLOW_HINT_WIDTH } else { 0 }
-}
-
-fn hint_area_width(enabled: bool, available_width: u16, hint_width: usize) -> u16 {
-    if enabled {
-        available_width.min(u16::try_from(hint_width).unwrap_or(u16::MAX))
-    } else {
-        0
-    }
 }

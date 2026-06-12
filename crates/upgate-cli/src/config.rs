@@ -378,9 +378,7 @@ impl ConfigFile {
             };
         }
 
-        let section_manager_id = ManagerId::new(section.to_owned())
-            .map_err(|_| ConfigError::UnknownManager(section.to_owned()))?;
-        ensure_known_manager(section_manager_id.as_str())
+        ensure_known_manager(section)
             .map_err(|_| ConfigError::UnknownManager(section.to_owned()))?;
 
         match key {
@@ -445,9 +443,7 @@ impl ConfigFile {
     ) -> Result<(), ConfigError> {
         for manager_id in selected_ids {
             let manager_id = manager_id.as_ref();
-            let manager_id_value = ManagerId::new(manager_id.to_owned())
-                .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
-            ensure_known_manager(manager_id_value.as_str())
+            ensure_known_manager(manager_id)
                 .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
             self.sections.entry(manager_id.to_owned()).or_default().mode =
                 Some(ManagerMode::Apply.to_string());
@@ -463,11 +459,9 @@ impl ConfigFile {
     pub fn set_manager_selection_policy(
         &mut self,
         manager_id: &str,
-        selection_policy: UpdateSelectionPolicy,
+        selection_policy: &UpdateSelectionPolicy,
     ) -> Result<(), ConfigError> {
-        let manager_id_value = ManagerId::new(manager_id.to_owned())
-            .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
-        ensure_known_manager(manager_id_value.as_str())
+        ensure_known_manager(manager_id)
             .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
 
         self.sections
@@ -498,9 +492,7 @@ impl ConfigFile {
         manager_id: &str,
         path: &Path,
     ) -> Result<(), ConfigError> {
-        let manager_id_value = ManagerId::new(manager_id.to_owned())
-            .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
-        ensure_known_manager(manager_id_value.as_str())
+        ensure_known_manager(manager_id)
             .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
 
         if let Some(parent) = path.parent() {
@@ -549,10 +541,9 @@ impl ConfigFile {
                 table.remove("selection");
             }
         } else {
-            if !doc.contains_key(manager_id) {
-                doc[manager_id] = Item::Table(Table::new());
-            }
-            let table = doc[manager_id]
+            let table = doc
+                .entry(manager_id)
+                .or_insert(Item::Table(Table::new()))
                 .as_table_like_mut()
                 .ok_or_else(|| ConfigError::NonTableManagerSection(manager_id.to_owned()))?;
             let mut selection_table = Table::new();
@@ -611,15 +602,13 @@ fn parse_manager_mode(manager_id: &str, raw: &str) -> Result<ManagerMode, Config
 }
 
 fn validate_policy_support(manager_id: &str, policy: VersionPolicy) -> Result<(), ConfigError> {
-    let manager_id = ManagerId::new(manager_id.to_owned())
+    let supported = supports_version_policy(manager_id, policy)
         .map_err(|_| ConfigError::UnknownManager(manager_id.to_owned()))?;
-    let supported = supports_version_policy(manager_id.as_str(), policy)
-        .map_err(|_| ConfigError::UnknownManager(manager_id.to_string()))?;
     if supported {
         Ok(())
     } else {
         Err(ConfigError::UnsupportedVersionPolicy {
-            manager_id: manager_id.to_string(),
+            manager_id: manager_id.to_owned(),
             policy,
         })
     }
@@ -700,7 +689,7 @@ fn parse_selection_policy(
 }
 
 fn selection_section_from_policy(
-    selection_policy: UpdateSelectionPolicy,
+    selection_policy: &UpdateSelectionPolicy,
 ) -> SelectionSectionConfig {
     SelectionSectionConfig {
         mode: Some(
@@ -712,8 +701,8 @@ fn selection_section_from_policy(
         ),
         except: selection_policy
             .except
-            .into_iter()
-            .map(|package_name| package_name.to_string())
+            .iter()
+            .map(ToString::to_string)
             .collect(),
     }
 }

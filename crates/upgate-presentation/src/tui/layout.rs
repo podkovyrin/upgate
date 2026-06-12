@@ -19,8 +19,14 @@ pub(super) fn app_frame(area: Rect) -> Option<AppFrame> {
         return None;
     }
 
-    let [header, header_separator, body, footer_separator, footer] =
-        vertical_header_body_footer(inner);
+    let [header, header_separator, body, footer_separator, footer] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
     Some(AppFrame {
         outer: area,
         inner,
@@ -30,15 +36,4 @@ pub(super) fn app_frame(area: Rect) -> Option<AppFrame> {
         footer_separator,
         footer,
     })
-}
-
-pub(super) fn vertical_header_body_footer(area: Rect) -> [Rect; 5] {
-    Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Fill(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(area)
 }

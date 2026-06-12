@@ -9,7 +9,7 @@ use crate::{
 pub struct ExecutionProgressState {
     pub rows: Vec<ExecutionProgressRow>,
     pub manager_failures: Vec<ExecutionProgressManagerFailure>,
-    pub command_log: Vec<ExecutionCommandLogEntry>,
+    pub command_log: Vec<String>,
     pub finished: bool,
     pub stop_after_current: bool,
 }
@@ -47,11 +47,6 @@ pub struct ExecutionProgressManagerFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExecutionCommandLogEntry {
-    pub command: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutionProgressEvent {
     ManagerStarted {
         manager_id: ManagerId,
@@ -80,18 +75,15 @@ pub struct ExecutionProgressSummary {
 }
 
 impl ExecutionProgressState {
-    pub fn from_execution_plans(plans: Vec<(ManagerId, ResolvedExecutionPlan)>) -> Self {
-        let rows = plans
-            .into_iter()
-            .flat_map(|(manager_id, plan)| {
-                plan.intents.into_iter().flat_map(move |intent| {
-                    execution_intent_items(intent).into_iter().map({
-                        let manager_id = manager_id.clone();
-                        move |item| row_from_item(manager_id.clone(), item)
-                    })
-                })
-            })
-            .collect();
+    pub fn from_execution_plans(plans: &[(ManagerId, ResolvedExecutionPlan)]) -> Self {
+        let mut rows = Vec::new();
+        for (manager_id, plan) in plans {
+            for intent in &plan.intents {
+                for item in execution_intent_items(intent) {
+                    rows.push(row_from_item(manager_id.clone(), item));
+                }
+            }
+        }
 
         Self {
             rows,
@@ -103,10 +95,7 @@ impl ExecutionProgressState {
     }
 
     pub fn with_command_log(mut self, commands: Vec<String>) -> Self {
-        self.command_log = commands
-            .into_iter()
-            .map(|command| ExecutionCommandLogEntry { command })
-            .collect();
+        self.command_log = commands;
         self
     }
 
@@ -124,7 +113,7 @@ impl ExecutionProgressState {
                 }
             }
             ExecutionProgressEvent::CommandStarted { command } => {
-                self.command_log.push(ExecutionCommandLogEntry { command });
+                self.command_log.push(command);
             }
             ExecutionProgressEvent::ManagerFinished { report } => {
                 for result in report.items {
@@ -150,10 +139,6 @@ impl ExecutionProgressState {
                 }
             }
             ExecutionProgressEvent::ManagerFailed { manager_id, detail } => {
-                self.manager_failures.push(ExecutionProgressManagerFailure {
-                    manager_id: manager_id.clone(),
-                    detail: detail.clone(),
-                });
                 for row in self
                     .rows
                     .iter_mut()
@@ -168,6 +153,8 @@ impl ExecutionProgressState {
                         };
                     }
                 }
+                self.manager_failures
+                    .push(ExecutionProgressManagerFailure { manager_id, detail });
             }
             ExecutionProgressEvent::Fatal { detail } => {
                 for row in &mut self.rows {
@@ -213,24 +200,24 @@ impl ExecutionProgressState {
     }
 }
 
-fn execution_intent_items(intent: ExecutionCommandIntent) -> Vec<ResolvedExecutionItem> {
+fn execution_intent_items(intent: &ExecutionCommandIntent) -> &[ResolvedExecutionItem] {
     match intent {
         ExecutionCommandIntent::Exact(item)
         | ExecutionCommandIntent::NativeSelected(item)
-        | ExecutionCommandIntent::ResolverNative(item) => vec![item],
+        | ExecutionCommandIntent::ResolverNative(item) => std::slice::from_ref(item),
         ExecutionCommandIntent::GroupedNative(items)
         | ExecutionCommandIntent::NativeGlobal(items)
         | ExecutionCommandIntent::ResolverNativeGlobal(items) => items,
     }
 }
 
-fn row_from_item(manager_id: ManagerId, item: ResolvedExecutionItem) -> ExecutionProgressRow {
+fn row_from_item(manager_id: ManagerId, item: &ResolvedExecutionItem) -> ExecutionProgressRow {
     ExecutionProgressRow {
         manager_id,
-        plan_item_id: item.plan_item_id,
-        package_name: item.package_name,
-        installed_version: item.installed_version,
-        target: item.target,
+        plan_item_id: item.plan_item_id.clone(),
+        package_name: item.package_name.clone(),
+        installed_version: item.installed_version.clone(),
+        target: item.target.clone(),
         status: ExecutionProgressStatus::Pending,
     }
 }

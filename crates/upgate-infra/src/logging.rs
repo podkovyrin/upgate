@@ -2,7 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitStatus;
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::Local;
@@ -79,7 +79,7 @@ pub fn init_logging(options: LoggingOptions, env: &Env) -> Result<PathBuf, Infra
     Ok(session_dir)
 }
 
-pub fn on_command_start(command_display: &str, is_mutation: bool) {
+pub(crate) fn on_command_start(command_display: &str, is_mutation: bool) {
     let options = OPTIONS.get().copied().unwrap_or_default();
     if options.trace_commands {
         print_command_start(command_display, options, is_mutation);
@@ -114,7 +114,7 @@ fn print_command_start(command_display: &str, options: LoggingOptions, is_mutati
     }
 }
 
-pub fn on_command_spawn_error(command_display: &str, is_mutation: bool, err: &str) {
+pub(crate) fn on_command_spawn_error(command_display: &str, is_mutation: bool, err: &str) {
     let Some(logger) = LOGGER.get() else {
         return;
     };
@@ -127,7 +127,7 @@ pub fn on_command_spawn_error(command_display: &str, is_mutation: bool, err: &st
     );
 }
 
-pub fn on_command_finish(
+pub(crate) fn on_command_finish(
     command_display: &str,
     status: ExitStatus,
     stdout: &[u8],
@@ -141,6 +141,10 @@ pub fn on_command_finish(
     };
 
     let should_dump_streams = logger.options.log_commands || is_mutation || !status_allowed;
+    if !should_dump_streams {
+        return;
+    }
+
     let level = if !status_allowed {
         "ERROR"
     } else if is_mutation {
@@ -149,20 +153,18 @@ pub fn on_command_finish(
         "DEBUG"
     };
 
-    if should_dump_streams {
-        let _ = write_line(
-            logger,
-            level,
-            &format!(
-                "command finish: {command_display}; exit={}; accepted={status_allowed}; elapsed_ms={}",
-                exit_code_label(status.code()),
-                elapsed.as_millis()
-            ),
-        );
+    let _ = write_line(
+        logger,
+        level,
+        &format!(
+            "command finish: {command_display}; exit={}; accepted={status_allowed}; elapsed_ms={}",
+            exit_code_label(status.code()),
+            elapsed.as_millis()
+        ),
+    );
 
-        let _ = write_block(logger, "STDOUT", &String::from_utf8_lossy(stdout));
-        let _ = write_block(logger, "STDERR", &String::from_utf8_lossy(stderr));
-    }
+    let _ = write_block(logger, "STDOUT", &String::from_utf8_lossy(stdout));
+    let _ = write_block(logger, "STDERR", &String::from_utf8_lossy(stderr));
 }
 
 fn log_base_dir(env: &Env) -> Option<PathBuf> {
@@ -222,14 +224,13 @@ fn with_log_file(
     logger: &Logger,
     write: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> io::Result<()> {
-    let _guard = lock_or_recover(&logger.write_lock);
+    let _guard = logger
+        .write_lock
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let path = logger.session_dir.join("core.log");
     let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
     write(&mut file)
-}
-
-fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn exit_code_label(code: Option<i32>) -> String {

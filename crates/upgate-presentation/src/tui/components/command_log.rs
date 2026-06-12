@@ -44,15 +44,12 @@ pub fn render_command_log(
         clamp_command_log_scroll(scroll_from_bottom, commands.len(), visible_height);
     let max_offset = commands.len().saturating_sub(visible_height);
     let offset_from_top = max_offset.saturating_sub(scroll_from_bottom);
-    let items = commands
-        .iter()
-        .map(|command| {
-            ListItem::new(Line::from(Span::styled(
-                format!("$ {command}"),
-                theme.muted,
-            )))
-        })
-        .collect::<Vec<_>>();
+    let items = commands.iter().map(|command| {
+        ListItem::new(Line::from(Span::styled(
+            format!("$ {command}"),
+            theme.muted,
+        )))
+    });
     let mut state = ListState::default().with_offset(offset_from_top);
     frame.render_stateful_widget(List::new(items), log_area, &mut state);
     render_vertical_scrollbar(

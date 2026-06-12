@@ -16,23 +16,22 @@ pub(super) fn version_diff_spans(
     let changed_from = changed_version_segment_index(from, to);
     let changed_style = base_style.patch(theme.version_changed_for(selected));
     let to_core = to.strip_prefix('v').unwrap_or(to);
-    let to_parts = to_core.split('.').collect::<Vec<_>>();
 
     let mut spans = Vec::new();
     if to.starts_with('v') {
-        spans.push(Span::styled("v".to_owned(), base_style));
+        spans.push(Span::styled("v", base_style));
     }
 
-    for (idx, part) in to_parts.iter().enumerate() {
+    for (idx, part) in to_core.split('.').enumerate() {
         if idx > 0 {
-            spans.push(Span::styled(".".to_owned(), base_style));
+            spans.push(Span::styled(".", base_style));
         }
         let style = if changed_from.is_some_and(|first| idx >= first) {
             changed_style
         } else {
             base_style
         };
-        spans.push(Span::styled((*part).to_owned(), style));
+        spans.push(Span::styled(part.to_owned(), style));
     }
 
     spans

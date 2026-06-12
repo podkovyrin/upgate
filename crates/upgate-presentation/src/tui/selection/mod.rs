@@ -161,17 +161,16 @@ fn run_selection_loop(
     planning_events: &Receiver<InteractiveSelectionPlanningEvent>,
 ) -> io::Result<InteractiveSelectionOutcome> {
     loop {
-        drain_planning_events(screen, planning_events)?;
+        drain_planning_events(screen, planning_events);
         terminal.draw(|frame| draw_selection(frame, screen))?;
         if !event::poll(Duration::from_millis(100))? {
             screen.tick();
             continue;
         }
-        drain_planning_events(screen, planning_events)?;
+        drain_planning_events(screen, planning_events);
         let size = terminal.size()?;
         let area = Rect::new(0, 0, size.width, size.height);
-        let control = handle_selection_ready_events(screen, area)?
-            .map_err(|err| io::Error::other(err.to_string()))?;
+        let control = handle_selection_ready_events(screen, area)?.map_err(io::Error::other)?;
         match control {
             SelectionControl::Continue => {}
             SelectionControl::Confirm => {
@@ -188,14 +187,14 @@ fn run_selection_loop(
 fn drain_planning_events(
     screen: &mut InteractiveSelectionScreen,
     planning_events: &Receiver<InteractiveSelectionPlanningEvent>,
-) -> io::Result<()> {
+) {
     loop {
         match planning_events.try_recv() {
             Ok(event) => screen.apply_planning_event(event),
-            Err(TryRecvError::Empty) => return Ok(()),
+            Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => {
                 screen.planning_events_disconnected();
-                return Ok(());
+                break;
             }
         }
     }

@@ -4,7 +4,7 @@
 mod batch;
 pub mod config;
 mod interactive;
-pub mod registry;
+mod registry;
 mod snapshot;
 
 use std::fmt::{self, Display};
@@ -103,7 +103,7 @@ enum CliCommand {
 }
 
 impl Display for CliCommand {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Scan => "scan",
             Self::Plan => "plan",
@@ -280,7 +280,11 @@ fn run_cli(cli: &Cli) -> CliRunResult {
 }
 
 fn reported_command_log_dir(cli: &Cli, log_dir: Option<&PathBuf>) -> Option<PathBuf> {
-    cli.log_commands.then(|| log_dir.cloned()).flatten()
+    if cli.log_commands {
+        log_dir.cloned()
+    } else {
+        None
+    }
 }
 
 fn init_command_logging(

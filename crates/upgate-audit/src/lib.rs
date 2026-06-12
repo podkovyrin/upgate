@@ -65,7 +65,8 @@ impl AuditService {
     ///
     /// # Errors
     ///
-    /// Returns an error when the process-local cache cannot be accessed.
+    /// Returns an error when the process-local cache cannot be accessed or the
+    /// parallel worker pool cannot be created.
     pub fn query(
         &self,
         queries: impl IntoIterator<Item = AuditQuery>,
@@ -93,10 +94,7 @@ impl AuditService {
         drop(cached);
 
         if !missing.is_empty() {
-            let chunks = missing
-                .chunks(self.inner.chunk_size)
-                .map(<[AuditQuery]>::to_vec)
-                .collect::<Vec<_>>();
+            let chunks = missing.chunks(self.inner.chunk_size).collect::<Vec<_>>();
             let chunk_results = run_ordered_parallel(
                 chunks,
                 self.inner.concurrency,
@@ -110,11 +108,7 @@ impl AuditService {
                 .cache
                 .lock()
                 .map_err(|_| AuditError::CachePoisoned)?;
-            for chunk in chunk_results {
-                for (query, result) in chunk {
-                    cache.insert(query, result);
-                }
-            }
+            cache.extend(chunk_results.into_iter().flatten());
         }
 
         let cache = self
@@ -128,14 +122,14 @@ impl AuditService {
             .collect())
     }
 
-    fn query_chunk(&self, queries: Vec<AuditQuery>) -> BTreeMap<AuditQuery, AuditLookupResult> {
-        match self.query_chunk_inner(&queries) {
+    fn query_chunk(&self, queries: &[AuditQuery]) -> BTreeMap<AuditQuery, AuditLookupResult> {
+        match self.query_chunk_inner(queries) {
             Ok(results) => results,
             Err(err) => queries
-                .into_iter()
+                .iter()
                 .map(|query| {
                     (
-                        query,
+                        query.clone(),
                         AuditLookupResult::LookupFailed {
                             detail: err.to_string(),
                         },

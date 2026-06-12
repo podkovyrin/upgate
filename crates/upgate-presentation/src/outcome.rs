@@ -143,7 +143,7 @@ pub enum OutcomeVisibility {
     Always,
     VerboseOnly,
 }
-pub fn render_outcome_table(table: &OutcomeTable, theme: OutputTheme) -> String {
+pub(crate) fn render_outcome_table(table: &OutcomeTable, theme: OutputTheme) -> String {
     let rows = table
         .rows
         .iter()
@@ -157,17 +157,13 @@ pub fn render_outcome_table(table: &OutcomeTable, theme: OutputTheme) -> String 
 
     render_table_rows(&rows, theme.color()).join("\n")
 }
-pub fn version_label(version: &str) -> String {
-    if version.starts_with('v') {
-        return version.to_owned();
-    }
-
+pub(crate) fn version_label(version: &str) -> String {
     match version.chars().next() {
         Some(ch) if ch.is_ascii_digit() => format!("v{version}"),
         _ => version.to_owned(),
     }
 }
-pub fn changed_version_segment_index(from: &str, to: &str) -> Option<usize> {
+pub(crate) fn changed_version_segment_index(from: &str, to: &str) -> Option<usize> {
     let from_core = strip_v_prefix(from);
     let to_core = strip_v_prefix(to);
     let from_parts = from_core.split('.').collect::<Vec<_>>();
@@ -175,7 +171,7 @@ pub fn changed_version_segment_index(from: &str, to: &str) -> Option<usize> {
 
     first_changed_part_index(&from_parts, &to_parts)
 }
-pub fn render_to_version(from: &str, to: &str, theme: OutputTheme, emphasize: bool) -> String {
+fn render_to_version(from: &str, to: &str, theme: OutputTheme, emphasize: bool) -> String {
     if !theme.color() {
         return to.to_owned();
     }
@@ -202,13 +198,12 @@ pub fn render_to_version(from: &str, to: &str, theme: OutputTheme, emphasize: bo
 
     output
 }
-pub fn strip_ansi_codes(text: &str) -> String {
+fn strip_ansi_codes(text: &str) -> String {
     let mut stripped = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
 
     while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
-            let _ = chars.next();
+        if ch == '\u{1b}' && chars.next_if_eq(&'[').is_some() {
             for code_ch in chars.by_ref() {
                 if code_ch.is_ascii_alphabetic() {
                     break;
@@ -343,7 +338,7 @@ fn status_prefix(status: OutcomeStatusView, color: bool) -> String {
 
 fn render_manager(manager_id: &ManagerId, color: bool) -> String {
     if color {
-        format!("[{}]", manager_id.to_string().bold())
+        format!("[{}]", manager_id.bold())
     } else {
         format!("[{manager_id}]")
     }
@@ -385,19 +380,11 @@ fn strip_v_prefix(text: &str) -> &str {
 }
 
 fn first_changed_part_index(from_parts: &[&str], to_parts: &[&str]) -> Option<usize> {
-    let max_len = from_parts.len().max(to_parts.len());
-    for index in 0..max_len {
-        let from = from_parts.get(index).copied();
-        let to = to_parts.get(index).copied();
-        if from != to {
-            return Some(index);
-        }
-    }
-
-    None
+    (0..from_parts.len().max(to_parts.len()))
+        .find(|&index| from_parts.get(index) != to_parts.get(index))
 }
 
-pub const fn manager_resolved_label() -> &'static str {
+pub(crate) const fn manager_resolved_label() -> &'static str {
     "selected by manager"
 }
 
@@ -547,7 +534,7 @@ where
 
         if index + 1 < widths.len() {
             let padding = width.saturating_sub(cell.visible_width());
-            line.push_str(&" ".repeat(padding));
+            line.extend(std::iter::repeat_n(' ', padding));
         }
     }
 

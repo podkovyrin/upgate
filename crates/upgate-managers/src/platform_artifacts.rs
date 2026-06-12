@@ -8,27 +8,27 @@ pub fn is_platform_artifact_version(version: &str) -> bool {
     is_platform_os(os) && is_platform_cpu(cpu)
 }
 
-const fn is_platform_os(value: &str) -> bool {
+fn is_platform_os(value: &str) -> bool {
     matches!(
-        value.as_bytes(),
-        b"aix" | b"android" | b"darwin" | b"freebsd" | b"linux" | b"openbsd" | b"sunos" | b"win32"
+        value,
+        "aix" | "android" | "darwin" | "freebsd" | "linux" | "openbsd" | "sunos" | "win32"
     )
 }
 
-const fn is_platform_cpu(value: &str) -> bool {
+fn is_platform_cpu(value: &str) -> bool {
     matches!(
-        value.as_bytes(),
-        b"arm"
-            | b"arm64"
-            | b"ia32"
-            | b"loong64"
-            | b"mips"
-            | b"mipsel"
-            | b"ppc"
-            | b"ppc64"
-            | b"riscv64"
-            | b"s390"
-            | b"s390x"
-            | b"x64"
+        value,
+        "arm"
+            | "arm64"
+            | "ia32"
+            | "loong64"
+            | "mips"
+            | "mipsel"
+            | "ppc"
+            | "ppc64"
+            | "riscv64"
+            | "s390"
+            | "s390x"
+            | "x64"
     )
 }

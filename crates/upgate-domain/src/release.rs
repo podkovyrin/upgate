@@ -28,15 +28,15 @@ impl ReleaseEntry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReleaseTimestamp(SystemTime);
 
 impl ReleaseTimestamp {
     pub const fn new(value: SystemTime) -> Self {
         Self(value)
     }
-    pub const fn as_system_time(&self) -> &SystemTime {
-        &self.0
+    pub const fn as_system_time(&self) -> SystemTime {
+        self.0
     }
 }
 

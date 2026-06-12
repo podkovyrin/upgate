@@ -1,7 +1,9 @@
+use std::collections::BTreeSet;
+
 use upgate_domain::{
-    DomainError, ExecutionSupport, PackageName, PlanItem, PlanItemId, PlanSelection, SelectedItem,
-    ToolId, UpdateCandidate, UpdatePlan, UpdateSelectionMode, UpdateSelectionPolicy, VersionScheme,
-    VersionText,
+    DomainError, ExecutionSupport, ManagerId, PackageName, PlanItem, PlanItemId, PlanSelection,
+    SelectedItem, ToolId, UpdateCandidate, UpdatePlan, UpdateSelectionMode, UpdateSelectionPolicy,
+    VersionScheme, VersionText,
 };
 
 fn candidate(name: &str) -> UpdateCandidate {
@@ -19,7 +21,7 @@ fn candidate(name: &str) -> UpdateCandidate {
 fn update_plan_rejects_duplicate_item_ids() {
     let duplicate_id = PlanItemId::new("same-id").expect("valid plan item id");
     let result = UpdatePlan::new(
-        upgate_domain::ManagerId::new("pnpm").expect("valid manager id"),
+        ManagerId::new("pnpm").expect("valid manager id"),
         vec![
             PlanItem::Update {
                 id: duplicate_id.clone(),
@@ -41,7 +43,7 @@ fn update_plan_rejects_duplicate_item_ids() {
 #[test]
 fn plan_selection_preserves_policy_exception_outside_plan() {
     let plan = UpdatePlan::new(
-        upgate_domain::ManagerId::new("pnpm").expect("valid manager id"),
+        ManagerId::new("pnpm").expect("valid manager id"),
         vec![PlanItem::Update {
             id: PlanItemId::new("pnpm:alpha").expect("valid plan item id"),
             candidate: candidate("alpha"),
@@ -50,7 +52,7 @@ fn plan_selection_preserves_policy_exception_outside_plan() {
     .expect("plan should be valid");
     let policy = UpdateSelectionPolicy {
         mode: UpdateSelectionMode::Include,
-        except: std::iter::once(PackageName::new("beta").expect("valid package name")).collect(),
+        except: BTreeSet::from([PackageName::new("beta").expect("valid package name")]),
     };
 
     let selection = PlanSelection::new(
@@ -64,14 +66,14 @@ fn plan_selection_preserves_policy_exception_outside_plan() {
 
     assert_eq!(
         selection.selection_policy.except,
-        std::iter::once(PackageName::new("beta").expect("valid package name")).collect()
+        BTreeSet::from([PackageName::new("beta").expect("valid package name")])
     );
 }
 
 #[test]
 fn plan_selection_rejects_selected_update_outside_plan() {
     let plan = UpdatePlan::new(
-        upgate_domain::ManagerId::new("pnpm").expect("valid manager id"),
+        ManagerId::new("pnpm").expect("valid manager id"),
         vec![PlanItem::Update {
             id: PlanItemId::new("pnpm:alpha").expect("valid plan item id"),
             candidate: candidate("alpha"),

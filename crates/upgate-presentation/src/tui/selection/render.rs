@@ -111,6 +111,9 @@ const MINIMAL_FOOTER_INPUTS: &[Option<SelectionInput>] = &[
     Some(SelectionInput::Confirm),
     Some(SelectionInput::Cancel),
 ];
+const _: () = assert!(FOOTER_KEYS.len() == FOOTER_INPUTS.len());
+const _: () = assert!(COMPACT_FOOTER_KEYS.len() == COMPACT_FOOTER_INPUTS.len());
+const _: () = assert!(MINIMAL_FOOTER_KEYS.len() == MINIMAL_FOOTER_INPUTS.len());
 const COMPACT_FOOTER_WIDTH: u16 = 96;
 const MINIMAL_FOOTER_WIDTH: u16 = 52;
 pub(super) const PICKER_FOOTER_KEYS: &[KeyBinding<'static>] = &[
@@ -150,7 +153,7 @@ const CONFIRMATION_FOOTER_KEYS: &[KeyBinding<'static>] = &[
     },
 ];
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct SelectionRenderRow {
     selected: bool,
     manager: String,
@@ -161,27 +164,13 @@ struct SelectionRenderRow {
     forced: bool,
 }
 
-#[derive(Debug, Clone)]
-struct TargetPickerRenderRow {
-    target: String,
-    note_parts: Vec<CandidateNotePart>,
-}
-
 pub(super) fn draw_selection(
     frame: &mut ratatui::Frame<'_>,
     screen: &mut InteractiveSelectionScreen,
 ) {
     let theme = TuiTheme::current();
-    draw_selection_with_theme(frame, screen, &theme);
-}
-
-fn draw_selection_with_theme(
-    frame: &mut ratatui::Frame<'_>,
-    screen: &mut InteractiveSelectionScreen,
-    theme: &TuiTheme,
-) {
     let area = frame.area();
-    let block = app_block(theme);
+    let block = app_block(&theme);
     let Some(app_frame) = app_frame(area) else {
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -190,22 +179,22 @@ fn draw_selection_with_theme(
     };
     frame.render_widget(block, app_frame.outer);
 
-    draw_tabs(frame, screen, app_frame.header, theme);
-    render_separator(frame, app_frame.header_separator, theme);
+    draw_tabs(frame, screen, app_frame.header, &theme);
+    render_separator(frame, app_frame.header_separator, &theme);
 
-    draw_selection_body(frame, screen, app_frame.body, theme);
+    draw_selection_body(frame, screen, app_frame.body, &theme);
 
-    render_separator(frame, app_frame.footer_separator, theme);
+    render_separator(frame, app_frame.footer_separator, &theme);
     frame.render_widget(
-        Paragraph::new(footer_line(screen, app_frame.footer.width, theme)),
+        Paragraph::new(footer_line(screen, app_frame.footer.width, &theme)),
         app_frame.footer,
     );
 
     if let Some(picker) = screen.target_picker() {
-        draw_target_picker(frame, screen, picker, app_frame.outer, theme);
+        draw_target_picker(frame, screen, picker, app_frame.outer, &theme);
     }
     if screen.confirmation_dialog_open() {
-        draw_confirmation_dialog(frame, screen, app_frame.outer, theme);
+        draw_confirmation_dialog(frame, screen, app_frame.outer, &theme);
     }
 }
 
@@ -266,7 +255,7 @@ fn draw_tabs(
         tabs_area.width,
     );
     screen.sync_tab_offset(tabs.start);
-    render_tabs(frame, tabs_area, &tabs, theme);
+    render_tabs(frame, tabs_area, tabs, theme);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(TAB_KEY_LABEL, theme.keycap))),
         key_area,
@@ -314,15 +303,12 @@ fn selection_tab_title(
 }
 
 fn all_tab_status(screen: &InteractiveSelectionScreen) -> SelectionTabStatus {
-    if screen
-        .managers
-        .iter()
-        .filter(|manager| manager.planning_status != ManagerPlanningStatus::Empty)
-        .any(|manager| {
-            manager.planning_status == ManagerPlanningStatus::Planning
-                || manager.planning_status == ManagerPlanningStatus::Waiting
-        })
-    {
+    if screen.managers.iter().any(|manager| {
+        matches!(
+            manager.planning_status,
+            ManagerPlanningStatus::Planning | ManagerPlanningStatus::Waiting
+        )
+    }) {
         return SelectionTabStatus::Loading;
     }
     SelectionTabStatus::Ready
@@ -353,13 +339,14 @@ fn draw_list_content(
     screen.clamp_cursor();
     screen.keep_cursor_visible(selection_table_visible_height(area));
     let render_rows = selection_render_rows(screen);
+    let row_count = render_rows.len();
     let table_rows = render_rows
-        .iter()
+        .into_iter()
         .enumerate()
         .map(|(idx, row)| selection_table_row(row, screen.cursor() == Some(idx), theme))
         .collect::<Vec<_>>();
 
-    let selected = screen.cursor().filter(|cursor| *cursor < render_rows.len());
+    let selected = screen.cursor().filter(|cursor| *cursor < row_count);
     render_table(
         frame,
         area,
@@ -435,8 +422,8 @@ fn selection_render_rows(screen: &InteractiveSelectionScreen) -> Vec<SelectionRe
 
             SelectionRenderRow {
                 selected,
-                manager: manager.manager_id.to_string(),
-                name: row.package_name.to_string(),
+                manager: manager.manager_id.as_str().to_owned(),
+                name: row.package_name.as_str().to_owned(),
                 current: version_label(row.installed_version.as_str()),
                 target,
                 note_parts,
@@ -456,14 +443,14 @@ fn selected_target_option<'a>(
 }
 
 fn selection_table_row(
-    row: &SelectionRenderRow,
+    row: SelectionRenderRow,
     highlighted: bool,
     theme: &TuiTheme,
 ) -> Row<'static> {
     let style = theme.row_for_selectable_state(highlighted);
     let marker = if row.selected { "[x]" } else { "[ ]" };
     let target = if row.target == "unavailable" || row.target == manager_resolved_label() {
-        Line::from(Span::styled(row.target.clone(), style))
+        Line::from(Span::styled(row.target, style))
     } else {
         Line::from(version_diff_spans(
             &row.current,
@@ -481,9 +468,9 @@ fn selection_table_row(
 
     Row::new(vec![
         Cell::new(marker).style(style),
-        Cell::new(row.manager.clone()).style(style),
-        Cell::new(row.name.clone()).style(theme.emphasis(style)),
-        Cell::new(row.current.clone()).style(style),
+        Cell::new(row.manager).style(style),
+        Cell::new(row.name).style(theme.emphasis(style)),
+        Cell::new(row.current).style(style),
         Cell::new(target).style(style),
         note,
     ])
@@ -708,19 +695,29 @@ fn draw_target_picker_rows(
         .state
         .selected_target(&row.plan_item_id);
     let current = version_label(row.installed_version.as_str());
-    let render_rows = target_picker_rows(&row.target_options);
-    let table_rows = render_rows
+    let table_rows = row
+        .target_options
         .iter()
         .enumerate()
-        .map(|(idx, render_row)| {
-            let selected = selected_target.is_some_and(|target| {
-                target_option_matches_selected(&row.target_options[idx], target)
-            });
-            target_picker_table_row(&current, render_row, selected, idx == picker.cursor, theme)
+        .map(|(idx, option)| {
+            let selected = selected_target
+                .is_some_and(|target| target_option_matches_selected(option, target));
+            let target = option.target_version().map_or_else(
+                || manager_resolved_label().to_owned(),
+                |version| version_label(version.as_str()),
+            );
+            target_picker_table_row(
+                &current,
+                target,
+                option.note_parts(),
+                selected,
+                idx == picker.cursor,
+                theme,
+            )
         })
         .collect::<Vec<_>>();
 
-    let selected = (picker.cursor < render_rows.len()).then_some(picker.cursor);
+    let selected = (picker.cursor < row.target_options.len()).then_some(picker.cursor);
     render_table(
         frame,
         area,
@@ -754,8 +751,9 @@ fn target_picker_detail_lines(option: &TargetOption, theme: &TuiTheme) -> Vec<Li
         match &part.kind {
             CandidateNoteKind::AuditVulnerable { findings } => {
                 for finding in findings.iter().take(2) {
-                    let mut ids = vec![finding.id.clone()];
-                    ids.extend(finding.aliases.iter().take(2).cloned());
+                    let ids = std::iter::once(finding.id.as_str())
+                        .chain(finding.aliases.iter().take(2).map(String::as_str))
+                        .collect::<Vec<_>>();
                     lines.push(Line::from(vec![
                         Span::styled("Advisory: ", theme.header),
                         Span::raw(ids.join(", ")),
@@ -789,39 +787,27 @@ fn target_picker_detail_lines(option: &TargetOption, theme: &TuiTheme) -> Vec<Li
 
 fn target_picker_table_row(
     current: &str,
-    row: &TargetPickerRenderRow,
+    target: String,
+    note_parts: &[CandidateNotePart],
     selected: bool,
     highlighted: bool,
     theme: &TuiTheme,
 ) -> Row<'static> {
     let style = theme.row_for_selectable_state(highlighted);
     let marker = if selected { "[x]" } else { "[ ]" };
-    let target = if row.target == manager_resolved_label() {
-        vec![Span::styled(row.target.clone(), style)]
+    let target_spans = if target == manager_resolved_label() {
+        vec![Span::styled(target, style)]
     } else {
-        version_diff_spans(current, &row.target, style, theme, highlighted)
+        version_diff_spans(current, &target, style, theme, highlighted)
     };
-    let note = note_line(&row.note_parts, theme);
+    let note = note_line(note_parts, theme);
 
     Row::new(vec![
         Cell::new(marker).style(style),
-        Cell::new(Line::from(target)).style(style),
+        Cell::new(Line::from(target_spans)).style(style),
         Cell::new(note),
     ])
     .style(style)
-}
-
-fn target_picker_rows(options: &[TargetOption]) -> Vec<TargetPickerRenderRow> {
-    options
-        .iter()
-        .map(|option| TargetPickerRenderRow {
-            target: option.target_version().map_or_else(
-                || manager_resolved_label().to_owned(),
-                |version| version_label(version.as_str()),
-            ),
-            note_parts: option.note_parts().to_vec(),
-        })
-        .collect()
 }
 
 pub(super) fn target_picker_height(option_count: usize) -> u16 {

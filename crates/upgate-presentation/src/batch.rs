@@ -49,11 +49,11 @@ pub fn apply_execution_report_table(
     OutcomeTable::new(rows)
 }
 pub fn render_batch_table(table: &OutcomeTable, theme: OutputTheme) -> String {
-    let rendered = render_outcome_table(table, theme);
-    if rendered.is_empty() {
-        return rendered;
+    let mut rendered = render_outcome_table(table, theme);
+    if !rendered.is_empty() {
+        rendered.push('\n');
     }
-    format!("{rendered}\n")
+    rendered
 }
 pub fn manager_error_table(manager_id: &ManagerId, command: &str, detail: &str) -> OutcomeTable {
     let row = OutcomeRow::manager(OutcomeStatusView::Error, manager_id.clone())
@@ -331,7 +331,7 @@ fn unselected_update_rows(plan: &UpdatePlan, selection: &PlanSelection) -> Vec<O
     let selected_ids = selection
         .selected_items
         .iter()
-        .map(|item| item.plan_item_id.clone())
+        .map(|item| &item.plan_item_id)
         .collect::<BTreeSet<_>>();
     plan.items
         .iter()

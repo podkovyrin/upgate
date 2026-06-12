@@ -236,17 +236,18 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
             let notes = blocked_notes(reason, policy_warnings, diagnostics);
             let target_options = blocked_target_options(seed, reason, notes.clone(), diagnostics);
             let target_version = blocked_target_version(seed, reason, diagnostics);
+            let default_visibility = if target_version.is_some() {
+                SelectionRowVisibility::Visible
+            } else {
+                SelectionRowVisibility::HiddenUntilViewAll
+            };
             SelectionRow {
                 plan_item_id: id.clone(),
                 package_name: seed.installed.package_name.clone(),
                 installed_version: seed.installed.installed_version.clone(),
-                target_version: target_version.clone(),
+                target_version,
                 status: SelectionRowStatus::Blocked,
-                default_visibility: if target_version.is_some() {
-                    SelectionRowVisibility::Visible
-                } else {
-                    SelectionRowVisibility::HiddenUntilViewAll
-                },
+                default_visibility,
                 notes,
                 initially_selected: false,
                 target_options,
@@ -450,10 +451,6 @@ const fn primary_option(
 }
 
 fn exact_target_options(candidate: &UpdateCandidate) -> Vec<TargetOption> {
-    if candidate.diagnostics.candidates.is_empty() {
-        return Vec::new();
-    }
-
     candidate
         .diagnostics
         .candidates
@@ -511,7 +508,7 @@ fn candidate_evaluation_notes(
         }
         None => {}
     }
-    if let Some(reason) = candidate.policy_block_reason.clone() {
+    if let Some(reason) = candidate.policy_block_reason {
         notes.push(CandidateNotePart::violation(
             CandidateNoteKind::VersionPolicyBlocked {
                 version: candidate.version.clone(),
@@ -533,15 +530,14 @@ fn candidate_evaluation_notes(
 fn delayed_notes(reason: &DelayReason, diagnostics: &PlanDiagnostics) -> Vec<CandidateNotePart> {
     match reason {
         DelayReason::ReleaseTooFresh => {
-            let mut notes = Vec::new();
-            notes.push(CandidateNotePart::violation(CandidateNoteKind::TooFresh {
+            let mut notes = vec![CandidateNotePart::violation(CandidateNoteKind::TooFresh {
                 version: None,
                 age: diagnostics
                     .selected_target
                     .as_ref()
                     .map(|target| target.age),
                 required_age: diagnostics.required_age,
-            }));
+            })];
             notes.extend(advisory_warning_notes(diagnostics));
             notes
         }
@@ -604,17 +600,19 @@ fn audit_notes(audit: &AuditLookupResult) -> Vec<CandidateNotePart> {
 }
 
 fn policy_notes(diagnostics: &PlanDiagnostics) -> Vec<CandidateNotePart> {
-    latest_policy_blocked_candidate(diagnostics).map_or_else(Vec::new, |candidate| {
-        vec![CandidateNotePart::violation(
-            CandidateNoteKind::VersionPolicyBlocked {
-                version: candidate.version.clone(),
-                reason: candidate
-                    .policy_block_reason
-                    .clone()
-                    .expect("blocked candidate should have reason"),
-            },
-        )]
-    })
+    diagnostics
+        .candidates
+        .iter()
+        .find_map(|candidate| {
+            let reason = candidate.policy_block_reason?;
+            Some(vec![CandidateNotePart::violation(
+                CandidateNoteKind::VersionPolicyBlocked {
+                    version: candidate.version.clone(),
+                    reason,
+                },
+            )])
+        })
+        .unwrap_or_default()
 }
 
 fn advisory_warning_notes(diagnostics: &PlanDiagnostics) -> Vec<CandidateNotePart> {
@@ -667,15 +665,6 @@ fn advisory_latest_age_fact(advisory: &AdvisoryLatestFact) -> Option<&CandidateA
     }
 }
 
-fn latest_policy_blocked_candidate(
-    diagnostics: &PlanDiagnostics,
-) -> Option<&CandidateEvaluationFact> {
-    diagnostics
-        .candidates
-        .iter()
-        .find(|candidate| candidate.policy_block_reason.is_some())
-}
-
 pub(crate) fn note_part_text(part: &CandidateNotePart) -> String {
     match &part.kind {
         CandidateNoteKind::Released { age } => notes::released(*age),
@@ -701,7 +690,7 @@ pub(crate) fn note_part_text(part: &CandidateNotePart) -> String {
         CandidateNoteKind::AdvisoryLookupFailed { error } => {
             format!("advisory latest lookup failed: {}", error.detail)
         }
-        CandidateNoteKind::Skipped(reason) => notes::skip_reason(reason),
+        CandidateNoteKind::Skipped(reason) => notes::skip_reason(reason).to_owned(),
         CandidateNoteKind::ResolverError { message } => message.clone(),
     }
 }

@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Mutex, mpsc};
 use std::thread;
 
 use rayon::prelude::*;
@@ -65,16 +65,14 @@ where
     }
 
     let job_count = jobs.len();
-    let queue = Arc::new(Mutex::new(
-        jobs.into_iter().enumerate().collect::<VecDeque<_>>(),
-    ));
+    let queue = Mutex::new(jobs.into_iter().enumerate().collect::<VecDeque<_>>());
     let (result_tx, result_rx) = mpsc::channel::<(usize, R)>();
     let worker_count = threads.max(1).min(job_count);
 
     thread::scope(|scope| {
         let mut handles = Vec::with_capacity(worker_count);
         for _ in 0..worker_count {
-            let queue = Arc::clone(&queue);
+            let queue = &queue;
             let result_tx = result_tx.clone();
             let worker = &worker;
             let should_stop_after_result = &should_stop_after_result;
@@ -84,9 +82,7 @@ where
                         break;
                     }
 
-                    let job = queue
-                        .lock()
-                        .map_or_else(|_| None, |mut jobs| jobs.pop_front());
+                    let job = queue.lock().ok().and_then(|mut jobs| jobs.pop_front());
                     let Some((index, job)) = job else {
                         break;
                     };
@@ -113,6 +109,6 @@ where
     })?;
 
     let mut indexed = result_rx.into_iter().collect::<Vec<_>>();
-    indexed.sort_by_key(|(index, _)| *index);
+    indexed.sort_unstable_by_key(|(index, _)| *index);
     Ok(indexed.into_iter().map(|(_, result)| result).collect())
 }

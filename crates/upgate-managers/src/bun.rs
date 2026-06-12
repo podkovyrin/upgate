@@ -147,25 +147,20 @@ impl ManagerAdapter for BunManager {
         installed
             .into_iter()
             .map(|tool| {
-                match lookup_release(process, env, &tool.package_name)
+                let release_evidence = match lookup_release(process, env, &tool.package_name)
                     .map_err(|err| adapter_error(&err))?
                 {
                     ReleaseLookupResult::Known(timeline) => {
-                        Ok(ManagerScanEvidenceInput::Installed {
-                            release_evidence: release_evidence_for_version(
-                                &timeline,
-                                &tool.installed_version,
-                            ),
-                            tool,
-                        })
+                        release_evidence_for_version(&timeline, &tool.installed_version)
                     }
                     ReleaseLookupResult::MissingMetadata | ReleaseLookupResult::LookupFailed(_) => {
-                        Ok(ManagerScanEvidenceInput::Installed {
-                            tool,
-                            release_evidence: None,
-                        })
+                        None
                     }
-                }
+                };
+                Ok(ManagerScanEvidenceInput::Installed {
+                    tool,
+                    release_evidence,
+                })
             })
             .collect()
     }
@@ -436,11 +431,10 @@ fn exact_command(
     bypass_min_release_age: bool,
 ) -> CommandSpec {
     let spec = format!("{package_name}@{target_version}");
-    let min_age_secs = min_release_age.as_secs().to_string();
     let mut args = vec!["update".to_owned(), "-g".to_owned(), spec];
     if !bypass_min_release_age {
         args.push("--minimum-release-age".to_owned());
-        args.push(min_age_secs);
+        args.push(min_release_age.as_secs().to_string());
     }
     CommandSpec::new(MANAGER_ID, args).mutating()
 }
@@ -463,7 +457,6 @@ fn selected_native_update_command(
     min_release_age: Duration,
     bypass_min_release_age: bool,
 ) -> CommandSpec {
-    let min_age_secs = min_release_age.as_secs().to_string();
     let mut args = vec![
         "update".to_owned(),
         "-g".to_owned(),
@@ -471,18 +464,9 @@ fn selected_native_update_command(
     ];
     if !bypass_min_release_age {
         args.push("--minimum-release-age".to_owned());
-        args.push(min_age_secs);
+        args.push(min_release_age.as_secs().to_string());
     }
     CommandSpec::new(MANAGER_ID, args).mutating()
-}
-
-fn trim_non_empty(value: &str) -> Option<&str> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
 }
 
 fn installed_tool(package: BunInstalledPackage) -> Result<InstalledTool, BunError> {
@@ -571,15 +555,10 @@ fn system_time_from_datetime(datetime: DateTime<chrono::FixedOffset>) -> SystemT
 }
 
 fn bun_global_cwd(env: &Env) -> Option<String> {
-    let bun_install = env.var("BUN_INSTALL");
-    let home = env.var("HOME");
-    bun_install
-        .as_deref()
-        .and_then(trim_non_empty)
+    env.non_empty_var("BUN_INSTALL")
         .map(|path| format!("{path}/install/global"))
         .or_else(|| {
-            home.as_deref()
-                .and_then(trim_non_empty)
+            env.non_empty_var("HOME")
                 .map(|path| format!("{path}/.bun/install/global"))
         })
 }
@@ -587,13 +566,13 @@ fn bun_global_cwd(env: &Env) -> Option<String> {
 fn adapter_error(err: &BunError) -> ManagerAdapterError {
     let detail = err.to_string();
     let kind = match err {
-        &BunError::Interrupted(_) => ManagerAdapterErrorKind::Interrupted,
-        &BunError::Json(_)
-        | &BunError::Domain(_)
-        | &BunError::InvalidTimestamp { .. }
-        | &BunError::MissingReleaseMetadata(_) => ManagerAdapterErrorKind::Parse,
-        &BunError::UnsupportedCommandIntent(_) => ManagerAdapterErrorKind::CommandConstruction,
-        &BunError::Infra(_) => ManagerAdapterErrorKind::Infra,
+        BunError::Interrupted(_) => ManagerAdapterErrorKind::Interrupted,
+        BunError::Json(_)
+        | BunError::Domain(_)
+        | BunError::InvalidTimestamp { .. }
+        | BunError::MissingReleaseMetadata(_) => ManagerAdapterErrorKind::Parse,
+        BunError::UnsupportedCommandIntent(_) => ManagerAdapterErrorKind::CommandConstruction,
+        BunError::Infra(_) => ManagerAdapterErrorKind::Infra,
     };
     ManagerAdapterError::Manager { kind, detail }
 }

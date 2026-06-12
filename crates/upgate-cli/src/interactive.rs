@@ -47,10 +47,10 @@ impl InteractiveCommandLog {
     }
 
     fn snapshot(&self) -> Vec<String> {
-        self.entries.lock().map_or_else(
-            |poisoned| poisoned.into_inner().clone(),
-            |entries| entries.clone(),
-        )
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn record(&self, command: String) {
@@ -328,10 +328,10 @@ fn prepare_interactive_apply_with_events(
     let mut planning_failures = Vec::new();
     for result in worker_results {
         match result {
-            InteractivePlanningWorkerResult::Ready { manager, .. } => managers.push(manager),
-            InteractivePlanningWorkerResult::Failed {
-                manager_id, detail, ..
-            } => planning_failures.push((manager_id, detail)),
+            InteractivePlanningWorkerResult::Ready { manager } => managers.push(manager),
+            InteractivePlanningWorkerResult::Failed { manager_id, detail } => {
+                planning_failures.push((manager_id, detail));
+            }
         }
     }
 
@@ -406,7 +406,7 @@ fn prepare_one_interactive_manager_with_events(
 
     let manager = match configured_manager(manager_config.clone()).map_err(map_manager_error) {
         Ok(manager) => manager,
-        Err(err @ AppError::Interrupted(_)) => return Err(err),
+        Err(err) if err.is_interruption() => return Err(err),
         Err(err) => {
             let detail = err.to_string();
             let _ = event_tx.send(InteractiveSelectionPlanningEvent::ManagerError {
@@ -441,7 +441,7 @@ fn prepare_one_interactive_manager_with_events(
                 },
             })
         }
-        Err(err @ AppError::Interrupted(_)) => Err(err),
+        Err(err) if err.is_interruption() => Err(err),
         Err(err) => {
             let detail = err.to_string();
             let _ = event_tx.send(InteractiveSelectionPlanningEvent::ManagerError {
@@ -475,7 +475,7 @@ fn confirmed_from_drafts(
         else {
             return Err(AppError::Planning(format!(
                 "missing interactive selection for {}",
-                manager.plan.manager_id.as_str()
+                manager.plan.manager_id
             )));
         };
         let selection = PlanSelection::new(
@@ -508,7 +508,7 @@ pub fn execute_confirmed_interactive_apply_with_config_path(
     config_path: &Path,
 ) -> Result<InteractiveApplyReport, AppError> {
     let resolved = resolve_confirmed_execution_plans(&confirmed)?;
-    let mut progress = ExecutionProgressState::from_execution_plans(resolved.clone());
+    let mut progress = ExecutionProgressState::from_execution_plans(&resolved);
     execute_confirmed_interactive_apply_resolved(
         &mut config,
         process,
@@ -534,7 +534,7 @@ fn execute_confirmed_interactive_apply_live(
     command_log: &InteractiveCommandLog,
 ) -> Result<ExecutionProgressSummary, AppError> {
     let resolved = resolve_confirmed_execution_plans(&confirmed)?;
-    let initial_progress = ExecutionProgressState::from_execution_plans(resolved.clone())
+    let initial_progress = ExecutionProgressState::from_execution_plans(&resolved)
         .with_command_log(command_log.snapshot());
     let (tx, rx) = mpsc::channel();
     let stop_requested = Arc::new(AtomicBool::new(false));
@@ -573,7 +573,7 @@ fn execute_confirmed_interactive_apply_live(
         let tui_result = run_interactive_progress(
             initial_progress,
             &rx,
-            Arc::clone(&stop_requested),
+            &stop_requested,
             command_log.enabled(),
         )
         .map_err(|err| AppError::Planning(err.to_string()))
@@ -627,20 +627,15 @@ fn execute_confirmed_interactive_apply_resolved(
     emit: &mut impl FnMut(ExecutionProgressEvent) -> Result<(), AppError>,
 ) -> Result<(), AppError> {
     for manager in &confirmed {
-        config
-            .set_manager_selection_policy(
-                manager.plan.manager_id.as_str(),
-                manager.selection.selection_policy.clone(),
-            )
-            .map_err(AppError::from)?;
+        config.set_manager_selection_policy(
+            manager.plan.manager_id.as_str(),
+            &manager.selection.selection_policy,
+        )?;
         if let Some(path) = config_path {
             config
-                .persist_manager_selection_policy_to_path(manager.plan.manager_id.as_str(), path)
-                .map_err(AppError::from)?;
+                .persist_manager_selection_policy_to_path(manager.plan.manager_id.as_str(), path)?;
         } else {
-            config
-                .persist_manager_selection_policy(manager.plan.manager_id.as_str())
-                .map_err(AppError::from)?;
+            config.persist_manager_selection_policy(manager.plan.manager_id.as_str())?;
         }
     }
 
@@ -654,14 +649,14 @@ fn execute_confirmed_interactive_apply_resolved(
         })?;
 
         let manager_adapter =
-            configured_manager(manager.manager_config.clone()).map_err(map_manager_error)?;
+            configured_manager(manager.manager_config).map_err(map_manager_error)?;
         let Some((_, execution_plan)) = resolved
             .iter()
             .find(|(manager_id, _)| manager_id == &manager.plan.manager_id)
         else {
             return Err(AppError::Execution(format!(
                 "missing execution plan for {}",
-                manager.plan.manager_id.as_str()
+                manager.plan.manager_id
             )));
         };
         let commands =
@@ -677,14 +672,9 @@ fn execute_confirmed_interactive_apply_resolved(
                 }
             };
         let report = if let Some(stop_requested) = stop_requested {
-            execute_commands_stoppable(
-                manager.plan.manager_id.clone(),
-                commands,
-                process,
-                stop_requested,
-            )
+            execute_commands_stoppable(manager.plan.manager_id, commands, process, stop_requested)
         } else {
-            execute_commands(manager.plan.manager_id.clone(), commands, process)
+            execute_commands(manager.plan.manager_id, commands, process)
         }
         .map_err(|err| {
             if err.is_interruption() {

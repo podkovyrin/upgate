@@ -3,12 +3,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use upgate_domain::{
-    AuditLookupResult, BlockReason, CandidateEvaluationFact, ExecutionSupport, ExecutionTargetKind,
-    InstalledTool, ManagerCapabilities, ManagerId, ManagerSelectedTarget, MinAgeConstraintSupport,
-    MissingMetadataKind, PackageName, PlanDiagnostics, PlanItem, PlanItemId, PlanSelection,
-    PolicyBlockReason, ReleaseEntry, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
-    SelectedItem, TargetAgeLookupResult, ToolId, ToolName, UpdateCandidate, UpdatePlan, UpdateSeed,
-    UpdateSelectionPolicy, VersionPolicy, VersionScheme, VersionText,
+    AuditLookupResult, BlockReason, CandidateEvaluationFact, DelayReason, ExecutionSupport,
+    ExecutionTargetKind, InstalledTool, ManagerCapabilities, ManagerId, ManagerSelectedTarget,
+    MinAgeConstraintSupport, MissingMetadataKind, PackageName, PlanDiagnostics, PlanItem,
+    PlanItemId, PlanSelection, PolicyBlockReason, ReleaseEntry, ReleaseLookupResult,
+    ReleaseTimeline, ReleaseTimestamp, SelectedItem, TargetAgeLookupResult, ToolId, ToolName,
+    UpdateCandidate, UpdatePlan, UpdateSeed, UpdateSelectionPolicy, VersionPolicy, VersionScheme,
+    VersionText,
 };
 use upgate_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionTarget,
@@ -395,8 +396,16 @@ fn stoppable_executor_stops_before_second_concrete_command() {
     let stop_requested = Arc::new(AtomicBool::new(false));
     let commands_started = Arc::new(AtomicUsize::new(0));
     let process = ProcessRunner::fake([
-        Ok(CommandOutput::from_parts(success_exit_status(), "", "")),
-        Ok(CommandOutput::from_parts(success_exit_status(), "", "")),
+        Ok(CommandOutput::from_parts(
+            std::process::ExitStatus::default(),
+            "",
+            "",
+        )),
+        Ok(CommandOutput::from_parts(
+            std::process::ExitStatus::default(),
+            "",
+            "",
+        )),
     ])
     .with_command_start_listener({
         let stop_requested = Arc::clone(&stop_requested);
@@ -550,7 +559,7 @@ fn delayed_item(id: &str, package: &str, eligibility: ExecutionSupport) -> PlanI
             }],
             ..PlanDiagnostics::default()
         }),
-        reason: upgate_domain::DelayReason::ReleaseTooFresh,
+        reason: DelayReason::ReleaseTooFresh,
     }
 }
 
@@ -561,14 +570,7 @@ fn manager_resolved_update_item(
 ) -> PlanItem {
     PlanItem::Update {
         id: PlanItemId::new(id).expect("valid id"),
-        candidate: UpdateCandidate::new(
-            ToolId::new(id).expect("valid tool id"),
-            PackageName::new(package).expect("valid package"),
-            VersionText::new("1.0.0").expect("valid version"),
-            VersionText::new("1.2.0").expect("valid version"),
-            VersionScheme::SemVer,
-            eligibility,
-        ),
+        candidate: candidate(id, package, eligibility),
     }
 }
 
@@ -698,18 +700,4 @@ fn execution_command(id: &str, package: &str) -> ExecutionCommand {
         }],
         command: CommandSpec::new(package, ["upgrade"]).mutating(),
     }
-}
-
-#[cfg(unix)]
-fn success_exit_status() -> std::process::ExitStatus {
-    use std::os::unix::process::ExitStatusExt;
-
-    std::process::ExitStatus::from_raw(0)
-}
-
-#[cfg(windows)]
-fn success_exit_status() -> std::process::ExitStatus {
-    use std::os::windows::process::ExitStatusExt;
-
-    std::process::ExitStatus::from_raw(0)
 }

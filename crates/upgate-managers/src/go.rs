@@ -30,14 +30,14 @@ use crate::adapter::{
     ReleaseLookupSubject, validate_version_policy,
 };
 
-pub const MANAGER_ID: &str = "go";
+const MANAGER_ID: &str = "go";
 const GO_MAX_PARALLEL_CHECKS: usize = 4;
 
 const MISSING_BUILD_METADATA: &str = "missing go build metadata";
 const MISSING_MODULE_METADATA: &str = "missing go module/version metadata";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GoError {
+enum GoError {
     Infra(String),
     Interrupted(String),
     Json(String),
@@ -102,7 +102,7 @@ impl GoError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GoManagedTool {
+struct GoManagedTool {
     pub binary_name: PackageName,
     pub install_path: String,
     pub module_path: String,
@@ -110,13 +110,13 @@ pub struct GoManagedTool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GoDiscoveredTool {
+enum GoDiscoveredTool {
     Managed(GoManagedTool),
     Skipped { name: PackageName, reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GoBuildInfo {
+struct GoBuildInfo {
     pub install_path: String,
     pub module_path: String,
     pub version: String,
@@ -303,7 +303,7 @@ fn parse_module_time_json(version: &str, raw: &str) -> Result<Option<SystemTime>
 /// # Errors
 ///
 /// Returns an error when the Go bin directory cannot be inspected.
-pub fn discover_global_tools(
+fn discover_global_tools(
     process: &ProcessRunner,
     env: &Env,
 ) -> Result<Vec<GoDiscoveredTool>, GoError> {
@@ -336,7 +336,7 @@ pub fn discover_global_tools(
                 [
                     OsString::from("version"),
                     OsString::from("-m"),
-                    path.as_os_str().to_os_string(),
+                    path.into_os_string(),
                 ],
             ),
             &CommandCheck::IgnoreStatus,
@@ -379,7 +379,7 @@ pub fn discover_global_tools(
 /// # Errors
 ///
 /// Returns an error when discovery fails.
-pub fn scan_inputs(process: &ProcessRunner, env: &Env) -> Result<Vec<ManagerScanInput>, GoError> {
+fn scan_inputs(process: &ProcessRunner, env: &Env) -> Result<Vec<ManagerScanInput>, GoError> {
     discover_global_tools(process, env)?
         .into_iter()
         .map(scan_input)
@@ -391,7 +391,7 @@ pub fn scan_inputs(process: &ProcessRunner, env: &Env) -> Result<Vec<ManagerScan
 /// # Errors
 ///
 /// Returns an error when discovery fails.
-pub fn update_inputs(
+fn update_inputs(
     process: &ProcessRunner,
     env: &Env,
     max_parallel_checks_per_manager: usize,
@@ -422,7 +422,7 @@ pub fn update_inputs(
 /// # Errors
 ///
 /// Returns an error when discovery is interrupted.
-pub fn lookup_release(
+fn lookup_release(
     process: &ProcessRunner,
     env: &Env,
     package: &PackageName,
@@ -443,7 +443,7 @@ pub fn lookup_release(
 /// # Errors
 ///
 /// Returns an error only when command execution is interrupted.
-pub fn lookup_release_by_module(
+fn lookup_release_by_module(
     process: &ProcessRunner,
     module_path: &str,
 ) -> Result<ReleaseLookupResult, GoError> {
@@ -489,7 +489,7 @@ pub fn lookup_release_by_module(
 /// # Errors
 ///
 /// Returns an error when an execution intent is unsupported or install path is unavailable.
-pub fn commands_for_execution_plan(
+fn commands_for_execution_plan(
     process: &ProcessRunner,
     env: &Env,
     plan: &ResolvedExecutionPlan,
@@ -646,11 +646,9 @@ fn newest_go_semver_version(timeline: &ReleaseTimeline) -> Option<VersionText> {
     timeline
         .versions
         .iter()
-        .filter_map(|entry| {
-            parse_go_semver(entry.version.as_str()).map(|version| (version, entry.version.clone()))
-        })
+        .filter_map(|entry| parse_go_semver(entry.version.as_str()).map(|version| (version, entry)))
         .max_by(|(left, _), (right, _)| left.cmp(right))
-        .map(|(_, version)| version)
+        .map(|(_, entry)| entry.version.clone())
 }
 
 fn parse_go_semver(raw: &str) -> Option<Version> {

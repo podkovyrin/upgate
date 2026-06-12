@@ -180,27 +180,24 @@ pub trait ManagerAdapter: Sync {
             max_parallel_checks_per_manager.max(1),
             "verbose scan release evidence",
             |input| match input {
-                ManagerScanInput::Installed(tool) => match self.release_lookup(
-                    process,
-                    http,
-                    env,
-                    ReleaseLookupSubject::Installed(&tool),
-                )? {
-                    ReleaseLookupResult::Known(timeline) => {
-                        let release_evidence =
-                            release_evidence_for_version(&timeline, &tool.installed_version);
-                        Ok(ManagerScanEvidenceInput::Installed {
-                            tool,
-                            release_evidence,
-                        })
-                    }
-                    ReleaseLookupResult::MissingMetadata | ReleaseLookupResult::LookupFailed(_) => {
-                        Ok(ManagerScanEvidenceInput::Installed {
-                            tool,
-                            release_evidence: None,
-                        })
-                    }
-                },
+                ManagerScanInput::Installed(tool) => {
+                    let release_evidence = match self.release_lookup(
+                        process,
+                        http,
+                        env,
+                        ReleaseLookupSubject::Installed(&tool),
+                    )? {
+                        ReleaseLookupResult::Known(timeline) => {
+                            release_evidence_for_version(&timeline, &tool.installed_version)
+                        }
+                        ReleaseLookupResult::MissingMetadata
+                        | ReleaseLookupResult::LookupFailed(_) => None,
+                    };
+                    Ok(ManagerScanEvidenceInput::Installed {
+                        tool,
+                        release_evidence,
+                    })
+                }
                 ManagerScanInput::Skipped { installed, reason } => {
                     Ok(ManagerScanEvidenceInput::Skipped { installed, reason })
                 }

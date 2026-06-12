@@ -4,7 +4,7 @@ use std::time::Duration;
 use crossterm::event::{
     self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use unicode_width::UnicodeWidthStr;
 
 use super::render::{
@@ -421,12 +421,10 @@ fn target_picker_inner_rect(area: Rect, option_count: usize) -> Option<Rect> {
         width,
         height,
     };
-    Some(Rect {
-        x: popup.x.saturating_add(1),
-        y: popup.y.saturating_add(1),
-        width: popup.width.saturating_sub(2),
-        height: popup.height.saturating_sub(2),
-    })
+    Some(popup.inner(Margin {
+        vertical: 1,
+        horizontal: 1,
+    }))
 }
 
 const fn rect_contains(area: Rect, column: u16, row: u16) -> bool {

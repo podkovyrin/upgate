@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use serde::Serialize;
-use upgate_domain::{PlanItem, PlanSelection, SelectedUpdate, UpdatePlan};
+use upgate_domain::{PlanItem, PlanSelection, SelectedUpdate, UpdatePlan, VersionText};
 
 use crate::AppError;
 
@@ -14,7 +14,7 @@ struct ApplySnapshotRow<'a> {
     tool_name: &'a str,
     current: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    target: Option<String>,
+    target: Option<&'a str>,
     action: &'static str,
 }
 
@@ -113,29 +113,28 @@ fn snapshot_current_version(item: &PlanItem) -> &str {
     }
 }
 
-fn snapshot_target(item: &PlanItem, selected_update: Option<&SelectedUpdate>) -> Option<String> {
-    if let Some(selected_update) = selected_update {
-        return match selected_update {
-            SelectedUpdate::Exact { target_version } => Some(target_version.to_string()),
-            SelectedUpdate::ManagerResolved => None,
-            SelectedUpdate::Recommended | SelectedUpdate::ForcePlannedCandidate => {
-                snapshot_plan_target(item)
-            }
-        };
+fn snapshot_target<'a>(
+    item: &'a PlanItem,
+    selected_update: Option<&'a SelectedUpdate>,
+) -> Option<&'a str> {
+    match selected_update {
+        Some(SelectedUpdate::Exact { target_version }) => Some(target_version.as_str()),
+        Some(SelectedUpdate::ManagerResolved) => None,
+        Some(SelectedUpdate::Recommended | SelectedUpdate::ForcePlannedCandidate) | None => {
+            snapshot_plan_target(item)
+        }
     }
-
-    snapshot_plan_target(item)
 }
 
-fn snapshot_plan_target(item: &PlanItem) -> Option<String> {
+fn snapshot_plan_target(item: &PlanItem) -> Option<&str> {
     match item {
         PlanItem::Update { candidate, .. } | PlanItem::Delayed { candidate, .. } => {
-            candidate.target_version().map(ToString::to_string)
+            candidate.target_version().map(VersionText::as_str)
         }
         PlanItem::Blocked { seed, .. } => seed
             .target_selection
             .target_version()
-            .map(ToString::to_string),
+            .map(VersionText::as_str),
         PlanItem::Current { .. } | PlanItem::Skipped { .. } | PlanItem::ResolverError { .. } => {
             None
         }

@@ -125,7 +125,7 @@ mode = "skip"
     let mut config = ConfigFile::load_from_path(&path).expect("config should load");
 
     config
-        .set_manager_selection_policy("npm", UpdateSelectionPolicy::default())
+        .set_manager_selection_policy("npm", &UpdateSelectionPolicy::default())
         .expect("selection policy should be set");
     config
         .persist_manager_selection_policy_to_path("npm", &path)
@@ -259,7 +259,7 @@ except = ["aom"]
     };
 
     config
-        .set_manager_selection_policy("npm", policy)
+        .set_manager_selection_policy("npm", &policy)
         .expect("selection policy should be set");
     config
         .persist_manager_selection_policy_to_path("npm", &path)

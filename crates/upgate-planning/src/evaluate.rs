@@ -33,10 +33,10 @@ impl PolicyDecision {
         }
     }
 
-    fn block_reason(&self) -> Option<PolicyBlockReason> {
+    const fn block_reason(&self) -> Option<PolicyBlockReason> {
         match self {
             Self::Allowed { .. } => None,
-            Self::Blocked { reason, .. } => Some(reason.clone()),
+            Self::Blocked { reason, .. } => Some(*reason),
         }
     }
 }
@@ -77,7 +77,7 @@ pub fn evaluate_seed_with_audit(
     }
 }
 
-pub(crate) fn audit_queries_for_seed(seed: &UpdateSeed) -> Vec<AuditQuery> {
+pub fn audit_queries_for_seed(seed: &UpdateSeed) -> Vec<AuditQuery> {
     match &seed.target_selection {
         TargetSelection::PlannerSelectable {
             discovered_target,
@@ -143,9 +143,7 @@ fn audit_queries_for_timeline<V: Ord>(
         return Vec::new();
     };
     if !timeline.versions.iter().any(|entry| {
-        parse(entry.version.as_str())
-            .map(|parsed| parsed == parsed_discovered_target)
-            .unwrap_or(false)
+        parse(entry.version.as_str()).is_ok_and(|parsed| parsed == parsed_discovered_target)
     }) {
         return Vec::new();
     }
@@ -332,37 +330,33 @@ fn evaluate_manager_selected_seed(
         }
     };
 
-    if is_evidence_old_enough(&target_age, now, min_release_age) {
-        if let Some(audit) = candidate_fact.audit.clone()
-            && !audit_allows_target(&audit)
-        {
-            diagnostics.audit_blocking_target = Some(audit.clone());
-            diagnostics.audit_blocking_candidate = Some(candidate_fact.clone());
-            diagnostics.candidates.push(candidate_fact);
-            return PlanItem::Blocked {
-                id,
-                seed,
-                reason: audit_block_reason(&audit),
-                policy_warnings: policy_warning.into_iter().collect(),
-                diagnostics,
-            };
-        }
+    let old_enough = is_evidence_old_enough(&target_age, now, min_release_age);
+    if old_enough
+        && let Some(audit) = candidate_fact.audit.as_ref()
+        && !audit_allows_target(audit)
+    {
+        let reason = audit_block_reason(audit);
+        diagnostics.audit_blocking_target = Some(audit.clone());
+        diagnostics.audit_blocking_candidate = Some(candidate_fact.clone());
         diagnostics.candidates.push(candidate_fact);
-        let candidate = candidate_from_seed(
-            &seed,
-            selected_target,
-            policy_warning.into_iter().collect(),
+        return PlanItem::Blocked {
+            id,
+            seed,
+            reason,
+            policy_warnings: policy_warning.into_iter().collect(),
             diagnostics,
-        );
+        };
+    }
+    diagnostics.candidates.push(candidate_fact);
+    let candidate = candidate_from_seed(
+        &seed,
+        selected_target,
+        policy_warning.into_iter().collect(),
+        diagnostics,
+    );
+    if old_enough {
         PlanItem::Update { id, candidate }
     } else {
-        diagnostics.candidates.push(candidate_fact);
-        let candidate = candidate_from_seed(
-            &seed,
-            selected_target,
-            policy_warning.into_iter().collect(),
-            diagnostics,
-        );
         PlanItem::Delayed {
             id,
             candidate,
@@ -452,37 +446,16 @@ fn evaluate_timeline_seed<V: Ord + Clone>(
         candidate_facts.push((parsed, fact));
     }
 
-    let newest_overall = candidate_facts
-        .iter()
-        .reduce(|current, candidate| {
-            if candidate_is_newer_by_date(&candidate.0, &candidate.1, current) {
-                candidate
-            } else {
-                current
-            }
-        })
-        .cloned();
+    let newest_overall = candidate_facts.iter().reduce(newer_by_date).cloned();
     let newest_policy_eligible = candidate_facts
         .iter()
         .filter(|(_, fact)| fact.policy_block_reason.is_none())
-        .reduce(|current, candidate| {
-            if candidate_is_newer_by_date(&candidate.0, &candidate.1, current) {
-                candidate
-            } else {
-                current
-            }
-        })
+        .reduce(newer_by_date)
         .cloned();
     let newest_age_eligible = candidate_facts
         .iter()
         .filter(|(_, fact)| fact.policy_block_reason.is_none() && fact.age_allowed)
-        .reduce(|current, candidate| {
-            if candidate_is_newer_by_date(&candidate.0, &candidate.1, current) {
-                candidate
-            } else {
-                current
-            }
-        })
+        .reduce(newer_by_date)
         .cloned();
     let newest_audit_eligible = candidate_facts
         .iter()
@@ -491,13 +464,7 @@ fn evaluate_timeline_seed<V: Ord + Clone>(
                 && fact.age_allowed
                 && audit_allows_optional_target(fact.audit.as_ref())
         })
-        .reduce(|current, candidate| {
-            if candidate_is_newer_by_date(&candidate.0, &candidate.1, current) {
-                candidate
-            } else {
-                current
-            }
-        })
+        .reduce(newer_by_date)
         .cloned();
 
     let mut diagnostics = diagnostics_from_candidate_facts(
@@ -524,7 +491,7 @@ fn evaluate_timeline_seed<V: Ord + Clone>(
             id,
             seed,
             reason: BlockReason::VersionPolicy(reason),
-            policy_warnings: newest_overall.warnings,
+            policy_warnings: newest_overall.warning.into_iter().collect(),
             diagnostics,
         };
     };
@@ -535,7 +502,7 @@ fn evaluate_timeline_seed<V: Ord + Clone>(
         let candidate = candidate_from_seed(
             &seed,
             policy_candidate.version,
-            policy_candidate.warnings,
+            policy_candidate.warning.into_iter().collect(),
             diagnostics,
         );
         return PlanItem::Delayed {
@@ -553,12 +520,13 @@ fn evaluate_timeline_seed<V: Ord + Clone>(
                 .unwrap_or_else(|| AuditLookupResult::LookupFailed {
                     detail: "audit lookup result missing".to_owned(),
                 });
-        diagnostics.audit_blocking_target = Some(audit.clone());
+        let reason = audit_block_reason(&audit);
+        diagnostics.audit_blocking_target = Some(audit);
         diagnostics.audit_blocking_candidate = Some(age_candidate.candidate_evaluation());
         return PlanItem::Blocked {
             id,
             seed,
-            reason: audit_block_reason(&audit),
+            reason,
             policy_warnings: Vec::new(),
             diagnostics,
         };
@@ -570,7 +538,7 @@ fn evaluate_timeline_seed<V: Ord + Clone>(
         candidate: candidate_from_seed(
             &seed,
             audit_candidate.version,
-            audit_candidate.warnings,
+            audit_candidate.warning.into_iter().collect(),
             diagnostics,
         ),
     }
@@ -602,12 +570,14 @@ fn audit_fact_for(
 ) -> Option<AuditLookupResult> {
     let subject = subject?;
     let query = AuditQuery::new(subject.clone(), version.clone());
-    Some(audit_results.get(&query).map_or_else(
-        || AuditLookupResult::LookupFailed {
-            detail: "audit lookup result missing".to_owned(),
-        },
-        Clone::clone,
-    ))
+    Some(
+        audit_results
+            .get(&query)
+            .cloned()
+            .unwrap_or_else(|| AuditLookupResult::LookupFailed {
+                detail: "audit lookup result missing".to_owned(),
+            }),
+    )
 }
 
 const fn audit_allows_optional_target(audit: Option<&AuditLookupResult>) -> bool {
@@ -751,12 +721,12 @@ fn target_age_duration(target_age: &TargetAgeLookupResult, now: SystemTime) -> O
 }
 
 fn evidence_age(evidence: &TargetAgeEvidence, now: SystemTime) -> Duration {
-    now.duration_since(*evidence.timestamp().as_system_time())
+    now.duration_since(evidence.timestamp().as_system_time())
         .unwrap_or_default()
 }
 
 fn release_age(entry: &ReleaseEntry, now: SystemTime) -> Duration {
-    now.duration_since(*entry.published_at.as_system_time())
+    now.duration_since(entry.published_at.as_system_time())
         .unwrap_or_default()
 }
 
@@ -810,19 +780,18 @@ where
     }
 }
 
-fn candidate_is_newer_by_date<T>(
-    parsed: &T,
-    fact: &CandidateFact,
-    current: &(T, CandidateFact),
-) -> bool
-where
-    T: Ord,
-{
-    fact.published_at
+fn newer_by_date<'a, T: Ord>(
+    current: &'a (T, CandidateFact),
+    candidate: &'a (T, CandidateFact),
+) -> &'a (T, CandidateFact) {
+    let is_newer = candidate
+        .1
+        .published_at
         .as_system_time()
-        .cmp(current.1.published_at.as_system_time())
-        .then_with(|| parsed.cmp(&current.0))
-        .is_gt()
+        .cmp(&current.1.published_at.as_system_time())
+        .then_with(|| candidate.0.cmp(&current.0))
+        .is_gt();
+    if is_newer { candidate } else { current }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -832,7 +801,7 @@ struct CandidateFact {
     published_at: upgate_domain::ReleaseTimestamp,
     age_allowed: bool,
     policy_block_reason: Option<PolicyBlockReason>,
-    warnings: Vec<PolicyWarning>,
+    warning: Option<PolicyWarning>,
     audit: Option<AuditLookupResult>,
 }
 
@@ -847,10 +816,10 @@ impl CandidateFact {
         Self {
             version: entry.version.clone(),
             age,
-            published_at: entry.published_at.clone(),
+            published_at: entry.published_at,
             age_allowed: age >= min_release_age,
             policy_block_reason: policy_decision.block_reason(),
-            warnings: policy_decision.warning().into_iter().collect(),
+            warning: policy_decision.warning(),
             audit: None,
         }
     }
@@ -864,8 +833,8 @@ impl CandidateFact {
             version: self.version.clone(),
             age: Some(self.age),
             age_allowed: self.age_allowed,
-            policy_block_reason: self.policy_block_reason.clone(),
-            policy_warning: self.warnings.first().copied(),
+            policy_block_reason: self.policy_block_reason,
+            policy_warning: self.warning,
             audit: self.audit.clone(),
         }
     }

@@ -34,22 +34,15 @@ impl ReleaseClass {
 pub fn parse_semver(raw: &str) -> Result<SemverVersion, String> {
     let trimmed = raw.trim().trim_start_matches(['v', 'V']);
     SemverVersion::parse(trimmed)
-        .or_else(|_| {
-            let parts = trimmed.split('.').collect::<Vec<_>>();
-            if parts.is_empty()
-                || parts.len() > 3
-                || parts.iter().any(|part| part.is_empty())
-                || !parts
-                    .iter()
-                    .all(|part| part.chars().all(|ch| ch.is_ascii_digit()))
-            {
-                return SemverVersion::parse(trimmed);
+        .or_else(|err| {
+            let mut parts = trimmed.split('.').collect::<Vec<_>>();
+            if parts.len() > 3 || !is_numeric_dot_core(trimmed) {
+                return Err(err);
             }
-            let mut padded = parts;
-            while padded.len() < 3 {
-                padded.push("0");
+            while parts.len() < 3 {
+                parts.push("0");
             }
-            SemverVersion::parse(&padded.join("."))
+            SemverVersion::parse(&parts.join("."))
         })
         .map_err(|err| err.to_string())
 }
@@ -59,7 +52,6 @@ pub fn parse_pep440(raw: &str) -> Result<Pep440Version, String> {
 }
 
 pub fn classify_semver_release(raw: &str) -> ReleaseClass {
-    let raw = raw.trim();
     let Ok(parsed) = parse_semver(raw) else {
         return classify_semver_like_fallback(raw);
     };
@@ -156,45 +148,21 @@ fn classify_brew_prerelease(version: &str) -> Option<ReleaseClass> {
 fn classify_brew_token(version: &str, start: usize, end: usize) -> Option<ReleaseClass> {
     let token = &version[start..end];
     let normalized = token.to_ascii_lowercase();
-    let marker = normalized
-        .trim_start_matches(|ch: char| ch.is_ascii_digit())
-        .trim();
-    let label = leading_alpha_prefix(marker);
-    if label.is_empty() {
-        return None;
+    let marker = normalized.trim_start_matches(|ch: char| ch.is_ascii_digit());
+    match leading_alpha_prefix(marker) {
+        "canary" | "nightly" | "snapshot" | "dev" | "devel" | "development" | "next" | "edge"
+        | "preview" | "experimental" | "exp" => Some(ReleaseClass::Dev),
+        "alpha" => Some(ReleaseClass::Alpha),
+        "beta" => Some(ReleaseClass::Beta),
+        "prerelease" | "pre" | "rc" => Some(ReleaseClass::Rc),
+        "a" if has_short_brew_prerelease_context(version, start, token, marker) => {
+            Some(ReleaseClass::Alpha)
+        }
+        "b" if has_short_brew_prerelease_context(version, start, token, marker) => {
+            Some(ReleaseClass::Beta)
+        }
+        _ => None,
     }
-    if matches!(
-        label,
-        "canary"
-            | "nightly"
-            | "snapshot"
-            | "dev"
-            | "devel"
-            | "development"
-            | "next"
-            | "edge"
-            | "preview"
-            | "experimental"
-            | "exp"
-    ) {
-        return Some(ReleaseClass::Dev);
-    }
-    if label == "alpha" {
-        return Some(ReleaseClass::Alpha);
-    }
-    if label == "beta" {
-        return Some(ReleaseClass::Beta);
-    }
-    if matches!(label, "prerelease" | "pre" | "rc") {
-        return Some(ReleaseClass::Rc);
-    }
-    if label == "a" && has_short_brew_prerelease_context(version, start, token, marker) {
-        return Some(ReleaseClass::Alpha);
-    }
-    if label == "b" && has_short_brew_prerelease_context(version, start, token, marker) {
-        return Some(ReleaseClass::Beta);
-    }
-    None
 }
 
 fn has_short_brew_prerelease_context(
@@ -252,8 +220,7 @@ const fn select_less_stable(
 
 fn leading_alpha_prefix(token: &str) -> &str {
     let end = token
-        .char_indices()
-        .find_map(|(idx, ch)| (!ch.is_ascii_alphabetic()).then_some(idx))
+        .find(|ch: char| !ch.is_ascii_alphabetic())
         .unwrap_or(token.len());
     &token[..end]
 }

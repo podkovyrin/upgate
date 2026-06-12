@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use upgate_domain::{
     ExecutionSupport, InstalledTool, ManagerId, ManagerUpdateInput, PackageName, PlanItem,
@@ -74,8 +74,7 @@ fn default_batch_selection_include_mode_excludes_exceptions() {
     let plan = plan();
     let policy = UpdateSelectionPolicy {
         mode: UpdateSelectionMode::Include,
-        except: std::iter::once(PackageName::new("exception-pkg").expect("valid package name"))
-            .collect(),
+        except: BTreeSet::from([PackageName::new("exception-pkg").expect("valid package name")]),
     };
     let selection = default_batch_selection(&plan, &policy).expect("selection should be valid");
 
@@ -95,8 +94,7 @@ fn default_batch_selection_include_mode_ignores_stale_exceptions() {
     let plan = plan();
     let policy = UpdateSelectionPolicy {
         mode: UpdateSelectionMode::Include,
-        except: std::iter::once(PackageName::new("stale-pkg").expect("valid package name"))
-            .collect(),
+        except: BTreeSet::from([PackageName::new("stale-pkg").expect("valid package name")]),
     };
     let selection = default_batch_selection(&plan, &policy).expect("selection should be valid");
 
@@ -133,8 +131,7 @@ fn default_batch_selection_skip_mode_includes_only_exceptions() {
     let plan = plan();
     let policy = UpdateSelectionPolicy {
         mode: UpdateSelectionMode::Skip,
-        except: std::iter::once(PackageName::new("exception-pkg").expect("valid package name"))
-            .collect(),
+        except: BTreeSet::from([PackageName::new("exception-pkg").expect("valid package name")]),
     };
     let selection = default_batch_selection(&plan, &policy).expect("selection should be valid");
 
@@ -154,8 +151,7 @@ fn default_batch_selection_skip_mode_ignores_stale_exceptions() {
     let plan = plan();
     let policy = UpdateSelectionPolicy {
         mode: UpdateSelectionMode::Skip,
-        except: std::iter::once(PackageName::new("stale-pkg").expect("valid package name"))
-            .collect(),
+        except: BTreeSet::from([PackageName::new("stale-pkg").expect("valid package name")]),
     };
     let selection = default_batch_selection(&plan, &policy).expect("selection should be valid");
 

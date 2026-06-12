@@ -284,12 +284,10 @@ fn update_inputs(
     let tools = installed_global(process)?;
     let threads =
         effective_parallelism(max_parallel_checks_per_manager, DOTNET_MAX_PARALLEL_CHECKS);
-    run_ordered_parallel(tools, threads, MANAGER_ID, |tool| {
+    Ok(run_ordered_parallel(tools, threads, MANAGER_ID, |tool| {
         let lookup = lookup_release(http, env, &tool.package_name);
-        Ok(update_input(tool, lookup))
-    })?
-    .into_iter()
-    .collect()
+        update_input(tool, lookup)
+    })?)
 }
 
 /// Looks up `NuGet` release metadata.
@@ -413,9 +411,7 @@ fn nuget_entries_from_index(
     for page_ref in index.items {
         let page_body = fetch_registration_text(http, &page_ref.id, gzipped)?;
         entries.extend(parse_nuget_page_json(&page_body).map_err(|err| match err {
-            DotnetError::InvalidTimestamp { version, value } => {
-                DotnetError::InvalidTimestamp { version, value }
-            }
+            err @ DotnetError::InvalidTimestamp { .. } => err,
             other => DotnetError::Json(format!(
                 "failed to parse NuGet registration page for {}: {other}",
                 package.as_str()
@@ -441,7 +437,7 @@ fn fetch_registration_text(
         .get_bytes(url)
         .map_err(|err| DotnetError::Infra(err.to_string()))?
         .body;
-    let mut decoder = GzDecoder::new(std::io::Cursor::new(bytes));
+    let mut decoder = GzDecoder::new(bytes.as_slice());
     let mut out = String::new();
     decoder.read_to_string(&mut out).map_err(|err| {
         DotnetError::Infra(format!("failed to gunzip NuGet payload from {url}: {err}"))

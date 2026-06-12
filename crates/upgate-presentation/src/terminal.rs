@@ -1,7 +1,8 @@
 use std::fmt::{self, Display};
+use std::io::IsTerminal;
 use std::time::Duration;
 
-use indicatif::{ProgressBar, ProgressFinish, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::OutputTheme;
 
@@ -50,7 +51,7 @@ impl BatchTerminal {
     pub fn from_environment(theme: OutputTheme) -> Self {
         Self {
             theme,
-            stderr_is_tty: std::io::IsTerminal::is_terminal(&std::io::stderr()),
+            stderr_is_tty: std::io::stderr().is_terminal(),
             spinner_suppressed: false,
         }
     }
@@ -71,7 +72,7 @@ impl BatchTerminal {
             return ManagerSpinner(None);
         }
 
-        let progress = ProgressBar::new_spinner().with_finish(ProgressFinish::AndClear);
+        let progress = ProgressBar::new_spinner();
         progress.set_style(spinner_style(self.theme.color()));
         progress.set_message(format!("{}...", action.spinner_label()));
         progress.enable_steady_tick(Duration::from_millis(90));

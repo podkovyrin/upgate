@@ -14,7 +14,7 @@ pub fn release_evidence_for_version(
         .versions
         .iter()
         .find(|entry| entry.version == *version)
-        .map(|entry| VersionReleaseEvidence::new(entry.version.clone(), entry.published_at.clone()))
+        .map(|entry| VersionReleaseEvidence::new(entry.version.clone(), entry.published_at))
 }
 pub fn newest_semver_version(timeline: &ReleaseTimeline) -> Option<VersionText> {
     timeline
@@ -24,8 +24,7 @@ pub fn newest_semver_version(timeline: &ReleaseTimeline) -> Option<VersionText> 
             let raw = entry.version.as_str().trim().trim_start_matches(['v', 'V']);
             let parsed = Version::parse(raw).or_else(|err| {
                 let parts = raw.split('.').collect::<Vec<_>>();
-                if parts.is_empty()
-                    || parts.len() > 3
+                if parts.len() > 3
                     || parts.iter().any(|part| part.is_empty())
                     || !parts
                         .iter()
@@ -34,9 +33,7 @@ pub fn newest_semver_version(timeline: &ReleaseTimeline) -> Option<VersionText> 
                     return Err(err);
                 }
                 let mut padded = parts;
-                while padded.len() < 3 {
-                    padded.push("0");
-                }
+                padded.resize(3, "0");
                 Version::parse(&padded.join("."))
             });
             parsed.ok().map(|version| (entry, version))
@@ -45,7 +42,7 @@ pub fn newest_semver_version(timeline: &ReleaseTimeline) -> Option<VersionText> 
             left_entry
                 .published_at
                 .as_system_time()
-                .cmp(right_entry.published_at.as_system_time())
+                .cmp(&right_entry.published_at.as_system_time())
                 .then_with(|| left_version.cmp(right_version))
         })
         .map(|(entry, _)| entry.version.clone())
@@ -63,7 +60,7 @@ pub fn newest_pep440_version(timeline: &ReleaseTimeline) -> Option<VersionText> 
             left_entry
                 .published_at
                 .as_system_time()
-                .cmp(right_entry.published_at.as_system_time())
+                .cmp(&right_entry.published_at.as_system_time())
                 .then_with(|| left_version.cmp(right_version))
         })
         .map(|(entry, _)| entry.version.clone())

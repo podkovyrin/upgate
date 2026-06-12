@@ -62,12 +62,11 @@ impl CommandSpec {
 
 impl fmt::Display for CommandSpec {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut display = self.program.to_string_lossy().into_owned();
+        formatter.write_str(&self.program.to_string_lossy())?;
         for arg in &self.args {
-            display.push(' ');
-            display.push_str(arg.to_string_lossy().as_ref());
+            write!(formatter, " {}", arg.to_string_lossy())?;
         }
-        formatter.write_str(&display)
+        Ok(())
     }
 }
 
@@ -199,9 +198,8 @@ impl FakeProcess {
                 command: display.clone(),
                 detail: "fake process response queue was empty".to_owned(),
             })??;
-        output.command_display.clone_from(&display);
-
         if status_allowed(output.status, check) {
+            output.command_display = display;
             Ok(output)
         } else {
             Err(InfraError::CommandFailed(CommandFailure::new(
@@ -225,11 +223,10 @@ fn run_real(
     let output = if spec.is_mutation && mutation_mode == MutationMode::Skip {
         CommandOutput::from_skipped_mutation(success_exit_status(), display.clone())
     } else {
-        run_real_command(spec, &display, interrupt_requested).map_err(|err| {
+        run_real_command(spec, &display, interrupt_requested).inspect_err(|err| {
             if matches!(err, InfraError::ProcessSpawn { .. }) {
                 logging::on_command_spawn_error(&display, spec.is_mutation, &err.to_string());
             }
-            err
         })?
     };
 
@@ -494,7 +491,7 @@ pub struct CommandFailure {
 }
 
 impl CommandFailure {
-    pub const fn new(command: String, status: ExitStatus, stderr: String) -> Self {
+    const fn new(command: String, status: ExitStatus, stderr: String) -> Self {
         Self {
             command,
             status,
@@ -545,8 +542,7 @@ pub fn command_exists_in_env(command: &str, env: &Env) -> bool {
     }
 
     env.var("PATH").is_some_and(|paths| {
-        std::env::split_paths(std::ffi::OsStr::new(&paths))
-            .any(|path_dir| is_executable_file(&path_dir.join(trimmed)))
+        std::env::split_paths(&paths).any(|path_dir| is_executable_file(&path_dir.join(trimmed)))
     })
 }
 

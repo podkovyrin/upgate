@@ -272,9 +272,9 @@ fn outdated_global(process: &ProcessRunner) -> Result<Vec<PnpmOutdatedPackage>, 
             ));
         }
         let detail = if stderr.trim().is_empty() {
-            stdout.to_owned()
+            stdout
         } else {
-            stderr.to_owned()
+            stderr
         };
         return Err(PnpmError::Infra(format!(
             "pnpm outdated -g --json failed: {detail}"
@@ -413,28 +413,28 @@ fn exact_command_for_item(item: &ResolvedExecutionItem) -> Result<CommandSpec, P
 fn installed_tool(package: PnpmInstalledPackage) -> Result<InstalledTool, PnpmError> {
     Ok(InstalledTool::new(
         PnpmManager::id(),
-        ToolId::new(package.name.as_str().to_owned())?,
+        ToolId::new(package.name.as_str())?,
         package.name.clone(),
-        ToolName::new(package.name.as_str().to_owned())?,
+        ToolName::new(package.name.as_str())?,
         package.version,
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Npm,
-        AuditPackageName::new(package.name.as_str().to_owned())?,
+        AuditPackageName::new(package.name.as_str())?,
     )))
 }
 
 fn installed_tool_from_outdated(package: PnpmOutdatedPackage) -> Result<InstalledTool, PnpmError> {
     Ok(InstalledTool::new(
         PnpmManager::id(),
-        ToolId::new(package.name.as_str().to_owned())?,
+        ToolId::new(package.name.as_str())?,
         package.name.clone(),
-        ToolName::new(package.name.as_str().to_owned())?,
+        ToolName::new(package.name.as_str())?,
         package.current,
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Npm,
-        AuditPackageName::new(package.name.as_str().to_owned())?,
+        AuditPackageName::new(package.name.as_str())?,
     )))
 }
 
@@ -496,10 +496,7 @@ fn time_map_to_timeline(
 fn parse_timestamp(value: &str) -> Option<DateTime<chrono::FixedOffset>> {
     DateTime::parse_from_rfc3339(value).ok().or_else(|| {
         let naive = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f").ok()?;
-        Some(DateTime::from_naive_utc_and_offset(
-            naive,
-            chrono::FixedOffset::east_opt(0)?,
-        ))
+        Some(naive.and_utc().fixed_offset())
     })
 }
 

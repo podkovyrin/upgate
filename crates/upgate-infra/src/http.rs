@@ -29,7 +29,7 @@ impl HttpClient {
     /// Returns an error when reqwest cannot construct the client.
     pub fn real(settings: &HttpSettings) -> Result<Self, InfraError> {
         let client = Client::builder()
-            .user_agent(settings.user_agent.clone())
+            .user_agent(settings.user_agent.as_str())
             .timeout(settings.timeout)
             .build()
             .map_err(|err| InfraError::HttpClientBuild {
@@ -131,7 +131,7 @@ impl HttpClient {
                 })?;
                 Ok(HttpBytesResponse {
                     status,
-                    body: body.to_vec(),
+                    body: Vec::from(body),
                 })
             }
             Self::Fake(fake) => fake.get_bytes(url),
@@ -214,7 +214,7 @@ pub struct FakeHttpClient {
 }
 
 impl FakeHttpClient {
-    pub fn new(responses: impl IntoIterator<Item = (String, HttpResponse)>) -> Self {
+    fn new(responses: impl IntoIterator<Item = (String, HttpResponse)>) -> Self {
         Self {
             responses: responses
                 .into_iter()

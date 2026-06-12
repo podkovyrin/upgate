@@ -1,16 +1,16 @@
 //! Domain model crate for the `upgate` rebuild.
 #![allow(clippy::must_use_candidate, clippy::return_self_not_must_use)]
 
-pub mod audit;
-pub mod config;
-pub mod error;
-pub mod manager;
-pub mod plan;
-pub mod policy;
-pub mod release;
-pub mod scan;
-pub mod selection;
-pub mod version;
+mod audit;
+mod config;
+mod error;
+mod manager;
+mod plan;
+mod policy;
+mod release;
+mod scan;
+mod selection;
+mod version;
 
 pub use audit::{
     AuditFinding, AuditLookupResult, AuditPackageName, AuditQuery, AuditSubject, OsvEcosystem,

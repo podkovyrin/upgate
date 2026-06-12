@@ -27,18 +27,18 @@ use crate::adapter::{
     ReleaseLookupSubject, validate_version_policy,
 };
 
-pub const MANAGER_ID: &str = "pipx";
+const MANAGER_ID: &str = "pipx";
 const PIPX_MAX_PARALLEL_CHECKS: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PipxError {
+enum PipxError {
     Infra(String),
     Interrupted(String),
     Json(String),
     Domain(String),
     InvalidTimestamp { version: String, value: String },
     MissingReleaseMetadata(String),
-    UnsupportedCommandIntent(String),
+    UnsupportedCommandIntent(&'static str),
 }
 
 impl Display for PipxError {
@@ -83,16 +83,10 @@ impl From<DomainError> for PipxError {
     }
 }
 
-impl PipxError {
-    pub const fn is_interruption(&self) -> bool {
-        matches!(self, Self::Interrupted(_))
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PipxInstalledPackage {
-    pub name: PackageName,
-    pub version: VersionText,
+struct PipxInstalledPackage {
+    name: PackageName,
+    version: VersionText,
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,7 +184,7 @@ impl ManagerAdapter for PipxManager {
 /// # Errors
 ///
 /// Returns an error when JSON is malformed or a package/version is blank.
-pub fn parse_list_json(raw: &str) -> Result<Vec<PipxInstalledPackage>, PipxError> {
+fn parse_list_json(raw: &str) -> Result<Vec<PipxInstalledPackage>, PipxError> {
     let parsed: PipxListRoot =
         serde_json::from_str(raw).map_err(|err| PipxError::Json(err.to_string()))?;
     let mut packages = BTreeMap::new();
@@ -211,7 +205,7 @@ pub fn parse_list_json(raw: &str) -> Result<Vec<PipxInstalledPackage>, PipxError
 /// # Errors
 ///
 /// Returns an error when command output cannot be parsed.
-pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, PipxError> {
+fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, PipxError> {
     let output = process.run(
         &CommandSpec::new("pipx", ["list", "--json"]),
         &CommandCheck::Success,
@@ -227,7 +221,7 @@ pub fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, P
 /// # Errors
 ///
 /// Returns an error when installed discovery fails.
-pub fn update_inputs(
+fn update_inputs(
     process: &ProcessRunner,
     http: &HttpClient,
     env: &Env,
@@ -235,16 +229,14 @@ pub fn update_inputs(
 ) -> Result<Vec<ManagerUpdateInput>, PipxError> {
     let tools = installed_global(process)?;
     let threads = effective_parallelism(max_parallel_checks_per_manager, PIPX_MAX_PARALLEL_CHECKS);
-    run_ordered_parallel(tools, threads, MANAGER_ID, |tool| {
+    Ok(run_ordered_parallel(tools, threads, MANAGER_ID, |tool| {
         let lookup = lookup_release(http, env, &tool.package_name);
-        Ok(update_input(tool, lookup))
-    })?
-    .into_iter()
-    .collect()
+        update_input(tool, lookup)
+    })?)
 }
 
 /// Looks up `PyPI` release metadata.
-pub fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> ReleaseLookupResult {
+fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> ReleaseLookupResult {
     let base_url = upgate_infra::env_base_url(env, "upgate_PIPX_PYPI_BASE_URL", "https://pypi.org");
     let url = format!("{base_url}/pypi/{package}/json");
     match http.get_text(&url) {
@@ -263,7 +255,7 @@ pub fn lookup_release(http: &HttpClient, env: &Env, package: &PackageName) -> Re
 ///
 /// Returns an error when JSON or timestamps are invalid, or no version
 /// timestamps are present.
-pub fn parse_pypi_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeline, PipxError> {
+fn parse_pypi_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeline, PipxError> {
     let root: PypiRoot =
         serde_json::from_str(raw).map_err(|err| PipxError::Json(err.to_string()))?;
     let mut timestamps = BTreeMap::new();
@@ -284,7 +276,7 @@ pub fn parse_pypi_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeli
 /// # Errors
 ///
 /// Returns an error when the resolved execution mode is not supported.
-pub fn commands_for_execution_plan(
+fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
 ) -> Result<Vec<ExecutionCommand>, PipxError> {
     let mut commands = Vec::new();
@@ -297,29 +289,21 @@ pub fn commands_for_execution_plan(
                 });
             }
             ExecutionCommandIntent::NativeSelected(_) => {
-                return Err(PipxError::UnsupportedCommandIntent(
-                    "native-selected".to_owned(),
-                ));
+                return Err(PipxError::UnsupportedCommandIntent("native-selected"));
             }
             ExecutionCommandIntent::ResolverNative(_) => {
-                return Err(PipxError::UnsupportedCommandIntent(
-                    "resolver-native".to_owned(),
-                ));
+                return Err(PipxError::UnsupportedCommandIntent("resolver-native"));
             }
             ExecutionCommandIntent::ResolverNativeGlobal(_) => {
                 return Err(PipxError::UnsupportedCommandIntent(
-                    "resolver-native-global".to_owned(),
+                    "resolver-native-global",
                 ));
             }
             ExecutionCommandIntent::GroupedNative(_) => {
-                return Err(PipxError::UnsupportedCommandIntent(
-                    "grouped-native".to_owned(),
-                ));
+                return Err(PipxError::UnsupportedCommandIntent("grouped-native"));
             }
             ExecutionCommandIntent::NativeGlobal(_) => {
-                return Err(PipxError::UnsupportedCommandIntent(
-                    "native-global".to_owned(),
-                ));
+                return Err(PipxError::UnsupportedCommandIntent("native-global"));
             }
         }
     }
@@ -327,30 +311,26 @@ pub fn commands_for_execution_plan(
 }
 
 fn exact_command_for_item(item: &ResolvedExecutionItem) -> Result<CommandSpec, PipxError> {
-    Ok(exact_command_parts(
-        &item.package_name,
-        item.known_target_version().ok_or_else(|| {
-            PipxError::UnsupportedCommandIntent("exact-without-known-target".to_owned())
-        })?,
-    ))
-}
-
-fn exact_command_parts(package_name: &PackageName, target_version: &VersionText) -> CommandSpec {
-    let spec = format!("{package_name}=={target_version}");
-    CommandSpec::new("pipx", ["upgrade", &spec]).mutating()
+    let target_version = item
+        .known_target_version()
+        .ok_or(PipxError::UnsupportedCommandIntent(
+            "exact-without-known-target",
+        ))?;
+    let spec = format!("{}=={target_version}", item.package_name);
+    Ok(CommandSpec::new("pipx", ["upgrade", &spec]).mutating())
 }
 
 fn installed_tool(package: PipxInstalledPackage) -> Result<InstalledTool, PipxError> {
     Ok(InstalledTool::new(
         PipxManager::id(),
-        ToolId::new(package.name.as_str().to_owned())?,
+        ToolId::new(package.name.as_str())?,
         package.name.clone(),
-        ToolName::new(package.name.as_str().to_owned())?,
+        ToolName::new(package.name.as_str())?,
         package.version,
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Pypi,
-        AuditPackageName::new(package.name.as_str().to_owned())?,
+        AuditPackageName::new(package.name.as_str())?,
     )))
 }
 
@@ -390,8 +370,7 @@ fn time_map_to_timeline(
 ) -> Result<ReleaseTimeline, PipxError> {
     if timestamps.is_empty() {
         return Err(PipxError::MissingReleaseMetadata(format!(
-            "registry time metadata is empty for {}",
-            package.as_str()
+            "registry time metadata is empty for {package}"
         )));
     }
 

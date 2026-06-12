@@ -16,11 +16,10 @@ pub use batch::{
 pub use outcome::{
     OutcomeNote, OutcomeRow, OutcomeStatusView, OutcomeSubjectView, OutcomeTable,
     OutcomeTargetView, OutcomeVersionEmphasis, OutcomeVersionsView, OutcomeVisibility,
-    changed_version_segment_index, manager_resolved_label, render_outcome_table, render_to_version,
-    strip_ansi_codes, version_label,
 };
+pub(crate) use outcome::{render_outcome_table, version_label};
 pub use selection_view::{
     CandidateNoteKind, CandidateNotePart, CandidateNoteTone, SelectionRow, SelectionRowStatus,
     SelectionRowVisibility, SelectionView, TargetOption, selection_view,
 };
-pub use theme::{OutputTheme, TerminalCapabilities, ThemeOptions};
+pub use theme::{OutputTheme, ThemeOptions};

@@ -38,7 +38,6 @@ enum CargoError {
     Json(String),
     Domain(String),
     SearchParse(String),
-    LedgerRead(String),
     InvalidTimestamp { version: String, value: String },
     MissingReleaseMetadata(String),
     UnsupportedCommandIntent(String),
@@ -52,7 +51,6 @@ impl Display for CargoError {
             | Self::Json(detail)
             | Self::Domain(detail)
             | Self::SearchParse(detail)
-            | Self::LedgerRead(detail)
             | Self::MissingReleaseMetadata(detail) => formatter.write_str(detail),
             Self::InvalidTimestamp { version, value } => {
                 write!(
@@ -100,7 +98,7 @@ struct InstalledCrate {
     version: VersionText,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CargoInstallMeta {
     bins: Vec<String>,
     features: Vec<String>,
@@ -266,12 +264,12 @@ fn parse_ledger_key_name(key: &str) -> Option<String> {
 ///
 /// Returns an error when no exact row is found or the version is not `SemVer`.
 fn parse_search_latest_version(crate_name: &PackageName, raw: &str) -> Result<Version, CargoError> {
+    let prefix = format!("{crate_name} = \"");
     for line in raw.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with("...") || trimmed.starts_with("note:") {
             continue;
         }
-        let prefix = format!("{crate_name} = \"");
         if let Some(rest) = trimmed.strip_prefix(&prefix)
             && let Some((version, _)) = rest.split_once('"')
         {
@@ -387,7 +385,7 @@ fn commands_for_execution_plan(
     env: &Env,
     plan: &ResolvedExecutionPlan,
 ) -> Result<Vec<ExecutionCommand>, CargoError> {
-    let install_meta = install_tracking_map(env).unwrap_or_default();
+    let install_meta = install_tracking_map(env);
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
@@ -498,36 +496,20 @@ fn discovered_target(tool: &InstalledTool, lookup: &ReleaseLookupResult) -> Vers
     }
 }
 
-fn install_tracking_map(env: &Env) -> Result<BTreeMap<String, CargoInstallMeta>, CargoError> {
+fn install_tracking_map(env: &Env) -> BTreeMap<String, CargoInstallMeta> {
     let Some(path) = cargo_install_ledger_path(env) else {
-        return Ok(BTreeMap::new());
+        return BTreeMap::new();
     };
-    if !path.exists() {
-        return Ok(BTreeMap::new());
-    }
-    let raw = fs::read_to_string(&path).map_err(|err| {
-        CargoError::LedgerRead(format!("failed to read {}: {err}", path.display()))
-    })?;
-    parse_install_ledger(&raw)
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return BTreeMap::new();
+    };
+    parse_install_ledger(&raw).unwrap_or_default()
 }
 
 fn cargo_install_ledger_path(env: &Env) -> Option<PathBuf> {
-    env.var("CARGO_HOME")
-        .and_then(|value| trimmed(&value).map(PathBuf::from))
-        .or_else(|| {
-            env.var("HOME")
-                .and_then(|home| trimmed(&home).map(|home| PathBuf::from(home).join(".cargo")))
-        })
+    env.non_empty_path_var("CARGO_HOME")
+        .or_else(|| env.home_dir().map(|home| home.join(".cargo")))
         .map(|cargo_home| cargo_home.join(".crates2.json"))
-}
-
-fn trimmed(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_owned())
-    }
 }
 
 fn installed_tool(package: InstalledCrate) -> Result<InstalledTool, CargoError> {
@@ -579,12 +561,6 @@ fn time_map_to_timeline(
             ReleaseTimestamp::new(system_time_from_datetime(parsed)),
         ));
     }
-    if entries.is_empty() {
-        return Err(CargoError::MissingReleaseMetadata(format!(
-            "registry time metadata is empty for {}",
-            package.as_str()
-        )));
-    }
     Ok(ReleaseTimeline::new(entries))
 }
 
@@ -613,7 +589,6 @@ fn adapter_error(err: &CargoError) -> ManagerAdapterError {
         CargoError::Json(_)
         | CargoError::Domain(_)
         | CargoError::SearchParse(_)
-        | CargoError::LedgerRead(_)
         | CargoError::InvalidTimestamp { .. }
         | CargoError::MissingReleaseMetadata(_) => ManagerAdapterErrorKind::Parse,
         CargoError::UnsupportedCommandIntent(_) => ManagerAdapterErrorKind::CommandConstruction,

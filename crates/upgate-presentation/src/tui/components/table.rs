@@ -84,7 +84,7 @@ pub fn render_table<const N: usize>(
 }
 
 pub fn update_header_row(theme: &TuiTheme) -> Row<'static> {
-    Row::new(vec!["", "Manager", "Name", "Current", "Target", "Note"]).style(theme.header)
+    Row::new(["", "Manager", "Name", "Current", "Target", "Note"]).style(theme.header)
 }
 
 pub const fn selection_update_columns(width: u16) -> [Constraint; 6] {
