@@ -1,23 +1,22 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, mpsc};
 use std::thread;
 
 use upgate_audit::AuditService;
 use upgate_domain::{ManagerConfig, ManagerId, PlanSelection, UpdatePlan};
-use upgate_execution::progress::{
-    ExecutionProgressEvent, ExecutionProgressState, ExecutionProgressSummary,
-};
 use upgate_execution::{
-    ResolvedExecutionPlan, execute_commands, execute_commands_stoppable,
+    ExecutionCommand, ExecutionReport, ResolvedExecutionPlan, execute_commands,
     resolve_selection_for_execution,
 };
 use upgate_infra::{Env, HttpClient, ProcessRunner, run_ordered_parallel_stoppable};
-use upgate_presentation::selection_view;
 use upgate_presentation::tui::{
-    InteractiveManagerSelectionDraft, InteractiveProgressOutcome, InteractiveSelectionOutcome,
-    InteractiveSelectionPlanningEvent, run_interactive_progress,
-    run_interactive_selection_with_planning_events,
+    InteractiveManagerSelectionDraft, InteractiveSelectionOutcome,
+    InteractiveSelectionPlanningEvent, run_interactive_selection_with_planning_events,
+};
+use upgate_presentation::{
+    OutcomeTable, OutputTheme, apply_execution_report_table, manager_error_table,
+    render_batch_table, selection_view,
 };
 
 use crate::config::ConfigFile;
@@ -31,33 +30,15 @@ use crate::{
 #[derive(Clone)]
 pub struct InteractiveCommandLog {
     enabled: bool,
-    entries: Arc<Mutex<Vec<String>>>,
 }
 
 impl InteractiveCommandLog {
-    pub fn new(enabled: bool) -> Self {
-        Self {
-            enabled,
-            entries: Arc::new(Mutex::new(Vec::new())),
-        }
+    pub const fn new(enabled: bool) -> Self {
+        Self { enabled }
     }
 
     const fn enabled(&self) -> bool {
         self.enabled
-    }
-
-    fn snapshot(&self) -> Vec<String> {
-        self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    fn record(&self, command: String) {
-        self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(command);
     }
 
     fn process_for_selection(
@@ -69,26 +50,8 @@ impl InteractiveCommandLog {
             return process.clone();
         }
 
-        let command_log = self.clone();
         process.clone().with_command_start_listener(move |command| {
-            command_log.record(command.clone());
             let _ = event_tx.send(InteractiveSelectionPlanningEvent::CommandStarted { command });
-        })
-    }
-
-    fn process_for_progress(
-        &self,
-        process: &ProcessRunner,
-        tx: mpsc::Sender<ExecutionProgressEvent>,
-    ) -> ProcessRunner {
-        if !self.enabled {
-            return process.clone();
-        }
-
-        let command_log = self.clone();
-        process.clone().with_command_start_listener(move |command| {
-            command_log.record(command.clone());
-            let _ = tx.send(ExecutionProgressEvent::CommandStarted { command });
         })
     }
 }
@@ -98,12 +61,6 @@ pub struct ConfirmedInteractiveManagerApply {
     pub plan: UpdatePlan,
     pub manager_config: ManagerConfig,
     pub selection: PlanSelection,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InteractiveApplyReport {
-    pub progress: ExecutionProgressState,
-    pub summary: ExecutionProgressSummary,
 }
 
 #[derive(Debug, Clone)]
@@ -119,7 +76,7 @@ struct PreparedInteractiveManagerApply {
     manager_config: ManagerConfig,
 }
 
-/// Runs interactive apply through selection, config persistence, execution, and progress output.
+/// Runs interactive apply through selection, config persistence, and execution.
 ///
 /// # Errors
 ///
@@ -137,6 +94,7 @@ pub fn run_interactive_apply(
     manager_concurrency_override: Option<usize>,
     command_log: &InteractiveCommandLog,
     snapshot_log_dir: Option<&Path>,
+    theme: OutputTheme,
 ) -> Result<Option<String>, AppError> {
     let (mut config, manager_configs) =
         prepare_interactive_manager_configs(config, selected_managers, overrides)?;
@@ -169,8 +127,10 @@ pub fn run_interactive_apply(
                     log_dir,
                 )?;
             }
-            execute_confirmed_interactive_apply_live(config, process, env, confirmed, command_log)?;
-            Ok(Some(String::new()))
+            let output = execute_confirmed_interactive_apply_streaming(
+                config, process, env, confirmed, theme,
+            )?;
+            Ok(Some(output))
         }
         None => Ok(None),
     }
@@ -494,105 +454,86 @@ fn confirmed_from_drafts(
     Ok((prepared.config, confirmed))
 }
 
-/// Executes confirmed interactive selections and persists selection policy to a specific config.
+/// Executes confirmed interactive selections, streaming each command to the
+/// terminal as it runs and returning the rendered result table.
 ///
-/// # Errors
-///
-/// Returns an error for config persistence, selection resolution, or interrupted execution.
-/// Manager command construction and execution failures are reported in the progress report.
-pub fn execute_confirmed_interactive_apply_with_config_path(
+/// Commands run with their output captured to the command log. The terminal is
+/// left in normal mode so a command that needs elevated privileges can prompt
+/// for a password directly.
+fn execute_confirmed_interactive_apply_streaming(
     mut config: ConfigFile,
     process: &ProcessRunner,
     env: &Env,
     confirmed: Vec<ConfirmedInteractiveManagerApply>,
-    config_path: &Path,
-) -> Result<InteractiveApplyReport, AppError> {
+    theme: OutputTheme,
+) -> Result<String, AppError> {
     let resolved = resolve_confirmed_execution_plans(&confirmed)?;
-    let mut progress = ExecutionProgressState::from_execution_plans(&resolved);
-    execute_confirmed_interactive_apply_resolved(
-        &mut config,
-        process,
-        env,
-        confirmed,
-        &resolved,
-        Some(config_path),
-        None,
-        &mut |event| {
-            progress.apply_event(event);
-            Ok(())
-        },
-    )?;
-    let summary = progress.summary();
-    Ok(InteractiveApplyReport { progress, summary })
+    persist_confirmed_selection_policies(&mut config, &confirmed)?;
+
+    let process = process.clone().with_command_start_listener(|command| {
+        eprintln!("$ {command}");
+    });
+
+    let mut table = OutcomeTable::default();
+    for manager in confirmed {
+        let manager_id = manager.plan.manager_id.clone();
+        let execution_plan = execution_plan_for(&resolved, &manager_id)?;
+        let adapter =
+            configured_manager(manager.manager_config.clone()).map_err(map_manager_error)?;
+        match adapter.commands_for_execution_plan(&process, env, execution_plan) {
+            Ok(commands) => {
+                let report = run_manager_commands(manager_id, commands, &process)?;
+                table.rows.extend(
+                    apply_execution_report_table(&report, &manager.plan, &manager.selection).rows,
+                );
+            }
+            Err(err) if err.is_interruption() => return Err(map_manager_error(err)),
+            Err(err) => {
+                table
+                    .rows
+                    .extend(manager_error_table(&manager_id, "apply", &err.to_string()).rows);
+            }
+        }
+    }
+    Ok(render_batch_table(&table, theme))
 }
 
-fn execute_confirmed_interactive_apply_live(
-    config: ConfigFile,
+fn persist_confirmed_selection_policies(
+    config: &mut ConfigFile,
+    confirmed: &[ConfirmedInteractiveManagerApply],
+) -> Result<(), AppError> {
+    for manager in confirmed {
+        config.set_manager_selection_policy(
+            manager.plan.manager_id.as_str(),
+            &manager.selection.selection_policy,
+        )?;
+        config.persist_manager_selection_policy(manager.plan.manager_id.as_str())?;
+    }
+    Ok(())
+}
+
+fn execution_plan_for<'a>(
+    resolved: &'a [(ManagerId, ResolvedExecutionPlan)],
+    manager_id: &ManagerId,
+) -> Result<&'a ResolvedExecutionPlan, AppError> {
+    resolved
+        .iter()
+        .find(|(id, _)| id == manager_id)
+        .map(|(_, plan)| plan)
+        .ok_or_else(|| AppError::Execution(format!("missing execution plan for {manager_id}")))
+}
+
+fn run_manager_commands(
+    manager_id: ManagerId,
+    commands: Vec<ExecutionCommand>,
     process: &ProcessRunner,
-    env: &Env,
-    confirmed: Vec<ConfirmedInteractiveManagerApply>,
-    command_log: &InteractiveCommandLog,
-) -> Result<ExecutionProgressSummary, AppError> {
-    let resolved = resolve_confirmed_execution_plans(&confirmed)?;
-    let initial_progress = ExecutionProgressState::from_execution_plans(&resolved)
-        .with_command_log(command_log.snapshot());
-    let (tx, rx) = mpsc::channel();
-    let stop_requested = Arc::new(AtomicBool::new(false));
-    let worker_stop = Arc::clone(&stop_requested);
-    let hard_interrupt_requested = Arc::new(AtomicBool::new(false));
-    let worker_process = command_log
-        .process_for_progress(process, tx.clone())
-        .with_interrupt_flag(Arc::clone(&hard_interrupt_requested));
-
-    thread::scope(|scope| {
-        let worker = scope.spawn(move || {
-            let mut config = config;
-            let result = execute_confirmed_interactive_apply_resolved(
-                &mut config,
-                &worker_process,
-                env,
-                confirmed,
-                &resolved,
-                None,
-                Some(&worker_stop),
-                &mut |event| {
-                    tx.send(event).map_err(|err| {
-                        AppError::Execution(format!("progress event stream closed: {err}"))
-                    })
-                },
-            );
-            if let Err(err) = &result {
-                let _ = tx.send(ExecutionProgressEvent::Fatal {
-                    detail: err.to_string(),
-                });
-                let _ = tx.send(ExecutionProgressEvent::Finished);
-            }
-            result
-        });
-
-        let tui_result = run_interactive_progress(
-            initial_progress,
-            &rx,
-            &stop_requested,
-            command_log.enabled(),
-        )
-        .map_err(|err| AppError::Planning(err.to_string()))
-        .and_then(|outcome| match outcome {
-            InteractiveProgressOutcome::Finished(summary) => Ok(summary),
-            InteractiveProgressOutcome::Interrupted => {
-                hard_interrupt_requested.store(true, Ordering::Relaxed);
-                stop_requested.store(true, Ordering::Relaxed);
-                Err(AppError::Interrupted(
-                    "interactive apply interrupted".to_owned(),
-                ))
-            }
-        });
-        let worker_result = worker
-            .join()
-            .map_err(|_| AppError::Execution("interactive apply worker panicked".to_owned()))?;
-
-        worker_result?;
-        tui_result
+) -> Result<ExecutionReport, AppError> {
+    execute_commands(manager_id, commands, process).map_err(|err| {
+        if err.is_interruption() {
+            AppError::Interrupted(err.to_string())
+        } else {
+            AppError::Execution(err.to_string())
+        }
     })
 }
 
@@ -613,83 +554,4 @@ fn resolve_confirmed_execution_plans(
         resolved.push((manager.plan.manager_id.clone(), execution_plan));
     }
     Ok(resolved)
-}
-
-#[expect(clippy::too_many_arguments)]
-fn execute_confirmed_interactive_apply_resolved(
-    config: &mut ConfigFile,
-    process: &ProcessRunner,
-    env: &Env,
-    confirmed: Vec<ConfirmedInteractiveManagerApply>,
-    resolved: &[(ManagerId, ResolvedExecutionPlan)],
-    config_path: Option<&Path>,
-    stop_requested: Option<&AtomicBool>,
-    emit: &mut impl FnMut(ExecutionProgressEvent) -> Result<(), AppError>,
-) -> Result<(), AppError> {
-    for manager in &confirmed {
-        config.set_manager_selection_policy(
-            manager.plan.manager_id.as_str(),
-            &manager.selection.selection_policy,
-        )?;
-        if let Some(path) = config_path {
-            config
-                .persist_manager_selection_policy_to_path(manager.plan.manager_id.as_str(), path)?;
-        } else {
-            config.persist_manager_selection_policy(manager.plan.manager_id.as_str())?;
-        }
-    }
-
-    for manager in confirmed {
-        if stop_requested.is_some_and(|stop| stop.load(Ordering::Relaxed)) {
-            break;
-        }
-
-        emit(ExecutionProgressEvent::ManagerStarted {
-            manager_id: manager.plan.manager_id.clone(),
-        })?;
-
-        let manager_adapter =
-            configured_manager(manager.manager_config).map_err(map_manager_error)?;
-        let Some((_, execution_plan)) = resolved
-            .iter()
-            .find(|(manager_id, _)| manager_id == &manager.plan.manager_id)
-        else {
-            return Err(AppError::Execution(format!(
-                "missing execution plan for {}",
-                manager.plan.manager_id
-            )));
-        };
-        let commands =
-            match manager_adapter.commands_for_execution_plan(process, env, execution_plan) {
-                Ok(commands) => commands,
-                Err(err) if err.is_interruption() => return Err(map_manager_error(err)),
-                Err(err) => {
-                    emit(ExecutionProgressEvent::ManagerFailed {
-                        manager_id: manager.plan.manager_id,
-                        detail: err.to_string(),
-                    })?;
-                    continue;
-                }
-            };
-        let report = if let Some(stop_requested) = stop_requested {
-            execute_commands_stoppable(manager.plan.manager_id, commands, process, stop_requested)
-        } else {
-            execute_commands(manager.plan.manager_id, commands, process)
-        }
-        .map_err(|err| {
-            if err.is_interruption() {
-                AppError::Interrupted(err.to_string())
-            } else {
-                AppError::Execution(err.to_string())
-            }
-        })?;
-        emit(ExecutionProgressEvent::ManagerFinished { report })?;
-
-        if stop_requested.is_some_and(|stop| stop.load(Ordering::Relaxed)) {
-            break;
-        }
-    }
-
-    emit(ExecutionProgressEvent::Finished)?;
-    Ok(())
 }

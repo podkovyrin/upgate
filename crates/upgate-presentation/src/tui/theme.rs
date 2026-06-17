@@ -5,7 +5,6 @@ use crate::{OutputTheme, ThemeOptions};
 pub(super) struct TuiTheme {
     pub normal: Style,
     pub muted: Style,
-    pub title: Style,
     pub header: Style,
     pub selected: Style,
     pub selected_row_highlight: Style,
@@ -13,10 +12,7 @@ pub(super) struct TuiTheme {
     pub primary_keycap: Style,
     pub note: Style,
     pub forced: Style,
-    pub pending: Style,
     pub running: Style,
-    pub success: Style,
-    pub error: Style,
     pub version_changed: Style,
     pub version_changed_selected: Style,
     pub frame_border: Style,
@@ -34,9 +30,6 @@ impl TuiTheme {
             return Self {
                 normal: Style::default(),
                 muted: Style::default().fg(Color::Gray),
-                title: Style::default()
-                    .fg(Color::Magenta)
-                    .add_modifier(Modifier::BOLD),
                 header: Style::default()
                     .fg(Color::Magenta)
                     .add_modifier(Modifier::BOLD),
@@ -52,10 +45,7 @@ impl TuiTheme {
                     .add_modifier(Modifier::BOLD),
                 note: Style::default().fg(Color::Gray),
                 forced: Style::default().fg(Color::Red),
-                pending: Style::default().fg(Color::Gray),
                 running: Style::default().fg(Color::Yellow),
-                success: Style::default().fg(Color::Green),
-                error: Style::default().fg(Color::Red),
                 version_changed: Style::default().fg(Color::Blue),
                 version_changed_selected: Style::default()
                     .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
@@ -70,7 +60,6 @@ impl TuiTheme {
         Self {
             normal: Style::default(),
             muted: Style::default(),
-            title: emphasized,
             header: emphasized,
             selected,
             selected_row_highlight: selected,
@@ -78,10 +67,7 @@ impl TuiTheme {
             primary_keycap: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
             note: Style::default(),
             forced: Style::default(),
-            pending: Style::default(),
             running: emphasized,
-            success: emphasized,
-            error: emphasized,
             version_changed: emphasized,
             version_changed_selected: Style::default()
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),

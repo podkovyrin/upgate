@@ -10,7 +10,6 @@ workspace = true
 
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
-libc = "0.2.186"
 owo-colors = "4.3.0"
 rayon = "1.12.0"
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls"] }

@@ -32,10 +32,7 @@ use upgate_presentation::{
     terminal::{BatchTerminal, BatchTerminalAction, MutationNotice},
 };
 
-pub use interactive::{
-    ConfirmedInteractiveManagerApply, InteractiveApplyReport,
-    execute_confirmed_interactive_apply_with_config_path,
-};
+pub use interactive::ConfirmedInteractiveManagerApply;
 
 const DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER: usize = 6;
 
@@ -207,6 +204,11 @@ fn run_cli(cli: &Cli) -> CliRunResult {
                 "--yolo is only supported with apply".to_owned(),
             ));
         }
+        let theme = OutputTheme::from_environment(ThemeOptions {
+            plain: cli.plain,
+            no_color: cli.no_color,
+            verbose: cli.verbose,
+        });
         if interactive_apply {
             if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
                 return Err(AppError::InvalidArgs(
@@ -227,13 +229,9 @@ fn run_cli(cli: &Cli) -> CliRunResult {
                 cli.manager_concurrency.map(NonZeroUsize::get),
                 &command_log,
                 log_dir.as_deref(),
+                theme,
             );
         }
-        let theme = OutputTheme::from_environment(ThemeOptions {
-            plain: cli.plain,
-            no_color: cli.no_color,
-            verbose: cli.verbose,
-        });
         let terminal = BatchTerminal::from_environment(theme);
         maybe_emit_apply_mutation_mode_notice(command, &process, terminal, cli.dry_run);
         let terminal = if cli.trace_commands {

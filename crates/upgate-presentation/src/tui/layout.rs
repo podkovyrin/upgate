@@ -2,7 +2,6 @@ use ratatui::layout::{Constraint, Layout, Margin, Rect};
 
 pub(super) struct AppFrame {
     pub outer: Rect,
-    pub inner: Rect,
     pub header: Rect,
     pub header_separator: Rect,
     pub body: Rect,
@@ -29,7 +28,6 @@ pub(super) fn app_frame(area: Rect) -> Option<AppFrame> {
     .areas(inner);
     Some(AppFrame {
         outer: area,
-        inner,
         header,
         header_separator,
         body,

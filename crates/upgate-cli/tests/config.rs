@@ -195,6 +195,18 @@ fn config_rejects_invalid_modes_and_npm_subday_age() {
 }
 
 #[test]
+fn config_rejects_multibyte_duration_unit() {
+    let config: ConfigFile =
+        toml::from_str("[npm]\nmin_release_age = \"7д\"\n").expect("TOML should parse");
+
+    assert!(matches!(
+        config.resolve_manager("npm"),
+        Err(ConfigError::InvalidDurationUnit { key, value, unit })
+            if key == "[npm].min_release_age" && value == "7д" && unit == "д"
+    ));
+}
+
+#[test]
 fn cli_overrides_reject_unknown_and_non_phase_five_values() {
     let mut config = ConfigFile::default();
 

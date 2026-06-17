@@ -15,10 +15,9 @@ use crate::selection_view::note_part_text;
 use crate::tui::components::{
     KeyBinding, TuiTable, app_block, command_log_layout, key_footer, render_command_log,
     render_modal_frame, render_separator, render_table, render_tabs, selection_update_columns,
-    update_header_row, version_picker_columns, visible_tabs,
+    spinner_frame, update_header_row, version_picker_columns, visible_tabs,
 };
 use crate::tui::layout::app_frame;
-use crate::tui::progress::spinner_frame;
 use crate::tui::text::{truncate_with_ellipsis, version_diff_spans};
 use crate::tui::theme::TuiTheme;
 use crate::{CandidateNoteKind, CandidateNotePart, SelectionRow, TargetOption};

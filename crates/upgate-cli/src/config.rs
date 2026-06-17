@@ -723,7 +723,21 @@ fn parse_duration_key(key: &str, raw: &str) -> Result<Duration, ConfigError> {
         });
     }
 
-    let (number, unit) = trimmed.split_at(trimmed.len() - 1);
+    let Some((unit_start, _)) = trimmed.char_indices().next_back() else {
+        return Err(ConfigError::InvalidDuration {
+            key: key.to_owned(),
+            value: raw.to_owned(),
+        });
+    };
+    if unit_start == 0 {
+        return Err(ConfigError::InvalidDuration {
+            key: key.to_owned(),
+            value: raw.to_owned(),
+        });
+    }
+
+    let number = &trimmed[..unit_start];
+    let unit = &trimmed[unit_start..];
     let value = number
         .parse::<u64>()
         .map_err(|_| ConfigError::InvalidDuration {

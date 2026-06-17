@@ -120,39 +120,6 @@ pub const fn selection_update_columns(width: u16) -> [Constraint; 6] {
     ]
 }
 
-pub const fn progress_update_columns(width: u16) -> [Constraint; 6] {
-    if width < VERY_NARROW_TABLE_WIDTH {
-        return [
-            Constraint::Length(3),
-            Constraint::Max(7),
-            Constraint::Max(18),
-            Constraint::Length(0),
-            Constraint::Max(12),
-            Constraint::Fill(1),
-        ];
-    }
-
-    if width < COMPACT_TABLE_WIDTH {
-        return [
-            Constraint::Length(3),
-            Constraint::Max(7),
-            Constraint::Max(22),
-            Constraint::Max(14),
-            Constraint::Max(14),
-            Constraint::Fill(1),
-        ];
-    }
-
-    [
-        Constraint::Length(3),
-        Constraint::Max(7),
-        Constraint::Max(30),
-        Constraint::Max(14),
-        Constraint::Max(14),
-        Constraint::Fill(1),
-    ]
-}
-
 pub const fn version_picker_columns(width: u16) -> [Constraint; 3] {
     if width < VERY_NARROW_TABLE_WIDTH {
         return [
