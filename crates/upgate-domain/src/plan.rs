@@ -397,6 +397,7 @@ impl ExecutionSupport {
     }
     pub const fn supports_age_bypass(self) -> bool {
         self.exact
+            || self.grouped_native
             || (self.resolver_native_selected.selected
                 && matches!(
                     self.resolver_native_selected.min_age_constraint,

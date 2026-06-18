@@ -508,9 +508,9 @@ fn resolve_forced_candidate(
     candidate: &UpdateCandidate,
 ) -> Result<ResolvedExecutionItem, ExecutionSelectionError> {
     let support = candidate.execution_support;
-    if support.resolver_native_selected.selected
-        && support.resolver_native_selected.min_age_constraint == MinAgeConstraintSupport::Optional
-    {
+    let optional_resolver_native = support.resolver_native_selected.selected
+        && support.resolver_native_selected.min_age_constraint == MinAgeConstraintSupport::Optional;
+    if optional_resolver_native || support.grouped_native {
         return Ok(resolved_item(
             plan_item_id,
             candidate,
@@ -531,9 +531,9 @@ fn resolve_forced_seed(
     diagnostics: &PlanDiagnostics,
 ) -> Result<ResolvedExecutionItem, ExecutionSelectionError> {
     let support = seed.execution_support;
-    if support.resolver_native_selected.selected
-        && support.resolver_native_selected.min_age_constraint == MinAgeConstraintSupport::Optional
-    {
+    let optional_resolver_native = support.resolver_native_selected.selected
+        && support.resolver_native_selected.min_age_constraint == MinAgeConstraintSupport::Optional;
+    if optional_resolver_native || support.grouped_native {
         let target = known_blocked_target(seed, reason, diagnostics)?;
         return Ok(resolved_seed_item(plan_item_id, seed, target, false, true));
     }
@@ -686,7 +686,7 @@ fn should_use_native_selected_update(
 }
 
 const fn should_use_grouped_native_update(item: &ResolvedExecutionItem) -> bool {
-    if item.bypass_min_release_age || item.exact_target_required {
+    if item.exact_target_required {
         return false;
     }
 

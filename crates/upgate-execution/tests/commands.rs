@@ -326,6 +326,40 @@ fn forced_delayed_resolver_native_item_bypasses_age_limit() {
 }
 
 #[test]
+fn forced_delayed_grouped_native_brew_item_bypasses_age_limit() {
+    let plan = plan(vec![delayed_item_with_target_kind(
+        "brew:wget",
+        "wget",
+        ExecutionSupport::grouped_native_only(),
+        ExecutionTargetKind::BrewFormula,
+    )]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![SelectedItem::force_planned_candidate(
+            PlanItemId::new("brew:wget").expect("valid id"),
+        )],
+        UpdateSelectionPolicy::default(),
+    )
+    .expect("valid selection");
+
+    let resolved = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        ManagerCapabilities::new().with_native_global_update(true),
+        VersionPolicy::None,
+    )
+    .expect("selection should resolve");
+
+    assert!(matches!(
+        resolved.intents.as_slice(),
+        [ExecutionCommandIntent::GroupedNative(items)]
+            if items.len() == 1
+                && items[0].known_target_version().expect("known target").as_str() == "1.2.0"
+                && items[0].bypass_min_release_age
+    ));
+}
+
+#[test]
 fn manager_resolved_with_resolver_native_support_resolves_resolver_native() {
     let plan = plan(vec![manager_resolved_update_item(
         "uv:ruff",
@@ -500,20 +534,31 @@ fn update_item_with_target_kind(
 }
 
 fn delayed_item(id: &str, package: &str, eligibility: ExecutionSupport) -> PlanItem {
+    delayed_item_with_target_kind(id, package, eligibility, ExecutionTargetKind::Standard)
+}
+
+fn delayed_item_with_target_kind(
+    id: &str,
+    package: &str,
+    eligibility: ExecutionSupport,
+    target_kind: ExecutionTargetKind,
+) -> PlanItem {
     PlanItem::Delayed {
         id: PlanItemId::new(id).expect("valid id"),
-        candidate: candidate(id, package, eligibility).with_diagnostics(PlanDiagnostics {
-            required_age: Duration::from_secs(7 * 24 * 60 * 60),
-            candidates: vec![CandidateEvaluationFact {
-                version: VersionText::new("1.2.0").expect("valid version"),
-                age: Some(Duration::from_secs(24 * 60 * 60)),
-                age_allowed: false,
-                policy_block_reason: None,
-                policy_warning: None,
-                audit: None,
-            }],
-            ..PlanDiagnostics::default()
-        }),
+        candidate: candidate(id, package, eligibility)
+            .with_execution_target_kind(target_kind)
+            .with_diagnostics(PlanDiagnostics {
+                required_age: Duration::from_secs(7 * 24 * 60 * 60),
+                candidates: vec![CandidateEvaluationFact {
+                    version: VersionText::new("1.2.0").expect("valid version"),
+                    age: Some(Duration::from_secs(24 * 60 * 60)),
+                    age_allowed: false,
+                    policy_block_reason: None,
+                    policy_warning: None,
+                    audit: None,
+                }],
+                ..PlanDiagnostics::default()
+            }),
         reason: DelayReason::ReleaseTooFresh,
     }
 }

@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use upgate_domain::{
-    AuditFinding, AuditLookupResult, BlockReason, CandidateEvaluationFact, ExecutionSupport,
-    InstalledTool, ManagerId, PackageName, PlanDiagnostics, PlanItem, PlanItemId,
-    ReleaseLookupResult, ToolId, ToolName, UpdatePlan, UpdateSeed, UpdateSelectionPolicy,
-    VersionScheme, VersionText,
+    AuditFinding, AuditLookupResult, BlockReason, CandidateEvaluationFact, DelayReason,
+    ExecutionSupport, ExecutionTargetKind, InstalledTool, ManagerId, PackageName, PlanDiagnostics,
+    PlanItem, PlanItemId, ReleaseLookupResult, ToolId, ToolName, UpdateCandidate, UpdatePlan,
+    UpdateSeed, UpdateSelectionPolicy, VersionScheme, VersionText,
 };
 use upgate_presentation::{TargetOption, selection_view};
 
@@ -84,4 +84,41 @@ fn audit_blocked_picker_option_uses_the_blocked_candidate_version() {
         TargetOption::ForcedCandidate { target_version, .. } if target_version.as_str() == "2.0.0"
     ));
     assert!(option.has_violation());
+}
+
+#[test]
+fn delayed_grouped_native_brew_row_exposes_a_forced_target_option() {
+    let candidate = UpdateCandidate::new(
+        ToolId::new("wget").expect("valid tool id"),
+        PackageName::new("wget").expect("valid package name"),
+        version("1.0.0"),
+        version("1.2.0"),
+        VersionScheme::ManagerNative,
+        ExecutionSupport::grouped_native_only(),
+    )
+    .with_execution_target_kind(ExecutionTargetKind::BrewFormula)
+    .with_diagnostics(PlanDiagnostics {
+        required_age: Duration::from_secs(7 * 24 * 60 * 60),
+        ..PlanDiagnostics::new(Duration::from_secs(7 * 24 * 60 * 60))
+    });
+    let plan = UpdatePlan::new(
+        ManagerId::new("brew").expect("valid manager id"),
+        vec![PlanItem::Delayed {
+            id: PlanItemId::new("brew:wget").expect("valid plan item id"),
+            candidate,
+            reason: DelayReason::ReleaseTooFresh,
+        }],
+    )
+    .expect("valid plan");
+
+    let view = selection_view(&plan, &UpdateSelectionPolicy::include_all());
+    let option = view.rows[0]
+        .target_options
+        .first()
+        .expect("too-fresh brew row should expose a forced target option");
+
+    assert!(matches!(
+        option,
+        TargetOption::ForcedCandidate { target_version, .. } if target_version.as_str() == "1.2.0"
+    ));
 }
