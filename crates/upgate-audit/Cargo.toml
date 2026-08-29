@@ -13,7 +13,7 @@ readme.workspace = true
 workspace = true
 
 [dependencies]
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 upgate-domain = { version = "0.1.0", path = "../upgate-domain" }
 upgate-infra = { version = "0.1.0", path = "../upgate-infra" }

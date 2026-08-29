@@ -14,13 +14,13 @@ workspace = true
 
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
-flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
 pep440_rs = "0.7.3"
 reqwest = { version = "0.13.4", default-features = false }
 semver = "1.0.28"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
-toml = "1.1.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+toml = "1.1.4"
 upgate-domain = { version = "0.1.0", path = "../upgate-domain" }
 upgate-execution = { version = "0.1.0", path = "../upgate-execution" }
 upgate-infra = { version = "0.1.0", path = "../upgate-infra" }
