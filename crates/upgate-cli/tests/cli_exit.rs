@@ -7,6 +7,17 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn binary_reports_package_version() {
+    let output = Command::new(binary_path())
+        .arg("--version")
+        .output()
+        .expect("upgate binary should run");
+
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "upgate 0.1.0\n");
+}
+
+#[test]
 fn binary_plan_success_exits_zero() {
     let sandbox = Sandbox::new("plan-success");
     sandbox.write_executable(

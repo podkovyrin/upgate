@@ -14,9 +14,14 @@ members = [
 ]
 
 [workspace.package]
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
+description = "Keep globally installed developer tools up to date"
+repository = "https://github.com/podkovyrin/upgate"
+homepage = "https://github.com/podkovyrin/upgate"
+readme = "README.md"
 
 [workspace.lints.rust]
 unsafe_code = "warn"

@@ -1,39 +1,39 @@
 [
   {
-    "label": "Debug upnow plan",
+    "label": "Debug upgate plan",
     "adapter": "CodeLLDB",
     "request": "launch",
     "build": {
       "command": "cargo",
-      "args": ["build", "-p", "upnow-cli", "--bin", "upnow"]
+      "args": ["build", "-p", "upgate-cli", "--bin", "upgate"]
     },
-    "program": "$ZED_WORKTREE_ROOT/target/debug/upnow",
+    "program": "$ZED_WORKTREE_ROOT/target/debug/upgate",
     "cwd": "$ZED_WORKTREE_ROOT",
     "args": ["plan"],
     "sourceLanguages": ["rust"]
   },
   {
-    "label": "Debug upnow scan",
+    "label": "Debug upgate scan",
     "adapter": "CodeLLDB",
     "request": "launch",
     "build": {
       "command": "cargo",
-      "args": ["build", "-p", "upnow-cli", "--bin", "upnow"]
+      "args": ["build", "-p", "upgate-cli", "--bin", "upgate"]
     },
-    "program": "$ZED_WORKTREE_ROOT/target/debug/upnow",
+    "program": "$ZED_WORKTREE_ROOT/target/debug/upgate",
     "cwd": "$ZED_WORKTREE_ROOT",
     "args": ["scan"],
     "sourceLanguages": ["rust"]
   },
   {
-    "label": "Debug upnow apply dry-run",
+    "label": "Debug upgate apply dry-run",
     "adapter": "CodeLLDB",
     "request": "launch",
     "build": {
       "command": "cargo",
-      "args": ["build", "-p", "upnow-cli", "--bin", "upnow"]
+      "args": ["build", "-p", "upgate-cli", "--bin", "upgate"]
     },
-    "program": "$ZED_WORKTREE_ROOT/target/debug/upnow",
+    "program": "$ZED_WORKTREE_ROOT/target/debug/upgate",
     "cwd": "$ZED_WORKTREE_ROOT",
     "args": ["apply", "--yolo", "--dry-run"],
     "sourceLanguages": ["rust"]

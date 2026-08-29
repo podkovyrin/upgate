@@ -39,6 +39,7 @@ const DEFAULT_MAX_PARALLEL_CHECKS_PER_MANAGER: usize = 6;
 #[derive(Debug, Parser)]
 #[command(
     name = "upgate",
+    version,
     about = "Keep globally installed developer tools up to date."
 )]
 #[expect(clippy::struct_excessive_bools)]
@@ -53,7 +54,7 @@ struct Cli {
         global = true
     )]
     managers: Vec<String>,
-    /// Override config for this run, such as npm.mode=plan.
+    /// Override config for this run, such as `npm.min_release_age=14d`.
     #[arg(long = "set", short = 'S', global = true)]
     overrides: Vec<String>,
     /// Show more detail about decisions and skipped work.

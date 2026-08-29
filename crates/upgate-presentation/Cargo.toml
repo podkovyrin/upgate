@@ -1,9 +1,13 @@
 [package]
 name = "upgate-presentation"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
 
 [lints]
 workspace = true
@@ -14,5 +18,5 @@ indicatif = "0.18.4"
 owo-colors = "4.3.0"
 ratatui = { version = "0.30.1", default-features = false, features = ["crossterm"] }
 unicode-width = "0.2.2"
-upgate-domain = { path = "../upgate-domain" }
-upgate-execution = { path = "../upgate-execution" }
+upgate-domain = { version = "0.1.0", path = "../upgate-domain" }
+upgate-execution = { version = "0.1.0", path = "../upgate-execution" }
