@@ -4,6 +4,8 @@ use upgate_domain::{ManagerId, PackageName, VersionText};
 
 use crate::theme::OutputTheme;
 
+const MAX_NAME_LENGTH: usize = 45;
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct OutcomeTable {
     pub rows: Vec<OutcomeRow>,
@@ -345,11 +347,19 @@ fn render_manager(manager_id: &ManagerId, color: bool) -> String {
 }
 
 fn render_name(name: &str, color: bool) -> String {
-    if color {
-        name.bold().to_string()
+    let name = if name.chars().count() > MAX_NAME_LENGTH {
+        let side_length = (MAX_NAME_LENGTH - 1) / 2;
+        let start = name.chars().take(side_length).collect::<String>();
+        let end = name
+            .chars()
+            .skip(name.chars().count() - side_length)
+            .collect::<String>();
+        format!("{start}…{end}")
     } else {
         name.to_owned()
-    }
+    };
+
+    if color { name.bold().to_string() } else { name }
 }
 
 fn render_from_version(version: &str, color: bool, emphasize: bool) -> String {

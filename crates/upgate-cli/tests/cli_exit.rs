@@ -36,6 +36,48 @@ esac
 }
 
 #[test]
+fn binary_scan_and_plan_truncate_long_names_in_the_middle() {
+    const LONG_NAME: &str = "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz";
+    const TRUNCATED_NAME: &str = "abcdefghijklmnopqrstuv…efghijklmnopqrstuvwxyz";
+
+    let sandbox = Sandbox::new("long-name");
+    sandbox.write_executable(
+        "npm",
+        &format!(
+            r#"#!/bin/sh
+case "$*" in
+  "ls -g --depth=0 --json")
+    printf '%s\n' '{{"dependencies":{{"{LONG_NAME}":{{"version":"1.0.0"}}}}}}'
+    ;;
+  "outdated -g --json")
+    printf '%s\n' '{{"{LONG_NAME}":{{"current":"1.0.0"}}}}'
+    ;;
+  "view {LONG_NAME} time --json")
+    printf '%s\n' '{{"1.0.0":"2021-01-01T00:00:00.000Z","1.2.0":"2021-12-01T00:00:00.000Z"}}'
+    ;;
+  *)
+    echo "unexpected npm command: $*" >&2
+    exit 42
+    ;;
+esac
+"#,
+        ),
+    );
+
+    for command in ["scan", "plan"] {
+        let output = sandbox.run(["--manager", "npm", command]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(output.status.success(), "{command} should succeed");
+        assert!(
+            stdout.contains(TRUNCATED_NAME),
+            "{command} output should contain the middle-truncated name:\n{stdout}"
+        );
+        assert!(!stdout.contains(LONG_NAME));
+    }
+}
+
+#[test]
 fn binary_apply_command_failure_exits_one() {
     let sandbox = Sandbox::new("apply-failure");
     sandbox.write_executable(
