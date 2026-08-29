@@ -420,8 +420,8 @@ fn execute_prepared_batch_apply(
     let commands = manager
         .commands_for_execution_plan(process, env, &prepared.execution_plan)
         .map_err(map_manager_error)?;
-    let report =
-        execute_commands(prepared.plan.manager_id.clone(), commands, process).map_err(|err| {
+    let report = execute_commands(prepared.plan.manager_id.clone(), commands, process, None)
+        .map_err(|err| {
             if err.is_interruption() {
                 AppError::Interrupted(err.to_string())
             } else {

@@ -10,8 +10,44 @@ use upgate_domain::{
     VersionText,
 };
 use upgate_execution::{
-    ExecutionCommandIntent, ResolvedExecutionTarget, resolve_selection_for_execution,
+    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionTarget,
+    execute_commands, resolve_selection_for_execution,
 };
+use upgate_infra::{CommandSpec, MutationMode, ProcessRunner};
+
+#[test]
+fn reports_only_concrete_execution_commands_as_they_start() {
+    let manager_id = ManagerId::new("test-manager").expect("valid manager");
+    let first = execution_command("test-manager:first", "first", "upgrade first");
+    let second = execution_command("test-manager:second", "second", "upgrade second");
+    let process = ProcessRunner::new(MutationMode::Skip);
+    let mut started = Vec::new();
+
+    let report = execute_commands(
+        manager_id,
+        vec![first, second],
+        &process,
+        Some(&mut |command| started.push(command.to_string())),
+    )
+    .expect("dry-run execution should succeed");
+
+    assert_eq!(started, ["upgrade first", "upgrade second"]);
+    assert_eq!(report.items.len(), 2);
+}
+
+fn execution_command(id: &str, package: &str, program: &str) -> ExecutionCommand {
+    ExecutionCommand {
+        items: vec![ExecutionCommandItem {
+            plan_item_id: PlanItemId::new(id).expect("valid plan item id"),
+            package_name: PackageName::new(package).expect("valid package"),
+            installed_version: VersionText::new("1.0.0").expect("valid installed version"),
+            target: ResolvedExecutionTarget::Known(
+                VersionText::new("1.1.0").expect("valid target version"),
+            ),
+        }],
+        command: CommandSpec::new(program, std::iter::empty::<&str>()).mutating(),
+    }
+}
 
 #[test]
 fn resolves_native_global_intent_for_complete_native_only_selection() {

@@ -212,6 +212,10 @@ impl From<&ResolvedExecutionItem> for ExecutionCommandItem {
 
 /// Executes concrete commands produced by a manager.
 ///
+/// When provided, `on_command_start` is called immediately before each
+/// concrete execution command is handed to the process runner. Manager
+/// discovery and command-construction subprocesses do not cross this boundary.
+///
 /// # Errors
 ///
 /// Returns an infrastructure error when command execution is interrupted.
@@ -219,9 +223,13 @@ pub fn execute_commands(
     manager_id: ManagerId,
     commands: Vec<ExecutionCommand>,
     process: &ProcessRunner,
+    mut on_command_start: Option<&mut dyn FnMut(&CommandSpec)>,
 ) -> Result<ExecutionReport, InfraError> {
     let mut items = Vec::new();
     for command in commands {
+        if let Some(listener) = &mut on_command_start {
+            listener(&command.command);
+        }
         let command_display = command.command.to_string();
         let status = match process.run(&command.command, &CommandCheck::Success) {
             Ok(output) => ExecutionStatus::Succeeded {

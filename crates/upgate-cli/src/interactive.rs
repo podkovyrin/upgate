@@ -9,7 +9,7 @@ use upgate_execution::{
     ExecutionCommand, ExecutionReport, ResolvedExecutionPlan, execute_commands,
     resolve_selection_for_execution,
 };
-use upgate_infra::{Env, HttpClient, ProcessRunner, run_ordered_parallel_stoppable};
+use upgate_infra::{CommandSpec, Env, HttpClient, ProcessRunner, run_ordered_parallel_stoppable};
 use upgate_presentation::tui::{
     InteractiveManagerSelectionDraft, InteractiveSelectionOutcome,
     InteractiveSelectionPlanningEvent, run_interactive_selection_with_planning_events,
@@ -128,7 +128,12 @@ pub fn run_interactive_apply(
                 )?;
             }
             let output = execute_confirmed_interactive_apply_streaming(
-                config, process, env, confirmed, theme,
+                config,
+                process,
+                env,
+                confirmed,
+                command_log.enabled(),
+                theme,
             )?;
             Ok(Some(output))
         }
@@ -465,14 +470,19 @@ fn execute_confirmed_interactive_apply_streaming(
     process: &ProcessRunner,
     env: &Env,
     confirmed: Vec<ConfirmedInteractiveManagerApply>,
+    trace_commands: bool,
     theme: OutputTheme,
 ) -> Result<String, AppError> {
     let resolved = resolve_confirmed_execution_plans(&confirmed)?;
     persist_confirmed_selection_policies(&mut config, &confirmed)?;
 
-    let process = process.clone().with_command_start_listener(|command| {
-        eprintln!("$ {command}");
-    });
+    let process = if trace_commands {
+        process.clone().with_command_start_listener(|command| {
+            eprintln!("$ {command}");
+        })
+    } else {
+        process.clone()
+    };
 
     let mut table = OutcomeTable::default();
     for manager in confirmed {
@@ -482,7 +492,7 @@ fn execute_confirmed_interactive_apply_streaming(
             configured_manager(manager.manager_config.clone()).map_err(map_manager_error)?;
         match adapter.commands_for_execution_plan(&process, env, execution_plan) {
             Ok(commands) => {
-                let report = run_manager_commands(manager_id, commands, &process)?;
+                let report = run_manager_commands(manager_id, commands, &process, trace_commands)?;
                 table.rows.extend(
                     apply_execution_report_table(&report, &manager.plan, &manager.selection).rows,
                 );
@@ -527,8 +537,17 @@ fn run_manager_commands(
     manager_id: ManagerId,
     commands: Vec<ExecutionCommand>,
     process: &ProcessRunner,
+    trace_commands: bool,
 ) -> Result<ExecutionReport, AppError> {
-    execute_commands(manager_id, commands, process).map_err(|err| {
+    let mut print_command = |command: &CommandSpec| {
+        eprintln!("$ {command}");
+    };
+    let on_command_start = if trace_commands {
+        None
+    } else {
+        Some(&mut print_command as &mut dyn FnMut(&CommandSpec))
+    };
+    execute_commands(manager_id, commands, process, on_command_start).map_err(|err| {
         if err.is_interruption() {
             AppError::Interrupted(err.to_string())
         } else {
