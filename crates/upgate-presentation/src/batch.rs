@@ -41,7 +41,8 @@ pub fn apply_execution_report_table(
     if report.items.is_empty() && rows.is_empty() {
         rows.push(
             OutcomeRow::manager(OutcomeStatusView::Current, report.manager_id.clone())
-                .with_note(OutcomeNote::normal("no selected updates")),
+                .with_note(OutcomeNote::normal("no selected updates"))
+                .with_visibility(OutcomeVisibility::VerboseOnly),
         );
     }
 
@@ -338,7 +339,8 @@ fn unselected_update_rows(plan: &UpdatePlan, selection: &PlanSelection) -> Vec<O
         .filter_map(|item| match item {
             PlanItem::Update { id, candidate } if !selected_ids.contains(id) => Some(
                 candidate_row(OutcomeStatusView::Skipped, &plan.manager_id, candidate)
-                    .with_note(OutcomeNote::normal("not selected")),
+                    .with_note(OutcomeNote::normal("not selected"))
+                    .with_visibility(OutcomeVisibility::VerboseOnly),
             ),
             _ => None,
         })
