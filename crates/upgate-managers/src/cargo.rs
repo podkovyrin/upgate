@@ -452,7 +452,11 @@ fn exact_command_for_item(
     let target_version = item.known_target_version().ok_or_else(|| {
         CargoError::UnsupportedCommandIntent("exact-without-known-target".to_owned())
     })?;
-    let mut args = vec!["install".to_owned(), "--force".to_owned()];
+    let mut args = vec![
+        "install".to_owned(),
+        "--force".to_owned(),
+        "--locked".to_owned(),
+    ];
     add_install_meta_args(&mut args, meta);
     args.push(format!(
         "{}@{}",
