@@ -1,5 +1,10 @@
 # 🚦 upgate
 
+[![CI](https://github.com/podkovyrin/upgate/actions/workflows/ci.yml/badge.svg)](https://github.com/podkovyrin/upgate/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/upgate.svg)](https://crates.io/crates/upgate)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-blue)](#install)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **The gate between available and ready updates**
 
 A new version can be available before it is ready for your system. `upgate`
