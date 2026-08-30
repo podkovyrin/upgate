@@ -11,6 +11,8 @@ Package managers still find and install updates in their own way. `upgate`
 checks the possible updates before it runs their commands. This makes supply
 chain attacks harder, but still it cannot prove that a release is safe.
 
+![upgate demo](demo/upgate-demo.gif)
+
 ## Install
 
 Download the prebuilt binary for your system from the
