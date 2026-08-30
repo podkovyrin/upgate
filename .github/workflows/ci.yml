@@ -51,10 +51,31 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --locked
 
+  package:
+    name: Verify crates.io packages
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Cargo 1.98.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+
+      - name: Cache Cargo data
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify workspace publication
+        run: cargo publish --workspace --dry-run --locked
+
   build:
     name: Build release (${{ matrix.os }})
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: check
+    needs:
+      - check
+      - package
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
