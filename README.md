@@ -13,13 +13,19 @@ chain attacks harder, but still it cannot prove that a release is safe.
 
 ## Install
 
-`cargo install` builds `upgate` from source, so it needs Rust 1.88 or newer.
+Download the prebuilt binary for your system from the
+[latest release](https://github.com/podkovyrin/upgate/releases/latest). Unpack
+it and place `upgate` in a directory from your `PATH`. Rust is not required.
+
+### Build with Cargo
+
+To build `upgate` from source, you need Rust 1.88 or newer.
 
 ```sh
-cargo install upgate-cli
+cargo install upgate
 ```
 
-To build the current source:
+### Build the current source
 
 ```sh
 git clone https://github.com/podkovyrin/upgate.git

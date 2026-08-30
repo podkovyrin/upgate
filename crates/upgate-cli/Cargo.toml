@@ -1,5 +1,5 @@
 [package]
-name = "upgate-cli"
+name = "upgate"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

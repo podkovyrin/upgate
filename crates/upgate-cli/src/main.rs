@@ -1,16 +1,16 @@
 use std::io::Write as _;
 
 fn main() {
-    match upgate_cli::run_from_env_with_report() {
-        upgate_cli::CliRunResult::Completed(output) => {
+    match upgate::run_from_env_with_report() {
+        upgate::CliRunResult::Completed(output) => {
             print!("{}", output.stdout);
             let _ = std::io::stdout().flush();
             print_command_log_dir(output.command_log_dir.as_deref());
         }
-        upgate_cli::CliRunResult::Cancelled(output) => {
+        upgate::CliRunResult::Cancelled(output) => {
             print_command_log_dir(output.command_log_dir.as_deref());
         }
-        upgate_cli::CliRunResult::Failed {
+        upgate::CliRunResult::Failed {
             error,
             command_log_dir,
         } => {

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use upgate_cli::config::{ConfigError, ConfigFile};
+use upgate::config::{ConfigError, ConfigFile};
 use upgate_domain::{
     ManagerMode, PackageName, UpdateSelectionMode, UpdateSelectionPolicy, VersionPolicy,
 };

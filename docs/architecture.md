@@ -30,7 +30,7 @@ output.
 
 ## Layers
 
-- `upgate-cli`: CLI parsing, config loading, orchestration, manager
+- `upgate`: CLI parsing, config loading, orchestration, manager
   construction, audit service lifetime, selection persistence, and exit codes.
 - `upgate-domain`: typed identities, versions, config, scan records, plan
   records, selections, audit facts, and errors.

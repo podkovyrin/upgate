@@ -5,7 +5,7 @@
     "request": "launch",
     "build": {
       "command": "cargo",
-      "args": ["build", "-p", "upgate-cli", "--bin", "upgate"]
+      "args": ["build", "-p", "upgate", "--bin", "upgate"]
     },
     "program": "$ZED_WORKTREE_ROOT/target/debug/upgate",
     "cwd": "$ZED_WORKTREE_ROOT",
@@ -18,7 +18,7 @@
     "request": "launch",
     "build": {
       "command": "cargo",
-      "args": ["build", "-p", "upgate-cli", "--bin", "upgate"]
+      "args": ["build", "-p", "upgate", "--bin", "upgate"]
     },
     "program": "$ZED_WORKTREE_ROOT/target/debug/upgate",
     "cwd": "$ZED_WORKTREE_ROOT",
@@ -31,7 +31,7 @@
     "request": "launch",
     "build": {
       "command": "cargo",
-      "args": ["build", "-p", "upgate-cli", "--bin", "upgate"]
+      "args": ["build", "-p", "upgate", "--bin", "upgate"]
     },
     "program": "$ZED_WORKTREE_ROOT/target/debug/upgate",
     "cwd": "$ZED_WORKTREE_ROOT",

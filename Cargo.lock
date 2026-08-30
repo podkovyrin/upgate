@@ -2182,17 +2182,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
-name = "upgate-audit"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "upgate-domain",
- "upgate-infra",
-]
-
-[[package]]
-name = "upgate-cli"
+name = "upgate"
 version = "0.1.0"
 dependencies = [
  "clap",
@@ -2207,6 +2197,16 @@ dependencies = [
  "upgate-managers",
  "upgate-planning",
  "upgate-presentation",
+]
+
+[[package]]
+name = "upgate-audit"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "upgate-domain",
+ "upgate-infra",
 ]
 
 [[package]]
