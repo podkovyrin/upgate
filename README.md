@@ -162,6 +162,28 @@ that option is present, you can choose it explicitly.
 `upgate scan --verbose` audits installed versions. Normal `scan` does not
 contact OSV.
 
+## Logs
+
+Each run gets a timestamped directory:
+
+- macOS: `~/Library/Logs/upgate/`
+- Linux: `$XDG_STATE_HOME/upgate/logs/`, or `~/.local/state/upgate/logs/`
+
+Files:
+
+- `core.log`: always logs failed commands and commands that change the system
+- `snapshot.json`: plan and selected actions for apply runs
+
+Use `--log-commands` to save all output and timing for every external command:
+
+```sh
+upgate plan --log-commands
+```
+
+- `--log-commands` prints the exact session directory after the run.
+- `--trace-commands` shows commands live. Interactive mode shows them inside
+  the picker.
+
 Run `upgate --help` to see all command options.
 
 ## License
