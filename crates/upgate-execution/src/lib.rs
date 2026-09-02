@@ -23,9 +23,6 @@ pub enum ExecutionCommandIntent {
     /// Update one selected item with the manager's native selected-update
     /// command, letting the manager choose the final target.
     NativeSelected(ResolvedExecutionItem),
-    /// Update several selected items with one grouped native command when the
-    /// manager supports a typed grouped shape for those items.
-    GroupedNative(Vec<ResolvedExecutionItem>),
     /// Run one manager-level native update command when the selected set is
     /// equivalent to all eligible native updates.
     NativeGlobal(Vec<ResolvedExecutionItem>),
@@ -132,14 +129,11 @@ pub fn resolve_selection_for_execution(
     }
 
     let mut intents = Vec::new();
-    let mut grouped_native = Vec::new();
     for item in selected {
         if item.exact_target_required {
             intents.push(ExecutionCommandIntent::Exact(item));
         } else if should_use_resolver_native_update(&item, version_policy) {
             intents.push(ExecutionCommandIntent::ResolverNative(item));
-        } else if should_use_grouped_native_update(&item) {
-            grouped_native.push(item);
         } else if should_use_native_selected_update(&item, version_policy) {
             intents.push(ExecutionCommandIntent::NativeSelected(item));
         } else if supports_exact_target(&item) {
@@ -149,9 +143,6 @@ pub fn resolve_selection_for_execution(
                 item.plan_item_id.to_string(),
             ));
         }
-    }
-    if !grouped_native.is_empty() {
-        intents.push(ExecutionCommandIntent::GroupedNative(grouped_native));
     }
     Ok(ResolvedExecutionPlan { intents })
 }
@@ -518,7 +509,7 @@ fn resolve_forced_candidate(
     let support = candidate.execution_support;
     let optional_resolver_native = support.resolver_native_selected.selected
         && support.resolver_native_selected.min_age_constraint == MinAgeConstraintSupport::Optional;
-    if optional_resolver_native || support.grouped_native {
+    if optional_resolver_native || support.native_selected_age_bypass {
         return Ok(resolved_item(
             plan_item_id,
             candidate,
@@ -541,7 +532,7 @@ fn resolve_forced_seed(
     let support = seed.execution_support;
     let optional_resolver_native = support.resolver_native_selected.selected
         && support.resolver_native_selected.min_age_constraint == MinAgeConstraintSupport::Optional;
-    if optional_resolver_native || support.grouped_native {
+    if optional_resolver_native || support.native_selected_age_bypass {
         let target = known_blocked_target(seed, reason, diagnostics)?;
         return Ok(resolved_seed_item(plan_item_id, seed, target, false, true));
     }
@@ -678,8 +669,12 @@ fn should_use_native_selected_update(
     item: &ResolvedExecutionItem,
     version_policy: VersionPolicy,
 ) -> bool {
-    if item.bypass_min_release_age || item.exact_target_required {
+    if item.exact_target_required {
         return false;
+    }
+
+    if item.bypass_min_release_age {
+        return item.execution_support.native_selected_age_bypass;
     }
 
     if !item.execution_support.native_selected {
@@ -690,19 +685,6 @@ fn should_use_native_selected_update(
         version_policy == VersionPolicy::None
     } else {
         true
-    }
-}
-
-const fn should_use_grouped_native_update(item: &ResolvedExecutionItem) -> bool {
-    if item.exact_target_required {
-        return false;
-    }
-
-    match item.execution_target_kind {
-        ExecutionTargetKind::Standard => false,
-        ExecutionTargetKind::BrewFormula | ExecutionTargetKind::BrewCask => {
-            item.execution_support.grouped_native || item.execution_support.native_selected
-        }
     }
 }
 

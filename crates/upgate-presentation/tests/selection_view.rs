@@ -87,14 +87,14 @@ fn audit_blocked_picker_option_uses_the_blocked_candidate_version() {
 }
 
 #[test]
-fn delayed_grouped_native_brew_row_exposes_a_forced_target_option() {
+fn delayed_native_brew_row_exposes_a_forced_target_option() {
     let candidate = UpdateCandidate::new(
         ToolId::new("wget").expect("valid tool id"),
         PackageName::new("wget").expect("valid package name"),
         version("1.0.0"),
         version("1.2.0"),
         VersionScheme::ManagerNative,
-        ExecutionSupport::grouped_native_only(),
+        ExecutionSupport::native_with_age_bypass_only(),
     )
     .with_execution_target_kind(ExecutionTargetKind::BrewFormula)
     .with_diagnostics(PlanDiagnostics {

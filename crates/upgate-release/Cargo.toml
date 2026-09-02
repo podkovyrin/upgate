@@ -15,4 +15,4 @@ workspace = true
 [dependencies]
 pep440_rs = "0.7.3"
 semver = "1.0.28"
-upgate-domain = { version = "0.1.0", path = "../upgate-domain" }
+upgate-domain = { version = "0.1.1", path = "../upgate-domain" }

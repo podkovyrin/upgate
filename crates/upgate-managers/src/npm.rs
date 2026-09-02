@@ -7,8 +7,8 @@ use serde::Deserialize;
 use upgate_domain::{
     AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
     ManagerId, ManagerScanInput, ManagerUpdateInput, OsvEcosystem, PackageName, ReleaseEntry,
-    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp,
-    ResolverNativeSupport, ToolId, ToolName, UpdateSeed, VersionPolicy, VersionScheme, VersionText,
+    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName,
+    UpdateSeed, VersionPolicy, VersionScheme, VersionText,
 };
 use upgate_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -140,7 +140,7 @@ impl ManagerAdapter for NpmManager {
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
-        ManagerCapabilities::new().with_native_global_update(true)
+        ManagerCapabilities::new()
     }
     fn scan_inputs(
         &self,
@@ -346,21 +346,20 @@ fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
     min_release_age: Duration,
 ) -> Result<Vec<ExecutionCommand>, NpmError> {
-    let min_age_days = min_release_age.as_secs() / (24 * 60 * 60);
+    let cutoff = npm_before_cutoff(min_release_age);
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
-            ExecutionCommandIntent::NativeSelected(item) => {
-                commands.push(ExecutionCommand {
-                    items: vec![ExecutionCommandItem::from(item)],
-                    command: selected_native_update_command_for_item(item, min_age_days),
-                });
-            }
             ExecutionCommandIntent::Exact(item) => {
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
-                    command: exact_command_for_item(item, min_age_days)?,
+                    command: exact_command_for_item(item, &cutoff)?,
                 });
+            }
+            ExecutionCommandIntent::NativeSelected(_) => {
+                return Err(NpmError::UnsupportedCommandIntent(
+                    "native-selected".to_owned(),
+                ));
             }
             ExecutionCommandIntent::ResolverNative(_) => {
                 return Err(NpmError::UnsupportedCommandIntent(
@@ -372,15 +371,11 @@ fn commands_for_execution_plan(
                     "resolver-native-global".to_owned(),
                 ));
             }
-            ExecutionCommandIntent::GroupedNative(_) => {
+            ExecutionCommandIntent::NativeGlobal(_) => {
                 return Err(NpmError::UnsupportedCommandIntent(
-                    "grouped-native".to_owned(),
+                    "native-global".to_owned(),
                 ));
             }
-            ExecutionCommandIntent::NativeGlobal(items) => commands.push(ExecutionCommand {
-                items: items.iter().map(ExecutionCommandItem::from).collect(),
-                command: native_global_update_command(min_age_days),
-            }),
         }
     }
     Ok(commands)
@@ -388,7 +383,7 @@ fn commands_for_execution_plan(
 
 fn exact_command_for_item(
     item: &ResolvedExecutionItem,
-    min_age_days: u64,
+    cutoff: &str,
 ) -> Result<CommandSpec, NpmError> {
     let target_version = item.known_target_version().ok_or_else(|| {
         NpmError::UnsupportedCommandIntent("exact-without-known-target".to_owned())
@@ -396,39 +391,16 @@ fn exact_command_for_item(
     let spec = format!("{}@{target_version}", item.package_name);
     let mut args = vec!["install".to_owned(), "-g".to_owned(), spec];
     if !item.bypass_min_release_age {
-        args.push("--min-release-age".to_owned());
-        args.push(min_age_days.to_string());
+        args.push(format!("--before={cutoff}"));
     }
     Ok(CommandSpec::new("npm", args).mutating())
 }
 
-fn selected_native_update_command_for_item(
-    item: &ResolvedExecutionItem,
-    min_age_days: u64,
-) -> CommandSpec {
-    let mut args = vec![
-        "-g".to_owned(),
-        "update".to_owned(),
-        item.package_name.as_str().to_owned(),
-    ];
-    if !item.bypass_min_release_age {
-        args.push("--min-release-age".to_owned());
-        args.push(min_age_days.to_string());
-    }
-    CommandSpec::new("npm", args).mutating()
-}
-
-fn native_global_update_command(min_age_days: u64) -> CommandSpec {
-    CommandSpec::new(
-        "npm",
-        [
-            "-g",
-            "update",
-            "--min-release-age",
-            &min_age_days.to_string(),
-        ],
-    )
-    .mutating()
+fn npm_before_cutoff(min_release_age: Duration) -> String {
+    let cutoff = SystemTime::now()
+        .checked_sub(min_release_age)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    DateTime::<chrono::Utc>::from(cutoff).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 fn installed_tool(package: NpmInstalledPackage) -> Result<InstalledTool, NpmError> {
@@ -473,14 +445,7 @@ fn update_input(tool: InstalledTool, lookup: ReleaseLookupResult) -> ManagerUpda
         discovered_target,
         VersionScheme::SemVer,
         lookup,
-        ExecutionSupport {
-            exact: true,
-            native_selected: true,
-            native_global: true,
-            grouped_native: false,
-            resolver_native_selected: ResolverNativeSupport::none(),
-            resolver_native_global: false,
-        },
+        ExecutionSupport::exact_only(),
     ))
 }
 

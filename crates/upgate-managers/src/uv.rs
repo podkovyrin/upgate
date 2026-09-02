@@ -466,11 +466,6 @@ fn commands_for_execution_plan(
                     "resolver-native-global".to_owned(),
                 ));
             }
-            ExecutionCommandIntent::GroupedNative(_) => {
-                return Err(UvError::UnsupportedCommandIntent(
-                    "grouped-native".to_owned(),
-                ));
-            }
             ExecutionCommandIntent::Exact(_) => {
                 return Err(UvError::UnsupportedCommandIntent("exact".to_owned()));
             }

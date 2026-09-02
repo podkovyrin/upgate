@@ -2183,7 +2183,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "upgate"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "serde",
@@ -2201,7 +2201,7 @@ dependencies = [
 
 [[package]]
 name = "upgate-audit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2211,11 +2211,11 @@ dependencies = [
 
 [[package]]
 name = "upgate-domain"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "upgate-execution"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "upgate-domain",
  "upgate-infra",
@@ -2223,7 +2223,7 @@ dependencies = [
 
 [[package]]
 name = "upgate-infra"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "owo-colors",
@@ -2235,7 +2235,7 @@ dependencies = [
 
 [[package]]
 name = "upgate-managers"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "flate2",
@@ -2253,7 +2253,7 @@ dependencies = [
 
 [[package]]
 name = "upgate-planning"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pep440_rs",
  "semver",
@@ -2262,7 +2262,7 @@ dependencies = [
 
 [[package]]
 name = "upgate-presentation"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossterm",
  "indicatif",
@@ -2275,7 +2275,7 @@ dependencies = [
 
 [[package]]
 name = "upgate-release"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pep440_rs",
  "semver",

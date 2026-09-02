@@ -279,7 +279,7 @@ pub struct ExecutionSupport {
     pub exact: bool,
     pub native_selected: bool,
     pub native_global: bool,
-    pub grouped_native: bool,
+    pub native_selected_age_bypass: bool,
     pub resolver_native_selected: ResolverNativeSupport,
     pub resolver_native_global: bool,
 }
@@ -324,7 +324,7 @@ impl ExecutionSupport {
             exact: true,
             native_selected: false,
             native_global: false,
-            grouped_native: false,
+            native_selected_age_bypass: false,
             resolver_native_selected: ResolverNativeSupport::none(),
             resolver_native_global: false,
         }
@@ -334,7 +334,7 @@ impl ExecutionSupport {
             exact: true,
             native_selected: true,
             native_global: true,
-            grouped_native: false,
+            native_selected_age_bypass: false,
             resolver_native_selected: ResolverNativeSupport::none(),
             resolver_native_global: false,
         }
@@ -344,7 +344,7 @@ impl ExecutionSupport {
             exact: true,
             native_selected: false,
             native_global: true,
-            grouped_native: false,
+            native_selected_age_bypass: false,
             resolver_native_selected: ResolverNativeSupport::none(),
             resolver_native_global: false,
         }
@@ -354,17 +354,17 @@ impl ExecutionSupport {
             exact: false,
             native_selected: true,
             native_global: true,
-            grouped_native: false,
+            native_selected_age_bypass: false,
             resolver_native_selected: ResolverNativeSupport::none(),
             resolver_native_global: false,
         }
     }
-    pub const fn grouped_native_only() -> Self {
+    pub const fn native_with_age_bypass_only() -> Self {
         Self {
             exact: false,
             native_selected: true,
             native_global: false,
-            grouped_native: true,
+            native_selected_age_bypass: true,
             resolver_native_selected: ResolverNativeSupport::none(),
             resolver_native_global: false,
         }
@@ -378,7 +378,7 @@ impl ExecutionSupport {
             exact: false,
             native_selected: false,
             native_global: false,
-            grouped_native: false,
+            native_selected_age_bypass: false,
             resolver_native_selected: ResolverNativeSupport::selected(
                 min_age_constraint,
                 manager_resolved_target,
@@ -397,7 +397,7 @@ impl ExecutionSupport {
     }
     pub const fn supports_age_bypass(self) -> bool {
         self.exact
-            || self.grouped_native
+            || self.native_selected_age_bypass
             || (self.resolver_native_selected.selected
                 && matches!(
                     self.resolver_native_selected.min_age_constraint,
@@ -412,9 +412,9 @@ impl ExecutionSupport {
 pub enum ExecutionTargetKind {
     /// Standard package update command with no manager-specific grouping kind.
     Standard,
-    /// Homebrew formula update command/group.
+    /// Homebrew formula update command.
     BrewFormula,
-    /// Homebrew cask update command/group.
+    /// Homebrew cask update command.
     BrewCask,
 }
 

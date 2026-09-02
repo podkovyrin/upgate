@@ -235,12 +235,15 @@ fn parse_pm_ls_json(raw: &str) -> Result<Vec<BunInstalledPackage>, BunError> {
         })
         .collect()
 }
-fn is_missing_global_manifest(text: &str) -> bool {
-    text.contains("missing package.json")
-        || text.contains("MissingPackageJSON")
-        || text.contains("No package.json was found for directory")
-        || text.contains("missing lockfile, nothing outdated")
-        || text.contains("Lockfile not found")
+fn reports_empty_global_install(text: &str) -> bool {
+    text.lines().any(|line| {
+        matches!(
+            line.trim(),
+            "error: missing lockfile, nothing to list"
+                | "error: missing lockfile, nothing outdated"
+                | "error: missing package.json"
+        )
+    })
 }
 
 /// Reads installed Bun global packages.
@@ -255,7 +258,7 @@ fn installed_global(process: &ProcessRunner) -> Result<Vec<InstalledTool>, BunEr
     )?;
     let stdout = output.stdout()?;
     let stderr = output.stderr().unwrap_or_default();
-    if is_missing_global_manifest(stdout) || is_missing_global_manifest(stderr) {
+    if reports_empty_global_install(stdout) || reports_empty_global_install(stderr) {
         return Ok(Vec::new());
     }
     if !output.status().success() {
@@ -383,11 +386,6 @@ fn commands_for_execution_plan(
             ExecutionCommandIntent::ResolverNativeGlobal(_) => {
                 return Err(BunError::UnsupportedCommandIntent(
                     "resolver-native-global".to_owned(),
-                ));
-            }
-            ExecutionCommandIntent::GroupedNative(_) => {
-                return Err(BunError::UnsupportedCommandIntent(
-                    "grouped-native".to_owned(),
                 ));
             }
             ExecutionCommandIntent::NativeGlobal(items) => {

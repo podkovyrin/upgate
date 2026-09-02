@@ -461,11 +461,6 @@ fn commands_for_execution_plan(
                     "resolver-native-global".to_owned(),
                 ));
             }
-            ExecutionCommandIntent::GroupedNative(_) => {
-                return Err(GemError::UnsupportedCommandIntent(
-                    "grouped-native".to_owned(),
-                ));
-            }
             ExecutionCommandIntent::NativeGlobal(_) => {
                 return Err(GemError::UnsupportedCommandIntent(
                     "native-global".to_owned(),

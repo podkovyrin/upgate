@@ -166,18 +166,18 @@ fn resolves_native_global_for_exact_or_native_global_items_with_no_policy() {
 }
 
 #[test]
-fn resolves_grouped_native_intent_for_brew_target_kinds() {
+fn resolves_one_native_selected_intent_per_brew_item() {
     let plan = plan(vec![
         update_item_with_target_kind(
             "brew:alpha-ready",
             "alpha-ready",
-            ExecutionSupport::native_only(),
+            ExecutionSupport::native_with_age_bypass_only(),
             ExecutionTargetKind::BrewFormula,
         ),
         update_item_with_target_kind(
             "brew:beta-ready",
             "beta-ready",
-            ExecutionSupport::native_only(),
+            ExecutionSupport::native_with_age_bypass_only(),
             ExecutionTargetKind::BrewCask,
         ),
     ]);
@@ -201,7 +201,9 @@ fn resolves_grouped_native_intent_for_brew_target_kinds() {
 
     assert!(matches!(
         resolved.intents.as_slice(),
-        [ExecutionCommandIntent::GroupedNative(items)] if items.len() == 2
+        [ExecutionCommandIntent::NativeSelected(first), ExecutionCommandIntent::NativeSelected(second)]
+            if first.package_name.as_str() == "alpha-ready"
+                && second.package_name.as_str() == "beta-ready"
     ));
 }
 
@@ -362,11 +364,11 @@ fn forced_delayed_resolver_native_item_bypasses_age_limit() {
 }
 
 #[test]
-fn forced_delayed_grouped_native_brew_item_bypasses_age_limit() {
+fn forced_delayed_native_brew_item_bypasses_age_limit() {
     let plan = plan(vec![delayed_item_with_target_kind(
         "brew:wget",
         "wget",
-        ExecutionSupport::grouped_native_only(),
+        ExecutionSupport::native_with_age_bypass_only(),
         ExecutionTargetKind::BrewFormula,
     )]);
     let selection = PlanSelection::new(
@@ -388,10 +390,9 @@ fn forced_delayed_grouped_native_brew_item_bypasses_age_limit() {
 
     assert!(matches!(
         resolved.intents.as_slice(),
-        [ExecutionCommandIntent::GroupedNative(items)]
-            if items.len() == 1
-                && items[0].known_target_version().expect("known target").as_str() == "1.2.0"
-                && items[0].bypass_min_release_age
+        [ExecutionCommandIntent::NativeSelected(item)]
+            if item.known_target_version().expect("known target").as_str() == "1.2.0"
+                && item.bypass_min_release_age
     ));
 }
 

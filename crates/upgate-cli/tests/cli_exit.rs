@@ -14,7 +14,10 @@ fn binary_reports_package_version() {
         .expect("upgate binary should run");
 
     assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "upgate 0.1.0\n");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("upgate {}\n", env!("CARGO_PKG_VERSION"))
+    );
 }
 
 #[test]
@@ -101,7 +104,7 @@ case "$*" in
   "view alpha-ready time --json")
     printf '%s\n' '{"1.0.0":"2021-01-01T00:00:00.000Z","1.2.0":"2021-12-01T00:00:00.000Z"}'
     ;;
-  "-g update --min-release-age 7")
+  "install -g alpha-ready@1.2.0 --before="*)
     echo "install failed" >&2
     exit 1
     ;;
@@ -267,7 +270,7 @@ case "$*" in
   "view alpha-ready time --json")
     printf '%s\n' '{{"1.0.0":"2021-01-01T00:00:00.000Z","1.2.0":"2021-12-01T00:00:00.000Z"}}'
     ;;
-  "-g update --min-release-age 7")
+  "install -g alpha-ready@1.2.0 --before="*)
     printf changed > {}
     ;;
   *)

@@ -63,6 +63,12 @@ does not create decisions. Selection produces a typed `PlanSelection`.
 Execution resolves that selection into command intents, and managers turn those
 intents into concrete commands.
 
+Apply reports selected items from command exit status; it does not perform a
+post-mutation rescan. Managers must therefore give independently fallible item
+updates separate commands. A command may map to several selected items only
+when it is one manager-level operation whose exit status applies to the whole
+selection.
+
 Managers may pass `min_release_age` to native resolvers when the resolver owns
 target selection, such as uv or Mise. Managers must not perform clock-aware
 shared planning decisions. Those decisions belong in `upgate-planning`.
@@ -147,8 +153,8 @@ except = ["typescript"]
 `except` always means the opposite of `mode`. Omitted selection resolves to
 `mode = "include", except = []` and is omitted when persisted.
 
-Npm `min_release_age` must be a whole number of days because npm's native
-`--min-release-age` accepts days.
+Npm `min_release_age` must be a whole number of days. Execution converts it to
+an absolute `--before` cutoff for each exact global install.
 
 ## Output
 

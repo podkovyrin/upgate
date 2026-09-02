@@ -22,10 +22,10 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 toml = "1.1.4"
 toml_edit = "0.25.13"
-upgate-audit = { version = "0.1.0", path = "../upgate-audit" }
-upgate-domain = { version = "0.1.0", path = "../upgate-domain" }
-upgate-execution = { version = "0.1.0", path = "../upgate-execution" }
-upgate-infra = { version = "0.1.0", path = "../upgate-infra" }
-upgate-managers = { version = "0.1.0", path = "../upgate-managers" }
-upgate-planning = { version = "0.1.0", path = "../upgate-planning" }
-upgate-presentation = { version = "0.1.0", path = "../upgate-presentation" }
+upgate-audit = { version = "0.1.1", path = "../upgate-audit" }
+upgate-domain = { version = "0.1.1", path = "../upgate-domain" }
+upgate-execution = { version = "0.1.1", path = "../upgate-execution" }
+upgate-infra = { version = "0.1.1", path = "../upgate-infra" }
+upgate-managers = { version = "0.1.1", path = "../upgate-managers" }
+upgate-planning = { version = "0.1.1", path = "../upgate-planning" }
+upgate-presentation = { version = "0.1.1", path = "../upgate-presentation" }

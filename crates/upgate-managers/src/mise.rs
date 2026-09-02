@@ -552,11 +552,6 @@ pub fn commands_for_execution_plan(
             ExecutionCommandIntent::Exact(_) => {
                 return Err(MiseError::UnsupportedCommandIntent("exact".to_owned()));
             }
-            ExecutionCommandIntent::GroupedNative(_) => {
-                return Err(MiseError::UnsupportedCommandIntent(
-                    "grouped-native".to_owned(),
-                ));
-            }
             ExecutionCommandIntent::NativeGlobal(_) => {
                 return Err(MiseError::UnsupportedCommandIntent(
                     "native-global".to_owned(),

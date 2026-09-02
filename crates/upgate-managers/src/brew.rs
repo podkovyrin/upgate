@@ -276,7 +276,7 @@ impl ManagerAdapter for BrewManager {
     }
 
     fn capabilities(&self) -> ManagerCapabilities {
-        ManagerCapabilities::new().with_native_global_update(true)
+        ManagerCapabilities::new()
     }
     fn scan_inputs(
         &self,
@@ -534,7 +534,7 @@ fn update_inputs(
                     installed,
                     selected,
                     VersionScheme::ManagerNative,
-                    ExecutionSupport::grouped_native_only(),
+                    ExecutionSupport::native_with_age_bypass_only(),
                 )
                 .with_execution_target_kind(execution_target_kind),
             ))
@@ -552,22 +552,11 @@ fn update_inputs(
 fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
 ) -> Result<Vec<ExecutionCommand>, BrewError> {
-    let mut formulae = Vec::new();
-    let mut casks = Vec::new();
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
             ExecutionCommandIntent::NativeSelected(item) => {
                 commands.push(scoped_upgrade_command(item)?);
-            }
-            ExecutionCommandIntent::GroupedNative(items) => {
-                for item in items {
-                    if item.known_target_version().is_some() {
-                        push_brew_item(item, &mut formulae, &mut casks)?;
-                    } else {
-                        commands.push(scoped_upgrade_command(item)?);
-                    }
-                }
             }
             ExecutionCommandIntent::NativeGlobal(_) => {
                 return Err(BrewError::UnsupportedCommandIntent(
@@ -590,12 +579,6 @@ fn commands_for_execution_plan(
         }
     }
 
-    if !formulae.is_empty() {
-        commands.push(grouped_upgrade_command("--formula", &formulae));
-    }
-    if !casks.is_empty() {
-        commands.push(grouped_upgrade_command("--cask", &casks));
-    }
     Ok(commands)
 }
 
@@ -1043,46 +1026,10 @@ const fn execution_target_kind(kind: &BrewPackageKind) -> ExecutionTargetKind {
     }
 }
 
-fn push_brew_item<'item>(
-    item: &'item ResolvedExecutionItem,
-    formulae: &mut Vec<&'item ResolvedExecutionItem>,
-    casks: &mut Vec<&'item ResolvedExecutionItem>,
-) -> Result<(), BrewError> {
-    match item.execution_target_kind {
-        ExecutionTargetKind::BrewFormula => {
-            formulae.push(item);
-            Ok(())
-        }
-        ExecutionTargetKind::BrewCask => {
-            casks.push(item);
-            Ok(())
-        }
-        ExecutionTargetKind::Standard => Err(BrewError::UnsupportedCommandIntent(
-            "standard-target-kind".to_owned(),
-        )),
-    }
-}
-
-fn grouped_upgrade_command(kind_arg: &str, items: &[&ResolvedExecutionItem]) -> ExecutionCommand {
-    let mut args = vec!["upgrade".to_owned(), kind_arg.to_owned()];
-    args.extend(
-        items
-            .iter()
-            .map(|item| item.package_name.as_str().to_owned()),
-    );
-    ExecutionCommand {
-        items: items
-            .iter()
-            .map(|item| ExecutionCommandItem::from(*item))
-            .collect(),
-        command: CommandSpec::new("brew", args).mutating(),
-    }
-}
-
 fn scoped_upgrade_command(item: &ResolvedExecutionItem) -> Result<ExecutionCommand, BrewError> {
     let mut args = vec!["upgrade".to_owned()];
     match item.execution_target_kind {
-        ExecutionTargetKind::BrewFormula => {}
+        ExecutionTargetKind::BrewFormula => args.push("--formula".to_owned()),
         ExecutionTargetKind::BrewCask => args.push("--cask".to_owned()),
         ExecutionTargetKind::Standard => {
             return Err(BrewError::UnsupportedCommandIntent(

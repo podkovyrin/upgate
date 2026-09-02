@@ -9,8 +9,8 @@ use serde::Deserialize;
 use upgate_domain::{
     AuditPackageName, AuditSubject, DomainError, ExecutionSupport, InstalledTool, ManagerConfig,
     ManagerId, ManagerScanInput, ManagerUpdateInput, OsvEcosystem, PackageName, ReleaseEntry,
-    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, ToolId, ToolName,
-    UpdateSeed, VersionScheme, VersionText,
+    ReleaseLookupError, ReleaseLookupResult, ReleaseTimeline, ReleaseTimestamp, SkipReason, ToolId,
+    ToolName, UpdateSeed, VersionScheme, VersionText,
 };
 use upgate_execution::{
     ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
@@ -87,6 +87,11 @@ impl From<DomainError> for PipxError {
 struct PipxInstalledPackage {
     name: PackageName,
     version: VersionText,
+    package_or_url: Option<String>,
+    pip_args: Vec<String>,
+    pinned: bool,
+    locked: bool,
+    suffix: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +114,16 @@ struct PipxMetadata {
 struct PipxMainPackage {
     package: String,
     package_version: String,
+    #[serde(default)]
+    package_or_url: Option<String>,
+    #[serde(default)]
+    pip_args: Vec<String>,
+    #[serde(default)]
+    pinned: bool,
+    #[serde(default)]
+    lock_file: Option<serde_json::Value>,
+    #[serde(default)]
+    suffix: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +207,11 @@ fn parse_list_json(raw: &str) -> Result<Vec<PipxInstalledPackage>, PipxError> {
         let package = PipxInstalledPackage {
             name: PackageName::new(venv.metadata.main_package.package)?,
             version: VersionText::new(venv.metadata.main_package.package_version)?,
+            package_or_url: venv.metadata.main_package.package_or_url,
+            pip_args: venv.metadata.main_package.pip_args,
+            pinned: venv.metadata.main_package.pinned,
+            locked: venv.metadata.main_package.lock_file.is_some(),
+            suffix: venv.metadata.main_package.suffix,
         };
         packages
             .entry(package.name.as_str().to_owned())
@@ -227,12 +247,144 @@ fn update_inputs(
     env: &Env,
     max_parallel_checks_per_manager: usize,
 ) -> Result<Vec<ManagerUpdateInput>, PipxError> {
-    let tools = installed_global(process)?;
+    let output = process.run(
+        &CommandSpec::new("pipx", ["list", "--json"]),
+        &CommandCheck::Success,
+    )?;
+    let packages = parse_list_json(output.stdout()?)?;
     let threads = effective_parallelism(max_parallel_checks_per_manager, PIPX_MAX_PARALLEL_CHECKS);
-    Ok(run_ordered_parallel(tools, threads, MANAGER_ID, |tool| {
-        let lookup = lookup_release(http, env, &tool.package_name);
-        update_input(tool, lookup)
-    })?)
+    run_ordered_parallel(packages, threads, MANAGER_ID, |package| {
+        let constraint = pipx_constraint(&package);
+        let tool = installed_tool(package)?;
+        let cutoff = match constraint {
+            Ok(cutoff) => cutoff,
+            Err(reason) => {
+                return Ok(ManagerUpdateInput::Skipped {
+                    installed: tool,
+                    reason,
+                });
+            }
+        };
+        let lookup = apply_upload_cutoff(lookup_release(http, env, &tool.package_name), cutoff);
+        Ok(update_input(tool, lookup))
+    })?
+    .into_iter()
+    .collect()
+}
+
+fn pipx_constraint(package: &PipxInstalledPackage) -> Result<Option<SystemTime>, SkipReason> {
+    if package.pinned {
+        return Err(SkipReason::Pinned);
+    }
+    if package.locked {
+        return Err(SkipReason::ManagerRule(
+            "pipx package is controlled by a lock file".to_owned(),
+        ));
+    }
+    if !package.suffix.is_empty() {
+        return Err(SkipReason::ManagerRule(format!(
+            "pipx package uses unsupported suffix `{}`",
+            package.suffix
+        )));
+    }
+    if package
+        .package_or_url
+        .as_deref()
+        .is_some_and(|source| !is_bare_package_identity(source, package.name.as_str()))
+    {
+        return Err(SkipReason::ManagerRule(
+            "pipx package was installed from a URL, path, or versioned requirement".to_owned(),
+        ));
+    }
+
+    let mut cutoff = None;
+    let mut args = package.pip_args.iter();
+    while let Some(arg) = args.next() {
+        let cutoff_value = if arg == "--uploaded-prior-to" {
+            Some(
+                args.next()
+                    .ok_or_else(|| {
+                        SkipReason::ManagerRule(
+                            "pipx has an incomplete --uploaded-prior-to constraint".to_owned(),
+                        )
+                    })?
+                    .as_str(),
+            )
+        } else {
+            arg.strip_prefix("--uploaded-prior-to=")
+        };
+        if let Some(value) = cutoff_value {
+            let parsed = parse_timestamp(value).ok_or_else(|| {
+                SkipReason::ManagerRule(format!(
+                    "pipx has an invalid --uploaded-prior-to constraint `{value}`"
+                ))
+            })?;
+            let parsed = system_time_from_datetime(parsed);
+            cutoff = Some(cutoff.map_or(parsed, |current: SystemTime| current.min(parsed)));
+            continue;
+        }
+        if changes_package_source(arg) {
+            return Err(SkipReason::ManagerRule(format!(
+                "pipx package uses unsupported package-source argument `{arg}`"
+            )));
+        }
+    }
+    Ok(cutoff)
+}
+
+fn is_bare_package_identity(source: &str, package: &str) -> bool {
+    source
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
+        && normalize_python_name(source) == normalize_python_name(package)
+}
+
+fn normalize_python_name(value: &str) -> String {
+    let mut normalized = String::new();
+    let mut separator = false;
+    for character in value.chars() {
+        if matches!(character, '-' | '_' | '.') {
+            if !separator {
+                normalized.push('-');
+            }
+            separator = true;
+        } else {
+            normalized.push(character.to_ascii_lowercase());
+            separator = false;
+        }
+    }
+    normalized
+}
+
+fn changes_package_source(arg: &str) -> bool {
+    [
+        "-i",
+        "-f",
+        "--index-url",
+        "--extra-index-url",
+        "--find-links",
+        "--no-index",
+    ]
+    .iter()
+    .any(|option| arg == *option || arg.starts_with(&format!("{option}=")))
+}
+
+fn apply_upload_cutoff(
+    lookup: ReleaseLookupResult,
+    cutoff: Option<SystemTime>,
+) -> ReleaseLookupResult {
+    match (lookup, cutoff) {
+        (ReleaseLookupResult::Known(timeline), Some(cutoff)) => {
+            ReleaseLookupResult::Known(ReleaseTimeline::new(
+                timeline
+                    .versions
+                    .into_iter()
+                    .filter(|release| release.published_at.as_system_time() <= cutoff)
+                    .collect(),
+            ))
+        }
+        (lookup, _) => lookup,
+    }
 }
 
 /// Looks up `PyPI` release metadata.
@@ -299,9 +451,6 @@ fn commands_for_execution_plan(
                     "resolver-native-global",
                 ));
             }
-            ExecutionCommandIntent::GroupedNative(_) => {
-                return Err(PipxError::UnsupportedCommandIntent("grouped-native"));
-            }
             ExecutionCommandIntent::NativeGlobal(_) => {
                 return Err(PipxError::UnsupportedCommandIntent("native-global"));
             }
@@ -317,7 +466,11 @@ fn exact_command_for_item(item: &ResolvedExecutionItem) -> Result<CommandSpec, P
             "exact-without-known-target",
         ))?;
     let spec = format!("{}=={target_version}", item.package_name);
-    Ok(CommandSpec::new("pipx", ["upgrade", &spec]).mutating())
+    Ok(CommandSpec::new(
+        "pipx",
+        ["install", "--upgrade", "--skip-maintenance", &spec],
+    )
+    .mutating())
 }
 
 fn installed_tool(package: PipxInstalledPackage) -> Result<InstalledTool, PipxError> {
