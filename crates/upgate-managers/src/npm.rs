@@ -110,6 +110,13 @@ struct NpmOutdatedMapEntry {
     current: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum NpmTimeJson {
+    Map(BTreeMap<String, String>),
+    Wrapped([BTreeMap<String, String>; 1]),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NpmManager {
     config: ManagerConfig,
@@ -332,8 +339,11 @@ fn lookup_release(
 ///
 /// Returns an error when JSON or timestamps are invalid, or no version timestamps are present.
 fn parse_npm_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeline, NpmError> {
-    let timestamps: BTreeMap<String, String> =
+    let parsed: NpmTimeJson =
         serde_json::from_str(raw).map_err(|err| NpmError::Json(err.to_string()))?;
+    let timestamps = match parsed {
+        NpmTimeJson::Map(timestamps) | NpmTimeJson::Wrapped([timestamps]) => timestamps,
+    };
     time_map_to_timeline(package, timestamps)
 }
 

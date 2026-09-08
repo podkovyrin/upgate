@@ -31,7 +31,7 @@ case "$*" in
     printf '%s\n' '{"alpha-ready":{"current":"1.0.0"}}'
     ;;
   "view alpha-ready time --json")
-    printf '%s\n' '{"1.0.0":"2021-01-01T00:00:00.000Z","1.2.0":"2021-12-01T00:00:00.000Z"}'
+    printf '%s\n' '[{"1.0.0":"2021-01-01T00:00:00.000Z","1.2.0":"2021-12-01T00:00:00.000Z"}]'
     ;;
   *)
     echo "unexpected npm command: $*" >&2
