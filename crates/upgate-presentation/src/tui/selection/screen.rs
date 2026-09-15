@@ -23,9 +23,11 @@ pub(super) struct InteractiveSelectionScreen {
     tab_offset: usize,
     cursor: Option<usize>,
     pub(super) table_offset: usize,
-    show_all: bool,
+    pub(super) show_all: bool,
     target_picker: Option<TargetPickerState>,
     confirmation_dialog: Option<ConfirmationDialogState>,
+    pub(super) confirmation_scroll: u16,
+    pub(super) feedback: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +89,7 @@ pub(super) struct ConfirmationManagerSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ConfirmationSummary {
     pub(super) selected_total: usize,
+    pub(super) removals: Vec<String>,
     pub(super) managers: Vec<ConfirmationManagerSummary>,
 }
 
@@ -123,6 +126,8 @@ impl InteractiveSelectionScreen {
             show_all: false,
             target_picker: None,
             confirmation_dialog: None,
+            confirmation_scroll: 0,
+            feedback: None,
         };
         screen.clamp_cursor();
         screen
@@ -314,7 +319,9 @@ impl InteractiveSelectionScreen {
             return self.handle_picker_input(input);
         }
 
+        self.feedback = None;
         match input {
+            SelectionInput::ToggleRemoval => self.toggle_removal()?,
             SelectionInput::Up => self.move_cursor_up(),
             SelectionInput::Down => self.move_cursor_down(),
             SelectionInput::NextTab => self.next_tab(),
@@ -332,6 +339,7 @@ impl InteractiveSelectionScreen {
                 if let Some(detail) = self.planning_error_detail() {
                     return Err(SelectionStateError::PlanningFailed(detail));
                 }
+                self.confirmation_scroll = 0;
                 self.confirmation_dialog = Some(ConfirmationDialogState);
             }
             SelectionInput::Confirm
@@ -373,8 +381,22 @@ impl InteractiveSelectionScreen {
             .collect::<Vec<_>>();
         let selected_total = managers.iter().map(|manager| manager.selected_count).sum();
 
+        let removals = self
+            .managers
+            .iter()
+            .flat_map(|manager| {
+                manager
+                    .state
+                    .rows()
+                    .iter()
+                    .filter(|row| manager.state.is_removed(&row.plan_item_id))
+                    .map(|row| format!("{} / {}", manager.manager_id, row.removal_label()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
         ConfirmationSummary {
             selected_total,
+            removals,
             managers,
         }
     }
@@ -430,7 +452,13 @@ impl InteractiveSelectionScreen {
         &mut self,
         input: SelectionInput,
     ) -> Result<SelectionControl, SelectionStateError> {
+        self.feedback = None;
         match input {
+            SelectionInput::ToggleCurrent => self.toggle_current()?,
+            SelectionInput::ToggleRemoval => {
+                self.toggle_removal()?;
+                self.target_picker = None;
+            }
             SelectionInput::PickerCancel => self.target_picker = None,
             SelectionInput::Cancel => return Ok(SelectionControl::Cancel),
             SelectionInput::Interrupt => return Ok(SelectionControl::Interrupt),
@@ -444,7 +472,6 @@ impl InteractiveSelectionScreen {
             | SelectionInput::Down
             | SelectionInput::NextTab
             | SelectionInput::PreviousTab
-            | SelectionInput::ToggleCurrent
             | SelectionInput::SelectVisible
             | SelectionInput::SelectNoneVisible
             | SelectionInput::ToggleViewAll
@@ -541,8 +568,29 @@ impl InteractiveSelectionScreen {
         self.clamp_cursor();
     }
 
+    fn toggle_removal(&mut self) -> Result<(), SelectionStateError> {
+        let Some(visible) = self
+            .target_picker
+            .map(|p| p.visible_row)
+            .or_else(|| self.current_visible_row())
+        else {
+            return Ok(());
+        };
+        let row = self.row(visible);
+        if let upgate_domain::RemovalSupport::Unsupported(reason) = &row.removal {
+            self.feedback = Some(format!("Removal unavailable: {reason}"));
+            return Ok(());
+        }
+        let id = row.plan_item_id.clone();
+        self.managers[visible.manager_idx].state.toggle_removal(&id)
+    }
+
     fn toggle_current(&mut self) -> Result<(), SelectionStateError> {
-        let Some(visible) = self.current_visible_row() else {
+        let Some(visible) = self
+            .target_picker
+            .map(|picker| picker.visible_row)
+            .or_else(|| self.current_visible_row())
+        else {
             return Ok(());
         };
         let row = self.row(visible);
@@ -553,6 +601,10 @@ impl InteractiveSelectionScreen {
             .iter()
             .any(|option| matches!(option, TargetOption::ForcedCandidate { .. }));
         let manager = &mut self.managers[visible.manager_idx];
+        if manager.state.is_removed(&plan_item_id) {
+            manager.state.clear_removal(&plan_item_id);
+            return Ok(());
+        }
         if manager.state.selected_target(&plan_item_id).is_some() {
             manager.state.deselect(&plan_item_id)?;
         } else if is_update {
@@ -569,6 +621,9 @@ impl InteractiveSelectionScreen {
             let plan_item_id = row.plan_item_id.clone();
             let is_update = row.status == SelectionRowStatus::Update;
             let manager = &mut self.managers[visible.manager_idx];
+            if manager.state.is_removed(&plan_item_id) {
+                continue;
+            }
             if selected {
                 if is_update {
                     manager.state.select_recommended(&plan_item_id)?;
@@ -584,8 +639,7 @@ impl InteractiveSelectionScreen {
         let Some(visible_row) = self.current_visible_row() else {
             return;
         };
-        let row = self.row(visible_row);
-        if !row.target_options.is_empty() {
+        {
             self.target_picker = Some(TargetPickerState {
                 visible_row,
                 cursor: self.target_picker_initial_cursor(visible_row),
@@ -701,6 +755,13 @@ impl InteractiveSelectionScreen {
             .target_options
             .iter()
             .any(|option| matches!(option, TargetOption::Recommended { .. }));
+        if self.managers[picker.visible_row.manager_idx]
+            .state
+            .is_removed(&plan_item_id)
+        {
+            self.feedback = Some("Press Space to deselect removal".to_owned());
+            return Ok(());
+        }
         if has_recommended {
             self.managers[picker.visible_row.manager_idx]
                 .state
@@ -716,6 +777,18 @@ impl InteractiveSelectionScreen {
         };
         let row = self.row(picker.visible_row);
         let plan_item_id = row.plan_item_id.clone();
+        if picker.cursor == row.target_options.len() {
+            self.toggle_removal()?;
+            self.target_picker = None;
+            return Ok(());
+        }
+        if self.managers[picker.visible_row.manager_idx]
+            .state
+            .is_removed(&plan_item_id)
+        {
+            self.feedback = Some("Press Space to deselect removal".to_owned());
+            return Ok(());
+        }
         let option = row.target_options.get(picker.cursor).cloned();
         let manager = &mut self.managers[picker.visible_row.manager_idx];
         if let Some(option) = option {
@@ -743,7 +816,7 @@ impl InteractiveSelectionScreen {
 
     fn target_option_count(&self, visible: VisibleRow) -> usize {
         let row = self.row(visible);
-        row.target_options.len()
+        row.target_options.len() + 1
     }
 
     fn target_picker_initial_cursor(&self, visible: VisibleRow) -> usize {
@@ -833,7 +906,7 @@ impl InteractiveSelectionScreen {
         }
     }
 
-    fn current_visible_row(&self) -> Option<VisibleRow> {
+    pub(super) fn current_visible_row(&self) -> Option<VisibleRow> {
         self.visible_row_refs().get(self.cursor?).copied()
     }
 
@@ -860,6 +933,7 @@ impl InteractiveSelectionScreen {
             for (row_idx, row) in manager.state.rows().iter().enumerate() {
                 if self.show_all
                     || row.default_visibility == SelectionRowVisibility::Visible
+                    || manager.state.is_removed(&row.plan_item_id)
                     || manager.state.selected_target(&row.plan_item_id).is_some()
                 {
                     rows.push(VisibleRow {
@@ -1014,6 +1088,9 @@ mod tests {
             default_visibility: SelectionRowVisibility::Visible,
             notes: Vec::new(),
             initially_selected: true,
+            removal: upgate_domain::RemovalSupport::Supported(
+                upgate_domain::RemovalTarget::Package,
+            ),
             target_options: vec![TargetOption::Recommended {
                 target_version: version("2.0.0"),
                 note_parts: Vec::new(),
@@ -1119,5 +1196,346 @@ mod tests {
 
         assert_eq!(screen.cursor, Some(0));
         assert_eq!(screen.table_offset, 0);
+    }
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+    use upgate_domain::{PackageName, RemovalSupport, RemovalTarget, SelectedAction, VersionText};
+
+    fn screen(count: usize) -> InteractiveSelectionScreen {
+        let manager_id = ManagerId::new("mise").unwrap();
+        let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![manager_id.clone()]);
+        let rows = (0..count)
+            .map(|index| SelectionRow {
+                plan_item_id: PlanItemId::new(format!("mise:tool-{index}")).unwrap(),
+                package_name: PackageName::new(format!("tool-{index}")).unwrap(),
+                installed_version: VersionText::new("1.0.0").unwrap(),
+                target_version: None,
+                status: SelectionRowStatus::Current,
+                default_visibility: SelectionRowVisibility::HiddenUntilViewAll,
+                notes: Vec::new(),
+                initially_selected: false,
+                target_options: Vec::new(),
+                removal: RemovalSupport::Supported(RemovalTarget::Version),
+            })
+            .collect();
+        screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerReady {
+            view: SelectionView { manager_id, rows },
+            selection_policy: UpdateSelectionPolicy::include_all(),
+            version_policy: VersionPolicy::None,
+        });
+        screen.apply_planning_event(InteractiveSelectionPlanningEvent::Finished);
+        screen
+    }
+
+    fn render(screen: &mut InteractiveSelectionScreen, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| super::super::render::draw_selection(frame, screen))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    #[test]
+    fn removal_details_and_confirmation_show_binary_path_and_brew_kind() {
+        for (target, expected) in [
+            (
+                RemovalTarget::Binary("/opt/go/bin/tool-0".into()),
+                "Remove binary tool-0 (/opt/go/bin/tool-0)",
+            ),
+            (RemovalTarget::BrewFormula, "Uninstall formula tool-0"),
+            (RemovalTarget::BrewCask, "Uninstall cask tool-0"),
+        ] {
+            let mut screen = screen(1);
+            let mut rows = screen.managers[0].state.rows().to_vec();
+            rows[0].removal = RemovalSupport::Supported(target);
+            screen.managers[0].state = InteractiveSelectionState::new(
+                SelectionView {
+                    manager_id: ManagerId::new("mise").unwrap(),
+                    rows,
+                },
+                UpdateSelectionPolicy::include_all(),
+            );
+            screen.handle_input(SelectionInput::ToggleViewAll).unwrap();
+            screen.handle_input(SelectionInput::Down).unwrap();
+            screen
+                .handle_input(SelectionInput::OpenTargetPicker)
+                .unwrap();
+            assert!(render(&mut screen, 100, 30).contains(expected));
+            screen.handle_input(SelectionInput::PickerConfirm).unwrap();
+            screen.handle_input(SelectionInput::Confirm).unwrap();
+            assert!(render(&mut screen, 100, 30).contains(expected));
+        }
+    }
+
+    #[test]
+    fn current_package_removal_is_visible_reviewable_and_reversible() {
+        let mut screen = screen(1);
+        screen.handle_input(SelectionInput::ToggleViewAll).unwrap();
+        screen.handle_input(SelectionInput::Down).unwrap();
+        screen
+            .handle_input(SelectionInput::OpenTargetPicker)
+            .unwrap();
+        assert!(render(&mut screen, 100, 30).contains("Uninstall tool-0@1.0.0"));
+        screen.handle_input(SelectionInput::PickerConfirm).unwrap();
+        screen.handle_input(SelectionInput::ToggleViewAll).unwrap();
+        screen.handle_input(SelectionInput::SelectVisible).unwrap();
+        screen
+            .handle_input(SelectionInput::SelectNoneVisible)
+            .unwrap();
+        let text = render(&mut screen, 100, 30);
+        assert!(text.contains("remove"));
+        assert!(text.contains('−'));
+        assert_eq!(
+            screen.selection_drafts()[0].selected_items[0].action,
+            SelectedAction::Remove
+        );
+        assert_eq!(
+            screen.selection_drafts()[0].selection_policy,
+            UpdateSelectionPolicy::include_all()
+        );
+        screen.handle_input(SelectionInput::Confirm).unwrap();
+        let text = render(&mut screen, 100, 30);
+        assert!(text.contains("0 updates · 1 removals"));
+        assert!(text.contains("mise / Uninstall tool-0@1.0.0"));
+        screen.close_confirmation_dialog();
+        screen.handle_input(SelectionInput::ToggleCurrent).unwrap();
+        assert!(screen.selection_drafts()[0].selected_items.is_empty());
+        screen.handle_input(SelectionInput::ToggleCurrent).unwrap();
+        assert!(screen.selection_drafts()[0].selected_items.is_empty());
+        assert_eq!(
+            screen.selection_drafts()[0].selection_policy,
+            UpdateSelectionPolicy::include_all()
+        );
+    }
+
+    #[test]
+    fn removal_review_scrolls_to_last_package_and_narrow_ui_exposes_remove() {
+        let mut screen = screen(25);
+        screen.handle_input(SelectionInput::ToggleViewAll).unwrap();
+        for _ in 0..25 {
+            screen.handle_input(SelectionInput::Down).unwrap();
+            screen.handle_input(SelectionInput::ToggleRemoval).unwrap();
+        }
+        assert!(render(&mut screen, 50, 20).contains("remove"));
+        assert!(render(&mut screen, 60, 20).contains("confirm"));
+        let compact = render(&mut screen, 120, 20);
+        assert!(compact.contains("space/x") && compact.contains("deselect"));
+        screen.handle_input(SelectionInput::Confirm).unwrap();
+        assert!(!render(&mut screen, 100, 25).contains("tool-24@"));
+        screen.confirmation_scroll = u16::MAX;
+        let text = render(&mut screen, 100, 25);
+        assert!(text.contains("tool-24@1.0.0"));
+        assert!(text.contains("back"));
+    }
+
+    #[test]
+    fn narrow_review_can_scroll_to_end_of_paths_with_spaces() {
+        let mut screen = screen(20);
+        let mut rows = screen.managers[0].state.rows().to_vec();
+        for row in &mut rows {
+            row.removal = RemovalSupport::Supported(RemovalTarget::Binary(
+                format!(
+                    "/long directory name/another directory name/last directory/{}-binary",
+                    row.package_name
+                )
+                .into(),
+            ));
+        }
+        screen.managers[0].state = InteractiveSelectionState::new(
+            SelectionView {
+                manager_id: ManagerId::new("mise").unwrap(),
+                rows,
+            },
+            UpdateSelectionPolicy::include_all(),
+        );
+        screen.handle_input(SelectionInput::ToggleViewAll).unwrap();
+        for _ in 0..20 {
+            screen.handle_input(SelectionInput::Down).unwrap();
+            screen.handle_input(SelectionInput::ToggleRemoval).unwrap();
+        }
+        screen.handle_input(SelectionInput::Confirm).unwrap();
+        screen.confirmation_scroll = u16::MAX;
+        let text = render(&mut screen, 44, 25);
+        assert!(text.contains("tool-19-binary)"), "{text}");
+        assert!(text.contains("scroll review"), "{text}");
+    }
+
+    #[test]
+    fn narrow_selection_and_removal_picker_keep_primary_actions_visible() {
+        let mut screen = screen(1);
+        screen.handle_input(SelectionInput::ToggleViewAll).unwrap();
+        screen.handle_input(SelectionInput::Down).unwrap();
+        screen.handle_input(SelectionInput::ToggleRemoval).unwrap();
+        for width in [20, 25, 31, 44] {
+            let text = render(&mut screen, width, 25);
+            assert!(text.contains("C confirm"), "{text}");
+        }
+        screen
+            .handle_input(SelectionInput::OpenTargetPicker)
+            .unwrap();
+        let text = render(&mut screen, 44, 25);
+        assert!(text.contains("enter  select"), "{text}");
+        assert!(text.contains("x  deselect"), "{text}");
+        assert!(text.contains("esc  cancel"), "{text}");
+    }
+
+    #[test]
+    fn unsupported_current_row_offers_details_without_update_or_removal_hints() {
+        let mut screen = screen(1);
+        let mut rows = screen.managers[0].state.rows().to_vec();
+        rows[0].removal = RemovalSupport::Unsupported("default tool cannot be removed".to_owned());
+        screen.managers[0].state = InteractiveSelectionState::new(
+            SelectionView {
+                manager_id: ManagerId::new("mise").unwrap(),
+                rows,
+            },
+            UpdateSelectionPolicy::include_all(),
+        );
+        screen.handle_input(SelectionInput::ToggleViewAll).unwrap();
+        screen.handle_input(SelectionInput::Down).unwrap();
+        let footer = render(&mut screen, 120, 25)
+            .chars()
+            .skip(120 * 23)
+            .take(120)
+            .collect::<String>();
+        assert!(
+            footer.contains("details") && !footer.contains("space/x") && !footer.contains(" d "),
+            "{footer}"
+        );
+        screen.handle_input(SelectionInput::ToggleCurrent).unwrap();
+        assert!(screen.selection_drafts()[0].selected_items.is_empty());
+        screen
+            .handle_input(SelectionInput::OpenTargetPicker)
+            .unwrap();
+        assert!(render(&mut screen, 120, 25).contains("default tool cannot be removed"));
+    }
+
+    #[test]
+    fn space_clears_removal_before_selecting_update_and_footer_follows_action() {
+        let mut screen = screen(1);
+        let mut rows = screen.managers[0].state.rows().to_vec();
+        rows[0].status = SelectionRowStatus::Update;
+        rows[0].default_visibility = SelectionRowVisibility::Visible;
+        rows[0].target_options = vec![TargetOption::Recommended {
+            target_version: VersionText::new("2.0.0").unwrap(),
+            note_parts: Vec::new(),
+        }];
+        screen.managers[0].state = InteractiveSelectionState::new(
+            SelectionView {
+                manager_id: ManagerId::new("mise").unwrap(),
+                rows,
+            },
+            UpdateSelectionPolicy::include_all(),
+        );
+        screen.handle_input(SelectionInput::Down).unwrap();
+        for width in [60, 80, 120, 160] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 25)).unwrap();
+            terminal
+                .draw(|frame| super::super::render::draw_selection(frame, &mut screen))
+                .unwrap();
+            let footer = (1..width - 1)
+                .map(|x| terminal.backend().buffer()[(x, 23)].symbol())
+                .collect::<String>();
+            assert!(
+                footer.contains("space/x")
+                    && footer.contains("update")
+                    && footer.contains("confirm"),
+                "{footer}"
+            );
+            let confirm = footer.find(" C confirm ").unwrap();
+            assert_eq!(
+                terminal.backend().buffer()[(u16::try_from(confirm).unwrap() + 2, 23)].modifier,
+                crate::tui::theme::TuiTheme::current()
+                    .primary_keycap
+                    .add_modifier
+            );
+        }
+        screen.handle_input(SelectionInput::ToggleCurrent).unwrap();
+        screen.handle_input(SelectionInput::ToggleRemoval).unwrap();
+        screen
+            .handle_input(SelectionInput::OpenTargetPicker)
+            .unwrap();
+        screen.handle_input(SelectionInput::ToggleCurrent).unwrap();
+        assert!(screen.selection_drafts()[0].selected_items.is_empty());
+        assert_eq!(
+            screen.selection_drafts()[0].selection_policy,
+            UpdateSelectionPolicy::include_all()
+        );
+        screen.handle_input(SelectionInput::ToggleCurrent).unwrap();
+        assert_eq!(
+            screen.selection_drafts()[0].selected_items[0].action,
+            SelectedAction::Update(SelectedUpdate::Recommended)
+        );
+        screen.handle_input(SelectionInput::PickerCancel).unwrap();
+        screen.handle_input(SelectionInput::ToggleRemoval).unwrap();
+        let footer = render(&mut screen, 160, 25)
+            .chars()
+            .skip(160 * 23)
+            .take(160)
+            .collect::<String>();
+        assert!(
+            footer.contains("deselect") && !footer.contains(" d "),
+            "{footer}"
+        );
+        screen.handle_input(SelectionInput::ToggleCurrent).unwrap();
+        let footer = render(&mut screen, 160, 25)
+            .chars()
+            .skip(160 * 23)
+            .take(160)
+            .collect::<String>();
+        assert!(
+            footer.contains("update")
+                && footer.contains(" d ")
+                && footer.contains("a/n")
+                && footer.contains("show all"),
+            "{footer}"
+        );
+        screen.handle_input(SelectionInput::ToggleViewAll).unwrap();
+        assert!(render(&mut screen, 160, 25).contains("hide all"));
+    }
+
+    #[test]
+    fn removal_undo_restores_exact_update_without_changing_preference() {
+        let mut screen = screen(1);
+        let manager = &mut screen.managers[0];
+        let mut rows = manager.state.rows().to_vec();
+        rows[0].status = SelectionRowStatus::Update;
+        rows[0].initially_selected = true;
+        rows[0].target_options = vec![TargetOption::AlternateExact {
+            target_version: VersionText::new("2.0.0").unwrap(),
+            note_parts: Vec::new(),
+        }];
+        let id = rows[0].plan_item_id.clone();
+        manager.state = InteractiveSelectionState::new(
+            SelectionView {
+                manager_id: manager.manager_id.clone(),
+                rows,
+            },
+            UpdateSelectionPolicy::include_all(),
+        );
+        manager
+            .state
+            .choose_alternate_exact(&id, VersionText::new("2.0.0").unwrap())
+            .unwrap();
+        let before = manager.state.selected_items();
+        manager.state.toggle_removal(&id).unwrap();
+        manager.state.select_recommended(&id).unwrap();
+        manager.state.deselect(&id).unwrap();
+        manager.state.toggle_removal(&id).unwrap();
+        assert_eq!(manager.state.selected_items(), before);
+        assert_eq!(
+            manager.state.selection_policy(),
+            &UpdateSelectionPolicy::include_all()
+        );
     }
 }

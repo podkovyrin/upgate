@@ -158,10 +158,11 @@ pub struct InstalledTool {
     pub tool_name: ToolName,
     pub installed_version: VersionText,
     pub audit_subject: Option<AuditSubject>,
+    pub removal: RemovalSupport,
 }
 
 impl InstalledTool {
-    pub const fn new(
+    pub fn new(
         manager_id: ManagerId,
         tool_id: ToolId,
         package_name: PackageName,
@@ -175,10 +176,39 @@ impl InstalledTool {
             tool_name,
             installed_version,
             audit_subject: None,
+            removal: RemovalSupport::default(),
         }
+    }
+    pub fn with_removal(mut self, target: RemovalTarget) -> Self {
+        self.removal = RemovalSupport::Supported(target);
+        self
     }
     pub fn with_audit_subject(mut self, audit_subject: AuditSubject) -> Self {
         self.audit_subject = Some(audit_subject);
         self
     }
+}
+
+/// Removal capability discovered independently of update eligibility.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemovalSupport {
+    Supported(RemovalTarget),
+    Unsupported(String),
+}
+
+impl Default for RemovalSupport {
+    fn default() -> Self {
+        Self::Unsupported("Removal is unavailable for this installed item".to_owned())
+    }
+}
+
+/// Native uninstall scope. Package and Version use the installed item's name
+/// and version; binary removal always retains the discovered path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemovalTarget {
+    Package,
+    Version,
+    BrewFormula,
+    BrewCask,
+    Binary(std::path::PathBuf),
 }

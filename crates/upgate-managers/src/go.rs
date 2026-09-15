@@ -4,6 +4,7 @@ use std::fmt::{self, Display};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
+use upgate_domain::RemovalTarget;
 
 use chrono::DateTime;
 use semver::Version;
@@ -104,6 +105,7 @@ impl GoError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GoManagedTool {
     pub binary_name: PackageName,
+    pub binary_path: PathBuf,
     pub install_path: String,
     pub module_path: String,
     pub current_version: VersionText,
@@ -336,7 +338,7 @@ fn discover_global_tools(
                 [
                     OsString::from("version"),
                     OsString::from("-m"),
-                    path.into_os_string(),
+                    path.as_os_str().to_owned(),
                 ],
             ),
             &CommandCheck::IgnoreStatus,
@@ -364,6 +366,7 @@ fn discover_global_tools(
         }
         discovered.push(GoDiscoveredTool::Managed(GoManagedTool {
             binary_name: package,
+            binary_path: path,
             install_path: info.install_path,
             module_path: info.module_path,
             current_version: VersionText::new(info.version)?,
@@ -494,10 +497,32 @@ fn commands_for_execution_plan(
     env: &Env,
     plan: &ResolvedExecutionPlan,
 ) -> Result<Vec<ExecutionCommand>, GoError> {
-    let install_paths = install_paths_by_package(process, env)?;
+    let install_paths = if plan
+        .intents
+        .iter()
+        .any(|intent| matches!(intent, ExecutionCommandIntent::Exact(_)))
+    {
+        install_paths_by_package(process, env)?
+    } else {
+        BTreeMap::new()
+    };
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
+            ExecutionCommandIntent::Remove(item) => {
+                let RemovalTarget::Binary(path) = &item.target else {
+                    return Err(GoError::UnsupportedCommandIntent(
+                        "invalid-removal-target".to_owned(),
+                    ));
+                };
+                let command =
+                    CommandSpec::new("rm", [OsString::from("--"), path.as_os_str().to_owned()])
+                        .mutating();
+                commands.push(ExecutionCommand {
+                    items: vec![ExecutionCommandItem::from(item)],
+                    command,
+                });
+            }
             ExecutionCommandIntent::Exact(item) => {
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
@@ -593,6 +618,7 @@ fn installed_tool(tool: &GoManagedTool) -> InstalledTool {
             .expect("valid package is valid tool name"),
         tool.current_version.clone(),
     )
+    .with_removal(RemovalTarget::Binary(tool.binary_path.clone()))
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Go,
         AuditPackageName::new(tool.module_path.clone()).expect("managed Go module path is valid"),

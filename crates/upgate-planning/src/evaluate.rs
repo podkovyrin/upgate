@@ -558,6 +558,7 @@ fn candidate_from_seed(
         seed.version_scheme,
         seed.execution_support,
     )
+    .with_removal(seed.installed.removal.clone())
     .with_execution_target_kind(seed.execution_target_kind)
     .with_policy_warnings(policy_warnings)
     .with_diagnostics(diagnostics)

@@ -50,14 +50,20 @@ impl PlanSelection {
 /// One selected plan row and the target/action chosen for this apply run.
 pub struct SelectedItem {
     pub plan_item_id: PlanItemId,
-    pub selected_update: SelectedUpdate,
+    pub action: SelectedAction,
 }
 
 impl SelectedItem {
     pub const fn new(plan_item_id: PlanItemId, selected_update: SelectedUpdate) -> Self {
         Self {
             plan_item_id,
-            selected_update,
+            action: SelectedAction::Update(selected_update),
+        }
+    }
+    pub const fn remove(plan_item_id: PlanItemId) -> Self {
+        Self {
+            plan_item_id,
+            action: SelectedAction::Remove,
         }
     }
     pub const fn recommended(plan_item_id: PlanItemId) -> Self {
@@ -72,6 +78,12 @@ impl SelectedItem {
     pub const fn manager_resolved(plan_item_id: PlanItemId) -> Self {
         Self::new(plan_item_id, SelectedUpdate::ManagerResolved)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectedAction {
+    Update(SelectedUpdate),
+    Remove,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

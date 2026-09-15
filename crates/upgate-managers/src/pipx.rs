@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt::{self, Display};
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
+use upgate_domain::RemovalTarget;
 
 use chrono::DateTime;
 use pep440_rs::Version as Pep440Version;
@@ -85,6 +86,7 @@ impl From<DomainError> for PipxError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PipxInstalledPackage {
+    environment: String,
     name: PackageName,
     version: VersionText,
     package_or_url: Option<String>,
@@ -202,9 +204,10 @@ impl ManagerAdapter for PipxManager {
 fn parse_list_json(raw: &str) -> Result<Vec<PipxInstalledPackage>, PipxError> {
     let parsed: PipxListRoot =
         serde_json::from_str(raw).map_err(|err| PipxError::Json(err.to_string()))?;
-    let mut packages = BTreeMap::new();
-    for venv in parsed.venvs.into_values() {
+    let mut packages = Vec::new();
+    for (environment, venv) in parsed.venvs {
         let package = PipxInstalledPackage {
+            environment,
             name: PackageName::new(venv.metadata.main_package.package)?,
             version: VersionText::new(venv.metadata.main_package.package_version)?,
             package_or_url: venv.metadata.main_package.package_or_url,
@@ -213,11 +216,9 @@ fn parse_list_json(raw: &str) -> Result<Vec<PipxInstalledPackage>, PipxError> {
             locked: venv.metadata.main_package.lock_file.is_some(),
             suffix: venv.metadata.main_package.suffix,
         };
-        packages
-            .entry(package.name.as_str().to_owned())
-            .or_insert(package);
+        packages.push(package);
     }
-    Ok(packages.into_values().collect())
+    Ok(packages)
 }
 
 /// Reads installed pipx main packages.
@@ -285,6 +286,12 @@ fn pipx_constraint(package: &PipxInstalledPackage) -> Result<Option<SystemTime>,
         return Err(SkipReason::ManagerRule(format!(
             "pipx package uses unsupported suffix `{}`",
             package.suffix
+        )));
+    }
+    if package.environment != package.name.as_str() {
+        return Err(SkipReason::ManagerRule(format!(
+            "pipx environment `{}` differs from package `{}`",
+            package.environment, package.name
         )));
     }
     if package
@@ -434,6 +441,20 @@ fn commands_for_execution_plan(
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
+            ExecutionCommandIntent::Remove(item) => {
+                if item.target != RemovalTarget::Package {
+                    return Err(PipxError::UnsupportedCommandIntent(
+                        "invalid-removal-target",
+                    ));
+                }
+                let command =
+                    CommandSpec::new("pipx", ["uninstall", "--", item.package_name.as_str()])
+                        .mutating();
+                commands.push(ExecutionCommand {
+                    items: vec![ExecutionCommandItem::from(item)],
+                    command,
+                });
+            }
             ExecutionCommandIntent::Exact(item) => {
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
@@ -474,17 +495,27 @@ fn exact_command_for_item(item: &ResolvedExecutionItem) -> Result<CommandSpec, P
 }
 
 fn installed_tool(package: PipxInstalledPackage) -> Result<InstalledTool, PipxError> {
-    Ok(InstalledTool::new(
+    let removal = if package.environment == package.name.as_str() && package.suffix.is_empty() {
+        upgate_domain::RemovalSupport::Supported(RemovalTarget::Package)
+    } else {
+        upgate_domain::RemovalSupport::Unsupported(format!(
+            "Remove this pipx environment manually with `pipx uninstall {}`; suffixed or renamed environments are not supported",
+            package.environment
+        ))
+    };
+    let mut tool = InstalledTool::new(
         PipxManager::id(),
-        ToolId::new(package.name.as_str())?,
+        ToolId::new(package.environment.as_str())?,
         package.name.clone(),
-        ToolName::new(package.name.as_str())?,
+        ToolName::new(package.environment.as_str())?,
         package.version,
     )
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Pypi,
         AuditPackageName::new(package.name.as_str())?,
-    )))
+    ));
+    tool.removal = removal;
+    Ok(tool)
 }
 
 #[derive(Debug, Deserialize)]

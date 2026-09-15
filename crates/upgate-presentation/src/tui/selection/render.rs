@@ -23,124 +23,14 @@ use crate::tui::theme::TuiTheme;
 use crate::{CandidateNoteKind, CandidateNotePart, SelectionRow, TargetOption};
 
 pub(super) const TAB_KEY_LABEL: &str = " ⇥ ";
-const FOOTER_KEYS: &[KeyBinding<'static>] = &[
-    KeyBinding {
-        key: "up/down j/k",
-        label: "move",
-    },
-    KeyBinding {
-        key: "space x",
-        label: "toggle",
-    },
-    KeyBinding {
-        key: "a",
-        label: "all",
-    },
-    KeyBinding {
-        key: "n",
-        label: "none",
-    },
-    KeyBinding {
-        key: "v",
-        label: "view all",
-    },
-    KeyBinding {
-        key: "enter",
-        label: "details",
-    },
-    KeyBinding {
-        key: "C",
-        label: "confirm",
-    },
-    KeyBinding {
-        key: "q",
-        label: "quit",
-    },
-];
-const FOOTER_INPUTS: &[Option<SelectionInput>] = &[
-    None,
-    Some(SelectionInput::ToggleCurrent),
-    Some(SelectionInput::SelectVisible),
-    Some(SelectionInput::SelectNoneVisible),
-    Some(SelectionInput::ToggleViewAll),
-    Some(SelectionInput::OpenTargetPicker),
-    Some(SelectionInput::Confirm),
-    Some(SelectionInput::Cancel),
-];
-const COMPACT_FOOTER_KEYS: &[KeyBinding<'static>] = &[
-    KeyBinding {
-        key: "v",
-        label: "view all",
-    },
-    KeyBinding {
-        key: "enter",
-        label: "details",
-    },
-    KeyBinding {
-        key: "C",
-        label: "confirm",
-    },
-    KeyBinding {
-        key: "q",
-        label: "quit",
-    },
-];
-const COMPACT_FOOTER_INPUTS: &[Option<SelectionInput>] = &[
-    Some(SelectionInput::ToggleViewAll),
-    Some(SelectionInput::OpenTargetPicker),
-    Some(SelectionInput::Confirm),
-    Some(SelectionInput::Cancel),
-];
-const MINIMAL_FOOTER_KEYS: &[KeyBinding<'static>] = &[
-    KeyBinding {
-        key: "enter",
-        label: "details",
-    },
-    KeyBinding {
-        key: "C",
-        label: "confirm",
-    },
-    KeyBinding {
-        key: "q",
-        label: "quit",
-    },
-];
-const MINIMAL_FOOTER_INPUTS: &[Option<SelectionInput>] = &[
-    Some(SelectionInput::OpenTargetPicker),
-    Some(SelectionInput::Confirm),
-    Some(SelectionInput::Cancel),
-];
-const _: () = assert!(FOOTER_KEYS.len() == FOOTER_INPUTS.len());
-const _: () = assert!(COMPACT_FOOTER_KEYS.len() == COMPACT_FOOTER_INPUTS.len());
-const _: () = assert!(MINIMAL_FOOTER_KEYS.len() == MINIMAL_FOOTER_INPUTS.len());
-const COMPACT_FOOTER_WIDTH: u16 = 96;
-const MINIMAL_FOOTER_WIDTH: u16 = 52;
-pub(super) const PICKER_FOOTER_KEYS: &[KeyBinding<'static>] = &[
-    KeyBinding {
-        key: "up/down j/k",
-        label: "target",
-    },
-    KeyBinding {
-        key: "r",
-        label: "recommended",
-    },
-    KeyBinding {
-        key: "esc",
-        label: "cancel",
-    },
-    KeyBinding {
-        key: "enter",
-        label: "select",
-    },
-];
 const PICKER_MAIN_MOVE_KEY: KeyBinding<'static> = KeyBinding {
-    key: "shift+up/down J/K",
+    key: "J/K",
     label: "row",
 };
 const CONFIRMATION_FOOTER_KEYS: &[KeyBinding<'static>] = &[
     KeyBinding {
-        key: "enter C",
-        label: "apply",
+        key: "C",
+        label: "confirm",
     },
     KeyBinding {
         key: "esc",
@@ -155,6 +45,7 @@ const CONFIRMATION_FOOTER_KEYS: &[KeyBinding<'static>] = &[
 #[derive(Debug)]
 struct SelectionRenderRow {
     selected: bool,
+    removed: bool,
     manager: String,
     name: String,
     current: String,
@@ -170,7 +61,7 @@ pub(super) fn draw_selection(
     let theme = TuiTheme::current();
     let area = frame.area();
     let block = app_block(&theme);
-    let Some(app_frame) = app_frame(area) else {
+    let Some(app_frame) = app_frame(area).filter(|_| area.width >= 20) else {
         let inner = block.inner(area);
         frame.render_widget(block, area);
         frame.render_widget(Paragraph::new("Terminal too small"), inner);
@@ -226,6 +117,17 @@ fn draw_selection_main(
     area: Rect,
     theme: &TuiTheme,
 ) {
+    let [area, status_area] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
+    let summary = screen.confirmation_summary();
+    let status = screen.feedback.clone().unwrap_or_else(|| {
+        format!(
+            "{} updates · {} removals",
+            summary.selected_total - summary.removals.len(),
+            summary.removals.len()
+        )
+    });
+    frame.render_widget(Paragraph::new(status), status_area);
     if let Some(message) = screen.placeholder_message() {
         draw_centered_placeholder(frame, area, &message, theme.muted);
     } else {
@@ -336,7 +238,7 @@ fn draw_list_content(
     }
 
     screen.clamp_cursor();
-    screen.keep_cursor_visible(selection_table_visible_height(area));
+    screen.keep_cursor_visible(usize::from(area.height.saturating_sub(1)));
     let render_rows = selection_render_rows(screen);
     let row_count = render_rows.len();
     let table_rows = render_rows
@@ -359,7 +261,7 @@ fn draw_list_content(
 }
 
 pub(super) fn selection_table_visible_height(area: Rect) -> usize {
-    usize::from(area.height.saturating_sub(1))
+    usize::from(area.height.saturating_sub(2))
 }
 
 fn draw_centered_placeholder(
@@ -419,13 +321,15 @@ fn selection_render_rows(screen: &InteractiveSelectionScreen) -> Vec<SelectionRe
             let note_parts = selected_exact_option
                 .map_or_else(|| row.notes.clone(), |option| option.note_parts().to_vec());
 
+            let removed = manager.state.is_removed(&row.plan_item_id);
             SelectionRenderRow {
                 selected,
+                removed,
                 manager: manager.manager_id.as_str().to_owned(),
                 name: row.package_name.as_str().to_owned(),
                 current: version_label(row.installed_version.as_str()),
-                target,
-                note_parts,
+                target: if removed { "remove".to_owned() } else { target },
+                note_parts: if removed { Vec::new() } else { note_parts },
                 forced,
             }
         })
@@ -447,18 +351,25 @@ fn selection_table_row(
     theme: &TuiTheme,
 ) -> Row<'static> {
     let style = theme.row_for_selectable_state(highlighted);
-    let marker = if row.selected { "[x]" } else { "[ ]" };
-    let target = if row.target == "unavailable" || row.target == manager_resolved_label() {
-        Line::from(Span::styled(row.target, style))
+    let marker = if row.removed {
+        " − "
+    } else if row.selected {
+        " ↑ "
     } else {
-        Line::from(version_diff_spans(
-            &row.current,
-            &row.target,
-            style,
-            theme,
-            highlighted,
-        ))
+        "   "
     };
+    let target =
+        if row.removed || row.target == "unavailable" || row.target == manager_resolved_label() {
+            Line::from(Span::styled(row.target, style))
+        } else {
+            Line::from(version_diff_spans(
+                &row.current,
+                &row.target,
+                style,
+                theme,
+                highlighted,
+            ))
+        };
     let note = if row.forced {
         forced_note_cell(&row.note_parts, theme)
     } else {
@@ -496,27 +407,195 @@ fn footer_line(screen: &InteractiveSelectionScreen, width: u16, theme: &TuiTheme
         return picker_footer_line(theme);
     }
 
-    key_footer(selection_footer_bindings(width), theme)
+    render_footer(&selection_footer(screen, width), theme)
 }
 
-pub(super) const fn selection_footer_bindings(width: u16) -> &'static [KeyBinding<'static>] {
-    if width < MINIMAL_FOOTER_WIDTH {
-        MINIMAL_FOOTER_KEYS
-    } else if width < COMPACT_FOOTER_WIDTH {
-        COMPACT_FOOTER_KEYS
-    } else {
-        FOOTER_KEYS
+pub(super) fn selection_footer(
+    screen: &InteractiveSelectionScreen,
+    width: u16,
+) -> Vec<(KeyBinding<'static>, SelectionInput)> {
+    let mut entries = vec![(
+        KeyBinding {
+            key: "j/k",
+            label: "move",
+        },
+        SelectionInput::Ignore,
+    )];
+    if let Some(visible) = screen.current_visible_row() {
+        append_row_actions(&mut entries, screen, visible);
+    }
+    entries.push((
+        KeyBinding {
+            key: "a/n",
+            label: "all/none",
+        },
+        SelectionInput::Ignore,
+    ));
+    entries.push((
+        KeyBinding {
+            key: "v",
+            label: if screen.show_all {
+                "hide all"
+            } else {
+                "show all"
+            },
+        },
+        SelectionInput::ToggleViewAll,
+    ));
+    if screen.current_visible_row().is_some() {
+        entries.push((
+            KeyBinding {
+                key: "enter",
+                label: "details",
+            },
+            SelectionInput::OpenTargetPicker,
+        ));
+    }
+    entries.push((
+        KeyBinding {
+            key: "C",
+            label: "confirm",
+        },
+        SelectionInput::Confirm,
+    ));
+    entries.push((
+        KeyBinding {
+            key: "q",
+            label: "quit",
+        },
+        SelectionInput::Cancel,
+    ));
+    fit_footer(entries, width)
+}
+
+fn append_row_actions(
+    entries: &mut Vec<(KeyBinding<'static>, SelectionInput)>,
+    screen: &InteractiveSelectionScreen,
+    visible: super::screen::VisibleRow,
+) {
+    let row = screen.row(visible);
+    let state = &screen.managers[visible.manager_idx].state;
+    let selected =
+        state.is_removed(&row.plan_item_id) || state.selected_target(&row.plan_item_id).is_some();
+    let update_available = row.status == crate::SelectionRowStatus::Update
+        || row
+            .target_options
+            .iter()
+            .any(|option| matches!(option, TargetOption::ForcedCandidate { .. }));
+    if selected || update_available {
+        entries.push((
+            KeyBinding {
+                key: "space/x",
+                label: if selected { "deselect" } else { "update" },
+            },
+            SelectionInput::ToggleCurrent,
+        ));
+    }
+    if !state.is_removed(&row.plan_item_id)
+        && matches!(row.removal, upgate_domain::RemovalSupport::Supported(_))
+    {
+        entries.push((
+            KeyBinding {
+                key: "d",
+                label: "remove",
+            },
+            SelectionInput::ToggleRemoval,
+        ));
     }
 }
 
-pub(super) const fn selection_footer_inputs(width: u16) -> &'static [Option<SelectionInput>] {
-    if width < MINIMAL_FOOTER_WIDTH {
-        MINIMAL_FOOTER_INPUTS
-    } else if width < COMPACT_FOOTER_WIDTH {
-        COMPACT_FOOTER_INPUTS
-    } else {
-        FOOTER_INPUTS
+pub(super) fn picker_actions(
+    screen: &InteractiveSelectionScreen,
+    width: u16,
+) -> Vec<(KeyBinding<'static>, SelectionInput)> {
+    let mut entries = Vec::new();
+    if let Some(picker) = screen.target_picker() {
+        entries.push((
+            KeyBinding {
+                key: "j/k",
+                label: "target",
+            },
+            SelectionInput::Ignore,
+        ));
+        append_row_actions(&mut entries, screen, picker.visible_row);
+        if !screen.managers[picker.visible_row.manager_idx]
+            .state
+            .is_removed(&screen.row(picker.visible_row).plan_item_id)
+            && screen
+                .row(picker.visible_row)
+                .target_options
+                .iter()
+                .any(|option| matches!(option, TargetOption::Recommended { .. }))
+        {
+            entries.push((
+                KeyBinding {
+                    key: "r",
+                    label: "recommended",
+                },
+                SelectionInput::RecommendedTarget,
+            ));
+        }
     }
+    entries.push((
+        KeyBinding {
+            key: "esc",
+            label: "cancel",
+        },
+        SelectionInput::PickerCancel,
+    ));
+    entries.push((
+        KeyBinding {
+            key: "enter",
+            label: "select",
+        },
+        SelectionInput::PickerConfirm,
+    ));
+    fit_footer(entries, width)
+}
+
+fn fit_footer(
+    mut entries: Vec<(KeyBinding<'static>, SelectionInput)>,
+    width: u16,
+) -> Vec<(KeyBinding<'static>, SelectionInput)> {
+    let theme = TuiTheme::current();
+    for key in ["j/k", "a/n", "r", "enter", "d", "v", "q"] {
+        if render_footer(&entries, &theme).width() <= usize::from(width) {
+            break;
+        }
+        if let Some(index) = entries
+            .iter()
+            .position(|(binding, _)| binding.key == key && binding.label != "select")
+        {
+            entries.remove(index);
+        }
+    }
+    if render_footer(&entries, &theme).width() > usize::from(width)
+        && let Some((binding, _)) = entries
+            .iter_mut()
+            .find(|(binding, _)| binding.key == "space/x")
+    {
+        binding.key = "x";
+    }
+    for key in ["x", "esc"] {
+        if render_footer(&entries, &theme).width() <= usize::from(width) {
+            break;
+        }
+        if let Some(index) = entries.iter().position(|(binding, _)| binding.key == key) {
+            entries.remove(index);
+        }
+    }
+    entries
+}
+
+fn render_footer(entries: &[(KeyBinding<'_>, SelectionInput)], theme: &TuiTheme) -> Line<'static> {
+    let bindings = entries
+        .iter()
+        .map(|(binding, _)| KeyBinding {
+            key: binding.key,
+            label: binding.label,
+        })
+        .collect::<Vec<_>>();
+    key_footer(&bindings, theme)
 }
 
 fn picker_footer_line(theme: &TuiTheme) -> Line<'static> {
@@ -536,7 +615,7 @@ fn draw_target_picker(
         frame,
         area,
         target_picker_width(area),
-        target_picker_height(row.target_options.len()),
+        target_picker_height(row.target_options.len() + 1),
         None,
         theme,
     ) else {
@@ -602,14 +681,17 @@ fn draw_target_picker(
     draw_target_picker_rows(frame, screen, picker, list_area, theme);
     draw_target_picker_details(frame, row, picker.cursor, detail_area, theme);
     frame.render_widget(
-        Paragraph::new(key_footer(PICKER_FOOTER_KEYS, theme)),
+        Paragraph::new(render_footer(
+            &picker_actions(screen, footer_area.width),
+            theme,
+        )),
         footer_area,
     );
 }
 
 fn draw_confirmation_dialog(
     frame: &mut ratatui::Frame<'_>,
-    screen: &InteractiveSelectionScreen,
+    screen: &mut InteractiveSelectionScreen,
     area: Rect,
     theme: &TuiTheme,
 ) {
@@ -634,7 +716,13 @@ fn draw_confirmation_dialog(
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
     let body = confirmation_dialog_lines(&summary, theme);
 
-    frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }), body_area);
+    let body = Paragraph::new(body).wrap(Wrap { trim: true });
+    let height = body.line_count(body_area.width);
+    let maximum = height.saturating_sub(usize::from(body_area.height));
+    screen.confirmation_scroll = screen
+        .confirmation_scroll
+        .min(u16::try_from(maximum).unwrap_or(u16::MAX));
+    frame.render_widget(body.scroll((screen.confirmation_scroll, 0)), body_area);
     frame.render_widget(
         Paragraph::new(key_footer(CONFIRMATION_FOOTER_KEYS, theme)),
         footer_area,
@@ -646,8 +734,12 @@ fn confirmation_dialog_lines(
     theme: &TuiTheme,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
-        Span::styled("Selected updates: ", theme.header),
-        Span::raw(summary.selected_total.to_string()),
+        Span::styled("Apply: ", theme.header),
+        Span::raw(format!(
+            "{} updates · {} removals",
+            summary.selected_total - summary.removals.len(),
+            summary.removals.len()
+        )),
     ])];
 
     if summary.managers.is_empty() {
@@ -667,11 +759,21 @@ fn confirmation_dialog_lines(
         ]));
     }
 
+    if !summary.removals.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::raw("Remove:"));
+        lines.extend(summary.removals.iter().cloned().map(Line::raw));
+        lines.push(Line::raw(""));
+        lines.push(Line::raw(
+            "Removal clears the item’s upgate selection preference.",
+        ));
+        lines.push(Line::raw("↑/↓ scroll review"));
+    }
     lines
 }
 
 fn confirmation_dialog_height(summary: &ConfirmationSummary) -> u16 {
-    let manager_rows = summary.managers.len().max(1);
+    let manager_rows = (summary.managers.len() + summary.removals.len() + 5).max(1);
     let body_rows = manager_rows.saturating_add(3);
     u16::try_from(body_rows.saturating_add(3))
         .unwrap_or(u16::MAX)
@@ -694,7 +796,7 @@ fn draw_target_picker_rows(
         .state
         .selected_target(&row.plan_item_id);
     let current = version_label(row.installed_version.as_str());
-    let table_rows = row
+    let mut table_rows = row
         .target_options
         .iter()
         .enumerate()
@@ -716,7 +818,15 @@ fn draw_target_picker_rows(
         })
         .collect::<Vec<_>>();
 
-    let selected = (picker.cursor < row.target_options.len()).then_some(picker.cursor);
+    let removing = screen.managers[picker.visible_row.manager_idx]
+        .state
+        .is_removed(&row.plan_item_id);
+    table_rows.push(Row::new(vec![
+        Cell::new(if removing { " − " } else { "   " }),
+        Cell::new(if removing { "Undo removal" } else { "Remove" }),
+        Cell::new(row.removal_label()),
+    ]));
+    let selected = Some(picker.cursor);
     render_table(
         frame,
         area,
@@ -735,6 +845,10 @@ fn draw_target_picker_details(
     theme: &TuiTheme,
 ) {
     let Some(option) = row.target_options.get(cursor) else {
+        frame.render_widget(
+            Paragraph::new(row.removal_label()).wrap(Wrap { trim: true }),
+            area,
+        );
         return;
     };
     let lines = target_picker_detail_lines(option, theme);
@@ -793,7 +907,7 @@ fn target_picker_table_row(
     theme: &TuiTheme,
 ) -> Row<'static> {
     let style = theme.row_for_selectable_state(highlighted);
-    let marker = if selected { "[x]" } else { "[ ]" };
+    let marker = if selected { " ↑ " } else { "   " };
     let target_spans = if target == manager_resolved_label() {
         vec![Span::styled(target, style)]
     } else {

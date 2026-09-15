@@ -9,7 +9,15 @@ use crate::{SelectionRow, SelectionRowStatus, SelectionView, TargetOption};
 pub(super) struct InteractiveSelectionState {
     rows: Vec<SelectionRow>,
     selection_policy: UpdateSelectionPolicy,
-    selected_targets: BTreeMap<PlanItemId, SelectedUpdate>,
+    choices: BTreeMap<PlanItemId, RowChoice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RowChoice {
+    Update(SelectedUpdate),
+    Remove {
+        previous_update: Option<SelectedUpdate>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,33 +45,73 @@ impl std::error::Error for SelectionStateError {}
 
 impl InteractiveSelectionState {
     pub(super) fn new(view: SelectionView, selection_policy: UpdateSelectionPolicy) -> Self {
-        let selected_targets = view
+        let choices = view
             .rows
             .iter()
             .filter(|row| row.initially_selected)
-            .map(|row| (row.plan_item_id.clone(), SelectedUpdate::Recommended))
+            .map(|row| {
+                (
+                    row.plan_item_id.clone(),
+                    RowChoice::Update(SelectedUpdate::Recommended),
+                )
+            })
             .collect();
 
         Self {
             rows: view.rows,
             selection_policy,
-            selected_targets,
+            choices,
+        }
+    }
+    pub(super) fn is_removed(&self, id: &PlanItemId) -> bool {
+        matches!(self.choices.get(id), Some(RowChoice::Remove { .. }))
+    }
+    pub(super) fn toggle_removal(&mut self, id: &PlanItemId) -> Result<(), SelectionStateError> {
+        if let upgate_domain::RemovalSupport::Unsupported(reason) = &self.row(id)?.removal {
+            return Err(SelectionStateError::TargetUnavailable(reason.clone()));
+        }
+        match self.choices.remove(id) {
+            Some(RowChoice::Remove { previous_update }) => {
+                if let Some(target) = previous_update {
+                    self.choices.insert(id.clone(), RowChoice::Update(target));
+                }
+            }
+            previous => {
+                let previous_update = match previous {
+                    Some(RowChoice::Update(target)) => Some(target),
+                    _ => None,
+                };
+                self.choices
+                    .insert(id.clone(), RowChoice::Remove { previous_update });
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn clear_removal(&mut self, id: &PlanItemId) {
+        if self.is_removed(id) {
+            self.choices.remove(id);
         }
     }
     pub(super) fn rows(&self) -> &[SelectionRow] {
         &self.rows
     }
     pub(super) fn selected_target(&self, plan_item_id: &PlanItemId) -> Option<&SelectedUpdate> {
-        self.selected_targets.get(plan_item_id)
+        match self.choices.get(plan_item_id) {
+            Some(RowChoice::Update(target)) => Some(target),
+            _ => None,
+        }
     }
     pub(super) fn selected_items(&self) -> Vec<SelectedItem> {
-        self.selected_targets
+        self.choices
             .iter()
-            .map(|(plan_item_id, target)| SelectedItem::new(plan_item_id.clone(), target.clone()))
+            .map(|(id, choice)| match choice {
+                RowChoice::Update(target) => SelectedItem::new(id.clone(), target.clone()),
+                RowChoice::Remove { .. } => SelectedItem::remove(id.clone()),
+            })
             .collect()
     }
     pub(super) fn selected_count(&self) -> usize {
-        self.selected_targets.len()
+        self.choices.len()
     }
     pub(super) const fn selection_policy(&self) -> &UpdateSelectionPolicy {
         &self.selection_policy
@@ -79,6 +127,9 @@ impl InteractiveSelectionState {
         &mut self,
         plan_item_id: &PlanItemId,
     ) -> Result<(), SelectionStateError> {
+        if self.is_removed(plan_item_id) {
+            return Ok(());
+        }
         let row = self.row(plan_item_id)?;
         if row.status != SelectionRowStatus::Update {
             return Err(SelectionStateError::TargetUnavailable(
@@ -86,8 +137,10 @@ impl InteractiveSelectionState {
             ));
         }
         let package_name = row.package_name.clone();
-        self.selected_targets
-            .insert(plan_item_id.clone(), SelectedUpdate::Recommended);
+        self.choices.insert(
+            plan_item_id.clone(),
+            RowChoice::Update(SelectedUpdate::Recommended),
+        );
         self.selection_policy.set_included(package_name, true);
         Ok(())
     }
@@ -101,10 +154,13 @@ impl InteractiveSelectionState {
         &mut self,
         plan_item_id: &PlanItemId,
     ) -> Result<(), SelectionStateError> {
+        if self.is_removed(plan_item_id) {
+            return Ok(());
+        }
         let row = self.row(plan_item_id)?;
         let package_name = row.package_name.clone();
         let is_update = row.status == SelectionRowStatus::Update;
-        self.selected_targets.remove(plan_item_id);
+        self.choices.remove(plan_item_id);
         if is_update {
             self.selection_policy.set_included(package_name, false);
         }
@@ -122,6 +178,9 @@ impl InteractiveSelectionState {
         &mut self,
         plan_item_id: &PlanItemId,
     ) -> Result<(), SelectionStateError> {
+        if self.is_removed(plan_item_id) {
+            return Ok(());
+        }
         let row = self.row(plan_item_id)?;
         if !row
             .target_options
@@ -132,8 +191,10 @@ impl InteractiveSelectionState {
                 plan_item_id.to_string(),
             ));
         }
-        self.selected_targets
-            .insert(plan_item_id.clone(), SelectedUpdate::ForcePlannedCandidate);
+        self.choices.insert(
+            plan_item_id.clone(),
+            RowChoice::Update(SelectedUpdate::ForcePlannedCandidate),
+        );
         Ok(())
     }
 
@@ -149,6 +210,9 @@ impl InteractiveSelectionState {
         plan_item_id: &PlanItemId,
         target_version: VersionText,
     ) -> Result<(), SelectionStateError> {
+        if self.is_removed(plan_item_id) {
+            return Ok(());
+        }
         let row = self.row(plan_item_id)?;
         if !row.target_options.iter().any(|option| {
             matches!(
@@ -163,9 +227,9 @@ impl InteractiveSelectionState {
                 plan_item_id.to_string(),
             ));
         }
-        self.selected_targets.insert(
+        self.choices.insert(
             plan_item_id.clone(),
-            SelectedUpdate::Exact { target_version },
+            RowChoice::Update(SelectedUpdate::Exact { target_version }),
         );
         Ok(())
     }
@@ -180,6 +244,9 @@ impl InteractiveSelectionState {
         &mut self,
         plan_item_id: &PlanItemId,
     ) -> Result<(), SelectionStateError> {
+        if self.is_removed(plan_item_id) {
+            return Ok(());
+        }
         let row = self.row(plan_item_id)?;
         if !row
             .target_options
@@ -190,8 +257,10 @@ impl InteractiveSelectionState {
                 plan_item_id.to_string(),
             ));
         }
-        self.selected_targets
-            .insert(plan_item_id.clone(), SelectedUpdate::ManagerResolved);
+        self.choices.insert(
+            plan_item_id.clone(),
+            RowChoice::Update(SelectedUpdate::ManagerResolved),
+        );
         Ok(())
     }
 

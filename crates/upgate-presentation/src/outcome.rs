@@ -65,6 +65,9 @@ impl OutcomeRow {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeStatusView {
+    Removed,
+    WouldRemove,
+    RemovalFailed,
     Current,
     Update,
     Delayed,
@@ -293,6 +296,9 @@ fn version_cells(versions: &OutcomeVersionsView, theme: OutputTheme) -> (TableCe
 
 fn status_prefix(status: OutcomeStatusView, color: bool) -> String {
     match status {
+        OutcomeStatusView::Removed => "− Removed".to_owned(),
+        OutcomeStatusView::WouldRemove => "− Would remove".to_owned(),
+        OutcomeStatusView::RemovalFailed => "! Removal failed".to_owned(),
         OutcomeStatusView::Current => {
             if color {
                 format!("{} {}", "=".cyan().bold(), "Current".cyan().bold())

@@ -54,6 +54,30 @@ interactive picker. The picker shows current tools, available updates, and
 anything delayed, blocked, or failed. Choose the updates you want, then run
 them from the picker.
 
+You can also uninstall tools from the picker. The action column shows `↑` for
+update, `−` for removal, and a blank for no action:
+
+- **Space/x** selects an update or deselects the current action. When removal is
+  marked, the first press clears it to no action; a second press selects an
+  available update. Clearing a removal mark preserves remembered update preferences.
+- **d** marks a tool for removal; press it again to restore the previous choice.
+- **Enter** opens details and available actions.
+- **a/n** selects all updates or clears update selections, preserving removal marks.
+- **v** switches between showing and hiding all installed tools.
+- **C confirm** reviews selected updates and removals before applying them.
+
+Footer hints follow the focused row and its selected action. The removal hint
+is hidden while removal is marked; Space/x then offers deselect.
+
+Bulk update selection leaves removal marks intact. Updates run before removals.
+Each manager uses its normal uninstall behavior and dependency checks. For mise,
+removal uninstalls the specific displayed version and leaves mise configuration
+intact; mise may reinstall it later if it is still declared there.
+
+Mise updates and removals for different versions of the same tool must run
+separately. Pipx environments installed with a suffix or a different environment
+name are shown with a removal-unavailable explanation.
+
 For read-only checks and other workflows:
 
 ```sh
@@ -125,6 +149,12 @@ Manager mode can be:
 A selection rule controls the default package selection. `except` always means
 the opposite of `mode`. The example skips npm packages by default, except for
 `typescript`.
+
+Confirming removal also clears that package from upgate's selection exceptions.
+Preferences are saved before commands run, so this cleanup applies even if the
+uninstall fails. Removal marks are never remembered for future runs, and
+`--yolo` only selects updates. `--dry-run` previews actions without uninstalling
+tools or saving selection changes.
 
 Release age accepts seconds, minutes, hours, and days, such as `30m`, `12h`, or
 `7d`. npm accepts whole days only.

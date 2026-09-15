@@ -6,7 +6,9 @@ use upgate_domain::{
     ManagerRuleReason, PlanDiagnostics, PlanItem, PlanSelection, PolicyWarning, ScanIssue,
     ScanItem, ScanReport, SkipReason, UpdateCandidate, UpdatePlan, UpdateSeed, VersionPolicy,
 };
-use upgate_execution::{ExecutionReport, ExecutionStatus, ResolvedExecutionTarget};
+use upgate_execution::{
+    ExecutionAction, ExecutionReport, ExecutionStatus, ResolvedExecutionTarget,
+};
 
 use crate::{
     OutcomeNote, OutcomeRow, OutcomeStatusView, OutcomeTable, OutcomeVersionEmphasis,
@@ -352,7 +354,34 @@ fn execution_report_rows(report: &ExecutionReport) -> Vec<OutcomeRow> {
         .items
         .iter()
         .map(|item| {
-            let versions = match &item.target {
+            if item.action == ExecutionAction::Remove {
+                let (status, note) = match &item.status {
+                    ExecutionStatus::Succeeded {
+                        skipped_mutation: true,
+                        ..
+                    } => (OutcomeStatusView::WouldRemove, None),
+                    ExecutionStatus::Succeeded { .. } => (OutcomeStatusView::Removed, None),
+                    ExecutionStatus::Failed { detail, .. } => {
+                        (OutcomeStatusView::RemovalFailed, Some(detail.clone()))
+                    }
+                };
+                let mut row = OutcomeRow::item(
+                    status,
+                    report.manager_id.clone(),
+                    item.package_name.clone(),
+                    OutcomeVersionsView::Current {
+                        version: item.installed_version.clone(),
+                    },
+                );
+                if let Some(note) = note {
+                    row = row.with_note(OutcomeNote::normal(note));
+                }
+                return row;
+            }
+            let ExecutionAction::Update(target) = &item.action else {
+                unreachable!()
+            };
+            let versions = match target {
                 ResolvedExecutionTarget::Known(target_version) => OutcomeVersionsView::change(
                     item.installed_version.clone(),
                     target_version.clone(),

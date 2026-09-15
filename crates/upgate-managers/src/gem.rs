@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Display};
 use std::time::{Duration, SystemTime};
+use upgate_domain::RemovalTarget;
 
 use chrono::DateTime;
 use semver::Version;
@@ -363,12 +364,24 @@ fn update_inputs(
         .into_iter()
         .filter(|package| !default_names.contains(package.name.as_str()))
         .collect::<Vec<_>>();
+    let updating = candidates
+        .iter()
+        .map(|package| package.name.clone())
+        .collect::<BTreeSet<_>>();
+    let current = installed
+        .into_iter()
+        .filter(|package| !package.is_default && !updating.contains(&package.name))
+        .map(installed_tool)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|installed| ManagerUpdateInput::Current { installed })
+        .collect::<Vec<_>>();
     if candidates.is_empty() {
-        return Ok(Vec::new());
+        return Ok(current);
     }
     let ruby_runtime = ruby_runtime_version(process)?;
     let threads = effective_parallelism(max_parallel_checks_per_manager, GEM_MAX_PARALLEL_CHECKS);
-    run_ordered_parallel(candidates, threads, MANAGER_ID, |package| {
+    let mut inputs: Vec<_> = run_ordered_parallel(candidates, threads, MANAGER_ID, |package| {
         let tool = installed_tool_from_outdated(package)?;
         let lookup = lookup_release(http, env, &tool.package_name, Some(&ruby_runtime));
         let discovered_target = discovered_target_from_lookup(&lookup)
@@ -376,7 +389,9 @@ fn update_inputs(
         Ok(update_input(tool, discovered_target, lookup))
     })?
     .into_iter()
-    .collect()
+    .collect::<Result<_, GemError>>()?;
+    inputs.extend(current);
+    Ok(inputs)
 }
 
 /// Looks up `RubyGems` release metadata.
@@ -440,6 +455,29 @@ fn commands_for_execution_plan(
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
+            ExecutionCommandIntent::Remove(item) => {
+                if item.target != RemovalTarget::Version {
+                    return Err(GemError::UnsupportedCommandIntent(
+                        "invalid-removal-target".to_owned(),
+                    ));
+                }
+                let command = CommandSpec::new(
+                    "gem",
+                    [
+                        "uninstall",
+                        "--version",
+                        item.installed_version.as_str(),
+                        "--executables",
+                        "--",
+                        item.package_name.as_str(),
+                    ],
+                )
+                .mutating();
+                commands.push(ExecutionCommand {
+                    items: vec![ExecutionCommandItem::from(item)],
+                    command,
+                });
+            }
             ExecutionCommandIntent::Exact(item) => {
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
@@ -620,6 +658,7 @@ fn installed_tool(package: GemInstalledPackage) -> Result<InstalledTool, GemErro
         ToolName::new(package.name.as_str().to_owned())?,
         package.version,
     )
+    .with_removal(RemovalTarget::Version)
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::RubyGems,
         AuditPackageName::new(package.name.as_str().to_owned())?,
@@ -634,6 +673,7 @@ fn installed_tool_from_outdated(package: GemOutdatedPackage) -> Result<Installed
         ToolName::new(package.name.as_str().to_owned())?,
         package.current,
     )
+    .with_removal(RemovalTarget::Version)
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::RubyGems,
         AuditPackageName::new(package.name.as_str().to_owned())?,

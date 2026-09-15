@@ -1,6 +1,7 @@
 use std::fmt::{self, Display};
 use std::io::Read;
 use std::time::{Duration, SystemTime};
+use upgate_domain::RemovalTarget;
 
 use chrono::DateTime;
 use flate2::read::GzDecoder;
@@ -339,6 +340,28 @@ fn commands_for_execution_plan(
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
+            ExecutionCommandIntent::Remove(item) => {
+                if item.target != RemovalTarget::Package {
+                    return Err(DotnetError::UnsupportedCommandIntent(
+                        "invalid-removal-target".to_owned(),
+                    ));
+                }
+                let command = CommandSpec::new(
+                    "dotnet",
+                    [
+                        "tool",
+                        "uninstall",
+                        "--global",
+                        "--",
+                        item.package_name.as_str(),
+                    ],
+                )
+                .mutating();
+                commands.push(ExecutionCommand {
+                    items: vec![ExecutionCommandItem::from(item)],
+                    command,
+                });
+            }
             ExecutionCommandIntent::Exact(item) => {
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
@@ -467,6 +490,7 @@ fn installed_tool(package: DotnetToolPackage) -> Result<InstalledTool, DotnetErr
         ToolName::new(package.package_id.as_str().to_owned())?,
         package.version,
     )
+    .with_removal(RemovalTarget::Package)
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::NuGet,
         AuditPackageName::new(package.package_id.as_str().to_owned())?,

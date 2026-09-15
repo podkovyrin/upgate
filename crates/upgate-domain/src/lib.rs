@@ -17,7 +17,10 @@ pub use audit::{
 };
 pub use config::{ManagerConfig, ManagerMode};
 pub use error::DomainError;
-pub use manager::{InstalledTool, ManagerCapabilities, ManagerId, PackageName, ToolId, ToolName};
+pub use manager::{
+    InstalledTool, ManagerCapabilities, ManagerId, PackageName, RemovalSupport, RemovalTarget,
+    ToolId, ToolName,
+};
 pub use plan::{
     AdvisoryLatestFact, AdvisoryReleaseLookup, BlockReason, CandidateAgeFact,
     CandidateEvaluationFact, DelayReason, ExecutionSupport, ExecutionTargetKind,
@@ -34,6 +37,7 @@ pub use scan::{
     ManagerRuleReason, ManagerScanEvidenceInput, ManagerScanInput, ScanIssue, ScanItem, ScanReport,
 };
 pub use selection::{
-    PlanSelection, SelectedItem, SelectedUpdate, UpdateSelectionMode, UpdateSelectionPolicy,
+    PlanSelection, SelectedAction, SelectedItem, SelectedUpdate, UpdateSelectionMode,
+    UpdateSelectionPolicy,
 };
 pub use version::{VersionScheme, VersionText};

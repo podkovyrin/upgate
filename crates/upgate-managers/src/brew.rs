@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Display};
 use std::time::{Duration, SystemTime};
+use upgate_domain::RemovalTarget;
 
 use chrono::DateTime;
 use serde::Deserialize;
@@ -489,8 +490,20 @@ fn update_inputs(
     }
 
     let outdated = outdated_packages(process)?;
+    let outdated_ids = outdated
+        .iter()
+        .map(|package| brew_tool_id(&package.kind, &package.name))
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    let current = installed_packages(process)?
+        .iter()
+        .map(installed_tool)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|tool| !outdated_ids.contains(&tool.tool_id))
+        .map(|installed| ManagerUpdateInput::Current { installed })
+        .collect::<Vec<_>>();
     if outdated.is_empty() {
-        return Ok(Vec::new());
+        return Ok(current);
     }
     let (package_info, package_info_error) = match package_info_for_outdated(process, &outdated) {
         Ok(package_info) => (package_info, None),
@@ -503,7 +516,7 @@ fn update_inputs(
         tap_metadata(process).unwrap_or_default()
     };
 
-    run_ordered_parallel(
+    let mut inputs: Vec<_> = run_ordered_parallel(
         outdated,
         max_parallel_checks_per_manager.max(1),
         MANAGER_ID,
@@ -541,7 +554,9 @@ fn update_inputs(
         },
     )?
     .into_iter()
-    .collect()
+    .collect::<Result<_, BrewError>>()?;
+    inputs.extend(current);
+    Ok(inputs)
 }
 
 /// Creates Brew commands for a resolved execution plan.
@@ -555,6 +570,26 @@ fn commands_for_execution_plan(
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
+            ExecutionCommandIntent::Remove(item) => {
+                let kind = match item.target {
+                    RemovalTarget::BrewFormula => "--formula",
+                    RemovalTarget::BrewCask => "--cask",
+                    _ => {
+                        return Err(BrewError::UnsupportedCommandIntent(
+                            "invalid-removal-target".to_owned(),
+                        ));
+                    }
+                };
+                let command = CommandSpec::new(
+                    "brew",
+                    ["uninstall", kind, "--", item.package_name.as_str()],
+                )
+                .mutating();
+                commands.push(ExecutionCommand {
+                    items: vec![ExecutionCommandItem::from(item)],
+                    command,
+                });
+            }
             ExecutionCommandIntent::NativeSelected(item) => {
                 commands.push(scoped_upgrade_command(item)?);
             }
@@ -949,7 +984,11 @@ fn installed_tool(package: &BrewInstalledPackage) -> Result<InstalledTool, BrewE
         package.name.clone(),
         ToolName::new(package.name.as_str())?,
         package.version.clone(),
-    );
+    )
+    .with_removal(match package.kind {
+        BrewPackageKind::Formula => RemovalTarget::BrewFormula,
+        BrewPackageKind::Cask => RemovalTarget::BrewCask,
+    });
     if let Some(subject) = brew_audit_subject(package.repo_url.as_deref()) {
         Ok(tool.with_audit_subject(subject))
     } else {
@@ -967,7 +1006,11 @@ fn installed_tool_for_outdated(
         package.name.clone(),
         ToolName::new(package.name.as_str())?,
         package.installed.clone(),
-    );
+    )
+    .with_removal(match package.kind {
+        BrewPackageKind::Formula => RemovalTarget::BrewFormula,
+        BrewPackageKind::Cask => RemovalTarget::BrewCask,
+    });
     let repo_url = package
         .repo_url
         .as_deref()

@@ -3,6 +3,7 @@ use std::fmt::{self, Display};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
+use upgate_domain::RemovalTarget;
 
 use chrono::DateTime;
 use pep440_rs::Version as Pep440Version;
@@ -451,6 +452,22 @@ fn commands_for_execution_plan(
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
+            ExecutionCommandIntent::Remove(item) => {
+                if item.target != RemovalTarget::Package {
+                    return Err(UvError::UnsupportedCommandIntent(
+                        "invalid-removal-target".to_owned(),
+                    ));
+                }
+                let command = CommandSpec::new(
+                    "uv",
+                    ["tool", "uninstall", "--", item.package_name.as_str()],
+                )
+                .mutating();
+                commands.push(ExecutionCommand {
+                    items: vec![ExecutionCommandItem::from(item)],
+                    command,
+                });
+            }
             ExecutionCommandIntent::ResolverNative(item) => {
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
@@ -615,6 +632,7 @@ fn installed_tool(tool: &UvTool) -> Result<InstalledTool, UvError> {
         ToolName::new(tool.name.as_str())?,
         tool.current.clone(),
     )
+    .with_removal(RemovalTarget::Package)
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Pypi,
         AuditPackageName::new(tool.name.as_str())?,

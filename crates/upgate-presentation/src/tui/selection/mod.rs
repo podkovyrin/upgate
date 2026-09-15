@@ -44,6 +44,7 @@ pub enum SelectionInput {
     NextTab,
     PreviousTab,
     ToggleCurrent,
+    ToggleRemoval,
     SelectVisible,
     SelectNoneVisible,
     ToggleViewAll,

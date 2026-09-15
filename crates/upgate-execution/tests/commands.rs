@@ -41,9 +41,9 @@ fn execution_command(id: &str, package: &str, program: &str) -> ExecutionCommand
             plan_item_id: PlanItemId::new(id).expect("valid plan item id"),
             package_name: PackageName::new(package).expect("valid package"),
             installed_version: VersionText::new("1.0.0").expect("valid installed version"),
-            target: ResolvedExecutionTarget::Known(
+            action: upgate_execution::ExecutionAction::Update(ResolvedExecutionTarget::Known(
                 VersionText::new("1.1.0").expect("valid target version"),
-            ),
+            )),
         }],
         command: CommandSpec::new(program, std::iter::empty::<&str>()).mutating(),
     }
@@ -723,4 +723,59 @@ fn release_lookup(version: &str) -> ReleaseLookupResult {
 
 fn plan(items: Vec<PlanItem>) -> UpdatePlan {
     UpdatePlan::new(ManagerId::new("pnpm").expect("valid manager"), items).expect("valid plan")
+}
+
+#[test]
+fn removal_is_independent_of_update_eligibility_and_disables_global_updates() {
+    use upgate_domain::RemovalTarget;
+    let plan = plan(vec![
+        update_item("pnpm:update", "update", ExecutionSupport::native_only()),
+        PlanItem::Current {
+            id: PlanItemId::new("pnpm:remove").unwrap(),
+            installed: installed_tool("remove").with_removal(RemovalTarget::Package),
+        },
+    ]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![
+            SelectedItem::remove(PlanItemId::new("pnpm:remove").unwrap()),
+            SelectedItem::recommended(PlanItemId::new("pnpm:update").unwrap()),
+        ],
+        UpdateSelectionPolicy::default(),
+    )
+    .unwrap();
+    let resolved = resolve_selection_for_execution(
+        &plan,
+        &selection,
+        ManagerCapabilities::new().with_native_global_update(true),
+        VersionPolicy::None,
+    )
+    .unwrap();
+    assert!(matches!(resolved.intents.as_slice(), [
+        ExecutionCommandIntent::NativeSelected(_), ExecutionCommandIntent::Remove(item)
+    ] if item.package_name.as_str() == "remove" && item.target == RemovalTarget::Package));
+}
+
+#[test]
+fn removal_rejects_an_item_without_a_supported_installed_target() {
+    let plan = plan(vec![update_item(
+        "pnpm:alpha",
+        "alpha",
+        ExecutionSupport::exact_only(),
+    )]);
+    let selection = PlanSelection::new(
+        &plan,
+        vec![SelectedItem::remove(PlanItemId::new("pnpm:alpha").unwrap())],
+        UpdateSelectionPolicy::default(),
+    )
+    .unwrap();
+    assert!(
+        resolve_selection_for_execution(
+            &plan,
+            &selection,
+            ManagerCapabilities::new(),
+            VersionPolicy::None
+        )
+        .is_err()
+    );
 }

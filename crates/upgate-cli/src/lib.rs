@@ -85,7 +85,7 @@ struct Cli {
     /// Apply selected updates without opening the interactive picker.
     #[arg(long, visible_aliases = ["dangerously-skip-confirmation", "no-approval"], global = true)]
     yolo: bool,
-    /// Preview apply without running install or upgrade commands.
+    /// Preview apply without running install, upgrade, or removal commands.
     #[arg(long, global = true)]
     dry_run: bool,
 }
@@ -96,7 +96,7 @@ enum CliCommand {
     Scan,
     /// Show available updates without applying them.
     Plan,
-    /// Update selected tools.
+    /// Update selected tools or remove them interactively.
     Apply,
 }
 

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Display};
 use std::time::{Duration, SystemTime};
+use upgate_domain::RemovalTarget;
 
 use chrono::DateTime;
 use serde::Deserialize;
@@ -296,20 +297,31 @@ fn update_inputs(
     version_policy: VersionPolicy,
     max_parallel_checks_per_manager: usize,
 ) -> Result<Vec<ManagerUpdateInput>, PnpmError> {
+    let all_installed = installed_global(process)?;
     let installed = match version_policy {
         VersionPolicy::None => outdated_global(process)?
             .into_iter()
             .map(installed_tool_from_outdated)
             .collect::<Result<Vec<_>, _>>()?,
-        VersionPolicy::Stable | VersionPolicy::SameTrack => installed_global(process)?,
+        VersionPolicy::Stable | VersionPolicy::SameTrack => all_installed.clone(),
     };
+    let updating = installed
+        .iter()
+        .map(|tool| tool.tool_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let current = all_installed
+        .into_iter()
+        .filter(|tool| !updating.contains(&tool.tool_id))
+        .map(|installed| ManagerUpdateInput::Current { installed });
     let threads = effective_parallelism(max_parallel_checks_per_manager, PNPM_MAX_PARALLEL_CHECKS);
-    run_ordered_parallel(installed, threads, MANAGER_ID, |tool| {
+    let mut inputs: Vec<_> = run_ordered_parallel(installed, threads, MANAGER_ID, |tool| {
         let lookup = lookup_release(process, &tool.package_name)?;
         Ok(update_input(tool, lookup))
     })?
     .into_iter()
-    .collect()
+    .collect::<Result<_, PnpmError>>()?;
+    inputs.extend(current);
+    Ok(inputs)
 }
 
 /// Looks up pnpm registry release metadata.
@@ -366,6 +378,20 @@ fn exact_commands_for_execution_plan(
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
+            ExecutionCommandIntent::Remove(item) => {
+                if item.target != RemovalTarget::Package {
+                    return Err(PnpmError::UnsupportedCommandIntent(
+                        "invalid-removal-target".to_owned(),
+                    ));
+                }
+                let command =
+                    CommandSpec::new("pnpm", ["remove", "-g", "--", item.package_name.as_str()])
+                        .mutating();
+                commands.push(ExecutionCommand {
+                    items: vec![ExecutionCommandItem::from(item)],
+                    command,
+                });
+            }
             ExecutionCommandIntent::Exact(item) => {
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
@@ -413,6 +439,7 @@ fn installed_tool(package: PnpmInstalledPackage) -> Result<InstalledTool, PnpmEr
         ToolName::new(package.name.as_str())?,
         package.version,
     )
+    .with_removal(RemovalTarget::Package)
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Npm,
         AuditPackageName::new(package.name.as_str())?,
@@ -427,6 +454,7 @@ fn installed_tool_from_outdated(package: PnpmOutdatedPackage) -> Result<Installe
         ToolName::new(package.name.as_str())?,
         package.current,
     )
+    .with_removal(RemovalTarget::Package)
     .with_audit_subject(AuditSubject::new(
         OsvEcosystem::Npm,
         AuditPackageName::new(package.name.as_str())?,

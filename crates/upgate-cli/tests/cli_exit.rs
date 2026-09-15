@@ -27,6 +27,9 @@ fn binary_plan_success_exits_zero() {
         "npm",
         r#"#!/bin/sh
 case "$*" in
+  "ls -g --depth=0 --json")
+    printf '%s\n' '{"dependencies":{"alpha-ready":{"version":"1.0.0"}}}'
+    ;;
   "outdated -g --json")
     printf '%s\n' '{"alpha-ready":{"current":"1.0.0"}}'
     ;;
@@ -98,6 +101,9 @@ fn binary_apply_command_failure_exits_one() {
         "npm",
         r#"#!/bin/sh
 case "$*" in
+  "ls -g --depth=0 --json")
+    printf '%s\n' '{"dependencies":{"alpha-ready":{"version":"1.0.0"}}}'
+    ;;
   "outdated -g --json")
     printf '%s\n' '{"alpha-ready":{"current":"1.0.0"}}'
     ;;
@@ -134,6 +140,9 @@ fn binary_apply_notice_gate_does_not_pollute_stdout_when_piped() {
         "npm",
         r#"#!/bin/sh
 case "$*" in
+  "ls -g --depth=0 --json")
+    printf '%s\n' '{"dependencies":{"alpha-ready":{"version":"1.0.0"}}}'
+    ;;
   "outdated -g --json")
     printf '%s\n' '{"alpha-ready":{"current":"1.0.0"}}'
     ;;
@@ -175,6 +184,9 @@ fn binary_plan_trace_commands_prints_commands_to_stderr() {
         "npm",
         r#"#!/bin/sh
 case "$*" in
+  "ls -g --depth=0 --json")
+    printf '%s\n' '{"dependencies":{"alpha-ready":{"version":"1.0.0"}}}'
+    ;;
   "outdated -g --json")
     printf '%s\n' '{"alpha-ready":{"current":"1.0.0"}}'
     ;;
@@ -204,6 +216,9 @@ fn binary_plan_log_commands_prints_session_path() {
         "npm",
         r#"#!/bin/sh
 case "$*" in
+  "ls -g --depth=0 --json")
+    printf '%s\n' '{"dependencies":{"alpha-ready":{"version":"1.0.0"}}}'
+    ;;
   "outdated -g --json")
     printf '%s\n' '{"alpha-ready":{"current":"1.0.0"}}'
     ;;
@@ -264,6 +279,9 @@ fn binary_apply_dry_run_skips_mutating_command() {
         &format!(
             r#"#!/bin/sh
 case "$*" in
+  "ls -g --depth=0 --json")
+    printf '%s\n' '{{"dependencies":{{"alpha-ready":{{"version":"1.0.0"}}}}}}'
+    ;;
   "outdated -g --json")
     printf '%s\n' '{{"alpha-ready":{{"current":"1.0.0"}}}}'
     ;;

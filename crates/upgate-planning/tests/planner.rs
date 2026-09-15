@@ -84,8 +84,8 @@ fn default_batch_selection_include_mode_excludes_exceptions() {
         "pnpm:alpha-ready"
     );
     assert_eq!(
-        selection.selected_items[0].selected_update,
-        SelectedUpdate::Recommended
+        selection.selected_items[0].action,
+        upgate_domain::SelectedAction::Update(SelectedUpdate::Recommended)
     );
 }
 
@@ -141,8 +141,8 @@ fn default_batch_selection_skip_mode_includes_only_exceptions() {
         "pnpm:exception-pkg"
     );
     assert_eq!(
-        selection.selected_items[0].selected_update,
-        SelectedUpdate::Recommended
+        selection.selected_items[0].action,
+        upgate_domain::SelectedAction::Update(SelectedUpdate::Recommended)
     );
 }
 
@@ -157,4 +157,53 @@ fn default_batch_selection_skip_mode_ignores_stale_exceptions() {
 
     assert!(selection.selected_items.is_empty());
     assert_eq!(selection.selection_policy, policy);
+}
+
+#[test]
+fn installed_removal_scope_survives_planning_without_becoming_a_batch_action() {
+    use upgate_domain::{RemovalSupport, RemovalTarget, SelectedAction};
+    let package = PackageName::new("shared").unwrap();
+    let mut update = seed("update", &package);
+    update.installed = update.installed.with_removal(RemovalTarget::BrewCask);
+    let current = seed("current", &package)
+        .installed
+        .with_removal(RemovalTarget::Version);
+    let failed = seed("failed", &package)
+        .installed
+        .with_removal(RemovalTarget::Package);
+    let plan = finalize_plan_from_inputs(
+        manager_id(),
+        vec![
+            ManagerUpdateInput::Seed(update),
+            ManagerUpdateInput::Current { installed: current },
+            ManagerUpdateInput::ResolverError {
+                installed: failed,
+                message: "lookup unavailable".into(),
+            },
+        ],
+        PlanningSettings {
+            policy: VersionPolicy::None,
+            now: std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(20),
+            min_release_age: std::time::Duration::ZERO,
+        },
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        plan.items
+            .iter()
+            .map(PlanItem::removal_support)
+            .collect::<Vec<_>>(),
+        vec![
+            &RemovalSupport::Supported(RemovalTarget::BrewCask),
+            &RemovalSupport::Supported(RemovalTarget::Version),
+            &RemovalSupport::Supported(RemovalTarget::Package),
+        ]
+    );
+    let selection = default_batch_selection(&plan, &UpdateSelectionPolicy::default()).unwrap();
+    assert_eq!(selection.selected_items.len(), 1);
+    assert!(matches!(
+        selection.selected_items[0].action,
+        SelectedAction::Update(_)
+    ));
 }

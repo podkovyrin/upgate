@@ -8,9 +8,8 @@ use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use unicode_width::UnicodeWidthStr;
 
 use super::render::{
-    PICKER_FOOTER_KEYS, TAB_KEY_LABEL, selection_footer_bindings, selection_footer_inputs,
-    selection_tab_titles, selection_table_visible_height, target_picker_height,
-    target_picker_width,
+    TAB_KEY_LABEL, picker_actions, selection_footer, selection_tab_titles,
+    selection_table_visible_height, target_picker_height, target_picker_width,
 };
 use super::screen::{InteractiveSelectionScreen, TargetPickerState};
 use super::{MAX_DRAINED_INPUT_EVENTS, SelectionControl, SelectionInput};
@@ -72,7 +71,7 @@ fn handle_selection_drained_event(
         return Ok(SelectionControl::Continue);
     }
 
-    if is_ignored_mouse_event(event) {
+    if is_ignored_mouse_event(event) && !screen.confirmation_dialog_open() {
         return Ok(SelectionControl::Continue);
     }
 
@@ -167,6 +166,18 @@ fn handle_confirmation_dialog_event(
     event: &Event,
     screen: &mut InteractiveSelectionScreen,
 ) -> SelectionControl {
+    if let Event::Mouse(mouse) = event {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                screen.confirmation_scroll = screen.confirmation_scroll.saturating_sub(1);
+            }
+            MouseEventKind::ScrollDown => {
+                screen.confirmation_scroll = screen.confirmation_scroll.saturating_add(1);
+            }
+            _ => {}
+        }
+        return SelectionControl::Continue;
+    }
     let Event::Key(key) = event else {
         return SelectionControl::Continue;
     };
@@ -183,7 +194,15 @@ fn handle_confirmation_dialog_event(
             screen.close_confirmation_dialog();
             SelectionControl::Continue
         }
-        KeyCode::Char('C') | KeyCode::Enter => SelectionControl::Confirm,
+        KeyCode::Char('C') => SelectionControl::Confirm,
+        KeyCode::Up | KeyCode::Char('k') => {
+            screen.confirmation_scroll = screen.confirmation_scroll.saturating_sub(1);
+            SelectionControl::Continue
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            screen.confirmation_scroll = screen.confirmation_scroll.saturating_add(1);
+            SelectionControl::Continue
+        }
         _ => SelectionControl::Continue,
     }
 }
@@ -207,7 +226,8 @@ fn handle_selection_mouse(
             if rect_contains(app_frame.header, mouse.column, mouse.row) {
                 handle_selection_tab_click(screen, mouse.column, app_frame.header)?;
             } else if rect_contains(app_frame.footer, mouse.column, mouse.row) {
-                if let Some(input) = selection_footer_input(mouse.column, app_frame.footer) {
+                if let Some(input) = selection_footer_input(screen, mouse.column, app_frame.footer)
+                {
                     return screen.handle_input(input);
                 }
             } else if rect_contains(selection_body.main, mouse.column, mouse.row)
@@ -243,7 +263,7 @@ fn handle_target_picker_mouse(
         return Ok(SelectionControl::Continue);
     };
     let row = screen.row(picker.visible_row);
-    let Some(inner) = target_picker_inner_rect(area, row.target_options.len()) else {
+    let Some(inner) = target_picker_inner_rect(area, row.target_options.len() + 1) else {
         return Ok(SelectionControl::Continue);
     };
     if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
@@ -253,12 +273,14 @@ fn handle_target_picker_mouse(
         return screen.handle_input(SelectionInput::PickerCancel);
     }
 
-    let [_, _, _, _, list_area, footer_area] = Layout::vertical([
+    let [_, _, _, _, _, list_area, _, footer_area] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Fill(1),
+        Constraint::Length(4),
         Constraint::Length(1),
     ])
     .areas(inner);
@@ -273,14 +295,9 @@ fn handle_target_picker_mouse(
         return Ok(SelectionControl::Continue);
     }
 
-    let Some(hit) = key_footer_hit(PICKER_FOOTER_KEYS, mouse.column - footer_area.x) else {
+    let entries = picker_actions(screen, footer_area.width);
+    let Some(input) = footer_input(&entries, mouse.column - footer_area.x) else {
         return Ok(SelectionControl::Continue);
-    };
-    let input = match hit {
-        1 => SelectionInput::RecommendedTarget,
-        2 => SelectionInput::PickerCancel,
-        3 => SelectionInput::PickerConfirm,
-        _ => SelectionInput::Ignore,
     };
     screen.handle_input(input)
 }
@@ -294,7 +311,7 @@ fn target_picker_option_index_at(
     if area.is_empty() || mouse_row < area.y || mouse_row >= area.bottom() {
         return None;
     }
-    let option_count = row.target_options.len();
+    let option_count = row.target_options.len() + 1;
     let visible_height = usize::from(area.height);
     let offset = table_offset_for_selected(option_count, picker.cursor, visible_height);
     let row_in_view = usize::from(mouse_row - area.y);
@@ -373,12 +390,37 @@ fn handle_selection_tab_click(
     Ok(())
 }
 
-fn selection_footer_input(column: u16, area: Rect) -> Option<SelectionInput> {
-    let bindings = selection_footer_bindings(area.width);
-    selection_footer_inputs(area.width)
-        .get(key_footer_hit(bindings, column - area.x)?)
-        .copied()
-        .flatten()
+fn selection_footer_input(
+    screen: &InteractiveSelectionScreen,
+    column: u16,
+    area: Rect,
+) -> Option<SelectionInput> {
+    footer_input(&selection_footer(screen, area.width), column - area.x)
+}
+
+fn footer_input(
+    entries: &[(crate::tui::components::KeyBinding<'_>, SelectionInput)],
+    column: u16,
+) -> Option<SelectionInput> {
+    let bindings = entries
+        .iter()
+        .map(|(binding, _)| crate::tui::components::KeyBinding {
+            key: binding.key,
+            label: binding.label,
+        })
+        .collect::<Vec<_>>();
+    let hit = key_footer_hit(&bindings, column)?;
+    if bindings[hit].key == "a/n" {
+        let prefix = crate::tui::components::key_footer(&bindings[..hit], &TuiTheme::current())
+            .width()
+            + usize::from(hit > 0);
+        return match usize::from(column).saturating_sub(prefix) {
+            1 | 6..=8 => Some(SelectionInput::SelectVisible),
+            3 | 10..=13 => Some(SelectionInput::SelectNoneVisible),
+            _ => None,
+        };
+    }
+    Some(entries[hit].1)
 }
 
 const fn selection_checkbox_hit(area: Rect, column: u16) -> bool {
@@ -390,7 +432,7 @@ fn selection_row_index_at(
     area: Rect,
     row: u16,
 ) -> Option<usize> {
-    if area.height < 2 || row <= area.y || row >= area.bottom() {
+    if area.height < 3 || row <= area.y || row >= area.bottom().saturating_sub(1) {
         return None;
     }
     let rows = screen.visible_row_refs();
@@ -455,6 +497,7 @@ fn selection_input_from_event(event: &Event, target_picker_open: bool) -> Select
         KeyCode::Tab => SelectionInput::NextTab,
         KeyCode::BackTab => SelectionInput::PreviousTab,
         KeyCode::Char(' ' | 'x' | 'X') => SelectionInput::ToggleCurrent,
+        KeyCode::Char('d' | 'D') => SelectionInput::ToggleRemoval,
         KeyCode::Char('a' | 'A') => SelectionInput::SelectVisible,
         KeyCode::Char('n' | 'N') => SelectionInput::SelectNoneVisible,
         KeyCode::Char('v' | 'V') => SelectionInput::ToggleViewAll,
@@ -486,5 +529,143 @@ fn selection_input_from_event(event: &Event, target_picker_open: bool) -> Select
         }
     } else {
         input
+    }
+}
+
+#[cfg(test)]
+mod removal_input_tests {
+    use super::*;
+    use upgate_domain::{
+        InstalledTool, ManagerId, PackageName, PlanItem, PlanItemId, RemovalTarget, SelectedAction,
+        ToolId, ToolName, UpdatePlan, UpdateSelectionPolicy, VersionPolicy, VersionText,
+    };
+
+    #[test]
+    fn clicking_status_row_does_not_change_an_offscreen_package() {
+        let manager = ManagerId::new("npm").unwrap();
+        let rows = (0..40)
+            .map(|index| crate::SelectionRow {
+                plan_item_id: PlanItemId::new(format!("npm:tool-{index}")).unwrap(),
+                package_name: PackageName::new(format!("tool-{index}")).unwrap(),
+                installed_version: VersionText::new("1.0.0").unwrap(),
+                target_version: Some(VersionText::new("2.0.0").unwrap()),
+                status: crate::SelectionRowStatus::Update,
+                default_visibility: crate::SelectionRowVisibility::Visible,
+                notes: Vec::new(),
+                initially_selected: true,
+                target_options: Vec::new(),
+                removal: upgate_domain::RemovalSupport::Supported(RemovalTarget::Package),
+            })
+            .collect();
+        let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![manager.clone()]);
+        screen.apply_planning_event(
+            super::super::InteractiveSelectionPlanningEvent::ManagerReady {
+                view: crate::SelectionView {
+                    manager_id: manager,
+                    rows,
+                },
+                selection_policy: UpdateSelectionPolicy::include_all(),
+                version_policy: VersionPolicy::None,
+            },
+        );
+        let before = screen.selection_drafts();
+        let area = Rect::new(0, 0, 100, 20);
+        let body = app_frame(area).unwrap().body;
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
+        terminal
+            .draw(|frame| super::super::render::draw_selection(frame, &mut screen))
+            .unwrap();
+        let footer = app_frame(area).unwrap().footer;
+        let text = (footer.x..footer.right())
+            .map(|x| terminal.backend().buffer()[(x, footer.y)].symbol())
+            .collect::<String>();
+        let pair_start = u16::try_from(text.find(" a/n ").unwrap()).unwrap() + footer.x;
+        for (offset, count) in [(3, 0), (6, 40), (10, 0), (1, 40)] {
+            let event = Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: pair_start + offset,
+                row: footer.y,
+                modifiers: KeyModifiers::NONE,
+            });
+            handle_selection_event(&event, &mut screen, area).unwrap();
+            assert_eq!(screen.selection_drafts()[0].selected_items.len(), count);
+        }
+        for column in [body.x, body.x + 8] {
+            let event = Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row: body.bottom() - 1,
+                modifiers: KeyModifiers::NONE,
+            });
+            handle_selection_event(&event, &mut screen, area).unwrap();
+        }
+        assert_eq!(screen.selection_drafts(), before);
+        assert!(!screen.target_picker_open());
+    }
+
+    #[test]
+    fn mouse_can_remove_current_item_from_details_and_enter_does_not_apply() {
+        let manager = ManagerId::new("npm").unwrap();
+        let plan = UpdatePlan::new(
+            manager.clone(),
+            vec![PlanItem::Current {
+                id: PlanItemId::new("npm:unused").unwrap(),
+                installed: InstalledTool::new(
+                    manager.clone(),
+                    ToolId::new("unused").unwrap(),
+                    PackageName::new("unused").unwrap(),
+                    ToolName::new("unused").unwrap(),
+                    VersionText::new("1.0.0").unwrap(),
+                )
+                .with_removal(RemovalTarget::Package),
+            }],
+        )
+        .unwrap();
+        let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![manager]);
+        screen.apply_planning_event(
+            super::super::InteractiveSelectionPlanningEvent::ManagerReady {
+                view: crate::selection_view(&plan, &UpdateSelectionPolicy::include_all()),
+                selection_policy: UpdateSelectionPolicy::include_all(),
+                version_policy: VersionPolicy::None,
+            },
+        );
+        screen.apply_planning_event(super::super::InteractiveSelectionPlanningEvent::Finished);
+        screen.handle_input(SelectionInput::ToggleViewAll).unwrap();
+        screen.handle_input(SelectionInput::Down).unwrap();
+        screen
+            .handle_input(SelectionInput::OpenTargetPicker)
+            .unwrap();
+        let area = Rect::new(0, 0, 100, 30);
+        let outer = app_frame(area).unwrap().outer;
+        let inner = target_picker_inner_rect(outer, 1).unwrap();
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: inner.x + 5,
+            row: inner.y + 5,
+            modifiers: KeyModifiers::NONE,
+        };
+        handle_selection_event(&Event::Mouse(mouse), &mut screen, area).unwrap();
+        assert_eq!(
+            screen.selection_drafts()[0].selected_items[0].action,
+            SelectedAction::Remove
+        );
+        screen.handle_input(SelectionInput::Confirm).unwrap();
+        let enter = Event::Key(crossterm::event::KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ));
+        assert_eq!(
+            handle_selection_event(&enter, &mut screen, area).unwrap(),
+            SelectionControl::Continue
+        );
+        let apply = Event::Key(crossterm::event::KeyEvent::new(
+            KeyCode::Char('C'),
+            KeyModifiers::SHIFT,
+        ));
+        assert_eq!(
+            handle_selection_event(&apply, &mut screen, area).unwrap(),
+            SelectionControl::Confirm
+        );
     }
 }

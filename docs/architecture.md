@@ -14,8 +14,9 @@ The supported workflows are:
 - `scan`: list installed tools. `scan --verbose` may include release-age and
   audit notes.
 - `plan`: show what would update without mutating the system.
-- `apply`: apply selected updates. Interactive apply is the default; `--yolo`
-  runs the batch default selection non-interactively.
+- `apply`: apply selected updates and explicitly selected removals. Interactive
+  apply is the default; `--yolo` runs the default update selection and never
+  selects removals.
 
 Built-in managers are `brew`, `bun`, `cargo`, `npm`, `mise`, `pipx`, `pnpm`,
 `uv`, `go`, `gem`, and `dotnet`.
@@ -63,11 +64,25 @@ does not create decisions. Selection produces a typed `PlanSelection`.
 Execution resolves that selection into command intents, and managers turn those
 intents into concrete commands.
 
+Plan inputs cover installed tools, including tools without an available update.
+Managers retain their discovery identity and explicit removal support independently
+of update lookup, policy, and audit facts. A missing update target does not imply
+that an installed tool cannot be removed. Uncertain identities and protected
+manager-owned installations carry an unsupported-removal reason.
+
+Each selected item has one action: update (with its selected target) or remove.
+Removal is a choice for this run only. It is not an update target, policy bypass,
+or a persistent selection mode. Presentation only offers actions supported by
+the immutable plan; execution validates the chosen action again.
+
 Apply reports selected items from command exit status; it does not perform a
 post-mutation rescan. Managers must therefore give independently fallible item
 updates separate commands. A command may map to several selected items only
 when it is one manager-level operation whose exit status applies to the whole
-selection.
+selection. The same rule applies to removals, whose result identifies the action
+without inventing a target version. All selected updates run before selected
+removals across managers. A manager with selected removals uses item-specific
+update commands instead of a manager-wide update shortcut.
 
 Managers may pass `min_release_age` to native resolvers when the resolver owns
 target selection, such as uv or Mise. Managers must not perform clock-aware
@@ -153,6 +168,13 @@ except = ["typescript"]
 `except` always means the opposite of `mode`. Omitted selection resolves to
 `mode = "include", except = []` and is omitted when persisted.
 
+Interactive confirmation persists update preferences at the existing point before
+execution. Confirmed removals clear the package from that manager's `except`
+set in either selection mode, even if the later uninstall fails. Merely marking
+or unmarking removal does not change the remembered update preference. Dry-run
+does not persist preference changes or removal cleanup. Config writing remains
+CLI-owned; it is not transactional with package-manager execution.
+
 Npm `min_release_age` must be a whole number of days. Execution converts it to
 an absolute `--before` cutoff for each exact global install.
 
@@ -163,6 +185,52 @@ states are `current`, `update`, `delayed`, `blocked`, `skipped`, and `error`.
 Normal output should explain what will happen and why an update is withheld.
 Verbose output may add release evidence, policy details, audit details, and
 command diagnostics.
+
+The interactive action column uses `↑` for update, `−` for removal, and a blank
+for no action. Removal rows also show a textual removal target. Space toggles
+updates; when removal is marked, Space clears it to no action without changing
+the remembered update preference. A second Space selects an available update.
+`d` toggles removal and restores the previous choice when undone, and
+Enter opens item details/actions. Bulk update selection preserves removal marks.
+The normal view stays focused on updates; `v` shows all installed tools, and
+marked rows remain visible in either view. Confirmation lists removal identities
+and scopes as well as separate update/removal counts. Footer hints follow the
+focused row: Space/x says update or deselect, removal is offered only when
+available and not already marked, and `v` alternates show all/hide all.
+`C confirm` remains the primary action; narrower terminals omit secondary hints
+according to their rendered width. Combined a/n all/none hints retain separate
+mouse targets for each operation.
+
+## Removal Semantics
+
+Managers own native uninstall command construction and retain normal dependency
+checks. Removal does not add force, recursive cleanup, dependency removal, or
+application-data cleanup flags. Manager mode `plan` remains non-mutating.
+
+Removal scope follows the installed item shown to the user:
+
+- Brew: the identified formula or cask, using normal uninstall behavior.
+- Bun, npm, pnpm: the global package.
+- Cargo: the installed package and its binaries.
+- pipx and uv: the installed tool environment.
+- .NET: the global tool package.
+- Gem: the displayed installed version; default gems are not removable.
+- Go: the exact discovered binary path, with no recursive deletion.
+- mise: the displayed concrete `tool@version` using `mise uninstall`. Upgate
+  does not edit mise configuration or select all installed versions implicitly.
+
+Mise rejects selecting an update and a removal for different versions of the
+same tool in one run: its selected upgrade command operates on configured tool
+requests rather than a single installed version. Ambiguous upgrade sources are
+reported as update errors while retaining known installed items for removal.
+Pipx keeps environment identities distinct; suffixed or renamed environments
+show an unsupported-removal reason instead of targeting the underlying package's
+ordinary environment.
+
+Only upgate's own selection preferences are cleaned at confirmation. Native
+package-manager behavior determines changes to manager-owned metadata. In
+particular, a mise config entry can remain and later cause mise to reinstall
+the tool.
 
 ## Testing
 

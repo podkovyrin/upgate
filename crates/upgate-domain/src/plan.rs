@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     DomainError, InstalledTool, ManagerId, PackageName, PolicyWarning, ReleaseLookupError,
-    ReleaseLookupResult, TargetAgeLookupResult, ToolId, VersionScheme, VersionText,
+    ReleaseLookupResult, RemovalSupport, TargetAgeLookupResult, ToolId, VersionScheme, VersionText,
     audit::AuditLookupResult,
 };
 
@@ -176,6 +176,9 @@ pub struct AdvisoryReleaseLookup {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManagerUpdateInput {
+    Current {
+        installed: InstalledTool,
+    },
     Seed(UpdateSeed),
     Skipped {
         installed: InstalledTool,
@@ -194,6 +197,7 @@ pub enum ManagerUpdateInput {
 /// surrounding `PlanItem` determines whether it is currently eligible,
 /// delayed, blocked, or selectable only as a forced action.
 pub struct UpdateCandidate {
+    pub removal: RemovalSupport,
     pub tool_id: ToolId,
     pub package_name: PackageName,
     pub installed_version: VersionText,
@@ -215,6 +219,7 @@ impl UpdateCandidate {
         execution_support: ExecutionSupport,
     ) -> Self {
         Self {
+            removal: RemovalSupport::default(),
             tool_id,
             package_name,
             installed_version,
@@ -225,6 +230,10 @@ impl UpdateCandidate {
             policy_warnings: Vec::new(),
             diagnostics: PlanDiagnostics::default(),
         }
+    }
+    pub fn with_removal(mut self, removal: RemovalSupport) -> Self {
+        self.removal = removal;
+        self
     }
     pub const fn with_execution_target_kind(
         mut self,
@@ -453,6 +462,27 @@ pub enum PlanItem {
 }
 
 impl PlanItem {
+    pub const fn removal_support(&self) -> &RemovalSupport {
+        match self {
+            Self::Update { candidate, .. } | Self::Delayed { candidate, .. } => &candidate.removal,
+            Self::Blocked { seed, .. } => &seed.installed.removal,
+            Self::Current { installed, .. }
+            | Self::Skipped { installed, .. }
+            | Self::ResolverError { installed, .. } => &installed.removal,
+        }
+    }
+    pub const fn installed_version(&self) -> &VersionText {
+        match self {
+            Self::Update { candidate, .. } | Self::Delayed { candidate, .. } => {
+                &candidate.installed_version
+            }
+            Self::Blocked { seed, .. } => &seed.installed.installed_version,
+            Self::Current { installed, .. }
+            | Self::Skipped { installed, .. }
+            | Self::ResolverError { installed, .. } => &installed.installed_version,
+        }
+    }
+
     pub const fn id(&self) -> &PlanItemId {
         match self {
             Self::Update { id, .. }

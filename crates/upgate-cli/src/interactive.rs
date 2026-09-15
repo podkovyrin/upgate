@@ -4,12 +4,14 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 
 use upgate_audit::AuditService;
-use upgate_domain::{ManagerConfig, ManagerId, PlanSelection, UpdatePlan};
+use upgate_domain::{ManagerConfig, ManagerId, PlanSelection, SelectedAction, UpdatePlan};
 use upgate_execution::{
-    ExecutionCommand, ExecutionReport, ResolvedExecutionPlan, execute_commands,
+    ExecutionAction, ExecutionCommand, ExecutionReport, ResolvedExecutionPlan, execute_commands,
     resolve_selection_for_execution,
 };
-use upgate_infra::{CommandSpec, Env, HttpClient, ProcessRunner, run_ordered_parallel_stoppable};
+use upgate_infra::{
+    CommandSpec, Env, HttpClient, MutationMode, ProcessRunner, run_ordered_parallel_stoppable,
+};
 use upgate_presentation::tui::{
     InteractiveManagerSelectionDraft, InteractiveSelectionOutcome,
     InteractiveSelectionPlanningEvent, run_interactive_selection_with_planning_events,
@@ -23,8 +25,8 @@ use crate::config::ConfigFile;
 use crate::registry::{configured_manager, ensure_known_manager};
 use crate::snapshot::write_apply_snapshot_for_selections;
 use crate::{
-    AppError, build_manager_plan, manager_executable_is_available, manager_mode_allows_run,
-    map_manager_error, selected_manager_ids,
+    AppError, build_manager_plan, execution_report_has_failures, manager_executable_is_available,
+    manager_mode_allows_run, map_manager_error, selected_manager_ids,
 };
 
 #[derive(Clone)]
@@ -459,6 +461,14 @@ fn confirmed_from_drafts(
     Ok((prepared.config, confirmed))
 }
 
+// Keeps each manager's two execution phases attached to its one final report.
+struct PendingManager {
+    manager: ConfirmedInteractiveManagerApply,
+    updates: Vec<ExecutionCommand>,
+    removals: Vec<ExecutionCommand>,
+    report: ExecutionReport,
+}
+
 /// Executes confirmed interactive selections, streaming each command to the
 /// terminal as it runs and returning the rendered result table.
 ///
@@ -474,7 +484,9 @@ fn execute_confirmed_interactive_apply_streaming(
     theme: OutputTheme,
 ) -> Result<String, AppError> {
     let resolved = resolve_confirmed_execution_plans(&confirmed)?;
-    persist_confirmed_selection_policies(&mut config, &confirmed)?;
+    if process.mutation_mode() != Some(MutationMode::Skip) {
+        persist_confirmed_selection_policies(&mut config, &confirmed)?;
+    }
 
     let process = if trace_commands {
         process.clone().with_command_start_listener(|command| {
@@ -484,28 +496,96 @@ fn execute_confirmed_interactive_apply_streaming(
         process.clone()
     };
 
+    // Construct all commands before removals can affect another manager's runtime.
+    let mut pending = Vec::new();
     let mut table = OutcomeTable::default();
+    let mut had_error = false;
     for manager in confirmed {
         let manager_id = manager.plan.manager_id.clone();
         let execution_plan = execution_plan_for(&resolved, &manager_id)?;
-        let adapter =
-            configured_manager(manager.manager_config.clone()).map_err(map_manager_error)?;
-        match adapter.commands_for_execution_plan(&process, env, execution_plan) {
+        let commands = configured_manager(manager.manager_config.clone())
+            .and_then(|adapter| adapter.commands_for_execution_plan(&process, env, execution_plan));
+        match commands {
             Ok(commands) => {
-                let report = run_manager_commands(manager_id, commands, &process, trace_commands)?;
-                table.rows.extend(
-                    apply_execution_report_table(&report, &manager.plan, &manager.selection).rows,
-                );
+                if commands.iter().any(|command| {
+                    let removes = command
+                        .items
+                        .iter()
+                        .any(|item| item.action == ExecutionAction::Remove);
+                    removes
+                        && command
+                            .items
+                            .iter()
+                            .any(|item| item.action != ExecutionAction::Remove)
+                }) {
+                    had_error = true;
+                    table.rows.extend(
+                        manager_error_table(
+                            &manager_id,
+                            "apply",
+                            "manager returned a command mixing updates and removals",
+                        )
+                        .rows,
+                    );
+                    continue;
+                }
+                let (removals, updates) = commands.into_iter().partition(|command| {
+                    command
+                        .items
+                        .iter()
+                        .any(|item| item.action == ExecutionAction::Remove)
+                });
+                pending.push(PendingManager {
+                    manager,
+                    updates,
+                    removals,
+                    report: ExecutionReport {
+                        manager_id,
+                        items: Vec::new(),
+                    },
+                });
             }
             Err(err) if err.is_interruption() => return Err(map_manager_error(err)),
             Err(err) => {
+                had_error = true;
                 table
                     .rows
                     .extend(manager_error_table(&manager_id, "apply", &err.to_string()).rows);
             }
         }
     }
-    Ok(render_batch_table(&table, theme))
+    for removal_pass in [false, true] {
+        for pending_manager in &mut pending {
+            let commands = if removal_pass {
+                std::mem::take(&mut pending_manager.removals)
+            } else {
+                std::mem::take(&mut pending_manager.updates)
+            };
+            let report = run_manager_commands(
+                pending_manager.report.manager_id.clone(),
+                commands,
+                &process,
+                trace_commands,
+            )?;
+            had_error |= execution_report_has_failures(&report);
+            pending_manager.report.items.extend(report.items);
+        }
+    }
+    for pending_manager in pending {
+        table.rows.extend(
+            apply_execution_report_table(
+                &pending_manager.report,
+                &pending_manager.manager.plan,
+                &pending_manager.manager.selection,
+            )
+            .rows,
+        );
+    }
+    let output = render_batch_table(&table, theme);
+    if had_error {
+        return Err(AppError::Manager(output));
+    }
+    Ok(output)
 }
 
 fn persist_confirmed_selection_policies(
@@ -513,10 +593,15 @@ fn persist_confirmed_selection_policies(
     confirmed: &[ConfirmedInteractiveManagerApply],
 ) -> Result<(), AppError> {
     for manager in confirmed {
-        config.set_manager_selection_policy(
-            manager.plan.manager_id.as_str(),
-            &manager.selection.selection_policy,
-        )?;
+        let mut policy = manager.selection.selection_policy.clone();
+        for selected in &manager.selection.selected_items {
+            if selected.action == SelectedAction::Remove
+                && let Some(item) = manager.plan.item(&selected.plan_item_id)
+            {
+                policy.except.remove(item.package_name());
+            }
+        }
+        config.set_manager_selection_policy(manager.plan.manager_id.as_str(), &policy)?;
         config.persist_manager_selection_policy(manager.plan.manager_id.as_str())?;
     }
     Ok(())

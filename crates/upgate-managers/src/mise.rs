@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Display};
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
+use upgate_domain::RemovalTarget;
 
 use chrono::DateTime;
 use pep440_rs::Version as Pep440Version;
@@ -46,11 +47,16 @@ pub enum MiseError {
     InvalidDryRun(String),
     MissingReleaseMetadata(String),
     UnsupportedCommandIntent(String),
+    ConflictingActions(PackageName),
 }
 
 impl Display for MiseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ConflictingActions(package) => write!(
+                formatter,
+                "Cannot update and remove different versions of {package} in the same run: mise upgrade operates on the tool's configured versions. Apply these actions separately."
+            ),
             Self::Infra(detail)
             | Self::Interrupted(detail)
             | Self::Json(detail)
@@ -102,6 +108,7 @@ impl MiseError {
 pub struct MiseInstalledTool {
     pub tool: PackageName,
     pub version: VersionText,
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,6 +235,8 @@ impl ManagerAdapter for MiseManager {
 struct MiseLsEntry {
     version: Option<String>,
     #[serde(default)]
+    installed: Option<bool>,
+    #[serde(default)]
     active: bool,
 }
 
@@ -283,17 +292,20 @@ pub fn parse_installed_json(raw: &str) -> Result<Vec<MiseInstalledTool>, MiseErr
         serde_json::from_str(raw).map_err(|err| MiseError::Json(err.to_string()))?;
     let mut tools = Vec::new();
     for (tool, entries) in parsed {
-        let active_version = entries
-            .iter()
-            .find(|entry| entry.active)
-            .and_then(|entry| entry.version.clone());
-        if let Some(version) =
-            active_version.or_else(|| entries.into_iter().rev().find_map(|entry| entry.version))
-        {
-            tools.push(MiseInstalledTool {
-                tool: PackageName::new(tool)?,
-                version: VersionText::new(version)?,
-            });
+        let mut versions = std::collections::BTreeSet::new();
+        for entry in entries {
+            if entry.installed == Some(false) {
+                continue;
+            }
+            if let Some(version) = entry.version
+                && versions.insert(version.clone())
+            {
+                tools.push(MiseInstalledTool {
+                    tool: PackageName::new(tool.clone())?,
+                    version: VersionText::new(version)?,
+                    active: entry.active,
+                });
+            }
         }
     }
     Ok(tools)
@@ -431,7 +443,7 @@ pub fn parse_versions_host_toml(raw: &str) -> Result<ReleaseTimeline, MiseError>
 /// Returns an error when `mise ls --json` fails or cannot be parsed.
 pub fn installed_tools(process: &ProcessRunner) -> Result<Vec<MiseInstalledTool>, MiseError> {
     let output = process.run(
-        &CommandSpec::new("mise", ["ls", "--json"]),
+        &CommandSpec::new("mise", ["ls", "--installed", "--json"]),
         &CommandCheck::Success,
     )?;
     parse_installed_json(output.stdout()?)
@@ -450,9 +462,35 @@ pub fn update_inputs(
     max_parallel_checks_per_manager: usize,
 ) -> Result<Vec<ManagerUpdateInput>, MiseError> {
     let min_age_arg = duration_arg(min_release_age);
-    let plan_items = upgrade_dry_run(process, &min_age_arg)?;
+    let plan_items = match upgrade_dry_run(process, &min_age_arg) {
+        Ok(items) => items,
+        Err(err) if err.is_interruption() => return Err(err),
+        Err(err) => {
+            return installed_tools(process)?
+                .into_iter()
+                .map(|tool| {
+                    Ok(ManagerUpdateInput::ResolverError {
+                        installed: installed_tool(tool)?,
+                        message: err.to_string(),
+                    })
+                })
+                .collect();
+        }
+    };
+    let updating = plan_items
+        .iter()
+        .map(|item| (item.tool.clone(), item.from_version.clone()))
+        .collect::<std::collections::BTreeSet<_>>();
+    let current = installed_tools(process)?
+        .into_iter()
+        .filter(|tool| !updating.contains(&(tool.tool.clone(), tool.version.clone())))
+        .map(installed_tool)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|installed| ManagerUpdateInput::Current { installed })
+        .collect::<Vec<_>>();
     if plan_items.is_empty() {
-        return Ok(Vec::new());
+        return Ok(current);
     }
     let advisory_latest = advisory_latest_map(process)?;
 
@@ -460,7 +498,7 @@ pub fn update_inputs(
         max_parallel_checks_per_manager,
         MISE_AGE_MAX_PARALLEL_CHECKS,
     );
-    run_ordered_parallel(plan_items, threads, MANAGER_ID, |item| {
+    let mut inputs: Vec<_> = run_ordered_parallel(plan_items, threads, MANAGER_ID, |item| {
         let installed = installed_tool_from_plan_item(process, &item)?;
         let target_age = lookup_target_age(process, http, env, &item.tool, &item.to_version);
         let version_scheme = version_scheme(&item.from_version, &item.to_version);
@@ -489,7 +527,9 @@ pub fn update_inputs(
         )))
     })?
     .into_iter()
-    .collect()
+    .collect::<Result<_, MiseError>>()?;
+    inputs.extend(current);
+    Ok(inputs)
 }
 
 fn scan_inputs_with_release_evidence(
@@ -528,10 +568,44 @@ pub fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
     min_release_age: Duration,
 ) -> Result<Vec<ExecutionCommand>, MiseError> {
+    for intent in &plan.intents {
+        let ExecutionCommandIntent::Remove(removal) = intent else {
+            continue;
+        };
+        if plan.intents.iter().any(|intent| match intent {
+            ExecutionCommandIntent::ResolverNative(item) => {
+                item.package_name == removal.package_name
+            }
+            ExecutionCommandIntent::ResolverNativeGlobal(_) => true,
+            _ => false,
+        }) {
+            return Err(MiseError::ConflictingActions(removal.package_name.clone()));
+        }
+    }
     let min_age_arg = duration_arg(min_release_age);
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
+            ExecutionCommandIntent::Remove(item) => {
+                if item.target != RemovalTarget::Version {
+                    return Err(MiseError::UnsupportedCommandIntent(
+                        "invalid-removal-target".to_owned(),
+                    ));
+                }
+                let command = CommandSpec::new(
+                    "mise",
+                    [
+                        "uninstall",
+                        "--",
+                        &format!("{}@{}", item.package_name, item.installed_version),
+                    ],
+                )
+                .mutating();
+                commands.push(ExecutionCommand {
+                    items: vec![ExecutionCommandItem::from(item)],
+                    command,
+                });
+            }
             ExecutionCommandIntent::ResolverNative(item) => {
                 commands.push(ExecutionCommand {
                     items: vec![ExecutionCommandItem::from(item)],
@@ -588,7 +662,7 @@ fn upgrade_dry_run(process: &ProcessRunner, before: &str) -> Result<Vec<MisePlan
     )?;
     let items = parse_upgrade_dry_run_targets(output.stdout()?)?;
     if items.iter().any(|item| item.from_version.is_none()) {
-        complete_dry_run_items(items, installed_tools(process)?)
+        complete_dry_run_items(items, &installed_tools(process)?)
     } else {
         complete_dry_run_items_without_installed_lookup(items)
     }
@@ -596,24 +670,20 @@ fn upgrade_dry_run(process: &ProcessRunner, before: &str) -> Result<Vec<MisePlan
 
 fn complete_dry_run_items(
     items: Vec<MiseDryRunItem>,
-    installed: Vec<MiseInstalledTool>,
+    installed: &[MiseInstalledTool],
 ) -> Result<Vec<MisePlanItem>, MiseError> {
-    let installed_versions = installed
-        .into_iter()
-        .map(|tool| (tool.tool, tool.version))
-        .collect::<BTreeMap<_, _>>();
-
     items
         .into_iter()
         .map(|item| {
-            let from_version = match item.from_version {
-                Some(version) => version,
-                None => installed_versions.get(&item.tool).cloned().ok_or_else(|| {
-                    MiseError::InvalidDryRun(format!(
-                        "mise dry-run install for {} did not match an installed tool",
-                        item.tool
-                    ))
-                })?,
+            let from_version = if let Some(version) = item.from_version { version } else {
+                    let matching = installed.iter().filter(|tool| tool.tool == item.tool).collect::<Vec<_>>();
+                    let active = matching.iter().filter(|tool| tool.active).collect::<Vec<_>>();
+                    let source = match (active.as_slice(), matching.as_slice()) {
+                        ([tool], _) => *tool,
+                        ([], [tool]) => tool,
+                        _ => return Err(MiseError::InvalidDryRun(format!("mise upgrade preview did not identify which installed version of {} it will update", item.tool))),
+                    };
+                    source.version.clone()
             };
             Ok(MisePlanItem {
                 tool: item.tool,
@@ -1003,11 +1073,12 @@ fn strip_v_prefix(value: &str) -> &str {
 fn installed_tool(tool: MiseInstalledTool) -> Result<InstalledTool, MiseError> {
     let installed = InstalledTool::new(
         MiseManager::id(),
-        ToolId::new(tool.tool.as_str().to_owned())?,
+        ToolId::new(format!("{}@{}", tool.tool, tool.version))?,
         tool.tool.clone(),
         ToolName::new(tool.tool.as_str().to_owned())?,
         tool.version,
-    );
+    )
+    .with_removal(RemovalTarget::Version);
     Ok(match audit_subject_for_mise_tool(&tool.tool)? {
         Some(subject) => installed.with_audit_subject(subject),
         None => installed,
@@ -1020,11 +1091,12 @@ fn installed_tool_with_registry_audit(
 ) -> Result<InstalledTool, MiseError> {
     let installed = InstalledTool::new(
         MiseManager::id(),
-        ToolId::new(tool.tool.as_str().to_owned())?,
+        ToolId::new(format!("{}@{}", tool.tool, tool.version))?,
         tool.tool.clone(),
         ToolName::new(tool.tool.as_str().to_owned())?,
         tool.version,
-    );
+    )
+    .with_removal(RemovalTarget::Version);
     Ok(
         match audit_subject_for_mise_tool_with_registry(process, &tool.tool)? {
             Some(subject) => installed.with_audit_subject(subject),
@@ -1039,11 +1111,12 @@ fn installed_tool_from_plan_item(
 ) -> Result<InstalledTool, MiseError> {
     let installed = InstalledTool::new(
         MiseManager::id(),
-        ToolId::new(item.tool.as_str().to_owned())?,
+        ToolId::new(format!("{}@{}", item.tool, item.from_version))?,
         item.tool.clone(),
         ToolName::new(item.tool.as_str().to_owned())?,
         item.from_version.clone(),
-    );
+    )
+    .with_removal(RemovalTarget::Version);
     Ok(
         match audit_subject_for_mise_tool_with_registry(process, &item.tool)? {
             Some(subject) => installed.with_audit_subject(subject),
@@ -1136,7 +1209,9 @@ fn adapter_error(err: &MiseError) -> ManagerAdapterError {
         | MiseError::InvalidTimestamp { .. }
         | MiseError::InvalidDryRun(_)
         | MiseError::MissingReleaseMetadata(_) => ManagerAdapterErrorKind::Parse,
-        MiseError::UnsupportedCommandIntent(_) => ManagerAdapterErrorKind::CommandConstruction,
+        MiseError::UnsupportedCommandIntent(_) | MiseError::ConflictingActions(_) => {
+            ManagerAdapterErrorKind::CommandConstruction
+        }
         MiseError::Infra(_) => ManagerAdapterErrorKind::Infra,
     };
     ManagerAdapterError::Manager {
@@ -1205,14 +1280,16 @@ mod tests {
         .expect("install-only dry-run output should parse");
         let completed = complete_dry_run_items(
             items,
-            vec![
+            &[
                 MiseInstalledTool {
                     tool: PackageName::new("node").expect("valid package"),
                     version: VersionText::new("24.14.1").expect("valid version"),
+                    active: true,
                 },
                 MiseInstalledTool {
                     tool: PackageName::new("npm:@anthropic-ai/claude-code").expect("valid package"),
                     version: VersionText::new("2.1.156").expect("valid version"),
+                    active: true,
                 },
             ],
         )
@@ -1228,21 +1305,26 @@ mod tests {
     }
 
     #[test]
-    fn parse_installed_json_prefers_active_version() {
+    fn installed_inventory_keeps_all_installed_versions_and_excludes_missing_versions() {
         let tools = parse_installed_json(
             r#"{
                 "node": [
                     {"version": "20.19.4", "installed": true, "active": false},
                     {"version": "24.14.1", "installed": true, "active": true},
-                    {"version": "22.22.3", "installed": true, "active": false}
+                    {"version": "22.22.3", "installed": true, "active": false},
+                    {"version": "25.0.0", "installed": false, "active": false}
                 ]
             }"#,
         )
         .expect("installed JSON should parse");
 
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].tool.as_str(), "node");
-        assert_eq!(tools[0].version.as_str(), "24.14.1");
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.version.as_str())
+                .collect::<Vec<_>>(),
+            ["20.19.4", "24.14.1", "22.22.3"]
+        );
     }
 
     #[test]

@@ -26,6 +26,7 @@ pub struct SelectionRow {
     pub notes: Vec<CandidateNotePart>,
     pub initially_selected: bool,
     pub target_options: Vec<TargetOption>,
+    pub removal: upgate_domain::RemovalSupport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +190,7 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
                 default_visibility: SelectionRowVisibility::Visible,
                 notes,
                 initially_selected: selected,
+                removal: item.removal_support().clone(),
                 target_options,
             }
         }
@@ -201,6 +203,7 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
             default_visibility: SelectionRowVisibility::HiddenUntilViewAll,
             notes: Vec::new(),
             initially_selected: false,
+            removal: item.removal_support().clone(),
             target_options: Vec::new(),
         },
         PlanItem::Delayed {
@@ -223,6 +226,7 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
                 },
                 notes,
                 initially_selected: false,
+                removal: item.removal_support().clone(),
                 target_options,
             }
         }
@@ -250,6 +254,7 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
                 default_visibility,
                 notes,
                 initially_selected: false,
+                removal: item.removal_support().clone(),
                 target_options,
             }
         }
@@ -268,6 +273,7 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
                 reason.clone(),
             ))],
             initially_selected: false,
+            removal: item.removal_support().clone(),
             target_options: Vec::new(),
         },
         PlanItem::ResolverError {
@@ -287,8 +293,33 @@ fn selection_row(item: &PlanItem, selection_policy: &UpdateSelectionPolicy) -> S
                 },
             )],
             initially_selected: false,
+            removal: item.removal_support().clone(),
             target_options: Vec::new(),
         },
+    }
+}
+
+impl SelectionRow {
+    pub fn removal_label(&self) -> String {
+        use upgate_domain::{RemovalSupport, RemovalTarget};
+        match &self.removal {
+            RemovalSupport::Unsupported(reason) => format!("Removal unavailable: {reason}"),
+            RemovalSupport::Supported(RemovalTarget::Version) => {
+                format!("Uninstall {}@{}", self.package_name, self.installed_version)
+            }
+            RemovalSupport::Supported(RemovalTarget::Package) => {
+                format!("Uninstall {}", self.package_name)
+            }
+            RemovalSupport::Supported(RemovalTarget::BrewFormula) => {
+                format!("Uninstall formula {}", self.package_name)
+            }
+            RemovalSupport::Supported(RemovalTarget::BrewCask) => {
+                format!("Uninstall cask {}", self.package_name)
+            }
+            RemovalSupport::Supported(RemovalTarget::Binary(path)) => {
+                format!("Remove binary {} ({})", self.package_name, path.display())
+            }
+        }
     }
 }
 

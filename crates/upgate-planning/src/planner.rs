@@ -21,7 +21,9 @@ pub fn derive_audit_queries(inputs: &[ManagerUpdateInput]) -> Vec<AuditQuery> {
         .iter()
         .filter_map(|input| match input {
             ManagerUpdateInput::Seed(seed) => Some(audit_queries_for_seed(seed)),
-            ManagerUpdateInput::Skipped { .. } | ManagerUpdateInput::ResolverError { .. } => None,
+            ManagerUpdateInput::Current { .. }
+            | ManagerUpdateInput::Skipped { .. }
+            | ManagerUpdateInput::ResolverError { .. } => None,
         })
         .flatten()
         .collect::<BTreeSet<_>>()
@@ -43,6 +45,10 @@ pub fn finalize_plan_from_inputs(
     let mut items = Vec::new();
     for input in inputs {
         match input {
+            ManagerUpdateInput::Current { installed } => {
+                let id = plan_item_id(&manager_id, &installed.tool_id)?;
+                items.push(PlanItem::Current { id, installed });
+            }
             ManagerUpdateInput::Seed(seed) => {
                 let id = plan_item_id(&manager_id, &seed.installed.tool_id)?;
                 items.push(evaluate_seed_with_audit(

@@ -6,8 +6,9 @@ use std::fmt::{self, Display};
 use upgate_domain::{
     BlockReason, ExecutionSupport, ExecutionTargetKind, ManagerCapabilities, ManagerId,
     MinAgeConstraintSupport, MissingMetadataKind, PackageName, PlanDiagnostics, PlanItem,
-    PlanItemId, PlanSelection, PlannedTargetRef, SelectedItem, SelectedUpdate, UpdateCandidate,
-    UpdatePlan, UpdateSeed, VersionPolicy, VersionText,
+    PlanItemId, PlanSelection, PlannedTargetRef, RemovalSupport, RemovalTarget, SelectedAction,
+    SelectedItem, SelectedUpdate, UpdateCandidate, UpdatePlan, UpdateSeed, VersionPolicy,
+    VersionText,
 };
 use upgate_infra::{CommandCheck, CommandSpec, InfraError, ProcessRunner};
 
@@ -18,6 +19,8 @@ pub struct ResolvedExecutionPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutionCommandIntent {
+    /// Uninstall exactly the discovered installed item.
+    Remove(ResolvedRemovalItem),
     /// Install a concrete target version for one selected item.
     Exact(ResolvedExecutionItem),
     /// Update one selected item with the manager's native selected-update
@@ -32,6 +35,20 @@ pub enum ExecutionCommandIntent {
     /// Run one manager-level resolver-native update command when the selected
     /// set is equivalent to all eligible resolver-native updates.
     ResolverNativeGlobal(Vec<ResolvedExecutionItem>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedRemovalItem {
+    pub plan_item_id: PlanItemId,
+    pub package_name: PackageName,
+    pub installed_version: VersionText,
+    pub target: RemovalTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecutionAction {
+    Update(ResolvedExecutionTarget),
+    Remove,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,12 +134,36 @@ pub fn resolve_selection_for_execution(
     version_policy: VersionPolicy,
 ) -> Result<ResolvedExecutionPlan, ExecutionSelectionError> {
     let selected = selected_execution_items(plan, selection)?;
-    if should_use_native_global_update(plan, &selected, capabilities, version_policy) {
+    let mut removals = Vec::new();
+    for selected in &selection.selected_items {
+        if selected.action != SelectedAction::Remove {
+            continue;
+        }
+        let item = plan.item(&selected.plan_item_id).ok_or_else(|| {
+            ExecutionSelectionError::UnknownPlanItem(selected.plan_item_id.to_string())
+        })?;
+        let RemovalSupport::Supported(target) = item.removal_support() else {
+            return Err(ExecutionSelectionError::ItemNotExecutable(
+                item.id().to_string(),
+            ));
+        };
+        removals.push(ExecutionCommandIntent::Remove(ResolvedRemovalItem {
+            plan_item_id: item.id().clone(),
+            package_name: item.package_name().clone(),
+            installed_version: item.installed_version().clone(),
+            target: target.clone(),
+        }));
+    }
+    if removals.is_empty()
+        && should_use_native_global_update(plan, &selected, capabilities, version_policy)
+    {
         return Ok(ResolvedExecutionPlan {
             intents: vec![ExecutionCommandIntent::NativeGlobal(selected)],
         });
     }
-    if should_use_resolver_native_global_update(plan, &selected, capabilities, version_policy) {
+    if removals.is_empty()
+        && should_use_resolver_native_global_update(plan, &selected, capabilities, version_policy)
+    {
         return Ok(ResolvedExecutionPlan {
             intents: vec![ExecutionCommandIntent::ResolverNativeGlobal(selected)],
         });
@@ -144,6 +185,7 @@ pub fn resolve_selection_for_execution(
             ));
         }
     }
+    intents.extend(removals);
     Ok(ResolvedExecutionPlan { intents })
 }
 
@@ -158,7 +200,7 @@ pub struct ExecutionItemResult {
     pub plan_item_id: PlanItemId,
     pub package_name: PackageName,
     pub installed_version: VersionText,
-    pub target: ResolvedExecutionTarget,
+    pub action: ExecutionAction,
     pub status: ExecutionStatus,
 }
 
@@ -187,7 +229,7 @@ pub struct ExecutionCommandItem {
     pub plan_item_id: PlanItemId,
     pub package_name: PackageName,
     pub installed_version: VersionText,
-    pub target: ResolvedExecutionTarget,
+    pub action: ExecutionAction,
 }
 
 impl From<&ResolvedExecutionItem> for ExecutionCommandItem {
@@ -196,7 +238,18 @@ impl From<&ResolvedExecutionItem> for ExecutionCommandItem {
             plan_item_id: item.plan_item_id.clone(),
             package_name: item.package_name.clone(),
             installed_version: item.installed_version.clone(),
-            target: item.target.clone(),
+            action: ExecutionAction::Update(item.target.clone()),
+        }
+    }
+}
+
+impl From<&ResolvedRemovalItem> for ExecutionCommandItem {
+    fn from(item: &ResolvedRemovalItem) -> Self {
+        Self {
+            plan_item_id: item.plan_item_id.clone(),
+            package_name: item.package_name.clone(),
+            installed_version: item.installed_version.clone(),
+            action: ExecutionAction::Remove,
         }
     }
 }
@@ -238,7 +291,7 @@ pub fn execute_commands(
                 plan_item_id: item.plan_item_id,
                 package_name: item.package_name,
                 installed_version: item.installed_version,
-                target: item.target,
+                action: item.action,
                 status: status.clone(),
             });
         }
@@ -256,7 +309,9 @@ fn selected_execution_items(
         let item = plan.item(&selected.plan_item_id).ok_or_else(|| {
             ExecutionSelectionError::UnknownPlanItem(selected.plan_item_id.to_string())
         })?;
-        items.push(selected_execution_item(item, selected)?);
+        if let SelectedAction::Update(update) = &selected.action {
+            items.push(selected_execution_item(item, selected, update)?);
+        }
     }
     Ok(items)
 }
@@ -264,8 +319,9 @@ fn selected_execution_items(
 fn selected_execution_item(
     item: &PlanItem,
     selected: &SelectedItem,
+    update: &SelectedUpdate,
 ) -> Result<ResolvedExecutionItem, ExecutionSelectionError> {
-    match &selected.selected_update {
+    match update {
         SelectedUpdate::Recommended => resolve_recommended_selection(item, selected),
         SelectedUpdate::Exact { target_version } => {
             resolve_exact_selection(item, selected, target_version)
