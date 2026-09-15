@@ -120,13 +120,20 @@ fn draw_selection_main(
     let [area, status_area] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
     let summary = screen.confirmation_summary();
-    let status = screen.feedback.clone().unwrap_or_else(|| {
-        format!(
-            "{} updates · {} removals",
-            summary.selected_total - summary.removals.len(),
-            summary.removals.len()
+    let status = if let Some(query) = &screen.search_query {
+        screen.feedback.as_ref().map_or_else(
+            || format!("/{query}"),
+            |feedback| format!("{feedback} · /{query}"),
         )
-    });
+    } else {
+        screen.feedback.clone().unwrap_or_else(|| {
+            format!(
+                "{} updates · {} removals",
+                summary.selected_total - summary.removals.len(),
+                summary.removals.len()
+            )
+        })
+    };
     frame.render_widget(Paragraph::new(status), status_area);
     if let Some(message) = screen.placeholder_message() {
         draw_centered_placeholder(frame, area, &message, theme.muted);
@@ -403,6 +410,25 @@ fn footer_line(screen: &InteractiveSelectionScreen, width: u16, theme: &TuiTheme
         return Line::raw("");
     }
 
+    if screen.search_query.is_some() {
+        let bindings = [
+            KeyBinding {
+                key: "↑/↓",
+                label: "matches",
+            },
+            KeyBinding {
+                key: "esc/enter",
+                label: "done",
+            },
+        ];
+        let footer = key_footer(&bindings, theme);
+        return if footer.width() <= usize::from(width) {
+            footer
+        } else {
+            key_footer(&bindings[1..], theme)
+        };
+    }
+
     if screen.target_picker_open() {
         return picker_footer_line(theme);
     }
@@ -421,6 +447,15 @@ pub(super) fn selection_footer(
         },
         SelectionInput::Ignore,
     )];
+    if screen.planning_finished {
+        entries.push((
+            KeyBinding {
+                key: "/",
+                label: "search",
+            },
+            SelectionInput::OpenSearch,
+        ));
+    }
     if let Some(visible) = screen.current_visible_row() {
         append_row_actions(&mut entries, screen, visible);
     }
@@ -558,7 +593,7 @@ fn fit_footer(
     width: u16,
 ) -> Vec<(KeyBinding<'static>, SelectionInput)> {
     let theme = TuiTheme::current();
-    for key in ["j/k", "a/n", "r", "enter", "d", "v", "q"] {
+    for key in ["j/k", "a/n", "r", "enter", "d", "v", "/", "q"] {
         if render_footer(&entries, &theme).width() <= usize::from(width) {
             break;
         }

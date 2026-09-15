@@ -22,17 +22,17 @@ chain attacks harder, but still it cannot prove that a release is safe.
 
 Download the prebuilt binary for your system from the
 [latest release](https://github.com/podkovyrin/upgate/releases/latest). Unpack
-it and place `upgate` in a directory from your `PATH`. Rust is not required.
+it and place `upgate` in a directory on your `PATH`. Rust is not required.
 
-### Build with Cargo
+### From source
 
-To build `upgate` from source, you need Rust 1.88 or newer.
+With Rust 1.88 or newer:
 
 ```sh
 cargo install upgate
 ```
 
-### Build the current source
+Or build the current checkout:
 
 ```sh
 git clone https://github.com/podkovyrin/upgate.git
@@ -49,34 +49,14 @@ same amount of real-world testing yet.
 upgate
 ```
 
-This command scans installed tools, builds an update plan, and opens the
-interactive picker. The picker shows current tools, available updates, and
-anything delayed, blocked, or failed. Choose the updates you want, then run
-them from the picker.
+Scans installed tools and opens a picker for updates and removals.
 
-You can also uninstall tools from the picker. The action column shows `↑` for
-update, `−` for removal, and a blank for no action:
+- **Space** toggles an update selection.
+- **d** toggles removal.
+- **/** searches package names, moving the cursor without filtering rows.
+- **C** reviews and applies selected actions.
 
-- **Space/x** selects an update or deselects the current action. When removal is
-  marked, the first press clears it to no action; a second press selects an
-  available update. Clearing a removal mark preserves remembered update preferences.
-- **d** marks a tool for removal; press it again to restore the previous choice.
-- **Enter** opens details and available actions.
-- **a/n** selects all updates or clears update selections, preserving removal marks.
-- **v** switches between showing and hiding all installed tools.
-- **C confirm** reviews selected updates and removals before applying them.
-
-Footer hints follow the focused row and its selected action. The removal hint
-is hidden while removal is marked; Space/x then offers deselect.
-
-Bulk update selection leaves removal marks intact. Updates run before removals.
-Each manager uses its normal uninstall behavior and dependency checks. For mise,
-removal uninstalls the specific displayed version and leaves mise configuration
-intact; mise may reinstall it later if it is still declared there.
-
-Mise updates and removals for different versions of the same tool must run
-separately. Pipx environments installed with a suffix or a different environment
-name are shown with a removal-unavailable explanation.
+See the on-screen footer for other controls.
 
 For read-only checks and other workflows:
 
@@ -117,9 +97,25 @@ Defaults and supported features differ by manager.
 | RubyGems | `off` | 7 days | `stable` | RubyGems |
 | .NET tools | `off` | 7 days | `none`, `stable`, `same-track` | NuGet |
 
-The OSV column shows where package identity comes from. A check runs only when
-`upgate` can make an exact mapping. Missing package-manager executables are
-skipped.
+OSV coverage depends on package identity: a check runs only when `upgate` can
+make an exact mapping. Missing package-manager executables are skipped.
+
+### Removals
+
+Updates run before removals. Each manager keeps its normal uninstall behavior
+and dependency checks.
+
+- **mise** removes the displayed version without editing mise configuration,
+  so tools still declared there may be reinstalled later. Updates and removals
+  for different versions of the same tool must run separately.
+- **pipx** shows a removal-unavailable explanation for suffixed or renamed
+  environments.
+
+Removal marks apply only to the current run. Bulk update selection leaves them
+intact, and `--yolo` selects updates only. Confirming a removal clears the package
+from upgate's selection exceptions before commands run, even if uninstall later
+fails. `--dry-run` previews actions without uninstalling tools or saving
+selection changes.
 
 ## Configuration
 
@@ -140,21 +136,13 @@ except = ["typescript"]
 mode = "plan"
 ```
 
-Manager mode can be:
+### Manager mode
 
 - `apply`: include the manager in every command
-- `plan`: scan and plan, but do not update
+- `plan`: scan and plan, but do not update or remove tools
 - `off`: skip the manager
 
-A selection rule controls the default package selection. `except` always means
-the opposite of `mode`. The example skips npm packages by default, except for
-`typescript`.
-
-Confirming removal also clears that package from upgate's selection exceptions.
-Preferences are saved before commands run, so this cleanup applies even if the
-uninstall fails. Removal marks are never remembered for future runs, and
-`--yolo` only selects updates. `--dry-run` previews actions without uninstalling
-tools or saving selection changes.
+### Update policy
 
 Release age accepts seconds, minutes, hours, and days, such as `30m`, `12h`, or
 `7d`. npm accepts whole days only.
@@ -166,13 +154,21 @@ Version policy can be:
 - `same-track`: stay at least as stable as the installed version
 
 Not every policy fits every manager. Unsupported combinations are rejected.
-See the full [config example](config.toml) for every setting.
+
+### Default selection
+
+A selection rule controls which packages start selected. `except` always means
+the opposite of `mode`: the example skips npm packages except `typescript`.
+
+### One-run overrides
 
 Use `--set` or `-S` for one run:
 
 ```sh
 upgate plan --set npm.min_release_age=14d --set brew.no_update=true
 ```
+
+See the full [config example](config.toml) for every setting.
 
 ## Release age and security
 
@@ -199,20 +195,14 @@ Each run gets a timestamped directory:
 - macOS: `~/Library/Logs/upgate/`
 - Linux: `$XDG_STATE_HOME/upgate/logs/`, or `~/.local/state/upgate/logs/`
 
-Files:
+| File | Contents |
+| --- | --- |
+| `core.log` | Failed commands and commands that change the system |
+| `snapshot.json` | Plan and selected actions for apply runs |
 
-- `core.log`: always logs failed commands and commands that change the system
-- `snapshot.json`: plan and selected actions for apply runs
-
-Use `--log-commands` to save all output and timing for every external command:
-
-```sh
-upgate plan --log-commands
-```
-
-- `--log-commands` prints the exact session directory after the run.
-- `--trace-commands` shows commands live. Interactive mode shows them inside
-  the picker.
+- **`--log-commands`** also saves output and timing for every external command
+  and prints the session directory after the run.
+- **`--trace-commands`** shows commands live, inside the picker when interactive.
 
 Run `upgate --help` to see all command options.
 

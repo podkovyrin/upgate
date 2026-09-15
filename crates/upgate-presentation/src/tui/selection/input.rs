@@ -92,7 +92,10 @@ fn selection_scroll_delta(
         MouseEventKind::ScrollDown => 1,
         _ => return None,
     };
-    if screen.target_picker_open() || screen.confirmation_dialog_open() {
+    if screen.target_picker_open()
+        || screen.confirmation_dialog_open()
+        || screen.search_query.is_some()
+    {
         return None;
     }
     let app_frame = app_frame(area)?;
@@ -155,10 +158,17 @@ fn handle_selection_event(
     }
 
     if let Event::Mouse(mouse) = event {
+        if screen.search_query.is_some() {
+            return Ok(SelectionControl::Continue);
+        }
         return handle_selection_mouse(screen, *mouse, area);
     }
 
-    let input = selection_input_from_event(event, screen.target_picker_open());
+    let input = selection_input_from_event(
+        event,
+        screen.target_picker_open(),
+        screen.search_query.is_some(),
+    );
     screen.handle_input(input)
 }
 
@@ -473,7 +483,11 @@ const fn rect_contains(area: Rect, column: u16, row: u16) -> bool {
     column >= area.x && column < area.right() && row >= area.y && row < area.bottom()
 }
 
-fn selection_input_from_event(event: &Event, target_picker_open: bool) -> SelectionInput {
+fn selection_input_from_event(
+    event: &Event,
+    target_picker_open: bool,
+    search_open: bool,
+) -> SelectionInput {
     let Event::Key(key) = event else {
         return SelectionInput::Ignore;
     };
@@ -484,6 +498,23 @@ fn selection_input_from_event(event: &Event, target_picker_open: bool) -> Select
         return SelectionInput::Interrupt;
     }
 
+    if search_open {
+        return match key.code {
+            KeyCode::Esc | KeyCode::Enter => SelectionInput::ExitSearch,
+            KeyCode::Up => SelectionInput::Up,
+            KeyCode::Down => SelectionInput::Down,
+            KeyCode::Backspace => SelectionInput::SearchBackspace,
+            KeyCode::Char(ch)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                SelectionInput::SearchChar(ch)
+            }
+            _ => SelectionInput::Ignore,
+        };
+    }
+
     let input = match key.code {
         KeyCode::Char('q' | 'Q') => SelectionInput::Cancel,
         #[expect(
@@ -492,6 +523,7 @@ fn selection_input_from_event(event: &Event, target_picker_open: bool) -> Select
         )]
         KeyCode::Esc => SelectionInput::Ignore,
         KeyCode::Char('C') => SelectionInput::Confirm,
+        KeyCode::Char('/') => SelectionInput::OpenSearch,
         KeyCode::Up | KeyCode::Char('k' | 'K') => SelectionInput::Up,
         KeyCode::Down | KeyCode::Char('j' | 'J') => SelectionInput::Down,
         KeyCode::Tab => SelectionInput::NextTab,
@@ -666,6 +698,225 @@ mod removal_input_tests {
         assert_eq!(
             handle_selection_event(&apply, &mut screen, area).unwrap(),
             SelectionControl::Confirm
+        );
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::super::InteractiveSelectionPlanningEvent;
+    use super::*;
+    use upgate_domain::{
+        ManagerId, PackageName, PlanItemId, RemovalSupport, UpdateSelectionPolicy, VersionPolicy,
+        VersionText,
+    };
+
+    fn screen() -> InteractiveSelectionScreen {
+        let mut screen = InteractiveSelectionScreen::from_manager_ids(vec![
+            ManagerId::new("npm").unwrap(),
+            ManagerId::new("cargo").unwrap(),
+        ]);
+        for (manager, packages) in [
+            (
+                "npm",
+                vec!["alpha", "JKit", "other", "jkit-extra", "hidden"],
+            ),
+            ("cargo", vec!["cargo-only"]),
+        ] {
+            let rows = packages
+                .into_iter()
+                .map(|name| crate::SelectionRow {
+                    plan_item_id: PlanItemId::new(format!("{manager}:{name}")).unwrap(),
+                    package_name: PackageName::new(name).unwrap(),
+                    installed_version: VersionText::new("1.0.0").unwrap(),
+                    target_version: None,
+                    status: crate::SelectionRowStatus::Current,
+                    default_visibility: if name == "hidden" {
+                        crate::SelectionRowVisibility::HiddenUntilViewAll
+                    } else {
+                        crate::SelectionRowVisibility::Visible
+                    },
+                    notes: Vec::new(),
+                    initially_selected: false,
+                    target_options: Vec::new(),
+                    removal: RemovalSupport::Supported(upgate_domain::RemovalTarget::Package),
+                })
+                .collect();
+            screen.apply_planning_event(InteractiveSelectionPlanningEvent::ManagerReady {
+                view: crate::SelectionView {
+                    manager_id: ManagerId::new(manager).unwrap(),
+                    rows,
+                },
+                selection_policy: UpdateSelectionPolicy::include_all(),
+                version_policy: VersionPolicy::None,
+            });
+        }
+        screen
+    }
+
+    fn key(screen: &mut InteractiveSelectionScreen, code: KeyCode) -> SelectionControl {
+        handle_selection_event(
+            &Event::Key(crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)),
+            screen,
+            Rect::new(0, 0, 100, 20),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn search_edits_and_cycles_names_without_changing_actions_or_opening_details() {
+        let mut screen = screen();
+        key(&mut screen, KeyCode::Char('/'));
+        assert!(
+            screen.search_query.is_none(),
+            "search is unavailable during planning"
+        );
+        screen.apply_planning_event(InteractiveSelectionPlanningEvent::Finished);
+        key(&mut screen, KeyCode::Down);
+        let before = screen.selection_drafts();
+        key(&mut screen, KeyCode::Char('/'));
+        assert_eq!(screen.cursor(), Some(0));
+        key(&mut screen, KeyCode::Char('j'));
+        key(&mut screen, KeyCode::Char('k'));
+        assert_eq!(screen.cursor(), Some(1));
+        key(&mut screen, KeyCode::Down);
+        assert_eq!(screen.cursor(), Some(3));
+        key(&mut screen, KeyCode::Down);
+        assert_eq!(screen.cursor(), Some(1));
+        key(&mut screen, KeyCode::Up);
+        assert_eq!(screen.cursor(), Some(3));
+        key(&mut screen, KeyCode::Char('I'));
+        assert_eq!(
+            screen.cursor(),
+            Some(1),
+            "editing jumps to first case-insensitive match"
+        );
+        for ch in ['q', 'C', ' ', 'd', 'v', 'a', 'n', '/', 'é'] {
+            key(&mut screen, KeyCode::Char(ch));
+        }
+        assert_eq!(screen.search_query.as_deref(), Some("jkIqC dvan/é"));
+        assert_eq!(screen.cursor(), Some(1));
+        assert_eq!(screen.feedback.as_deref(), Some("No matches"));
+        key(&mut screen, KeyCode::Backspace);
+        assert_eq!(screen.search_query.as_deref(), Some("jkIqC dvan/"));
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
+        terminal
+            .draw(|frame| super::super::render::draw_selection(frame, &mut screen))
+            .unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(
+            rendered.contains("No matches")
+                && rendered.contains("/jkIqC dvan/")
+                && rendered.contains("esc/enter  done")
+        );
+        assert!(
+            rendered.contains("alpha") && rendered.contains("other"),
+            "search does not filter rows"
+        );
+        key(&mut screen, KeyCode::Tab);
+        assert_eq!(screen.active_tab, 0);
+        for kind in [
+            MouseEventKind::ScrollDown,
+            MouseEventKind::Down(MouseButton::Left),
+        ] {
+            let event = Event::Mouse(MouseEvent {
+                kind,
+                column: 10,
+                row: 5,
+                modifiers: KeyModifiers::NONE,
+            });
+            handle_selection_drained_event(
+                &event,
+                &mut screen,
+                Rect::new(0, 0, 100, 20),
+                &mut SelectionScrollDeltas::default(),
+            )
+            .unwrap();
+        }
+        assert_eq!(screen.cursor(), Some(1));
+        assert_eq!(key(&mut screen, KeyCode::Enter), SelectionControl::Continue);
+        assert!(
+            screen.search_query.is_none()
+                && !screen.target_picker_open()
+                && !screen.confirmation_dialog_open()
+        );
+        assert_eq!(screen.cursor(), Some(1));
+        assert_eq!(screen.selection_drafts(), before);
+    }
+
+    #[test]
+    fn clearing_or_exiting_search_keeps_cursor_and_ctrl_c_interrupts() {
+        let mut screen = screen();
+        screen.apply_planning_event(InteractiveSelectionPlanningEvent::Finished);
+        key(&mut screen, KeyCode::Char('/'));
+        assert_eq!(screen.search_query.as_deref(), Some(""));
+        key(&mut screen, KeyCode::Char('j'));
+        key(&mut screen, KeyCode::Down);
+        key(&mut screen, KeyCode::Backspace);
+        assert_eq!(screen.cursor(), Some(3), "empty query keeps cursor");
+        key(&mut screen, KeyCode::Esc);
+        assert!(screen.search_query.is_none());
+        assert_eq!(screen.cursor(), Some(3));
+        key(&mut screen, KeyCode::Char('/'));
+        let interrupt = Event::Key(crossterm::event::KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        ));
+        assert_eq!(
+            handle_selection_event(&interrupt, &mut screen, Rect::new(0, 0, 100, 20)).unwrap(),
+            SelectionControl::Interrupt
+        );
+    }
+
+    #[test]
+    fn search_respects_current_tab_and_hidden_rows_and_ignores_versions() {
+        let mut screen = screen();
+        screen.apply_planning_event(InteractiveSelectionPlanningEvent::Finished);
+        key(&mut screen, KeyCode::Tab);
+        key(&mut screen, KeyCode::Down);
+        for query in ["cargo", "hidden", "1.0.0", "npm"] {
+            key(&mut screen, KeyCode::Char('/'));
+            for ch in query.chars() {
+                key(&mut screen, KeyCode::Char(ch));
+            }
+            assert_eq!(
+                screen.feedback.as_deref(),
+                Some("No matches"),
+                "query {query}"
+            );
+            key(&mut screen, KeyCode::Esc);
+        }
+        key(&mut screen, KeyCode::Char('v'));
+        key(&mut screen, KeyCode::Char('/'));
+        for ch in "hidden".chars() {
+            key(&mut screen, KeyCode::Char(ch));
+        }
+        assert_eq!(
+            screen
+                .row(screen.current_visible_row().unwrap())
+                .package_name
+                .as_str(),
+            "hidden"
+        );
+        key(&mut screen, KeyCode::Esc);
+        key(&mut screen, KeyCode::BackTab);
+        key(&mut screen, KeyCode::Char('/'));
+        for ch in "cargo".chars() {
+            key(&mut screen, KeyCode::Char(ch));
+        }
+        assert_eq!(
+            screen
+                .row(screen.current_visible_row().unwrap())
+                .package_name
+                .as_str(),
+            "cargo-only"
         );
     }
 }

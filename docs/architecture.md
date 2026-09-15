@@ -209,6 +209,15 @@ available and not already marked, and `v` alternates show all/hide all.
 according to their rendered width. Combined a/n all/none hints retain separate
 mouse targets for each operation.
 
+After planning finishes, `/` enters package-name search within the current
+tab/view, including rows outside the viewport. Search uses case-insensitive
+substring matching and moves the cursor without filtering rows. Editing jumps
+to the first match; Up/Down cycles matches with wrapping. An empty query leaves
+the cursor unchanged, as does a query with no matches, which shows `No matches`.
+Backspace removes the last character. Esc or Enter exits search and keeps the
+cursor position. While searching, characters such as j/k are query text, Tab
+and mouse input are ignored, and Ctrl-C still interrupts.
+
 ## Removal Semantics
 
 Managers own native uninstall command construction and retain normal dependency

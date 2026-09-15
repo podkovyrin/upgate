@@ -16,7 +16,7 @@ pub(super) struct InteractiveSelectionScreen {
     pub(super) command_log: Vec<String>,
     pub(super) command_log_scroll_from_bottom: usize,
     pub(super) trace_commands: bool,
-    planning_finished: bool,
+    pub(super) planning_finished: bool,
     planning_failure: Option<String>,
     pub(super) spinner_tick: usize,
     pub(super) active_tab: usize,
@@ -24,6 +24,7 @@ pub(super) struct InteractiveSelectionScreen {
     cursor: Option<usize>,
     pub(super) table_offset: usize,
     pub(super) show_all: bool,
+    pub(super) search_query: Option<String>,
     target_picker: Option<TargetPickerState>,
     confirmation_dialog: Option<ConfirmationDialogState>,
     pub(super) confirmation_scroll: u16,
@@ -124,6 +125,7 @@ impl InteractiveSelectionScreen {
             cursor: None,
             table_offset: 0,
             show_all: false,
+            search_query: None,
             target_picker: None,
             confirmation_dialog: None,
             confirmation_scroll: 0,
@@ -319,8 +321,65 @@ impl InteractiveSelectionScreen {
             return self.handle_picker_input(input);
         }
 
+        if let Some(query) = &mut self.search_query {
+            match input {
+                SelectionInput::SearchChar(ch) => query.push(ch),
+                SelectionInput::SearchBackspace => {
+                    query.pop();
+                }
+                SelectionInput::ExitSearch => {
+                    self.search_query = None;
+                    self.feedback = None;
+                    return Ok(SelectionControl::Continue);
+                }
+                SelectionInput::Interrupt => return Ok(SelectionControl::Interrupt),
+                SelectionInput::Up | SelectionInput::Down => {}
+                _ => return Ok(SelectionControl::Continue),
+            }
+            self.feedback = None;
+            if query.is_empty() {
+                return Ok(SelectionControl::Continue);
+            }
+            let query = query.to_lowercase();
+            let matches: Vec<_> = self
+                .visible_row_refs()
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, visible)| {
+                    self.row(visible)
+                        .package_name
+                        .as_str()
+                        .to_lowercase()
+                        .contains(&query)
+                        .then_some(index)
+                })
+                .collect();
+            if let Some(&first) = matches.first() {
+                self.cursor = Some(match (input, self.cursor) {
+                    (SelectionInput::Down, Some(cursor)) => matches
+                        .iter()
+                        .copied()
+                        .find(|index| *index > cursor)
+                        .unwrap_or(first),
+                    (SelectionInput::Up, Some(cursor)) => matches
+                        .iter()
+                        .copied()
+                        .rev()
+                        .find(|index| *index < cursor)
+                        .unwrap_or_else(|| *matches.last().unwrap()),
+                    _ => first,
+                });
+            } else {
+                self.feedback = Some("No matches".to_owned());
+            }
+            return Ok(SelectionControl::Continue);
+        }
+
         self.feedback = None;
         match input {
+            SelectionInput::OpenSearch if self.planning_finished => {
+                self.search_query = Some(String::new());
+            }
             SelectionInput::ToggleRemoval => self.toggle_removal()?,
             SelectionInput::Up => self.move_cursor_up(),
             SelectionInput::Down => self.move_cursor_down(),
@@ -343,6 +402,10 @@ impl InteractiveSelectionScreen {
                 self.confirmation_dialog = Some(ConfirmationDialogState);
             }
             SelectionInput::Confirm
+            | SelectionInput::OpenSearch
+            | SelectionInput::SearchChar(_)
+            | SelectionInput::SearchBackspace
+            | SelectionInput::ExitSearch
             | SelectionInput::Ignore
             | SelectionInput::PickerUp
             | SelectionInput::PickerDown
@@ -468,7 +531,11 @@ impl InteractiveSelectionScreen {
             SelectionInput::PickerNextRow => self.move_picker_to_row(1),
             SelectionInput::RecommendedTarget => self.choose_recommended_target()?,
             SelectionInput::PickerConfirm => self.confirm_picker_target()?,
-            SelectionInput::Up
+            SelectionInput::OpenSearch
+            | SelectionInput::SearchChar(_)
+            | SelectionInput::SearchBackspace
+            | SelectionInput::ExitSearch
+            | SelectionInput::Up
             | SelectionInput::Down
             | SelectionInput::NextTab
             | SelectionInput::PreviousTab
