@@ -375,10 +375,11 @@ fn build_manager_plan(
 }
 
 fn execution_report_has_failures(report: &ExecutionReport) -> bool {
-    report
-        .items
-        .iter()
-        .any(|item| matches!(item.status, ExecutionStatus::Failed { .. }))
+    !report.failed_groups.is_empty()
+        || report
+            .items
+            .iter()
+            .any(|item| matches!(item.status, ExecutionStatus::Failed { .. }))
 }
 
 const fn manager_mode_allows_run(mode: ManagerMode, is_apply: bool) -> bool {

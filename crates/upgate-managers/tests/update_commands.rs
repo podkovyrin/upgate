@@ -57,7 +57,7 @@ fn native_brew_item(package: &str, kind: ExecutionTargetKind) -> ResolvedExecuti
 }
 
 #[test]
-fn brew_runs_each_selected_item_in_its_own_scoped_command() {
+fn brew_keeps_formula_and_single_cask_results_independent() {
     let manager = BrewManager::new(config("brew"));
     let plan = ResolvedExecutionPlan {
         intents: vec![
@@ -86,6 +86,96 @@ fn brew_runs_each_selected_item_in_its_own_scoped_command() {
         "brew upgrade --cask docker"
     );
     assert!(commands.iter().all(|command| command.items.len() == 1));
+}
+
+#[test]
+fn brew_batches_selected_casks_and_reports_partial_failure_without_item_claims() {
+    use upgate_execution::{ExecutionStatus, execute_commands};
+    let manager = BrewManager::new(config("brew"));
+    let plan = ResolvedExecutionPlan {
+        intents: vec![
+            ExecutionCommandIntent::NativeSelected(native_brew_item(
+                "docker",
+                ExecutionTargetKind::BrewCask,
+            )),
+            ExecutionCommandIntent::NativeSelected(native_brew_item(
+                "btop",
+                ExecutionTargetKind::BrewFormula,
+            )),
+            ExecutionCommandIntent::NativeSelected(native_brew_item(
+                "firefox",
+                ExecutionTargetKind::BrewCask,
+            )),
+            ExecutionCommandIntent::Remove(ResolvedRemovalItem {
+                plan_item_id: PlanItemId::new("brew:old-app").unwrap(),
+                package_name: PackageName::new("old-app").unwrap(),
+                installed_version: VersionText::new("1.0.0").unwrap(),
+                target: RemovalTarget::BrewCask,
+            }),
+        ],
+    };
+    let commands = manager
+        .commands_for_execution_plan(&ProcessRunner::fake([]), &Env::fixed([]), &plan)
+        .unwrap();
+    assert_eq!(
+        commands
+            .iter()
+            .map(|command| command.command.to_string())
+            .collect::<Vec<_>>(),
+        [
+            "brew upgrade --formula btop",
+            "brew upgrade --cask docker firefox",
+            "brew uninstall --cask -- old-app",
+        ]
+    );
+    for exit in [0, 256] {
+        let process = ProcessRunner::fake([
+            Ok(CommandOutput::from_parts(ExitStatus::from_raw(0), "", "")),
+            Ok(CommandOutput::from_parts(
+                ExitStatus::from_raw(exit),
+                "docker upgraded",
+                "firefox installer failed",
+            )),
+            Ok(CommandOutput::from_parts(ExitStatus::from_raw(0), "", "")),
+        ]);
+        let report = execute_commands(
+            ManagerId::new("brew").unwrap(),
+            commands.clone(),
+            &process,
+            None,
+        )
+        .unwrap();
+        assert!(
+            report
+                .items
+                .iter()
+                .all(|item| matches!(item.status, ExecutionStatus::Succeeded { .. }))
+        );
+        if exit == 0 {
+            assert_eq!(report.items.len(), 4);
+            assert!(report.failed_groups.is_empty());
+        } else {
+            assert_eq!(
+                report
+                    .items
+                    .iter()
+                    .map(|item| item.package_name.as_str())
+                    .collect::<Vec<_>>(),
+                ["btop", "old-app"]
+            );
+            assert_eq!(report.failed_groups.len(), 1);
+            let group = &report.failed_groups[0];
+            assert_eq!(
+                group
+                    .items
+                    .iter()
+                    .map(|item| item.package_name.as_str())
+                    .collect::<Vec<_>>(),
+                ["docker", "firefox"]
+            );
+            assert!(group.detail.contains("firefox installer failed"));
+        }
+    }
 }
 
 #[test]

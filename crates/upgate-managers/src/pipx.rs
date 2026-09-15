@@ -451,12 +451,14 @@ fn commands_for_execution_plan(
                     CommandSpec::new("pipx", ["uninstall", "--", item.package_name.as_str()])
                         .mutating();
                 commands.push(ExecutionCommand {
+                    failure_group: None,
                     items: vec![ExecutionCommandItem::from(item)],
                     command,
                 });
             }
             ExecutionCommandIntent::Exact(item) => {
                 commands.push(ExecutionCommand {
+                    failure_group: None,
                     items: vec![ExecutionCommandItem::from(item)],
                     command: exact_command_for_item(item)?,
                 });

@@ -40,7 +40,7 @@ pub fn apply_execution_report_table(
 ) -> OutcomeTable {
     let mut rows = unselected_update_rows(plan, selection);
 
-    if report.items.is_empty() && rows.is_empty() {
+    if report.items.is_empty() && report.failed_groups.is_empty() && rows.is_empty() {
         rows.push(
             OutcomeRow::manager(OutcomeStatusView::Current, report.manager_id.clone())
                 .with_note(OutcomeNote::normal("no selected updates"))
@@ -49,6 +49,22 @@ pub fn apply_execution_report_table(
     }
 
     rows.extend(execution_report_rows(report));
+    for group in &report.failed_groups {
+        let packages = group
+            .items
+            .iter()
+            .map(|item| item.package_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        rows.push(
+            OutcomeRow::manager(OutcomeStatusView::Error, report.manager_id.clone()).with_note(
+                OutcomeNote::normal(format!(
+                    "Some {} failed ({packages}); individual outcomes are unknown. {}",
+                    group.label, group.detail
+                )),
+            ),
+        );
+    }
     OutcomeTable::new(rows)
 }
 pub fn render_batch_table(table: &OutcomeTable, theme: OutputTheme) -> String {

@@ -191,8 +191,18 @@ pub fn resolve_selection_for_execution(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionReport {
+    pub failed_groups: Vec<ExecutionGroupFailure>,
     pub manager_id: ManagerId,
     pub items: Vec<ExecutionItemResult>,
+}
+
+/// A failed command whose individual item outcomes cannot be inferred from its exit status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionGroupFailure {
+    pub label: String,
+    pub items: Vec<ExecutionCommandItem>,
+    pub command: String,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +229,9 @@ pub enum ExecutionStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Concrete command plus the selected items that should receive its result.
 pub struct ExecutionCommand {
+    /// Report failures once for this group instead of assigning failure to each item.
+    /// Success and skipped mutations still apply to every selected item.
+    pub failure_group: Option<String>,
     pub items: Vec<ExecutionCommandItem>,
     pub command: CommandSpec,
 }
@@ -270,6 +283,7 @@ pub fn execute_commands(
     mut on_command_start: Option<&mut dyn FnMut(&CommandSpec)>,
 ) -> Result<ExecutionReport, InfraError> {
     let mut items = Vec::new();
+    let mut failed_groups = Vec::new();
     for command in commands {
         if let Some(listener) = &mut on_command_start {
             listener(&command.command);
@@ -281,10 +295,21 @@ pub fn execute_commands(
                 skipped_mutation: output.skipped_mutation(),
             },
             Err(err) if err.is_interruption() => return Err(err),
-            Err(err) => ExecutionStatus::Failed {
-                command: command_display,
-                detail: err.to_string(),
-            },
+            Err(err) => {
+                if let Some(label) = command.failure_group {
+                    failed_groups.push(ExecutionGroupFailure {
+                        label,
+                        items: command.items,
+                        command: command_display,
+                        detail: err.to_string(),
+                    });
+                    continue;
+                }
+                ExecutionStatus::Failed {
+                    command: command_display,
+                    detail: err.to_string(),
+                }
+            }
         };
         for item in command.items {
             items.push(ExecutionItemResult {
@@ -297,7 +322,11 @@ pub fn execute_commands(
         }
     }
 
-    Ok(ExecutionReport { manager_id, items })
+    Ok(ExecutionReport {
+        failed_groups,
+        manager_id,
+        items,
+    })
 }
 
 fn selected_execution_items(

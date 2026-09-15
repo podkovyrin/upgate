@@ -68,6 +68,7 @@ fn apply_output_only_shows_selected_results_unless_verbose() {
     )
     .expect("valid selection");
     let report = ExecutionReport {
+        failed_groups: Vec::new(),
         manager_id: manager_id(),
         items: vec![
             ExecutionItemResult {
@@ -116,6 +117,7 @@ fn apply_output_only_reports_an_empty_selection_when_verbose() {
     let selection = PlanSelection::new(&plan, Vec::new(), UpdateSelectionPolicy::include_all())
         .expect("valid selection");
     let report = ExecutionReport {
+        failed_groups: Vec::new(),
         manager_id: manager_id(),
         items: Vec::new(),
     };
@@ -178,6 +180,7 @@ fn removal_reports_distinguish_preview_success_and_failure_without_update_target
         ),
     ] {
         let report = ExecutionReport {
+            failed_groups: Vec::new(),
             manager_id: manager_id(),
             items: vec![ExecutionItemResult {
                 plan_item_id: id.clone(),
@@ -193,5 +196,63 @@ fn removal_reports_distinguish_preview_success_and_failure_without_update_target
         );
         assert!(output.contains(label), "{output}");
         assert!(!output.contains("Target"), "{output}");
+    }
+}
+
+#[test]
+fn failed_group_reports_names_and_diagnostics_once_without_individual_results() {
+    use upgate_execution::{ExecutionAction, ExecutionCommandItem, ExecutionGroupFailure};
+    let plan = UpdatePlan::new(
+        manager_id(),
+        vec![update_item("docker"), update_item("firefox")],
+    )
+    .unwrap();
+    let selection = PlanSelection::new(
+        &plan,
+        plan.items
+            .iter()
+            .map(|item| SelectedItem::recommended(item.id().clone()))
+            .collect(),
+        UpdateSelectionPolicy::include_all(),
+    )
+    .unwrap();
+    let report = ExecutionReport {
+        failed_groups: vec![ExecutionGroupFailure {
+            label: "cask upgrades".into(),
+            command: "brew upgrade --cask docker firefox".into(),
+            detail: "firefox installer failed".into(),
+            items: plan
+                .items
+                .iter()
+                .map(|item| ExecutionCommandItem {
+                    plan_item_id: item.id().clone(),
+                    package_name: item.package_name().clone(),
+                    installed_version: version("1.0.0"),
+                    action: ExecutionAction::Update(ResolvedExecutionTarget::Known(version(
+                        "2.0.0",
+                    ))),
+                })
+                .collect(),
+        }],
+        manager_id: manager_id(),
+        items: Vec::new(),
+    };
+    for verbose in [false, true] {
+        let output = render_batch_table(
+            &apply_execution_report_table(&report, &plan, &selection),
+            theme(verbose),
+        );
+        assert!(
+            output.contains("Some cask upgrades failed (docker, firefox)"),
+            "{output}"
+        );
+        assert!(
+            output.contains("individual outcomes are unknown"),
+            "{output}"
+        );
+        assert_eq!(output.matches("firefox installer failed").count(), 1);
+        assert!(!output.contains("no selected updates"), "{output}");
+        assert!(!output.contains("1.0.0"), "{output}");
+        assert!(!output.contains("2.0.0"), "{output}");
     }
 }

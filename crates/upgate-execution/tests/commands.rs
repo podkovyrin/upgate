@@ -37,6 +37,7 @@ fn reports_only_concrete_execution_commands_as_they_start() {
 
 fn execution_command(id: &str, package: &str, program: &str) -> ExecutionCommand {
     ExecutionCommand {
+        failure_group: None,
         items: vec![ExecutionCommandItem {
             plan_item_id: PlanItemId::new(id).expect("valid plan item id"),
             package_name: PackageName::new(package).expect("valid package"),

@@ -14,8 +14,7 @@ use upgate_domain::{
     VersionScheme, VersionText,
 };
 use upgate_execution::{
-    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionItem,
-    ResolvedExecutionPlan,
+    ExecutionCommand, ExecutionCommandIntent, ExecutionCommandItem, ResolvedExecutionPlan,
 };
 use upgate_infra::{
     CommandCheck, CommandSpec, Env, HttpClient, HttpHeader, InfraError, ProcessRunner,
@@ -568,6 +567,7 @@ fn commands_for_execution_plan(
     plan: &ResolvedExecutionPlan,
 ) -> Result<Vec<ExecutionCommand>, BrewError> {
     let mut commands = Vec::new();
+    let mut casks = Vec::new();
     for intent in &plan.intents {
         match intent {
             ExecutionCommandIntent::Remove(item) => {
@@ -586,12 +586,29 @@ fn commands_for_execution_plan(
                 )
                 .mutating();
                 commands.push(ExecutionCommand {
+                    failure_group: None,
                     items: vec![ExecutionCommandItem::from(item)],
                     command,
                 });
             }
             ExecutionCommandIntent::NativeSelected(item) => {
-                commands.push(scoped_upgrade_command(item)?);
+                if item.execution_target_kind == ExecutionTargetKind::BrewCask {
+                    casks.push(item);
+                } else if item.execution_target_kind == ExecutionTargetKind::BrewFormula {
+                    commands.push(ExecutionCommand {
+                        failure_group: None,
+                        items: vec![ExecutionCommandItem::from(item)],
+                        command: CommandSpec::new(
+                            "brew",
+                            ["upgrade", "--formula", item.package_name.as_str()],
+                        )
+                        .mutating(),
+                    });
+                } else {
+                    return Err(BrewError::UnsupportedCommandIntent(
+                        "standard-target-kind".to_owned(),
+                    ));
+                }
             }
             ExecutionCommandIntent::NativeGlobal(_) => {
                 return Err(BrewError::UnsupportedCommandIntent(
@@ -614,6 +631,30 @@ fn commands_for_execution_plan(
         }
     }
 
+    if !casks.is_empty() {
+        let mut args = vec!["upgrade".to_owned(), "--cask".to_owned()];
+        args.extend(
+            casks
+                .iter()
+                .map(|item| item.package_name.as_str().to_owned()),
+        );
+        let command = ExecutionCommand {
+            failure_group: (casks.len() > 1).then(|| "cask upgrades".to_owned()),
+            items: casks.into_iter().map(ExecutionCommandItem::from).collect(),
+            command: CommandSpec::new("brew", args).mutating(),
+        };
+        // Selected updates must precede removals, including when both are requested.
+        let position = commands
+            .iter()
+            .position(|command| {
+                command
+                    .items
+                    .iter()
+                    .any(|item| item.action == upgate_execution::ExecutionAction::Remove)
+            })
+            .unwrap_or(commands.len());
+        commands.insert(position, command);
+    }
     Ok(commands)
 }
 
@@ -1067,24 +1108,6 @@ const fn execution_target_kind(kind: &BrewPackageKind) -> ExecutionTargetKind {
         BrewPackageKind::Formula => ExecutionTargetKind::BrewFormula,
         BrewPackageKind::Cask => ExecutionTargetKind::BrewCask,
     }
-}
-
-fn scoped_upgrade_command(item: &ResolvedExecutionItem) -> Result<ExecutionCommand, BrewError> {
-    let mut args = vec!["upgrade".to_owned()];
-    match item.execution_target_kind {
-        ExecutionTargetKind::BrewFormula => args.push("--formula".to_owned()),
-        ExecutionTargetKind::BrewCask => args.push("--cask".to_owned()),
-        ExecutionTargetKind::Standard => {
-            return Err(BrewError::UnsupportedCommandIntent(
-                "standard-target-kind".to_owned(),
-            ));
-        }
-    }
-    args.push(item.package_name.as_str().to_owned());
-    Ok(ExecutionCommand {
-        items: vec![ExecutionCommandItem::from(item)],
-        command: CommandSpec::new("brew", args).mutating(),
-    })
 }
 
 fn adapter_error(err: &BrewError) -> ManagerAdapterError {

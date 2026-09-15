@@ -464,12 +464,14 @@ fn commands_for_execution_plan(
                 )
                 .mutating();
                 commands.push(ExecutionCommand {
+                    failure_group: None,
                     items: vec![ExecutionCommandItem::from(item)],
                     command,
                 });
             }
             ExecutionCommandIntent::ResolverNative(item) => {
                 commands.push(ExecutionCommand {
+                    failure_group: None,
                     items: vec![ExecutionCommandItem::from(item)],
                     command: tool_install_command(
                         &item.package_name,

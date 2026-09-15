@@ -79,7 +79,15 @@ Apply reports selected items from command exit status; it does not perform a
 post-mutation rescan. Managers must therefore give independently fallible item
 updates separate commands. A command may map to several selected items only
 when it is one manager-level operation whose exit status applies to the whole
-selection. The same rule applies to removals, whose result identifies the action
+selection. Brew cask upgrades are a narrow exception: all selected casks share
+one `brew upgrade --cask ...` invocation to reduce repeated password prompts.
+On success, selected casks receive successful results. On failure, execution
+reports one failed group with the selected identities and native diagnostics;
+individual outcomes are unknown and are not reported as successes or failures.
+A single selected cask retains item-level reporting. Formula upgrades and all
+removals remain individual commands. Cask batching also applies when removals
+are selected, without including removal targets in the upgrade command.
+The same rule applies to removals, whose result identifies the action
 without inventing a target version. All selected updates run before selected
 removals across managers. A manager with selected removals uses item-specific
 update commands instead of a manager-wide update shortcut.

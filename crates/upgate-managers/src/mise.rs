@@ -602,12 +602,14 @@ pub fn commands_for_execution_plan(
                 )
                 .mutating();
                 commands.push(ExecutionCommand {
+                    failure_group: None,
                     items: vec![ExecutionCommandItem::from(item)],
                     command,
                 });
             }
             ExecutionCommandIntent::ResolverNative(item) => {
                 commands.push(ExecutionCommand {
+                    failure_group: None,
                     items: vec![ExecutionCommandItem::from(item)],
                     command: selected_upgrade_command(
                         &min_age_arg,
@@ -619,6 +621,7 @@ pub fn commands_for_execution_plan(
             }
             ExecutionCommandIntent::ResolverNativeGlobal(items) => {
                 commands.push(ExecutionCommand {
+                    failure_group: None,
                     items: items.iter().map(ExecutionCommandItem::from).collect(),
                     command: global_upgrade_command(&min_age_arg),
                 });

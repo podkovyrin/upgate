@@ -389,6 +389,7 @@ fn commands_for_execution_plan(
                     CommandSpec::new("bun", ["remove", "-g", "--", item.package_name.as_str()])
                         .mutating();
                 commands.push(ExecutionCommand {
+                    failure_group: None,
                     items: vec![ExecutionCommandItem::from(item)],
                     command,
                 });
@@ -405,6 +406,7 @@ fn commands_for_execution_plan(
             }
             ExecutionCommandIntent::NativeGlobal(items) => {
                 commands.push(ExecutionCommand {
+                    failure_group: None,
                     items: items.iter().map(ExecutionCommandItem::from).collect(),
                     command: global_update_command(min_release_age),
                 });
@@ -414,6 +416,7 @@ fn commands_for_execution_plan(
                     BunError::UnsupportedCommandIntent("exact-without-known-target".to_owned())
                 })?;
                 commands.push(ExecutionCommand {
+                    failure_group: None,
                     items: vec![ExecutionCommandItem::from(item)],
                     command: exact_command(
                         &item.package_name,
@@ -425,6 +428,7 @@ fn commands_for_execution_plan(
             }
             ExecutionCommandIntent::NativeSelected(item) => {
                 commands.push(ExecutionCommand {
+                    failure_group: None,
                     items: vec![ExecutionCommandItem::from(item)],
                     command: selected_native_update_command(
                         &item.package_name,

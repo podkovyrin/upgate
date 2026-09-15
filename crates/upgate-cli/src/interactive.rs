@@ -489,9 +489,9 @@ fn execute_confirmed_interactive_apply_streaming(
     }
 
     let process = if trace_commands {
-        process.clone().with_command_start_listener(|command| {
-            eprintln!("$ {command}");
-        })
+        process
+            .clone()
+            .with_command_start_listener(|command| eprintln!("$ {command}"))
     } else {
         process.clone()
     };
@@ -508,13 +508,11 @@ fn execute_confirmed_interactive_apply_streaming(
         match commands {
             Ok(commands) => {
                 if commands.iter().any(|command| {
-                    let removes = command
-                        .items
+                    let items = &command.items;
+                    items
                         .iter()
-                        .any(|item| item.action == ExecutionAction::Remove);
-                    removes
-                        && command
-                            .items
+                        .any(|item| item.action == ExecutionAction::Remove)
+                        && items
                             .iter()
                             .any(|item| item.action != ExecutionAction::Remove)
                 }) {
@@ -540,6 +538,7 @@ fn execute_confirmed_interactive_apply_streaming(
                     updates,
                     removals,
                     report: ExecutionReport {
+                        failed_groups: Vec::new(),
                         manager_id,
                         items: Vec::new(),
                     },
@@ -568,18 +567,18 @@ fn execute_confirmed_interactive_apply_streaming(
                 trace_commands,
             )?;
             had_error |= execution_report_has_failures(&report);
-            pending_manager.report.items.extend(report.items);
+            let accumulated = &mut pending_manager.report;
+            accumulated.items.extend(report.items);
+            accumulated.failed_groups.extend(report.failed_groups);
         }
     }
-    for pending_manager in pending {
-        table.rows.extend(
-            apply_execution_report_table(
-                &pending_manager.report,
-                &pending_manager.manager.plan,
-                &pending_manager.manager.selection,
-            )
-            .rows,
-        );
+    for PendingManager {
+        manager, report, ..
+    } in pending
+    {
+        table
+            .rows
+            .extend(apply_execution_report_table(&report, &manager.plan, &manager.selection).rows);
     }
     let output = render_batch_table(&table, theme);
     if had_error {
