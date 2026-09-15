@@ -731,6 +731,12 @@ fn npm_release_lookup(
     package: &str,
     version: Option<&VersionText>,
 ) -> ReleaseLookupResult {
+    let package_name = match PackageName::new(package) {
+        Ok(package) => package,
+        Err(err) => {
+            return ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(err.to_string()));
+        }
+    };
     let spec = version.map_or_else(
         || package.to_owned(),
         |version| format!("{package}@{version}"),
@@ -750,21 +756,13 @@ fn npm_release_lookup(
             return ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(err.to_string()));
         }
     };
-    match npm_time_map_to_timeline(raw) {
-        Ok(timeline) if timeline.versions.is_empty() => ReleaseLookupResult::MissingMetadata,
+    match crate::npm::parse_npm_time_json(&package_name, raw) {
         Ok(timeline) => ReleaseLookupResult::Known(timeline),
+        Err(crate::npm::NpmError::MissingReleaseMetadata(_)) => {
+            ReleaseLookupResult::MissingMetadata
+        }
         Err(err) => ReleaseLookupResult::LookupFailed(ReleaseLookupError::new(err.to_string())),
     }
-}
-
-fn npm_time_map_to_timeline(raw: &str) -> Result<ReleaseTimeline, MiseError> {
-    let map: BTreeMap<String, String> =
-        serde_json::from_str(raw).map_err(|err| MiseError::Json(err.to_string()))?;
-    let mut releases = Vec::new();
-    for (version, timestamp) in map {
-        releases.push(release_entry(version, timestamp)?);
-    }
-    Ok(ReleaseTimeline::new(releases))
 }
 
 fn mise_release_timeline(
@@ -1150,6 +1148,38 @@ fn adapter_error(err: &MiseError) -> ManagerAdapterError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn npm_release_lookup_accepts_plain_and_wrapped_time_maps() {
+        let timestamps = r#"{
+            "created": "2025-04-16T17:04:25.106Z",
+            "modified": "2026-09-15T02:19:32.938Z",
+            "0.153.4": "2026-09-05T12:00:00Z"
+        }"#;
+        for raw in [timestamps.to_owned(), format!("[{timestamps}]")] {
+            let process = ProcessRunner::fake([Ok(upgate_infra::CommandOutput::from_parts(
+                std::process::ExitStatus::default(),
+                raw,
+                Vec::new(),
+            ))]);
+            let lookup = lookup_release_for_tool(
+                &process,
+                &HttpClient::fake([]),
+                &Env::fixed([]),
+                &PackageName::new("npm:@openai/codex").unwrap(),
+                Some(&VersionText::new("0.153.4").unwrap()),
+            );
+            let ReleaseLookupResult::Known(timeline) = lookup else {
+                panic!("expected npm release timestamps, got {lookup:?}");
+            };
+            assert_eq!(timeline.versions.len(), 1);
+            assert_eq!(timeline.versions[0].version.as_str(), "0.153.4");
+            assert_eq!(
+                timeline.versions[0].published_at,
+                ReleaseTimestamp::new(SystemTime::UNIX_EPOCH + Duration::from_secs(1_788_609_600))
+            );
+        }
+    }
 
     #[test]
     fn parse_upgrade_dry_run_keeps_uninstall_install_pair_versions() {

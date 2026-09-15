@@ -30,7 +30,7 @@ const MANAGER_ID: &str = "npm";
 const NPM_MAX_PARALLEL_CHECKS: usize = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum NpmError {
+pub(crate) enum NpmError {
     Infra(String),
     Interrupted(String),
     Json(String),
@@ -338,7 +338,10 @@ fn lookup_release(
 /// # Errors
 ///
 /// Returns an error when JSON or timestamps are invalid, or no version timestamps are present.
-fn parse_npm_time_json(package: &PackageName, raw: &str) -> Result<ReleaseTimeline, NpmError> {
+pub(crate) fn parse_npm_time_json(
+    package: &PackageName,
+    raw: &str,
+) -> Result<ReleaseTimeline, NpmError> {
     let parsed: NpmTimeJson =
         serde_json::from_str(raw).map_err(|err| NpmError::Json(err.to_string()))?;
     let timestamps = match parsed {
