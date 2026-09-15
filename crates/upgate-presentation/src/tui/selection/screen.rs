@@ -84,13 +84,13 @@ pub(super) struct ConfirmationDialogState;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ConfirmationManagerSummary {
     pub(super) manager: String,
-    pub(super) selected_count: usize,
+    pub(super) update_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ConfirmationSummary {
     pub(super) selected_total: usize,
-    pub(super) removals: Vec<String>,
+    pub(super) removals: Vec<(String, String)>,
     pub(super) managers: Vec<ConfirmationManagerSummary>,
 }
 
@@ -435,14 +435,23 @@ impl InteractiveSelectionScreen {
             .managers
             .iter()
             .filter_map(|manager| {
-                let selected_count = manager.state.selected_count();
-                (selected_count > 0).then(|| ConfirmationManagerSummary {
+                let update_count = manager
+                    .state
+                    .rows()
+                    .iter()
+                    .filter(|row| manager.state.selected_target(&row.plan_item_id).is_some())
+                    .count();
+                (update_count > 0).then(|| ConfirmationManagerSummary {
                     manager: manager.manager_id.to_string(),
-                    selected_count,
+                    update_count,
                 })
             })
             .collect::<Vec<_>>();
-        let selected_total = managers.iter().map(|manager| manager.selected_count).sum();
+        let selected_total = self
+            .managers
+            .iter()
+            .map(|manager| manager.state.selected_count())
+            .sum();
 
         let removals = self
             .managers
@@ -453,7 +462,24 @@ impl InteractiveSelectionScreen {
                     .rows()
                     .iter()
                     .filter(|row| manager.state.is_removed(&row.plan_item_id))
-                    .map(|row| format!("{} / {}", manager.manager_id, row.removal_label()))
+                    .filter_map(|row| {
+                        use upgate_domain::{RemovalSupport, RemovalTarget};
+                        let RemovalSupport::Supported(target) = &row.removal else {
+                            return None;
+                        };
+                        let target = match target {
+                            RemovalTarget::Package => row.package_name.to_string(),
+                            RemovalTarget::Version => {
+                                format!("{}@{}", row.package_name, row.installed_version)
+                            }
+                            RemovalTarget::BrewFormula => format!("formula {}", row.package_name),
+                            RemovalTarget::BrewCask => format!("cask {}", row.package_name),
+                            RemovalTarget::Binary(path) => {
+                                format!("binary {} ({})", row.package_name, path.display())
+                            }
+                        };
+                        Some((manager.manager_id.to_string(), target))
+                    })
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
@@ -1314,13 +1340,23 @@ mod removal_tests {
 
     #[test]
     fn removal_details_and_confirmation_show_binary_path_and_brew_kind() {
-        for (target, expected) in [
+        for (target, expected, confirmation) in [
             (
                 RemovalTarget::Binary("/opt/go/bin/tool-0".into()),
                 "Remove binary tool-0 (/opt/go/bin/tool-0)",
+                "mise: binary tool-0 (/opt/go/bin/tool-0)",
             ),
-            (RemovalTarget::BrewFormula, "Uninstall formula tool-0"),
-            (RemovalTarget::BrewCask, "Uninstall cask tool-0"),
+            (
+                RemovalTarget::BrewFormula,
+                "Uninstall formula tool-0",
+                "mise: formula tool-0",
+            ),
+            (
+                RemovalTarget::BrewCask,
+                "Uninstall cask tool-0",
+                "mise: cask tool-0",
+            ),
+            (RemovalTarget::Package, "Uninstall tool-0", "mise: tool-0"),
         ] {
             let mut screen = screen(1);
             let mut rows = screen.managers[0].state.rows().to_vec();
@@ -1340,7 +1376,7 @@ mod removal_tests {
             assert!(render(&mut screen, 100, 30).contains(expected));
             screen.handle_input(SelectionInput::PickerConfirm).unwrap();
             screen.handle_input(SelectionInput::Confirm).unwrap();
-            assert!(render(&mut screen, 100, 30).contains(expected));
+            assert!(render(&mut screen, 100, 30).contains(confirmation));
         }
     }
 
@@ -1372,8 +1408,16 @@ mod removal_tests {
         );
         screen.handle_input(SelectionInput::Confirm).unwrap();
         let text = render(&mut screen, 100, 30);
-        assert!(text.contains("0 updates · 1 removals"));
-        assert!(text.contains("mise / Uninstall tool-0@1.0.0"));
+        assert!(text.contains("Update:") && text.contains("No updates selected."));
+        let removal = text.find("mise: tool-0@1.0.0").unwrap();
+        let footer = text.find("C confirm").unwrap();
+        assert!(text[removal..footer].contains("0 updates · 1 removals"));
+        assert!(!text.contains("mise: 1"));
+        assert!(text.contains("C confirm") && text.contains("esc  back"));
+        assert!(!text.contains("|  C confirm"));
+        assert!(!text.contains("Removal clears"));
+        assert!(!text.contains("scroll review"));
+        assert!(!text.contains("quit"));
         screen.close_confirmation_dialog();
         screen.handle_input(SelectionInput::ToggleCurrent).unwrap();
         assert!(screen.selection_drafts()[0].selected_items.is_empty());
@@ -1383,6 +1427,39 @@ mod removal_tests {
             screen.selection_drafts()[0].selection_policy,
             UpdateSelectionPolicy::include_all()
         );
+    }
+
+    #[test]
+    fn confirmation_separates_update_counts_from_removals_and_ends_with_totals() {
+        let mut screen = screen(2);
+        let manager = &mut screen.managers[0];
+        let mut rows = manager.state.rows().to_vec();
+        rows[0].status = SelectionRowStatus::Update;
+        rows[0].initially_selected = true;
+        rows[0].target_options = vec![TargetOption::Recommended {
+            target_version: VersionText::new("2.0.0").unwrap(),
+            note_parts: Vec::new(),
+        }];
+        let removal_id = rows[1].plan_item_id.clone();
+        manager.state = InteractiveSelectionState::new(
+            SelectionView {
+                manager_id: manager.manager_id.clone(),
+                rows,
+            },
+            UpdateSelectionPolicy::include_all(),
+        );
+        manager.state.toggle_removal(&removal_id).unwrap();
+        screen.handle_input(SelectionInput::Confirm).unwrap();
+        let text = render(&mut screen, 100, 30);
+        let update = text.find("Update:").unwrap();
+        let update_count = text.find("mise: 1").unwrap();
+        let remove = text.find("Remove:").unwrap();
+        let removal = text.find("mise: tool-1@1.0.0").unwrap();
+        let totals = removal + text[removal..].find("1 updates · 1 removals").unwrap();
+        let footer = text.find("C confirm").unwrap();
+        assert!(update < update_count && update_count < remove);
+        assert!(remove < removal && removal < totals && totals < footer);
+        assert!(!text.contains("mise: 2"));
     }
 
     #[test]
@@ -1434,7 +1511,6 @@ mod removal_tests {
         screen.confirmation_scroll = u16::MAX;
         let text = render(&mut screen, 44, 25);
         assert!(text.contains("tool-19-binary)"), "{text}");
-        assert!(text.contains("scroll review"), "{text}");
     }
 
     #[test]

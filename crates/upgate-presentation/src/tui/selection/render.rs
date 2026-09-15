@@ -36,10 +36,6 @@ const CONFIRMATION_FOOTER_KEYS: &[KeyBinding<'static>] = &[
         key: "esc",
         label: "back",
     },
-    KeyBinding {
-        key: "q",
-        label: "quit",
-    },
 ];
 
 #[derive(Debug)]
@@ -768,47 +764,41 @@ fn confirmation_dialog_lines(
     summary: &ConfirmationSummary,
     theme: &TuiTheme,
 ) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(vec![
-        Span::styled("Apply: ", theme.header),
-        Span::raw(format!(
-            "{} updates · {} removals",
-            summary.selected_total - summary.removals.len(),
-            summary.removals.len()
-        )),
-    ])];
-
+    let mut lines = vec![Line::from(Span::styled("Update:", theme.header))];
     if summary.managers.is_empty() {
-        lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
-            "No managers selected.",
+            "No updates selected.",
             theme.muted,
         )));
-        return lines;
     }
-
-    lines.push(Line::raw(""));
     for manager in &summary.managers {
         lines.push(Line::from(vec![
-            Span::styled(manager.manager.clone(), theme.header),
-            Span::raw(format!(": {}", manager.selected_count)),
+            Span::styled(manager.manager.clone(), theme.emphasis(theme.normal)),
+            Span::raw(format!(": {}", manager.update_count)),
         ]));
     }
 
     if !summary.removals.is_empty() {
         lines.push(Line::raw(""));
-        lines.push(Line::raw("Remove:"));
-        lines.extend(summary.removals.iter().cloned().map(Line::raw));
-        lines.push(Line::raw(""));
-        lines.push(Line::raw(
-            "Removal clears the item’s upgate selection preference.",
-        ));
-        lines.push(Line::raw("↑/↓ scroll review"));
+        lines.push(Line::from(Span::styled("Remove:", theme.header)));
+        for (manager, target) in &summary.removals {
+            lines.push(Line::from(vec![
+                Span::styled(manager.clone(), theme.emphasis(theme.normal)),
+                Span::raw(format!(": {target}")),
+            ]));
+        }
     }
+    lines.push(Line::raw(""));
+    lines.push(Line::raw(format!(
+        "{} updates · {} removals",
+        summary.selected_total - summary.removals.len(),
+        summary.removals.len()
+    )));
     lines
 }
 
 fn confirmation_dialog_height(summary: &ConfirmationSummary) -> u16 {
-    let manager_rows = (summary.managers.len() + summary.removals.len() + 5).max(1);
+    let manager_rows = summary.managers.len().max(1) + summary.removals.len() + 2;
     let body_rows = manager_rows.saturating_add(3);
     u16::try_from(body_rows.saturating_add(3))
         .unwrap_or(u16::MAX)
