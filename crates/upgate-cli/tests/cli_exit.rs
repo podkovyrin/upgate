@@ -308,6 +308,60 @@ esac
 }
 
 #[test]
+fn binary_mise_apply_supports_legacy_and_new_release_age_options() {
+    for flag in ["--before", "--minimum-release-age"] {
+        let sandbox = Sandbox::new("mise-release-age");
+        let applied = sandbox.root.join("applied");
+        sandbox.write_executable(
+            "mise",
+            &format!(
+                r#"#!/bin/sh
+case "$*" in
+  "upgrade --help")
+    printf '%s\n' '{flag} <AGE>'
+    ;;
+  "upgrade --dry-run {flag} 7d")
+    printf '%s\n' 'Would uninstall node@22.0.0' 'Would install node@24.0.0'
+    ;;
+  "ls --installed --json")
+    printf '%s\n' '{{"node":[{{"version":"22.0.0","installed":true,"active":true}}]}}'
+    ;;
+  "outdated --json")
+    printf '%s\n' '{{"node":{{"latest":"24.0.0"}}}}'
+    ;;
+  "registry node --json")
+    printf '%s\n' '{{"backends":["core:node","asdf:node"]}}'
+    ;;
+  "ls-remote --json core:node")
+    printf '%s\n' '[{{"version":"24.0.0","created_at":"2021-01-01T00:00:00Z"}}]'
+    ;;
+  "upgrade {flag} 7d")
+    printf '%s\n' upgraded > '{}'
+    ;;
+  *)
+    echo "unsupported mise command: $*" >&2
+    exit 42
+    ;;
+esac
+"#,
+                applied.display(),
+            ),
+        );
+
+        let output = sandbox.run(["--manager", "mise", "--yolo", "apply"]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            applied.exists(),
+            "mise should apply the age-constrained update with {flag}"
+        );
+    }
+}
+
+#[test]
 fn binary_interruption_exits_130() {
     let sandbox = Sandbox::new("interruption");
     sandbox.write_executable(

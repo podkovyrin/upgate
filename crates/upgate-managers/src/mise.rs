@@ -222,11 +222,11 @@ impl ManagerAdapter for MiseManager {
 
     fn commands_for_execution_plan(
         &self,
-        _process: &ProcessRunner,
+        process: &ProcessRunner,
         _env: &Env,
         plan: &ResolvedExecutionPlan,
     ) -> Result<Vec<ExecutionCommand>, ManagerAdapterError> {
-        commands_for_execution_plan(plan, self.config.min_release_age)
+        commands_for_execution_plan(process, plan, self.config.min_release_age)
             .map_err(|err| adapter_error(&err))
     }
 }
@@ -563,8 +563,9 @@ fn scan_inputs_with_release_evidence(
 ///
 /// # Errors
 ///
-/// Returns an error when the resolved execution mode is unsupported.
+/// Returns an error when mise capability discovery fails or the execution mode is unsupported.
 pub fn commands_for_execution_plan(
+    process: &ProcessRunner,
     plan: &ResolvedExecutionPlan,
     min_release_age: Duration,
 ) -> Result<Vec<ExecutionCommand>, MiseError> {
@@ -583,6 +584,18 @@ pub fn commands_for_execution_plan(
         }
     }
     let min_age_arg = duration_arg(min_release_age);
+    let min_age_flag = if plan.intents.iter().any(|intent| match intent {
+        ExecutionCommandIntent::ResolverNative(item) => {
+            !matches!(item.target, ResolvedExecutionTarget::ManagerResolved)
+                && !item.bypass_min_release_age
+        }
+        ExecutionCommandIntent::ResolverNativeGlobal(_) => true,
+        _ => false,
+    }) {
+        minimum_release_age_flag(process)?
+    } else {
+        "--minimum-release-age"
+    };
     let mut commands = Vec::new();
     for intent in &plan.intents {
         match intent {
@@ -612,6 +625,7 @@ pub fn commands_for_execution_plan(
                     failure_group: None,
                     items: vec![ExecutionCommandItem::from(item)],
                     command: selected_upgrade_command(
+                        min_age_flag,
                         &min_age_arg,
                         &item.package_name,
                         matches!(item.target, ResolvedExecutionTarget::ManagerResolved)
@@ -623,7 +637,7 @@ pub fn commands_for_execution_plan(
                 commands.push(ExecutionCommand {
                     failure_group: None,
                     items: items.iter().map(ExecutionCommandItem::from).collect(),
-                    command: global_upgrade_command(&min_age_arg),
+                    command: global_upgrade_command(min_age_flag, &min_age_arg),
                 });
             }
             ExecutionCommandIntent::Exact(_) => {
@@ -644,6 +658,7 @@ pub fn commands_for_execution_plan(
     Ok(commands)
 }
 fn selected_upgrade_command(
+    min_age_flag: &str,
     min_age_arg: &str,
     tool: &PackageName,
     bypass_min_release_age: bool,
@@ -651,16 +666,40 @@ fn selected_upgrade_command(
     if bypass_min_release_age {
         CommandSpec::new("mise", ["upgrade", tool.as_str()]).mutating()
     } else {
-        CommandSpec::new("mise", ["upgrade", "--before", min_age_arg, tool.as_str()]).mutating()
+        CommandSpec::new(
+            "mise",
+            ["upgrade", min_age_flag, min_age_arg, tool.as_str()],
+        )
+        .mutating()
     }
 }
-fn global_upgrade_command(min_age_arg: &str) -> CommandSpec {
-    CommandSpec::new("mise", ["upgrade", "--before", min_age_arg]).mutating()
+fn global_upgrade_command(min_age_flag: &str, min_age_arg: &str) -> CommandSpec {
+    CommandSpec::new("mise", ["upgrade", min_age_flag, min_age_arg]).mutating()
 }
 
-fn upgrade_dry_run(process: &ProcessRunner, before: &str) -> Result<Vec<MisePlanItem>, MiseError> {
+fn minimum_release_age_flag(process: &ProcessRunner) -> Result<&'static str, MiseError> {
     let output = process.run(
-        &CommandSpec::new("mise", ["upgrade", "--dry-run", "--before", before]),
+        &CommandSpec::new("mise", ["upgrade", "--help"]),
+        &CommandCheck::Success,
+    )?;
+    if output
+        .stdout()?
+        .split_whitespace()
+        .any(|word| word == "--minimum-release-age")
+    {
+        Ok("--minimum-release-age")
+    } else {
+        Ok("--before")
+    }
+}
+
+fn upgrade_dry_run(
+    process: &ProcessRunner,
+    min_age_arg: &str,
+) -> Result<Vec<MisePlanItem>, MiseError> {
+    let min_age_flag = minimum_release_age_flag(process)?;
+    let output = process.run(
+        &CommandSpec::new("mise", ["upgrade", "--dry-run", min_age_flag, min_age_arg]),
         &CommandCheck::Success,
     )?;
     let items = parse_upgrade_dry_run_targets(output.stdout()?)?;

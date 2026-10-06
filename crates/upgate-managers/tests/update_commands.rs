@@ -410,6 +410,7 @@ fn current_packages_remain_available_for_removal_in_native_outdated_managers() {
         (
             Box::new(MiseManager::new(config("mise"))),
             vec![
+                "--minimum-release-age <MINIMUM_RELEASE_AGE>",
                 "",
                 r#"{"sample":[{"version":"1.2.3","installed":true,"active":true}]}"#,
             ],
@@ -445,6 +446,61 @@ fn current_packages_remain_available_for_removal_in_native_outdated_managers() {
             installed.removal,
             upgate_domain::RemovalSupport::Supported(_)
         ));
+    }
+}
+
+#[test]
+fn mise_selected_upgrades_keep_release_age_with_old_and_new_cli_options() {
+    let manager = MiseManager::new(config("mise"));
+    let item = ResolvedExecutionItem {
+        execution_support: ExecutionSupport::resolver_native(
+            upgate_domain::MinAgeConstraintSupport::Optional,
+            true,
+            true,
+        ),
+        ..exact_item("mise", "node", "24.0.0")
+    };
+    for flag in ["--before", "--minimum-release-age"] {
+        let process = ProcessRunner::fake([Ok(CommandOutput::from_parts(
+            ExitStatus::from_raw(0),
+            format!("  {flag} <AGE>\n"),
+            "",
+        ))]);
+        let commands = manager
+            .commands_for_execution_plan(
+                &process,
+                &Env::fixed([]),
+                &ResolvedExecutionPlan {
+                    intents: vec![ExecutionCommandIntent::ResolverNative(item.clone())],
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            commands[0].command.to_string(),
+            format!("mise upgrade {flag} 7d node")
+        );
+    }
+
+    for item in [
+        ResolvedExecutionItem {
+            bypass_min_release_age: true,
+            ..item.clone()
+        },
+        ResolvedExecutionItem {
+            target: ResolvedExecutionTarget::ManagerResolved,
+            ..item
+        },
+    ] {
+        let commands = manager
+            .commands_for_execution_plan(
+                &ProcessRunner::fake([]),
+                &Env::fixed([]),
+                &ResolvedExecutionPlan {
+                    intents: vec![ExecutionCommandIntent::ResolverNative(item)],
+                },
+            )
+            .unwrap();
+        assert_eq!(commands[0].command.to_string(), "mise upgrade node");
     }
 }
 
@@ -488,15 +544,20 @@ fn ambiguous_mise_upgrade_preserves_installed_versions_for_removal() {
     let installed =
         r#"{"node":[{"version":"20.0.0","installed":true},{"version":"22.0.0","installed":true}]}"#;
     let process = ProcessRunner::fake(
-        ["Would install node@24.0.0\n", installed, installed]
-            .into_iter()
-            .map(|body| {
-                Ok(CommandOutput::from_parts(
-                    ExitStatus::from_raw(0),
-                    body.as_bytes(),
-                    vec![],
-                ))
-            }),
+        [
+            "--before <BEFORE>",
+            "Would install node@24.0.0\n",
+            installed,
+            installed,
+        ]
+        .into_iter()
+        .map(|body| {
+            Ok(CommandOutput::from_parts(
+                ExitStatus::from_raw(0),
+                body.as_bytes(),
+                vec![],
+            ))
+        }),
     );
     let inputs = MiseManager::new(config("mise"))
         .update_inputs(&process, &HttpClient::fake([]), &Env::fixed([]), 1)
